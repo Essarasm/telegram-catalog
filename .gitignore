@@ -3,6 +3,6 @@ __pycache__/
 .env
 data/catalog.db
 node_modules/
-frontend/dist/
+# frontend/dist/ — committed for Railway deployment
 *.egg-info/
 .vite/
