@@ -8,10 +8,12 @@ router = APIRouter(prefix="/api/products", tags=["products"])
 @router.get("")
 def list_products(
     category_id: Optional[int] = None,
+    producer_id: Optional[int] = None,
     search: Optional[str] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
 ):
+    """List products with filtering by category, producer, and/or search term."""
     conn = get_db()
     offset = (page - 1) * limit
     conditions = ["p.is_active = 1"]
@@ -21,9 +23,13 @@ def list_products(
         conditions.append("p.category_id = ?")
         params.append(category_id)
 
+    if producer_id:
+        conditions.append("p.producer_id = ?")
+        params.append(producer_id)
+
     if search:
-        conditions.append("p.name LIKE ?")
-        params.append(f"%{search}%")
+        conditions.append("(p.name LIKE ? OR p.name_display LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
 
     where = " AND ".join(conditions)
 
@@ -32,10 +38,12 @@ def list_products(
     ).fetchone()[0]
 
     rows = conn.execute(
-        f"""SELECT p.id, p.code, p.name, p.category_id, c.name as category_name,
-                   p.unit, p.price, p.currency, p.weight, p.image_path
+        f"""SELECT p.id, p.name, p.name_display, p.category_id, c.name as category_name,
+                   p.producer_id, pr.name as producer_name,
+                   p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path
             FROM products p
             JOIN categories c ON c.id = p.category_id
+            JOIN producers pr ON pr.id = p.producer_id
             WHERE {where}
             ORDER BY p.name
             LIMIT ? OFFSET ?""",
@@ -53,10 +61,13 @@ def list_products(
 
 @router.get("/{product_id}")
 def get_product(product_id: int):
+    """Get single product details."""
     conn = get_db()
     row = conn.execute(
-        """SELECT p.*, c.name as category_name
-           FROM products p JOIN categories c ON c.id = p.category_id
+        """SELECT p.*, c.name as category_name, pr.name as producer_name
+           FROM products p
+           JOIN categories c ON c.id = p.category_id
+           JOIN producers pr ON pr.id = p.producer_id
            WHERE p.id = ?""",
         (product_id,),
     ).fetchone()

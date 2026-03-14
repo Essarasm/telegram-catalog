@@ -2,7 +2,10 @@ __pycache__/
 *.pyc
 .env
 data/catalog.db
+data/catalog.db-wal
+data/catalog.db-shm
 node_modules/
-# frontend/dist/ — committed for Railway deployment
+frontend/dist/
 *.egg-info/
 .vite/
+images/*.jpg

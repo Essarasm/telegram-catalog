@@ -18,26 +18,38 @@ def init_db():
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
-            sort_order INTEGER DEFAULT 0
+            name_uz TEXT,
+            sort_order INTEGER DEFAULT 0,
+            product_count INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS producers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            product_count INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT,
             name TEXT NOT NULL,
+            name_display TEXT,
             category_id INTEGER NOT NULL,
-            unit TEXT DEFAULT 'шт',
-            price REAL DEFAULT 0,
-            currency TEXT DEFAULT 'USD' CHECK(currency IN ('USD', 'UZS')),
+            producer_id INTEGER NOT NULL,
+            unit TEXT DEFAULT 'sht',
+            price_usd REAL DEFAULT 0,
+            price_uzs REAL DEFAULT 0,
             weight REAL,
             image_path TEXT,
             is_active INTEGER DEFAULT 1,
-            FOREIGN KEY (category_id) REFERENCES categories(id)
+            FOREIGN KEY (category_id) REFERENCES categories(id),
+            FOREIGN KEY (producer_id) REFERENCES producers(id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
+        CREATE INDEX IF NOT EXISTS idx_products_producer ON products(producer_id);
         CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);
         CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
+        CREATE INDEX IF NOT EXISTS idx_products_cat_prod ON products(category_id, producer_id);
     """)
     conn.commit()
     conn.close()

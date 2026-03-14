@@ -5,9 +5,15 @@ export async function fetchCategories() {
   return res.json();
 }
 
-export async function fetchProducts({ categoryId, search, page = 1, limit = 20 }) {
+export async function fetchProducers(categoryId) {
+  const res = await fetch(`${API_BASE}/categories/${categoryId}/producers`);
+  return res.json();
+}
+
+export async function fetchProducts({ categoryId, producerId, search, page = 1, limit = 30 }) {
   const params = new URLSearchParams();
   if (categoryId) params.set('category_id', categoryId);
+  if (producerId) params.set('producer_id', producerId);
   if (search) params.set('search', search);
   params.set('page', page);
   params.set('limit', limit);
@@ -28,11 +34,27 @@ export async function exportOrder(items, format = 'pdf', clientName = '') {
   return res.blob();
 }
 
-export function formatPrice(price, currency) {
-  if (currency === 'UZS') {
-    return `${Number(price).toLocaleString('uz-UZ')} so'm`;
+export function formatPrice(priceUsd, priceUzs) {
+  // Show USD price preferentially
+  if (priceUsd && priceUsd > 0) {
+    return `$${Number(priceUsd).toFixed(2)}`;
   }
-  return `$${Number(price).toFixed(2)}`;
+  if (priceUzs && priceUzs > 0) {
+    return `${Number(priceUzs).toLocaleString('uz-UZ')} so'm`;
+  }
+  return '—';
+}
+
+export function getPriceCurrency(priceUsd, priceUzs) {
+  if (priceUsd && priceUsd > 0) return 'USD';
+  if (priceUzs && priceUzs > 0) return 'UZS';
+  return 'USD';
+}
+
+export function getPriceValue(priceUsd, priceUzs) {
+  if (priceUsd && priceUsd > 0) return priceUsd;
+  if (priceUzs && priceUzs > 0) return priceUzs;
+  return 0;
 }
 
 export function getImageUrl(product) {

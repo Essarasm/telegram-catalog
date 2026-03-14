@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { fetchProducts, formatPrice, getImageUrl } from '../utils/api';
+import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl } from '../utils/api';
 import t from '../i18n/uz.json';
 
-export default function ProductsPage({ category, searchQuery, cart }) {
+export default function ProductsPage({ category, producer, searchQuery, cart }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(1);
@@ -13,6 +13,7 @@ export default function ProductsPage({ category, searchQuery, cart }) {
     setLoading(true);
     const data = await fetchProducts({
       categoryId: category?.id,
+      producerId: producer?.id,
       search: searchQuery,
       page: pageNum,
       limit: 30,
@@ -20,13 +21,13 @@ export default function ProductsPage({ category, searchQuery, cart }) {
     setProducts(prev => reset ? data.items : [...prev, ...data.items]);
     setHasMore(pageNum < data.pages);
     setLoading(false);
-  }, [category?.id, searchQuery]);
+  }, [category?.id, producer?.id, searchQuery]);
 
   useEffect(() => {
     setPage(1);
     setProducts([]);
     loadProducts(1, true);
-  }, [category?.id, searchQuery, loadProducts]);
+  }, [category?.id, producer?.id, searchQuery, loadProducts]);
 
   // Infinite scroll
   const lastRef = useCallback(node => {
@@ -54,6 +55,8 @@ export default function ProductsPage({ category, searchQuery, cart }) {
         const inCart = isInCart(product.id);
         const imgUrl = getImageUrl(product);
         const isLast = idx === products.length - 1;
+        const displayName = product.name_display || product.name;
+        const priceStr = formatPrice(product.price_usd, product.price_uzs);
 
         return (
           <div
@@ -72,12 +75,14 @@ export default function ProductsPage({ category, searchQuery, cart }) {
 
             {/* Info */}
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium leading-tight truncate">{product.name}</div>
+              <div className="text-sm font-medium leading-tight truncate" title={product.name}>
+                {displayName}
+              </div>
               <div className="text-xs text-tg-hint mt-0.5">
-                {product.unit} · {product.weight ? `${product.weight} kg` : ''}
+                {product.unit}{product.weight ? ` · ${product.weight} kg` : ''}
               </div>
               <div className="text-sm font-semibold text-tg-link mt-1">
-                {formatPrice(product.price, product.currency)}
+                {priceStr}
               </div>
             </div>
 
@@ -103,7 +108,11 @@ export default function ProductsPage({ category, searchQuery, cart }) {
                 </div>
               ) : (
                 <button
-                  onClick={() => cart.addItem(product)}
+                  onClick={() => cart.addItem({
+                    ...product,
+                    price: getPriceValue(product.price_usd, product.price_uzs),
+                    currency: getPriceCurrency(product.price_usd, product.price_uzs),
+                  })}
                   className="bg-tg-button text-tg-button-text text-xs font-medium rounded-lg px-3 py-2 active:scale-95 transition-transform"
                 >
                   + {t.add_to_cart}

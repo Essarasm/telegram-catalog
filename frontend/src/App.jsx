@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useCart } from './hooks/useCart';
 import CatalogPage from './pages/CatalogPage';
+import ProducersPage from './pages/ProducersPage';
 import ProductsPage from './pages/ProductsPage';
 import CartPage from './pages/CartPage';
 import t from './i18n/uz.json';
@@ -8,19 +9,44 @@ import t from './i18n/uz.json';
 export default function App() {
   const [page, setPage] = useState('catalog');
   const [selectedCategory, setSelectedCategory] = useState(null);
+  const [selectedProducer, setSelectedProducer] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const cart = useCart();
 
   const navigateTo = (p, data) => {
-    if (p === 'products' && data) {
+    if (p === 'producers' && data) {
       setSelectedCategory(data);
+      setSelectedProducer(null);
+      setSearchQuery('');
+    }
+    if (p === 'products' && data) {
+      setSelectedProducer(data);
       setSearchQuery('');
     }
     if (p === 'search' && data) {
       setSearchQuery(data);
       setSelectedCategory(null);
+      setSelectedProducer(null);
+      p = 'products';
     }
-    setPage(p === 'search' ? 'products' : p);
+    setPage(p);
+  };
+
+  const goBack = () => {
+    if (page === 'cart') setPage(selectedProducer ? 'products' : selectedCategory ? 'producers' : 'catalog');
+    else if (page === 'products' && searchQuery) { setPage('catalog'); setSearchQuery(''); }
+    else if (page === 'products') setPage('producers');
+    else if (page === 'producers') { setPage('catalog'); setSelectedCategory(null); }
+    else setPage('catalog');
+  };
+
+  const getTitle = () => {
+    if (page === 'catalog') return t.app_title;
+    if (page === 'producers') return selectedCategory?.name || t.producers;
+    if (page === 'products' && searchQuery) return t.search_results;
+    if (page === 'products') return selectedProducer?.name || t.all_products;
+    if (page === 'cart') return t.cart;
+    return t.app_title;
   };
 
   // Expand Telegram Mini App
@@ -35,17 +61,12 @@ export default function App() {
       <header className="sticky top-0 z-50 bg-tg-bg border-b border-gray-200 px-4 py-3">
         <div className="flex items-center justify-between">
           {page !== 'catalog' && (
-            <button
-              onClick={() => page === 'cart' ? setPage('catalog') : setPage('catalog')}
-              className="text-tg-link font-medium text-sm"
-            >
+            <button onClick={goBack} className="text-tg-link font-medium text-sm">
               ← {t.back}
             </button>
           )}
           <h1 className="text-base font-semibold flex-1 text-center truncate">
-            {page === 'catalog' && t.app_title}
-            {page === 'products' && (selectedCategory?.name || t.search_results)}
-            {page === 'cart' && t.cart}
+            {getTitle()}
           </h1>
           <button
             onClick={() => navigateTo('cart')}
@@ -64,11 +85,21 @@ export default function App() {
       {/* Content */}
       <main className="px-4 py-3">
         {page === 'catalog' && (
-          <CatalogPage onSelectCategory={(cat) => navigateTo('products', cat)} onSearch={(q) => navigateTo('search', q)} />
+          <CatalogPage
+            onSelectCategory={(cat) => navigateTo('producers', cat)}
+            onSearch={(q) => navigateTo('search', q)}
+          />
+        )}
+        {page === 'producers' && (
+          <ProducersPage
+            category={selectedCategory}
+            onSelectProducer={(prod) => navigateTo('products', prod)}
+          />
         )}
         {page === 'products' && (
           <ProductsPage
             category={selectedCategory}
+            producer={selectedProducer}
             searchQuery={searchQuery}
             cart={cart}
           />

@@ -26,15 +26,30 @@ def export_order(req: ExportRequest):
     order_items = []
     for cart_item in req.items:
         row = conn.execute(
-            "SELECT name, unit, price, currency FROM products WHERE id = ?",
+            """SELECT p.name, p.unit, p.price_usd, p.price_uzs, pr.name as producer_name
+               FROM products p
+               JOIN producers pr ON pr.id = p.producer_id
+               WHERE p.id = ?""",
             (cart_item.product_id,),
         ).fetchone()
         if row:
+            # Use USD price if available, otherwise UZS
+            if row["price_usd"] and row["price_usd"] > 0:
+                price = row["price_usd"]
+                currency = "USD"
+            elif row["price_uzs"] and row["price_uzs"] > 0:
+                price = row["price_uzs"]
+                currency = "UZS"
+            else:
+                price = 0
+                currency = "USD"
+
             order_items.append({
                 "name": row["name"],
                 "unit": row["unit"],
-                "price": row["price"],
-                "currency": row["currency"],
+                "price": price,
+                "currency": currency,
+                "producer": row["producer_name"],
                 "quantity": cart_item.quantity,
             })
     conn.close()
