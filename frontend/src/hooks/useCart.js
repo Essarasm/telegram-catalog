@@ -3,6 +3,22 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 const CART_KEY = 'cart_v1';
 
 /**
+ * Only store essential fields to stay within Telegram CloudStorage's
+ * 4096-byte-per-key limit.  ~80 bytes per item → safe up to ~50 items.
+ */
+function slimItem(product, quantity = 1) {
+  return {
+    id: product.id,
+    name: product.name_display || product.name,
+    name_display: product.name_display || product.name,
+    price: product.price,
+    currency: product.currency,
+    unit: product.unit,
+    quantity,
+  };
+}
+
+/**
  * Try to load saved cart from Telegram CloudStorage.
  * Falls back gracefully if not available (e.g., outside Telegram).
  */
@@ -44,21 +60,27 @@ function saveCartToCloud(items) {
 
 export function useCart() {
   const [items, setItems] = useState([]);
-  const loaded = useRef(false);
+  const cloudLoaded = useRef(false);   // true once the async cloud read finishes
+  const mountedOnce = useRef(false);
 
   // Load saved cart on mount
   useEffect(() => {
-    if (!loaded.current) {
-      loaded.current = true;
+    if (!mountedOnce.current) {
+      mountedOnce.current = true;
       loadCartFromCloud((savedItems) => {
+        cloudLoaded.current = true;
         setItems(savedItems);
       });
+      // If CloudStorage is unavailable or empty, mark as loaded after a short delay
+      // so that subsequent user additions still get saved.
+      setTimeout(() => { cloudLoaded.current = true; }, 500);
     }
   }, []);
 
-  // Save to cloud whenever items change (skip initial empty state)
+  // Save to cloud whenever items change — but ONLY after cloud read is done,
+  // so we never overwrite saved data with an empty initial array.
   useEffect(() => {
-    if (loaded.current) {
+    if (cloudLoaded.current) {
       saveCartToCloud(items);
     }
   }, [items]);
@@ -71,7 +93,7 @@ export function useCart() {
           i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i
         );
       }
-      return [...prev, { ...product, quantity: 1 }];
+      return [...prev, slimItem(product)];
     });
   }, []);
 

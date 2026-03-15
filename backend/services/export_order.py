@@ -1,6 +1,8 @@
 """Generate order exports as PDF or Excel."""
 import io
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import List, Dict
 
 from reportlab.lib import colors
@@ -14,17 +16,52 @@ from reportlab.pdfbase.ttfonts import TTFont
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 
+# ---------------------------------------------------------------------------
+# Register Cyrillic-capable font (DejaVu Sans) — fixes black squares
+# ---------------------------------------------------------------------------
+_FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
+
+# Try bundled font first, then system font paths
+_DEJAVU_PATHS = [
+    _FONTS_DIR / "DejaVuSans.ttf",
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+    Path("/usr/share/fonts/dejavu/DejaVuSans.ttf"),
+]
+_DEJAVU_BOLD_PATHS = [
+    _FONTS_DIR / "DejaVuSans-Bold.ttf",
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    Path("/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf"),
+]
+
+_FONT_NAME = "Helvetica"       # fallback
+_FONT_BOLD = "Helvetica-Bold"  # fallback
+
+for p in _DEJAVU_PATHS:
+    if p.exists():
+        pdfmetrics.registerFont(TTFont("DejaVuSans", str(p)))
+        _FONT_NAME = "DejaVuSans"
+        break
+
+for p in _DEJAVU_BOLD_PATHS:
+    if p.exists():
+        pdfmetrics.registerFont(TTFont("DejaVuSans-Bold", str(p)))
+        _FONT_BOLD = "DejaVuSans-Bold"
+        break
+
 
 def generate_pdf(items: List[Dict], client_name: str = "") -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=20*mm, bottomMargin=20*mm)
+
     styles = getSampleStyleSheet()
 
     title_style = ParagraphStyle(
-        'Title_UZ', parent=styles['Title'], fontSize=16, spaceAfter=12
+        'Title_UZ', parent=styles['Title'], fontName=_FONT_BOLD,
+        fontSize=16, spaceAfter=12
     )
     normal_style = ParagraphStyle(
-        'Normal_UZ', parent=styles['Normal'], fontSize=10
+        'Normal_UZ', parent=styles['Normal'], fontName=_FONT_NAME,
+        fontSize=10
     )
 
     elements = []
@@ -46,7 +83,8 @@ def generate_pdf(items: List[Dict], client_name: str = "") -> bytes:
     uzs_items = [it for it in items if it.get("currency", "USD") == "UZS"]
 
     def build_table(item_list, currency_label):
-        header = ["#", "Mahsulot nomi", "Birlik", "Miqdor", f"Narx ({currency_label})", f"Jami ({currency_label})"]
+        header = ["#", "Mahsulot nomi", "Birlik", "Miqdor",
+                  f"Narx ({currency_label})", f"Jami ({currency_label})"]
         data = [header]
         grand_total = 0
 
@@ -71,6 +109,8 @@ def generate_pdf(items: List[Dict], client_name: str = "") -> bytes:
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2563EB')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, -2), _FONT_NAME),
+            ('FONTNAME', (0, 0), (-1, 0), _FONT_BOLD),
             ('FONTSIZE', (0, 0), (-1, 0), 9),
             ('FONTSIZE', (0, 1), (-1, -1), 8),
             ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
@@ -78,7 +118,7 @@ def generate_pdf(items: List[Dict], client_name: str = "") -> bytes:
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, colors.HexColor('#F3F4F6')]),
             ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#E5E7EB')),
-            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('FONTNAME', (0, -1), (-1, -1), _FONT_BOLD),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
         ]))
@@ -134,7 +174,8 @@ def generate_excel(items: List[Dict], client_name: str = "") -> bytes:
         ws.cell(row=start_row, column=1).font = Font(bold=True, size=11)
         start_row += 1
 
-        headers = ["#", "Mahsulot nomi", "Birlik", "Miqdor", f"Narx ({currency_label})", f"Jami ({currency_label})"]
+        headers = ["#", "Mahsulot nomi", "Birlik", "Miqdor",
+                   f"Narx ({currency_label})", f"Jami ({currency_label})"]
         for col, h in enumerate(headers, 1):
             cell = ws.cell(row=start_row, column=col, value=h)
             cell.font = header_font
