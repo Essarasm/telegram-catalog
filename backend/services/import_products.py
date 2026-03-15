@@ -218,9 +218,23 @@ def standardize_cyrillic_name(raw_name, producer_cyrillic):
 
 
 def import_from_catalog_clean(xlsx_path: str):
-    """Import all products from the Catalog Clean sheet."""
+    """Import all products from the Catalog Clean sheet.
+
+    Skips import if products already exist to keep IDs stable
+    (cart persistence depends on stable product IDs).
+    Use FORCE_REIMPORT=1 env var to force a fresh import.
+    """
     init_db()
     conn = get_db()
+
+    # Check if products already exist — skip import to keep IDs stable
+    existing = conn.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+    force = os.getenv("FORCE_REIMPORT", "").strip()
+    if existing > 0 and force != "1":
+        print(f"Database already has {existing} products — skipping import (IDs stable).")
+        print("Set FORCE_REIMPORT=1 to force a fresh import.")
+        conn.close()
+        return
 
     print(f"Loading {xlsx_path}...")
     wb = load_workbook(xlsx_path, read_only=True, data_only=True)
@@ -234,6 +248,8 @@ def import_from_catalog_clean(xlsx_path: str):
     conn.execute("DELETE FROM products")
     conn.execute("DELETE FROM producers")
     conn.execute("DELETE FROM categories")
+    # Reset auto-increment so IDs start from 1 on fresh import
+    conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('products','producers','categories')")
 
     cat_map = {}   # name -> id
     prod_map = {}  # name -> id
