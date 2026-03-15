@@ -20,14 +20,14 @@ class UserRegister(BaseModel):
 
 @router.get("/check")
 def check_user(telegram_id: int = Query(...)):
-    """Check if user has registered (shared phone number)."""
+    """Check if user has fully registered (phone + location)."""
     conn = get_db()
     row = conn.execute(
-        "SELECT telegram_id, phone, first_name FROM users WHERE telegram_id = ?",
+        "SELECT telegram_id, phone, first_name, latitude, longitude FROM users WHERE telegram_id = ?",
         (telegram_id,),
     ).fetchone()
     conn.close()
-    if row:
+    if row and row["phone"] and row["latitude"] is not None:
         return {"registered": True, "phone": row["phone"], "first_name": row["first_name"]}
     return {"registered": False}
 

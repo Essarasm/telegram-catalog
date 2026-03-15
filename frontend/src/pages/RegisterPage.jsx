@@ -1,9 +1,9 @@
 import { useState, useRef } from 'react';
 
 /**
- * Registration gate — 2 steps:
+ * Registration gate — 2 required steps:
  * 1. Share phone number (required)
- * 2. Share location (optional but encouraged)
+ * 2. Share location (required)
  */
 export default function RegisterPage({ onRegistered }) {
   const [step, setStep] = useState('phone'); // 'phone' | 'location'
@@ -66,6 +66,24 @@ export default function RegisterPage({ onRegistered }) {
     });
   };
 
+  const onLocationDenied = () => {
+    setError("Joylashuvni yuborish majburiy. Iltimos, qayta urinib ko'ring.");
+    setLoading(false);
+  };
+
+  const saveLocationAndFinish = (lat, lng) => {
+    saveToServer({
+      ...contactData.current,
+      latitude: lat,
+      longitude: lng,
+    })
+      .then(() => onRegistered())
+      .catch(() => {
+        setError("Serverga saqlashda xatolik");
+        setLoading(false);
+      });
+  };
+
   const requestLocation = () => {
     setLoading(true);
     setError(null);
@@ -75,23 +93,12 @@ export default function RegisterPage({ onRegistered }) {
       // Fallback: use browser geolocation API
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            saveToServer({
-              ...contactData.current,
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-            })
-              .then(() => onRegistered())
-              .catch(() => onRegistered()); // still let them in
-          },
-          () => {
-            // Denied or error — let them in anyway
-            onRegistered();
-          },
+          (pos) => saveLocationAndFinish(pos.coords.latitude, pos.coords.longitude),
+          () => onLocationDenied(),
           { timeout: 15000, enableHighAccuracy: false }
         );
       } else {
-        onRegistered();
+        onLocationDenied();
       }
       return;
     }
@@ -102,42 +109,24 @@ export default function RegisterPage({ onRegistered }) {
         // Fall back to browser geolocation
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
-            (pos) => {
-              saveToServer({
-                ...contactData.current,
-                latitude: pos.coords.latitude,
-                longitude: pos.coords.longitude,
-              })
-                .then(() => onRegistered())
-                .catch(() => onRegistered());
-            },
-            () => onRegistered(),
+            (pos) => saveLocationAndFinish(pos.coords.latitude, pos.coords.longitude),
+            () => onLocationDenied(),
             { timeout: 15000, enableHighAccuracy: false }
           );
         } else {
-          onRegistered();
+          onLocationDenied();
         }
         return;
       }
 
       tg.LocationManager.getLocation((loc) => {
         if (loc && loc.latitude) {
-          saveToServer({
-            ...contactData.current,
-            latitude: loc.latitude,
-            longitude: loc.longitude,
-          })
-            .then(() => onRegistered())
-            .catch(() => onRegistered());
+          saveLocationAndFinish(loc.latitude, loc.longitude);
         } else {
-          onRegistered();
+          onLocationDenied();
         }
       });
     });
-  };
-
-  const skipLocation = () => {
-    onRegistered();
   };
 
   // Step 1: Phone
@@ -164,28 +153,22 @@ export default function RegisterPage({ onRegistered }) {
     );
   }
 
-  // Step 2: Location
+  // Step 2: Location (required)
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] px-6 text-center">
       <div className="text-5xl mb-4">📍</div>
       <h2 className="text-xl font-bold mb-2">Joylashuvingiz</h2>
       <p className="text-tg-hint text-sm mb-6 max-w-[280px]">
-        Yetkazib berishni tezlashtirish uchun joylashuvingizni yuboring.
+        Buyurtma berish uchun joylashuvingizni yuboring.
+        Bu yetkazib berishni tezlashtirish uchun kerak.
       </p>
 
       <button
         onClick={requestLocation}
         disabled={loading}
-        className="bg-tg-button text-tg-button-text font-semibold rounded-xl px-8 py-3 text-base active:scale-[0.98] transition-transform disabled:opacity-50 mb-3"
+        className="bg-tg-button text-tg-button-text font-semibold rounded-xl px-8 py-3 text-base active:scale-[0.98] transition-transform disabled:opacity-50"
       >
         {loading ? "Yuklanmoqda..." : "📍 Joylashuvni yuborish"}
-      </button>
-
-      <button
-        onClick={skipLocation}
-        className="text-tg-hint text-sm underline"
-      >
-        Keyinroq
       </button>
 
       {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
