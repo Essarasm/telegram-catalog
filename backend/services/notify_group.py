@@ -8,7 +8,7 @@ from typing import List, Dict
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ORDER_GROUP_CHAT_ID = os.getenv("ORDER_GROUP_CHAT_ID", "")
+ORDER_GROUP_CHAT_ID = os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463")
 
 
 def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = ""):
