@@ -9,13 +9,14 @@ from aiogram.filters import CommandStart
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    MenuButtonWebApp,
     WebAppInfo,
 )
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-WEBAPP_URL = os.getenv("WEBAPP_URL", "https://your-domain.com")
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.railway.app")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -68,6 +69,17 @@ async def fallback(message: types.Message):
 
 async def main():
     logger.info("Bot started in polling mode...")
+    # Set the persistent menu button to open the webapp
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="Katalog",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )
+        )
+        logger.info(f"Menu button set to webapp: {WEBAPP_URL}")
+    except Exception as e:
+        logger.warning(f"Could not set menu button: {e}")
     await dp.start_polling(bot)
 
 
