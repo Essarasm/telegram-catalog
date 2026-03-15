@@ -10,10 +10,9 @@ const CART_KEY = 'cart_v2'; // bumped to avoid loading old bloated data
 function compress(item) {
   return {
     i: item.id,
-    n: item.name_display || item.name || '',
+    n: (item.name_display || item.name || '').slice(0, 18),
     p: item.price,
-    c: item.currency,
-    u: item.unit,
+    c: item.currency === 'UZS' ? 'Z' : 'D',
     q: item.quantity,
   };
 }
@@ -24,14 +23,15 @@ function compress(item) {
 function decompress(raw) {
   // Handle both compressed (short keys) and legacy (full keys) formats
   if (raw.i !== undefined) {
-    // Compressed format
+    // Compressed format — expand 1-char currency back
+    const currency = raw.c === 'Z' ? 'UZS' : (raw.c === 'D' ? 'USD' : raw.c);
     return {
       id: raw.i,
       name: raw.n,
       name_display: raw.n,
       price: raw.p,
-      currency: raw.c,
-      unit: raw.u,
+      currency,
+      unit: raw.u || '',
       quantity: raw.q,
     };
   }
