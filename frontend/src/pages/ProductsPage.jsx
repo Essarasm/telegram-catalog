@@ -93,7 +93,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, on
               onClick={() => onSelectProduct && onSelectProduct(product)}
             >
               {/* Image or placeholder */}
-              <div className="w-14 h-14 rounded-lg bg-gray-200 flex-shrink-0 flex items-center justify-center overflow-hidden">
+              <div className="w-14 h-14 rounded-lg bg-tg-secondary flex-shrink-0 flex items-center justify-center overflow-hidden border border-black/5">
                 {imgUrl ? (
                   <img src={imgUrl} alt="" className="w-full h-full object-cover" />
                 ) : (

@@ -114,7 +114,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-tg-bg text-tg-text pb-20">
       {/* Top bar */}
-      <header className="sticky top-0 z-50 bg-tg-bg border-b border-gray-200 px-4 py-3">
+      <header className="sticky top-0 z-50 bg-tg-bg border-b border-tg-hint/20 px-4 py-3">
         <div className="flex items-center justify-between">
           {page !== 'catalog' && (
             <button onClick={goBack} className="text-tg-link font-medium text-sm">

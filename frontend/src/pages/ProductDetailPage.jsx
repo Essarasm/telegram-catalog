@@ -19,7 +19,7 @@ export default function ProductDetailPage({ product, producer, cart, onBack }) {
   return (
     <div className="space-y-4">
       {/* Large product image */}
-      <div className="w-full aspect-square bg-gray-100 rounded-2xl overflow-hidden flex items-center justify-center">
+      <div className="w-full aspect-square bg-tg-secondary rounded-2xl overflow-hidden flex items-center justify-center">
         {imgUrl ? (
           <img src={imgUrl} alt={displayName} className="w-full h-full object-contain" />
         ) : (
