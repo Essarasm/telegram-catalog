@@ -7,7 +7,7 @@ import CartPage from './pages/CartPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v12.1';
 
 export default function App() {
   const [page, setPage] = useState('catalog');

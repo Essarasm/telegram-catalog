@@ -8,4 +8,4 @@ node_modules/
 # frontend/dist/ — included for Railway deployment
 *.egg-info/
 .vite/
-images/*.jpg
+# Product images are committed to git for Railway persistence
