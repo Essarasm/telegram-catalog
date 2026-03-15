@@ -57,6 +57,8 @@ def init_db():
             first_name TEXT,
             last_name TEXT,
             username TEXT,
+            latitude REAL,
+            longitude REAL,
             registered_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -69,6 +71,13 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_cart_user ON cart_items(user_id);
     """)
+    conn.commit()
+
+    # Migrations: add columns if missing (safe for existing DBs)
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    for col, coltype in [("latitude", "REAL"), ("longitude", "REAL")]:
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {coltype}")
     conn.commit()
     conn.close()
 
