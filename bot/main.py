@@ -5,7 +5,7 @@ import logging
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -48,6 +48,12 @@ async def cmd_start(message: types.Message):
         "savatga qo'shing va buyurtma yarating.",
         reply_markup=keyboard,
     )
+
+
+@dp.message(Command("chatid"))
+async def cmd_chatid(message: types.Message):
+    """Report the chat ID — useful for configuring group notifications."""
+    await message.answer(f"Chat ID: <code>{message.chat.id}</code>", parse_mode="HTML")
 
 
 @dp.message()
