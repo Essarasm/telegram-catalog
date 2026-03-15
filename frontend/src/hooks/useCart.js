@@ -1,198 +1,222 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 
-const CART_KEY = 'cart_v2'; // bumped to avoid loading old bloated data
+const CART_KEY = 'cart_v3';
 
-/**
- * Compress a cart item for CloudStorage.
- * Short keys: i=id, n=name, p=price, c=currency, u=unit, q=quantity
- * ~65 chars per item → supports 60+ items within the 4096-char limit.
- */
-function compress(item) {
-  return {
-    i: item.id,
-    n: (item.name_display || item.name || '').slice(0, 18),
-    p: item.price,
-    c: item.currency === 'UZS' ? 'Z' : 'D',
-    q: item.quantity,
-  };
+// ---------------------------------------------------------------------------
+// CloudStorage helpers — store ONLY { id, quantity } per item (~20 bytes each)
+// Product details (name, price, unit) are fetched from the server on load.
+// This makes the payload tiny (~2000 chars for 100 items) and eliminates
+// every size/encoding-related persistence bug.
+// ---------------------------------------------------------------------------
+
+function cloudGet(key) {
+  return new Promise((resolve) => {
+    try {
+      const cs = window.Telegram?.WebApp?.CloudStorage;
+      if (!cs) return resolve(null);
+      cs.getItem(key, (err, val) => resolve(err ? null : val || null));
+    } catch { resolve(null); }
+  });
 }
 
-/**
- * Decompress a cart item from CloudStorage back to full field names.
- */
-function decompress(raw) {
-  // Handle both compressed (short keys) and legacy (full keys) formats
-  if (raw.i !== undefined) {
-    // Compressed format — expand 1-char currency back
-    const currency = raw.c === 'Z' ? 'UZS' : (raw.c === 'D' ? 'USD' : raw.c);
-    return {
-      id: raw.i,
-      name: raw.n,
-      name_display: raw.n,
-      price: raw.p,
-      currency,
-      unit: raw.u || '',
-      quantity: raw.q,
-    };
-  }
-  // Legacy full-key format — normalize it
-  return {
-    id: raw.id,
-    name: raw.name_display || raw.name || '',
-    name_display: raw.name_display || raw.name || '',
-    price: raw.price,
-    currency: raw.currency,
-    unit: raw.unit,
-    quantity: raw.quantity || 1,
-  };
-}
-
-/**
- * Try to load saved cart from Telegram CloudStorage.
- */
-function loadCartFromCloud(callback) {
+function cloudSet(key, value) {
   try {
     const cs = window.Telegram?.WebApp?.CloudStorage;
-    if (!cs) return;
+    if (cs) cs.setItem(key, value);
+  } catch { /* best-effort */ }
+}
 
-    cs.getItem(CART_KEY, (err, value) => {
-      if (!err && value) {
-        try {
-          const parsed = JSON.parse(value);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            callback(parsed.map(decompress));
-            return;
-          }
-        } catch (e) { /* ignore corrupt */ }
+function cloudRemove(key) {
+  try {
+    const cs = window.Telegram?.WebApp?.CloudStorage;
+    if (cs) cs.removeItem(key);
+  } catch { /* ignore */ }
+}
+
+/**
+ * Persist the cart to CloudStorage.  Only IDs + quantities are stored.
+ * Called synchronously inside every state-setter so the write starts
+ * as early as possible (before the next React render, not after it).
+ */
+function persistCart(items) {
+  const minimal = items.map(it => [it.id, it.quantity]); // [[id,qty], ...]
+  cloudSet(CART_KEY, JSON.stringify(minimal));
+}
+
+/**
+ * Load cart skeleton from CloudStorage, then hydrate from the server.
+ */
+async function loadCart() {
+  // Try v3 first (array of [id, qty] pairs)
+  let raw = await cloudGet(CART_KEY);
+  let pairs = null;
+
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // v3 format: [[id,qty], [id,qty], ...]
+        if (Array.isArray(parsed[0])) {
+          pairs = parsed.map(p => ({ id: p[0], quantity: p[1] }));
+        }
+        // Could also be v2 compressed objects — migrate
+        else if (typeof parsed[0] === 'object') {
+          pairs = parsed.map(p => ({
+            id: p.i ?? p.id,
+            quantity: p.q ?? p.quantity ?? 1,
+          }));
+        }
       }
-      // Also try loading old key for migration
-      cs.getItem('cart_v1', (err2, value2) => {
-        if (!err2 && value2) {
-          try {
-            const parsed2 = JSON.parse(value2);
-            if (Array.isArray(parsed2) && parsed2.length > 0) {
-              callback(parsed2.map(decompress));
-              // Migrate: save under new key and delete old
-              cs.setItem(CART_KEY, JSON.stringify(parsed2.map(compress)));
-              cs.removeItem('cart_v1');
-            }
-          } catch (e) { /* ignore */ }
-        }
-      });
-    });
-  } catch (e) {
-    // CloudStorage not available
+    } catch { /* corrupt */ }
   }
-}
 
-/**
- * Save cart to Telegram CloudStorage using compressed format.
- */
-function saveCartToCloud(items) {
-  try {
-    const cs = window.Telegram?.WebApp?.CloudStorage;
-    if (!cs) return;
-
-    const payload = JSON.stringify(items.map(compress));
-    // Safety: check length before saving (4096-char limit)
-    if (payload.length <= 4096) {
-      cs.setItem(CART_KEY, payload);
-    } else {
-      console.warn(`Cart too large for CloudStorage: ${payload.length} chars`);
-      // Save as much as possible: trim from the end
-      let trimmed = [...items];
-      while (trimmed.length > 0) {
-        const p = JSON.stringify(trimmed.map(compress));
-        if (p.length <= 4096) {
-          cs.setItem(CART_KEY, p);
-          break;
-        }
-        trimmed.pop();
+  // Fallback: try old keys for migration
+  if (!pairs) {
+    for (const oldKey of ['cart_v2', 'cart_v1']) {
+      const oldRaw = await cloudGet(oldKey);
+      if (oldRaw) {
+        try {
+          const oldParsed = JSON.parse(oldRaw);
+          if (Array.isArray(oldParsed) && oldParsed.length > 0) {
+            pairs = oldParsed.map(p => ({
+              id: p.i ?? p.id,
+              quantity: p.q ?? p.quantity ?? 1,
+            }));
+            // Migrate to v3 and clean up
+            const minimal = pairs.map(p => [p.id, p.quantity]);
+            cloudSet(CART_KEY, JSON.stringify(minimal));
+            cloudRemove(oldKey);
+            break;
+          }
+        } catch { /* ignore */ }
       }
     }
-  } catch (e) {
-    // ignore
+  }
+
+  if (!pairs || pairs.length === 0) return [];
+
+  // Hydrate from server — fetch full product details
+  try {
+    const ids = pairs.map(p => p.id).join(',');
+    const res = await fetch(`/api/products/by-ids?ids=${ids}`);
+    const data = await res.json();
+    const productMap = {};
+    for (const p of data.items || []) {
+      productMap[p.id] = p;
+    }
+
+    return pairs
+      .filter(p => productMap[p.id]) // skip products that no longer exist
+      .map(p => {
+        const prod = productMap[p.id];
+        const hasUsd = prod.price_usd && prod.price_usd > 0;
+        return {
+          id: prod.id,
+          name: prod.name_display || prod.name,
+          name_display: prod.name_display || prod.name,
+          price: hasUsd ? prod.price_usd : (prod.price_uzs || 0),
+          currency: hasUsd ? 'USD' : 'UZS',
+          unit: prod.unit || '',
+          quantity: p.quantity,
+        };
+      });
+  } catch (err) {
+    // API failed — return skeleton items with IDs so we don't lose the cart
+    // They won't have names/prices, but the IDs are preserved for next load
+    return pairs.map(p => ({
+      id: p.id,
+      name: '...',
+      name_display: '...',
+      price: 0,
+      currency: 'USD',
+      unit: '',
+      quantity: p.quantity,
+    }));
   }
 }
+
 
 export function useCart() {
   const [items, setItems] = useState([]);
-  const cloudLoaded = useRef(false);
+  const [loading, setLoading] = useState(true);
   const mountedOnce = useRef(false);
 
-  // Load saved cart on mount
+  // Load cart on mount
   useEffect(() => {
     if (!mountedOnce.current) {
       mountedOnce.current = true;
-      loadCartFromCloud((savedItems) => {
-        cloudLoaded.current = true;
-        setItems(savedItems);
+      loadCart().then(loaded => {
+        setItems(loaded);
+        setLoading(false);
       });
-      // Fallback: if CloudStorage is empty/missing, allow saves after 1s
-      // (but DON'T save the empty array — only allow future saves)
-      const timer = setTimeout(() => {
-        if (!cloudLoaded.current) {
-          cloudLoaded.current = true;
-        }
-      }, 1000);
-      return () => clearTimeout(timer);
     }
   }, []);
 
-  // Save to cloud whenever items change — but ONLY after cloud load finishes,
-  // and ONLY if there are items (never overwrite with empty unless user cleared)
-  const userHasInteracted = useRef(false);
+  // Save on page hide / visibility change (last chance before WebView dies)
   useEffect(() => {
-    if (cloudLoaded.current) {
-      if (items.length > 0) {
-        saveCartToCloud(items);
-      } else if (userHasInteracted.current) {
-        // Only save empty array if user explicitly cleared the cart
-        saveCartToCloud([]);
-      }
-    }
+    const saveOnHide = () => {
+      if (items.length > 0) persistCart(items);
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') saveOnHide();
+    });
+    window.addEventListener('pagehide', saveOnHide);
+    window.addEventListener('beforeunload', saveOnHide);
+    return () => {
+      document.removeEventListener('visibilitychange', saveOnHide);
+      window.removeEventListener('pagehide', saveOnHide);
+      window.removeEventListener('beforeunload', saveOnHide);
+    };
   }, [items]);
 
   const addItem = useCallback((product) => {
-    userHasInteracted.current = true;
     setItems(prev => {
       const existing = prev.find(i => i.id === product.id);
+      let next;
       if (existing) {
-        return prev.map(i =>
+        next = prev.map(i =>
           i.id === product.id ? { ...i, quantity: i.quantity + 1 } : i
         );
+      } else {
+        next = [...prev, {
+          id: product.id,
+          name: product.name_display || product.name,
+          name_display: product.name_display || product.name,
+          price: product.price,
+          currency: product.currency,
+          unit: product.unit,
+          quantity: 1,
+        }];
       }
-      return [...prev, {
-        id: product.id,
-        name: product.name_display || product.name,
-        name_display: product.name_display || product.name,
-        price: product.price,
-        currency: product.currency,
-        unit: product.unit,
-        quantity: 1,
-      }];
+      persistCart(next); // save IMMEDIATELY, not in an effect
+      return next;
     });
   }, []);
 
   const removeItem = useCallback((productId) => {
-    userHasInteracted.current = true;
-    setItems(prev => prev.filter(i => i.id !== productId));
+    setItems(prev => {
+      const next = prev.filter(i => i.id !== productId);
+      persistCart(next);
+      return next;
+    });
   }, []);
 
   const updateQuantity = useCallback((productId, quantity) => {
-    userHasInteracted.current = true;
-    if (quantity <= 0) {
-      setItems(prev => prev.filter(i => i.id !== productId));
-      return;
-    }
-    setItems(prev =>
-      prev.map(i => (i.id === productId ? { ...i, quantity } : i))
-    );
+    setItems(prev => {
+      let next;
+      if (quantity <= 0) {
+        next = prev.filter(i => i.id !== productId);
+      } else {
+        next = prev.map(i => (i.id === productId ? { ...i, quantity } : i));
+      }
+      persistCart(next);
+      return next;
+    });
   }, []);
 
   const clearCart = useCallback(() => {
-    userHasInteracted.current = true;
     setItems([]);
+    persistCart([]);
   }, []);
 
   const totalCount = items.reduce((sum, i) => sum + i.quantity, 0);
@@ -203,5 +227,5 @@ export function useCart() {
     return acc;
   }, {});
 
-  return { items, addItem, removeItem, updateQuantity, clearCart, totalCount, totals };
+  return { items, loading, addItem, removeItem, updateQuantity, clearCart, totalCount, totals };
 }

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Query
-from typing import Optional
+from typing import Optional, List
 from backend.database import get_db
 
 router = APIRouter(prefix="/api/products", tags=["products"])
@@ -57,6 +57,29 @@ def list_products(
         "page": page,
         "pages": (total + limit - 1) // limit,
     }
+
+
+@router.get("/by-ids")
+def get_products_by_ids(ids: str = Query(..., description="Comma-separated product IDs")):
+    """Batch lookup: return multiple products by their IDs (for cart reconstruction)."""
+    try:
+        id_list = [int(x.strip()) for x in ids.split(",") if x.strip()]
+    except ValueError:
+        return {"items": []}
+    if not id_list:
+        return {"items": []}
+
+    placeholders = ",".join("?" for _ in id_list)
+    conn = get_db()
+    rows = conn.execute(
+        f"""SELECT p.id, p.name, p.name_display, p.unit,
+                   p.price_usd, p.price_uzs, p.image_path
+            FROM products p
+            WHERE p.id IN ({placeholders})""",
+        id_list,
+    ).fetchall()
+    conn.close()
+    return {"items": [dict(r) for r in rows]}
 
 
 @router.get("/{product_id}")

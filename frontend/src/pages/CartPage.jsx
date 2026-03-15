@@ -31,6 +31,10 @@ export default function CartPage({ cart }) {
     setExporting(false);
   };
 
+  if (cart.loading) {
+    return <div className="text-center py-16 text-tg-hint">{t.loading}</div>;
+  }
+
   if (cart.items.length === 0) {
     return (
       <div className="text-center py-16">

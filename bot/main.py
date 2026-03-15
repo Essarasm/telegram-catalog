@@ -18,7 +18,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 _BASE_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.railway.app")
 # Cache-busting: Telegram WebView caches aggressively; changing the URL forces a fresh load
-WEBAPP_URL = f"{_BASE_URL}?v=8"
+WEBAPP_URL = f"{_BASE_URL}?v=9"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
