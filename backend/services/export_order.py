@@ -199,19 +199,20 @@ def generate_excel(items: List[Dict], client_name: str = "") -> bytes:
             price_cell.border = thin_border
             price_cell.number_format = '#,##0.00'
             price_cell.alignment = Alignment(horizontal='right')
-            # Formula for line total
-            total_cell = ws.cell(row=row, column=6)
-            total_cell.value = f"=D{row}*E{row}"
+            # Computed line total (not formula — works in all viewers)
+            line_total = qty * price
+            total_cell = ws.cell(row=row, column=6, value=line_total)
             total_cell.border = thin_border
             total_cell.number_format = '#,##0.00'
             total_cell.alignment = Alignment(horizontal='right')
 
+        # Computed grand total
+        grand_total = sum(it.get("quantity", 1) * it.get("price", 0) for it in item_list)
         total_row = data_start + len(item_list)
         ws.cell(row=total_row, column=5, value="JAMI:").font = total_font
         ws.cell(row=total_row, column=5).fill = total_fill
         ws.cell(row=total_row, column=5).border = thin_border
-        grand_cell = ws.cell(row=total_row, column=6)
-        grand_cell.value = f"=SUM(F{data_start}:F{total_row - 1})"
+        grand_cell = ws.cell(row=total_row, column=6, value=grand_total)
         grand_cell.font = total_font
         grand_cell.fill = total_fill
         grand_cell.border = thin_border
@@ -227,7 +228,7 @@ def generate_excel(items: List[Dict], client_name: str = "") -> bytes:
 
     # Auto-width
     ws.column_dimensions['A'].width = 5
-    ws.column_dimensions['B'].width = 45
+    ws.column_dimensions['B'].width = 55
     ws.column_dimensions['C'].width = 10
     ws.column_dimensions['D'].width = 10
     ws.column_dimensions['E'].width = 15
