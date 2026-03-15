@@ -57,6 +57,15 @@ export function getPriceValue(priceUsd, priceUzs) {
   return 0;
 }
 
+// Format a single price with known currency (used in cart)
+export function formatCartPrice(amount, currency) {
+  if (!amount || amount <= 0) return '—';
+  if (currency === 'UZS') {
+    return `${Number(amount).toLocaleString('uz-UZ')} so'm`;
+  }
+  return `$${Number(amount).toFixed(2)}`;
+}
+
 export function getImageUrl(product) {
   if (product.image_path) {
     return `/images/${product.image_path}`;

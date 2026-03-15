@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { exportOrder, formatPrice } from '../utils/api';
+import { exportOrder, formatCartPrice } from '../utils/api';
 import t from '../i18n/uz.json';
 
 export default function CartPage({ cart }) {
@@ -48,9 +48,9 @@ export default function CartPage({ cart }) {
         {cart.items.map(item => (
           <div key={item.id} className="bg-tg-secondary rounded-xl p-3 flex items-center gap-3">
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium leading-tight truncate">{item.name}</div>
+              <div className="text-sm font-medium leading-tight truncate">{item.name_display || item.name}</div>
               <div className="text-xs text-tg-hint mt-0.5">
-                {formatPrice(item.price, item.currency)} × {item.quantity} {item.unit}
+                {formatCartPrice(item.price, item.currency)} × {item.quantity} {item.unit}
               </div>
             </div>
 
@@ -73,7 +73,7 @@ export default function CartPage({ cart }) {
 
             {/* Line total */}
             <div className="text-sm font-semibold text-right min-w-[70px]">
-              {formatPrice(item.price * item.quantity, item.currency)}
+              {formatCartPrice(item.price * item.quantity, item.currency)}
             </div>
 
             {/* Remove */}
@@ -94,7 +94,7 @@ export default function CartPage({ cart }) {
           <div key={currency} className="flex justify-between items-center py-1">
             <span className="text-base font-semibold">{t.total} ({currency})</span>
             <span className="text-lg font-bold text-tg-link">
-              {formatPrice(total, currency)}
+              {formatCartPrice(total, currency)}
             </span>
           </div>
         ))}

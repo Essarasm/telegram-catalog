@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from backend.database import get_db
 from backend.services.export_order import generate_pdf, generate_excel
+from backend.services.notify_group import send_order_to_group
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -26,7 +27,7 @@ def export_order(req: ExportRequest):
     order_items = []
     for cart_item in req.items:
         row = conn.execute(
-            """SELECT p.name, p.unit, p.price_usd, p.price_uzs, pr.name as producer_name
+            """SELECT p.name, p.name_display, p.unit, p.price_usd, p.price_uzs, pr.name as producer_name
                FROM products p
                JOIN producers pr ON pr.id = p.producer_id
                WHERE p.id = ?""",
@@ -45,7 +46,7 @@ def export_order(req: ExportRequest):
                 currency = "USD"
 
             order_items.append({
-                "name": row["name"],
+                "name": row["name_display"] or row["name"],
                 "unit": row["unit"],
                 "price": price,
                 "currency": currency,
@@ -57,10 +58,18 @@ def export_order(req: ExportRequest):
     if not order_items:
         return Response(content="No valid products in order", status_code=400)
 
+    # Always generate Excel for group notification
+    excel_data = generate_excel(order_items, req.client_name or "")
+
+    # Send order to Telegram sales managers group (non-blocking best-effort)
+    try:
+        send_order_to_group(order_items, excel_data, req.client_name or "")
+    except Exception:
+        pass  # Don't fail the export if notification fails
+
     if req.format == "xlsx":
-        data = generate_excel(order_items, req.client_name or "")
         return Response(
-            content=data,
+            content=excel_data,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": "attachment; filename=buyurtma.xlsx"},
         )
