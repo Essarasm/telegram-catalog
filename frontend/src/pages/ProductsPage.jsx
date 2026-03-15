@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl } from '../utils/api';
 import t from '../i18n/uz.json';
 
-export default function ProductsPage({ category, producer, searchQuery, cart }) {
+export default function ProductsPage({ category, producer, searchQuery, cart, onSelectProduct }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -87,25 +87,31 @@ export default function ProductsPage({ category, producer, searchQuery, cart }) 
             ref={isLast ? lastRef : null}
             className="bg-tg-secondary rounded-xl p-3 flex gap-3 items-center"
           >
-            {/* Image or placeholder */}
-            <div className="w-14 h-14 rounded-lg bg-gray-200 flex-shrink-0 flex items-center justify-center overflow-hidden">
-              {imgUrl ? (
-                <img src={imgUrl} alt="" className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-2xl opacity-30">📷</span>
-              )}
-            </div>
+            {/* Clickable area: image + info → opens detail */}
+            <div
+              className="flex gap-3 items-center flex-1 min-w-0 cursor-pointer"
+              onClick={() => onSelectProduct && onSelectProduct(product)}
+            >
+              {/* Image or placeholder */}
+              <div className="w-14 h-14 rounded-lg bg-gray-200 flex-shrink-0 flex items-center justify-center overflow-hidden">
+                {imgUrl ? (
+                  <img src={imgUrl} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-2xl opacity-30">📷</span>
+                )}
+              </div>
 
-            {/* Info */}
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium leading-tight truncate" title={product.name}>
-                {displayName}
-              </div>
-              <div className="text-xs text-tg-hint mt-0.5">
-                {product.unit}{product.weight ? ` · ${product.weight} kg` : ''}
-              </div>
-              <div className="text-sm font-semibold text-tg-link mt-1">
-                {priceStr}
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium leading-tight line-clamp-2" title={product.name}>
+                  {displayName}
+                </div>
+                <div className="text-xs text-tg-hint mt-0.5">
+                  {product.unit}{product.weight ? ` · ${product.weight} kg` : ''}
+                </div>
+                <div className="text-sm font-semibold text-tg-link mt-1">
+                  {priceStr}
+                </div>
               </div>
             </div>
 

@@ -4,15 +4,17 @@ import CatalogPage from './pages/CatalogPage';
 import ProducersPage from './pages/ProducersPage';
 import ProductsPage from './pages/ProductsPage';
 import CartPage from './pages/CartPage';
+import ProductDetailPage from './pages/ProductDetailPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 
 export default function App() {
   const [page, setPage] = useState('catalog');
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [selectedProducer, setSelectedProducer] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const [appError, setAppError] = useState(null);
   const cart = useCart();
 
@@ -26,6 +28,9 @@ export default function App() {
       if (p === 'products' && data) {
         setSelectedProducer(data);
         setSearchQuery('');
+      }
+      if (p === 'product_detail' && data) {
+        setSelectedProduct(data);
       }
       if (p === 'search' && data) {
         setSearchQuery(data);
@@ -41,6 +46,7 @@ export default function App() {
 
   const goBack = () => {
     if (page === 'cart') setPage(selectedProducer ? 'products' : selectedCategory ? 'producers' : 'catalog');
+    else if (page === 'product_detail') { setPage('products'); setSelectedProduct(null); }
     else if (page === 'products' && searchQuery) { setPage('catalog'); setSearchQuery(''); }
     else if (page === 'products') setPage('producers');
     else if (page === 'producers') { setPage('catalog'); setSelectedCategory(null); }
@@ -52,6 +58,7 @@ export default function App() {
     if (page === 'producers') return selectedCategory?.name || t.producers;
     if (page === 'products' && searchQuery) return t.search_results;
     if (page === 'products') return selectedProducer?.name || t.all_products;
+    if (page === 'product_detail') return selectedProducer?.name || t.all_products;
     if (page === 'cart') return t.cart;
     return t.app_title;
   };
@@ -121,6 +128,15 @@ export default function App() {
             producer={selectedProducer}
             searchQuery={searchQuery}
             cart={cart}
+            onSelectProduct={(product) => navigateTo('product_detail', product)}
+          />
+        )}
+        {page === 'product_detail' && selectedProduct && (
+          <ProductDetailPage
+            product={selectedProduct}
+            producer={selectedProducer}
+            cart={cart}
+            onBack={goBack}
           />
         )}
         {page === 'cart' && (

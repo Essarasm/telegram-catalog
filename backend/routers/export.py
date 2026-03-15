@@ -45,8 +45,12 @@ def export_order(req: ExportRequest):
                 price = 0
                 currency = "USD"
 
+            # Include producer name so managers can identify products
+            product_name = row["name_display"] or row["name"]
+            full_name = f"{row['producer_name']} — {product_name}" if row["producer_name"] else product_name
+
             order_items.append({
-                "name": row["name_display"] or row["name"],
+                "name": full_name,
                 "unit": row["unit"],
                 "price": price,
                 "currency": currency,
