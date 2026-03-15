@@ -3,6 +3,8 @@
 Reads the 'Catalog Clean' sheet from the FINAL xlsx file.
 Columns: A=Kategoriya, B=Ishlab chiqaruvchi, C=Mahsulot nomi,
          D=Og'irligi, E=Birlik, F=Narx UZS, G=Narx USD
+
+Transliterates Cyrillic product/producer names to Latin for standardized display.
 """
 import sys
 import os
@@ -13,42 +15,95 @@ from openpyxl import load_workbook
 from backend.database import get_db, init_db
 
 
+# ── Cyrillic → Latin transliteration table ──────────────────────
+CYRILLIC_MAP = {
+    'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E',
+    'Ё': 'Yo', 'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K',
+    'Л': 'L', 'М': 'M', 'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R',
+    'С': 'S', 'Т': 'T', 'У': 'U', 'Ф': 'F', 'Х': 'Kh', 'Ц': 'Ts',
+    'Ч': 'Ch', 'Ш': 'Sh', 'Щ': 'Shch', 'Ъ': '', 'Ы': 'Y', 'Ь': '',
+    'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya',
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e',
+    'ё': 'yo', 'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k',
+    'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r',
+    'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'kh', 'ц': 'ts',
+    'ч': 'ch', 'ш': 'sh', 'щ': 'shch', 'ъ': '', 'ы': 'y', 'ь': '',
+    'э': 'e', 'ю': 'yu', 'я': 'ya',
+}
+
+
+def transliterate(text):
+    """Convert Cyrillic characters to Latin equivalents."""
+    if not text:
+        return text
+    result = []
+    for ch in text:
+        if ch in CYRILLIC_MAP:
+            result.append(CYRILLIC_MAP[ch])
+        else:
+            result.append(ch)
+    return ''.join(result)
+
+
 def generate_display_name(full_name, producer):
-    """Create a shorter display name for mobile UI (target: ≤30 chars).
-    Strips redundant brand mentions since producer is already shown in the UI."""
+    """Create a shorter display name for mobile UI.
+
+    1. Strip redundant brand/producer mentions (since producer is shown in nav)
+    2. Transliterate Cyrillic -> Latin
+    3. Truncate to <=35 chars if needed
+    """
     name = full_name.strip()
 
-    # Remove common brand prefixes that duplicate the producer
-    brand_prefixes = [
-        producer.upper() if producer else '',
-        # Common Russian brand spellings
-        'ПОЛИСАН', 'СОБСАН', 'СИЛКОАТ', 'ПАЛИЖ', 'ХАЯТ', 'ВЕБЕР',
-        'НЮМИКС', 'СОУДАЛ', 'ОСКАР', 'ГАММА', 'ДЕЛЮКС', 'ДЕ ЛЮКС',
-        'АКФИКС', 'СОМО ФИКС', 'МАТТРОС', 'ДЕКОАРТ', 'ДАЙСОН',
-        'МЕГАМИКС', 'ГУГЛЕ', 'ТИТАН', 'ЛЕОН',
-    ]
+    # First: strip producer name from the beginning (case-insensitive)
+    if producer:
+        producer_upper = producer.strip().upper()
+        name_upper = name.upper()
+        if name_upper.startswith(producer_upper):
+            name = name[len(producer_upper):].strip()
+            name = re.sub(r'^[\s\-\u2013\u2014/\\:,.]+', '', name)
 
+    # Also try common brand prefixes that may differ from the producer name
+    brand_prefixes = [
+        '\u041f\u041e\u041b\u0418\u0421\u0410\u041d', '\u0421\u041e\u0411\u0421\u0410\u041d',
+        '\u0421\u0418\u041b\u041a\u041e\u0410\u0422', '\u041f\u0410\u041b\u0418\u0416',
+        '\u0425\u0410\u042f\u0422', '\u0412\u0415\u0411\u0415\u0420',
+        '\u041d\u042e\u041c\u0418\u041a\u0421', '\u0421\u041e\u0423\u0414\u0410\u041b',
+        '\u041e\u0421\u041a\u0410\u0420', '\u0413\u0410\u041c\u041c\u0410',
+        '\u0414\u0415\u041b\u042e\u041a\u0421', '\u0414\u0415 \u041b\u042e\u041a\u0421',
+        '\u0410\u041a\u0424\u0418\u041a\u0421',
+        '\u0421\u041e\u041c\u041e \u0424\u0418\u041a\u0421',
+        '\u041c\u0410\u0422\u0422\u0420\u041e\u0421',
+        '\u0414\u0415\u041a\u041e\u0410\u0420\u0422',
+        '\u0414\u0410\u0419\u0421\u041e\u041d',
+        '\u041c\u0415\u0413\u0410\u041c\u0418\u041a\u0421',
+        '\u0413\u0423\u0413\u041b\u0415', '\u0422\u0418\u0422\u0410\u041d',
+        '\u041b\u0415\u041e\u041d',
+    ]
     name_upper = name.upper()
     for prefix in brand_prefixes:
-        if prefix and name_upper.startswith(prefix):
+        if name_upper.startswith(prefix):
             name = name[len(prefix):].strip()
-            # Remove leading punctuation/spaces
-            name = re.sub(r'^[\s\-–—/\\]+', '', name)
+            name = re.sub(r'^[\s\-\u2013\u2014/\\:,.]+', '', name)
             break
 
     # Remove excessive quotes
     name = name.replace('"', '').replace("'", '')
 
+    # Transliterate to Latin
+    name = transliterate(name)
+
+    # Clean up multiple spaces
+    name = re.sub(r'\s+', ' ', name).strip()
+
     # If still too long, truncate at a sensible point
     if len(name) > 35:
-        # Try to cut at last space before 32 chars
         cut = name[:32].rfind(' ')
         if cut > 15:
-            name = name[:cut] + '…'
+            name = name[:cut] + '\u2026'
         else:
-            name = name[:32] + '…'
+            name = name[:32] + '\u2026'
 
-    return name if name else full_name[:30]
+    return name if name else transliterate(full_name[:30])
 
 
 def import_from_catalog_clean(xlsx_path: str):
@@ -69,8 +124,8 @@ def import_from_catalog_clean(xlsx_path: str):
     conn.execute("DELETE FROM producers")
     conn.execute("DELETE FROM categories")
 
-    cat_map = {}   # name → id
-    prod_map = {}  # name → id
+    cat_map = {}   # name -> id
+    prod_map = {}  # name -> id
     imported = 0
     skipped = 0
 
@@ -95,7 +150,10 @@ def import_from_catalog_clean(xlsx_path: str):
         name = str(name).strip()
         unit = str(unit).strip() if unit else 'sht'
 
-        # Ensure category exists
+        # Transliterate producer name to Latin
+        producer_latin = transliterate(producer)
+
+        # Ensure category exists (categories are already in Latin/Uzbek)
         if category not in cat_map:
             conn.execute(
                 "INSERT OR IGNORE INTO categories (name, sort_order) VALUES (?, ?)",
@@ -106,16 +164,16 @@ def import_from_catalog_clean(xlsx_path: str):
             ).fetchone()[0]
             cat_map[category] = cat_id
 
-        # Ensure producer exists
-        if producer not in prod_map:
+        # Ensure producer exists - use transliterated name
+        if producer_latin not in prod_map:
             conn.execute(
                 "INSERT OR IGNORE INTO producers (name) VALUES (?)",
-                (producer,)
+                (producer_latin,)
             )
             prod_id = conn.execute(
-                "SELECT id FROM producers WHERE name = ?", (producer,)
+                "SELECT id FROM producers WHERE name = ?", (producer_latin,)
             ).fetchone()[0]
-            prod_map[producer] = prod_id
+            prod_map[producer_latin] = prod_id
 
         # Parse prices
         p_usd = 0
@@ -139,15 +197,18 @@ def import_from_catalog_clean(xlsx_path: str):
         except (ValueError, TypeError):
             pass
 
-        # Generate display name
+        # Generate display name (producer-stripped, transliterated)
         display_name = generate_display_name(name, producer)
+
+        # Full name also transliterated for search
+        name_latin = transliterate(name)
 
         conn.execute(
             """INSERT INTO products
                (name, name_display, category_id, producer_id, unit,
                 price_usd, price_uzs, weight, is_active)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
-            (name, display_name, cat_map[category], prod_map[producer],
+            (name_latin, display_name, cat_map[category], prod_map[producer_latin],
              unit, p_usd, p_uzs, weight)
         )
         imported += 1
@@ -195,6 +256,16 @@ def import_from_catalog_clean(xlsx_path: str):
     print("\n  Top 10 producers:")
     for r in rows:
         print(f"    {r['product_count']:>4}  {r['name']}")
+
+    # Show sample display names
+    rows = conn.execute("""
+        SELECT p.name, p.name_display, pr.name as producer_name
+        FROM products p JOIN producers pr ON p.producer_id = pr.id
+        LIMIT 15
+    """).fetchall()
+    print("\n  Sample display names:")
+    for r in rows:
+        print(f"    [{r['producer_name']}] {r['name'][:40]} -> {r['name_display']}")
 
     conn.close()
     wb.close()

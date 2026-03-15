@@ -5,7 +5,7 @@ data/catalog.db
 data/catalog.db-wal
 data/catalog.db-shm
 node_modules/
-frontend/dist/
+# frontend/dist/ — included for Railway deployment
 *.egg-info/
 .vite/
 images/*.jpg
