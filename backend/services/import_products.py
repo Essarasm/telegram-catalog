@@ -4,7 +4,8 @@ Reads the 'Catalog Clean' sheet from the FINAL xlsx file.
 Columns: A=Kategoriya, B=Ishlab chiqaruvchi, C=Mahsulot nomi,
          D=Og'irligi, E=Birlik, F=Narx UZS, G=Narx USD
 
-Transliterates Cyrillic product/producer names to Latin for standardized display.
+- name field: ORIGINAL Cyrillic (preserved for future Russian language support)
+- name_display field: clean Latin transliteration for Uzbek display
 """
 import sys
 import os
@@ -15,7 +16,9 @@ from openpyxl import load_workbook
 from backend.database import get_db, init_db
 
 
-# ── Cyrillic → Latin transliteration table ──────────────────────
+# ── Cyrillic → Latin transliteration ────────────────────────────
+# Applied AFTER converting to Title Case so multi-char mappings
+# (Я→Ya, Ш→Sh, etc.) get natural casing automatically.
 CYRILLIC_MAP = {
     'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E',
     'Ё': 'Yo', 'Ж': 'Zh', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K',
@@ -38,72 +41,180 @@ def transliterate(text):
         return text
     result = []
     for ch in text:
-        if ch in CYRILLIC_MAP:
-            result.append(CYRILLIC_MAP[ch])
-        else:
-            result.append(ch)
+        result.append(CYRILLIC_MAP.get(ch, ch))
     return ''.join(result)
 
 
-def generate_display_name(full_name, producer):
-    """Create a shorter display name for mobile UI.
+def cyrillic_title_case(text):
+    """Convert to Title Case, handling mixed Cyrillic/Latin.
+    'ЗОЛОТИСТАЯ БЕЛАЯ' → 'Золотистая Белая'
+    Preserves Latin segments and numbers as-is."""
+    words = text.split()
+    result = []
+    for word in words:
+        # If word is all-Latin or a number/code, keep as-is
+        if not any('\u0400' <= c <= '\u04ff' for c in word):
+            result.append(word)
+        # If word is a short abbreviation (2-3 Cyrillic chars), keep uppercase
+        elif len(word) <= 3 and word.isupper():
+            result.append(word)
+        else:
+            result.append(word[0].upper() + word[1:].lower() if len(word) > 1 else word.upper())
+    return ' '.join(result)
 
-    1. Strip redundant brand/producer mentions (since producer is shown in nav)
-    2. Transliterate Cyrillic -> Latin
-    3. Truncate to <=35 chars if needed
-    """
-    name = full_name.strip()
 
-    # First: strip producer name from the beginning (case-insensitive)
-    if producer:
-        producer_upper = producer.strip().upper()
-        name_upper = name.upper()
-        if name_upper.startswith(producer_upper):
-            name = name[len(producer_upper):].strip()
-            name = re.sub(r'^[\s\-\u2013\u2014/\\:,.]+', '', name)
+# ── Regex patterns for stripping weight/volume/size from names ──
+WEIGHT_VOLUME_RE = re.compile(
+    r'/\s*\d+[,.]?\d*\s*'          # opening slash + number
+    r'(?:кг|kg|гр|gr|г|мл|ml|л|l)' # unit
+    r'\.?\s*/',                     # optional dot + closing slash
+    re.IGNORECASE
+)
 
-    # Also try common brand prefixes that may differ from the producer name
-    brand_prefixes = [
-        '\u041f\u041e\u041b\u0418\u0421\u0410\u041d', '\u0421\u041e\u0411\u0421\u0410\u041d',
-        '\u0421\u0418\u041b\u041a\u041e\u0410\u0422', '\u041f\u0410\u041b\u0418\u0416',
-        '\u0425\u0410\u042f\u0422', '\u0412\u0415\u0411\u0415\u0420',
-        '\u041d\u042e\u041c\u0418\u041a\u0421', '\u0421\u041e\u0423\u0414\u0410\u041b',
-        '\u041e\u0421\u041a\u0410\u0420', '\u0413\u0410\u041c\u041c\u0410',
-        '\u0414\u0415\u041b\u042e\u041a\u0421', '\u0414\u0415 \u041b\u042e\u041a\u0421',
-        '\u0410\u041a\u0424\u0418\u041a\u0421',
-        '\u0421\u041e\u041c\u041e \u0424\u0418\u041a\u0421',
-        '\u041c\u0410\u0422\u0422\u0420\u041e\u0421',
-        '\u0414\u0415\u041a\u041e\u0410\u0420\u0422',
-        '\u0414\u0410\u0419\u0421\u041e\u041d',
-        '\u041c\u0415\u0413\u0410\u041c\u0418\u041a\u0421',
-        '\u0413\u0423\u0413\u041b\u0415', '\u0422\u0418\u0422\u0410\u041d',
-        '\u041b\u0415\u041e\u041d',
-    ]
+SIZE_RE = re.compile(
+    r'/\s*\d+[,.]?\d*\s*'   # /6
+    r'(?:см|cm|мм|mm)'      # см
+    r'\.?\s*/',              # /
+    re.IGNORECASE
+)
+
+# Standalone weight at end like "0,75л" without slashes
+WEIGHT_END_RE = re.compile(
+    r'\s+\d+[,.]?\d*\s*(?:кг|kg|гр|gr|г|мл|ml|л|l)\.?\s*$',
+    re.IGNORECASE
+)
+
+
+def strip_weight_volume(name):
+    """Remove weight/volume/size info from product name (e.g., /20кг/, /400мл./, /6см/)."""
+    name = WEIGHT_VOLUME_RE.sub(' ', name)
+    name = SIZE_RE.sub(' ', name)
+    name = WEIGHT_END_RE.sub('', name)
+    return name.strip()
+
+
+def strip_producer(name, producer_cyrillic):
+    """Remove producer name from the beginning of product name (case-insensitive)."""
+    if not producer_cyrillic:
+        return name
+    # Try the Cyrillic producer name
+    prod_upper = producer_cyrillic.strip().upper()
     name_upper = name.upper()
-    for prefix in brand_prefixes:
+    if name_upper.startswith(prod_upper):
+        name = name[len(prod_upper):].strip()
+        name = re.sub(r'^[\s\-\u2013\u2014/\\:,.]+', '', name)
+    return name
+
+
+# Common brand name variants in Cyrillic that may differ from the producer field
+BRAND_PREFIXES = [
+    'ПОЛИСАН', 'СОБСАН', 'СИЛКОАТ', 'ПАЛИЖ', 'ХАЯТ', 'ВЕБЕР',
+    'НЮМИКС', 'СОУДАЛ', 'ОСКАР', 'ГАММА', 'ДЕЛЮКС', 'ДЕ ЛЮКС',
+    'АКФИКС', 'СОМО ФИКС', 'МАТТРОС', 'ДЕКОАРТ', 'ДАЙСОН',
+    'МЕГАМИКС', 'ГУГЛЕ', 'ТИТАН', 'ЛЕОН', 'СЕМИКС', 'ДЕВИЛЮКС',
+    'БУМЕРАНГ', 'ФОРМУЛА', 'НОВАМИКС', 'СВЕТОМИКС', 'ВЕРОРАКС',
+    'ДУАФИКС', 'ИДЕАЛ', 'СЕНТА', 'ЭКОС', 'КОЛОРЕКС', 'ПОЛИМАКС',
+    'СОБ', 'ЗИП',  # Partial brand abbreviations (Sobsan, Zip color)
+]
+
+
+def strip_brand_prefix(name):
+    """Remove known brand prefixes that duplicate the producer."""
+    name_upper = name.upper()
+    for prefix in BRAND_PREFIXES:
         if name_upper.startswith(prefix):
             name = name[len(prefix):].strip()
             name = re.sub(r'^[\s\-\u2013\u2014/\\:,.]+', '', name)
             break
+    return name
 
-    # Remove excessive quotes
+
+# Category-specific keywords that are redundant
+# (the user already navigated to that category)
+CATEGORY_STRIP_WORDS = {
+    'ПЛИНТУС', 'IDEAL',  # Plintus va Aksessuarlar
+}
+
+
+def strip_category_keywords(name):
+    """Remove category-contextual words that are redundant in navigation."""
+    for kw in CATEGORY_STRIP_WORDS:
+        # Replace the keyword wherever it appears (case-insensitive)
+        pattern = re.compile(re.escape(kw), re.IGNORECASE)
+        name = pattern.sub('', name)
+    # Clean up resulting double spaces and leading punctuation
+    name = re.sub(r'\s+', ' ', name).strip()
+    name = re.sub(r'^[\s\-\u2013\u2014/\\:,.]+', '', name)
+    return name
+
+
+def generate_display_name(raw_name, producer_cyrillic):
+    """Create a clean display name for mobile UI.
+
+    Pipeline:
+    1. Strip producer name
+    2. Strip known brand prefixes
+    3. Strip weight/volume/size (already shown separately)
+    4. Strip redundant category keywords
+    5. Normalize Cyrillic to Title Case
+    6. Transliterate to Latin
+    7. Clean up quotes, extra spaces
+    8. Truncate to 40 chars if needed
+    """
+    name = raw_name.strip()
+
+    # 1-2. Strip producer and brand
+    name = strip_producer(name, producer_cyrillic)
+    name = strip_brand_prefix(name)
+
+    # 3. Strip weight/volume/size info
+    name = strip_weight_volume(name)
+
+    # 4. Strip category keywords
+    name = strip_category_keywords(name)
+
+    # 5. Remove excessive quotes and clean
     name = name.replace('"', '').replace("'", '')
+    name = re.sub(r'\s+', ' ', name).strip()
+    name = re.sub(r'^[\s\-\u2013\u2014/\\:,.]+', '', name)
+    name = re.sub(r'[\s\-\u2013\u2014/\\:,.]+$', '', name)
 
-    # Transliterate to Latin
+    # 6. Normalize to Title Case (before transliteration for clean multi-char maps)
+    name = cyrillic_title_case(name)
+
+    # 7. Transliterate to Latin
     name = transliterate(name)
 
-    # Clean up multiple spaces
+    # 8. Final cleanup
     name = re.sub(r'\s+', ' ', name).strip()
 
-    # If still too long, truncate at a sensible point
-    if len(name) > 35:
-        cut = name[:32].rfind(' ')
+    # 9. Truncate if too long
+    if len(name) > 40:
+        cut = name[:37].rfind(' ')
         if cut > 15:
-            name = name[:cut] + '\u2026'
+            name = name[:cut].rstrip('.,- ') + '...'
         else:
-            name = name[:32] + '\u2026'
+            name = name[:37].rstrip('.,- ') + '...'
 
-    return name if name else transliterate(full_name[:30])
+    return name if name else transliterate(raw_name[:30])
+
+
+def standardize_cyrillic_name(raw_name, producer_cyrillic):
+    """Create a clean Russian name for future bilingual support.
+
+    Same stripping as display name but WITHOUT transliteration.
+    """
+    name = raw_name.strip()
+    name = strip_producer(name, producer_cyrillic)
+    name = strip_brand_prefix(name)
+    name = strip_weight_volume(name)
+    name = strip_category_keywords(name)
+    name = name.replace('"', '').replace("'", '')
+    name = re.sub(r'\s+', ' ', name).strip()
+    name = re.sub(r'^[\s\-\u2013\u2014/\\:,.]+', '', name)
+    name = re.sub(r'[\s\-\u2013\u2014/\\:,.]+$', '', name)
+    name = cyrillic_title_case(name)
+    return name if name else raw_name[:40]
 
 
 def import_from_catalog_clean(xlsx_path: str):
@@ -150,8 +261,8 @@ def import_from_catalog_clean(xlsx_path: str):
         name = str(name).strip()
         unit = str(unit).strip() if unit else 'sht'
 
-        # Transliterate producer name to Latin
-        producer_latin = transliterate(producer)
+        # Transliterate producer name to Latin for display
+        producer_latin = transliterate(cyrillic_title_case(producer))
 
         # Ensure category exists (categories are already in Latin/Uzbek)
         if category not in cat_map:
@@ -197,18 +308,18 @@ def import_from_catalog_clean(xlsx_path: str):
         except (ValueError, TypeError):
             pass
 
-        # Generate display name (producer-stripped, transliterated)
-        display_name = generate_display_name(name, producer)
+        # name = ORIGINAL Cyrillic (for Russian bilingual support)
+        original_cyrillic = name
 
-        # Full name also transliterated for search
-        name_latin = transliterate(name)
+        # name_display = clean Latin for Uzbek display
+        display_name = generate_display_name(name, producer)
 
         conn.execute(
             """INSERT INTO products
                (name, name_display, category_id, producer_id, unit,
                 price_usd, price_uzs, weight, is_active)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
-            (name_latin, display_name, cat_map[category], prod_map[producer_latin],
+            (original_cyrillic, display_name, cat_map[category], prod_map[producer_latin],
              unit, p_usd, p_uzs, weight)
         )
         imported += 1
@@ -257,15 +368,19 @@ def import_from_catalog_clean(xlsx_path: str):
     for r in rows:
         print(f"    {r['product_count']:>4}  {r['name']}")
 
-    # Show sample display names
+    # Show sample display names from various categories
     rows = conn.execute("""
-        SELECT p.name, p.name_display, pr.name as producer_name
-        FROM products p JOIN producers pr ON p.producer_id = pr.id
-        LIMIT 15
+        SELECT p.name, p.name_display, pr.name as producer_name, c.name as cat_name
+        FROM products p
+        JOIN producers pr ON p.producer_id = pr.id
+        JOIN categories c ON p.category_id = c.id
+        ORDER BY RANDOM()
+        LIMIT 25
     """).fetchall()
-    print("\n  Sample display names:")
+    print("\n  Sample display names (random 25):")
     for r in rows:
-        print(f"    [{r['producer_name']}] {r['name'][:40]} -> {r['name_display']}")
+        print(f"    [{r['cat_name'][:15]}] [{r['producer_name']}] {r['name'][:45]}")
+        print(f"      -> {r['name_display']}")
 
     conn.close()
     wb.close()

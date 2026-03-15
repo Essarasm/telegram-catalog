@@ -1,7 +1,67 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
+
+const CART_KEY = 'cart_v1';
+
+/**
+ * Try to load saved cart from Telegram CloudStorage.
+ * Falls back gracefully if not available (e.g., outside Telegram).
+ */
+function loadCartFromCloud(callback) {
+  try {
+    const cs = window.Telegram?.WebApp?.CloudStorage;
+    if (cs) {
+      cs.getItem(CART_KEY, (err, value) => {
+        if (!err && value) {
+          try {
+            const parsed = JSON.parse(value);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              callback(parsed);
+            }
+          } catch (e) {
+            // ignore corrupt data
+          }
+        }
+      });
+    }
+  } catch (e) {
+    // CloudStorage not available
+  }
+}
+
+/**
+ * Save cart to Telegram CloudStorage (fire-and-forget).
+ */
+function saveCartToCloud(items) {
+  try {
+    const cs = window.Telegram?.WebApp?.CloudStorage;
+    if (cs) {
+      cs.setItem(CART_KEY, JSON.stringify(items));
+    }
+  } catch (e) {
+    // ignore
+  }
+}
 
 export function useCart() {
   const [items, setItems] = useState([]);
+  const loaded = useRef(false);
+
+  // Load saved cart on mount
+  useEffect(() => {
+    if (!loaded.current) {
+      loaded.current = true;
+      loadCartFromCloud((savedItems) => {
+        setItems(savedItems);
+      });
+    }
+  }, []);
+
+  // Save to cloud whenever items change (skip initial empty state)
+  useEffect(() => {
+    if (loaded.current) {
+      saveCartToCloud(items);
+    }
+  }, [items]);
 
   const addItem = useCallback((product) => {
     setItems(prev => {
