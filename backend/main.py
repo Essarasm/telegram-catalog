@@ -22,7 +22,7 @@ class NoCacheMiddleware(BaseHTTPMiddleware):
 load_dotenv()
 
 from backend.database import init_db
-from backend.routers import categories, products, export
+from backend.routers import categories, products, export, cart
 
 app = FastAPI(title="Katalog API", version="1.0.0")
 
@@ -44,6 +44,7 @@ def health():
 app.include_router(categories.router)
 app.include_router(products.router)
 app.include_router(export.router)
+app.include_router(cart.router)
 
 # Serve product images
 images_dir = Path(os.getenv("IMAGES_DIR", "./images"))

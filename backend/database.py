@@ -50,6 +50,15 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);
         CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
         CREATE INDEX IF NOT EXISTS idx_products_cat_prod ON products(category_id, producer_id);
+
+        CREATE TABLE IF NOT EXISTS cart_items (
+            user_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, product_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cart_user ON cart_items(user_id);
     """)
     conn.commit()
     conn.close()
