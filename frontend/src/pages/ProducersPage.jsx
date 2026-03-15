@@ -5,15 +5,37 @@ import t from '../i18n/uz.json';
 export default function ProducersPage({ category, onSelectProducer }) {
   const [producers, setProducers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (!category?.id) return;
     setLoading(true);
-    fetchProducers(category.id).then(data => {
-      setProducers(data);
-      setLoading(false);
-    });
+    setError(null);
+    fetchProducers(category.id)
+      .then(data => {
+        if (Array.isArray(data)) {
+          setProducers(data);
+        } else {
+          setError('API returned unexpected format: ' + JSON.stringify(data).slice(0, 100));
+          setProducers([]);
+        }
+        setLoading(false);
+      })
+      .catch(err => {
+        setError('Fetch error: ' + (err.message || String(err)));
+        setLoading(false);
+      });
   }, [category?.id]);
+
+  if (error) {
+    return (
+      <div className="text-center py-10">
+        <div className="text-red-500 text-sm font-mono mb-2">ProducersPage Error:</div>
+        <div className="text-red-400 text-xs font-mono">{error}</div>
+        <div className="text-xs text-gray-400 mt-2">category.id={category?.id}</div>
+      </div>
+    );
+  }
 
   if (loading) {
     return <div className="text-center py-10 text-tg-hint">{t.loading}</div>;
@@ -23,8 +45,6 @@ export default function ProducersPage({ category, onSelectProducer }) {
     return <div className="text-center py-10 text-tg-hint">{t.no_producers}</div>;
   }
 
-  // If only one producer, could auto-navigate, but showing the list
-  // gives users confirmation of where they are
   return (
     <div>
       <h2 className="text-sm font-semibold text-tg-hint uppercase mb-3">

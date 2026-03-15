@@ -5,27 +5,38 @@ import t from '../i18n/uz.json';
 export default function ProductsPage({ category, producer, searchQuery, cart }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const observer = useRef();
 
   const loadProducts = useCallback(async (pageNum, reset = false) => {
-    setLoading(true);
-    const data = await fetchProducts({
-      categoryId: category?.id,
-      producerId: producer?.id,
-      search: searchQuery,
-      page: pageNum,
-      limit: 30,
-    });
-    setProducts(prev => reset ? data.items : [...prev, ...data.items]);
-    setHasMore(pageNum < data.pages);
-    setLoading(false);
+    try {
+      setLoading(true);
+      const data = await fetchProducts({
+        categoryId: category?.id,
+        producerId: producer?.id,
+        search: searchQuery,
+        page: pageNum,
+        limit: 30,
+      });
+      if (data && data.items) {
+        setProducts(prev => reset ? data.items : [...prev, ...data.items]);
+        setHasMore(pageNum < data.pages);
+      } else {
+        setError('Products API unexpected: ' + JSON.stringify(data).slice(0, 100));
+      }
+      setLoading(false);
+    } catch (err) {
+      setError('Fetch error: ' + (err.message || String(err)));
+      setLoading(false);
+    }
   }, [category?.id, producer?.id, searchQuery]);
 
   useEffect(() => {
     setPage(1);
     setProducts([]);
+    setError(null);
     loadProducts(1, true);
   }, [category?.id, producer?.id, searchQuery, loadProducts]);
 
@@ -44,6 +55,18 @@ export default function ProductsPage({ category, producer, searchQuery, cart }) 
   }, [loading, hasMore, page, loadProducts]);
 
   const isInCart = (id) => cart.items.find(i => i.id === id);
+
+  if (error) {
+    return (
+      <div className="text-center py-10">
+        <div className="text-red-500 text-sm font-mono mb-2">ProductsPage Error:</div>
+        <div className="text-red-400 text-xs font-mono">{error}</div>
+        <div className="text-xs text-gray-400 mt-2">
+          cat={category?.id} prod={producer?.id} q={searchQuery}
+        </div>
+      </div>
+    );
+  }
 
   if (!loading && products.length === 0) {
     return <div className="text-center py-10 text-tg-hint">{t.no_products}</div>;

@@ -6,30 +6,37 @@ import ProductsPage from './pages/ProductsPage';
 import CartPage from './pages/CartPage';
 import t from './i18n/uz.json';
 
+const APP_VERSION = 'v3';
+
 export default function App() {
   const [page, setPage] = useState('catalog');
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [selectedProducer, setSelectedProducer] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [appError, setAppError] = useState(null);
   const cart = useCart();
 
   const navigateTo = (p, data) => {
-    if (p === 'producers' && data) {
-      setSelectedCategory(data);
-      setSelectedProducer(null);
-      setSearchQuery('');
+    try {
+      if (p === 'producers' && data) {
+        setSelectedCategory(data);
+        setSelectedProducer(null);
+        setSearchQuery('');
+      }
+      if (p === 'products' && data) {
+        setSelectedProducer(data);
+        setSearchQuery('');
+      }
+      if (p === 'search' && data) {
+        setSearchQuery(data);
+        setSelectedCategory(null);
+        setSelectedProducer(null);
+        p = 'products';
+      }
+      setPage(p);
+    } catch (err) {
+      setAppError(`Nav error: ${err.message}`);
     }
-    if (p === 'products' && data) {
-      setSelectedProducer(data);
-      setSearchQuery('');
-    }
-    if (p === 'search' && data) {
-      setSearchQuery(data);
-      setSelectedCategory(null);
-      setSelectedProducer(null);
-      p = 'products';
-    }
-    setPage(p);
   };
 
   const goBack = () => {
@@ -50,9 +57,13 @@ export default function App() {
   };
 
   // Expand Telegram Mini App
-  if (window.Telegram?.WebApp) {
-    window.Telegram.WebApp.expand();
-    window.Telegram.WebApp.ready();
+  try {
+    if (window.Telegram?.WebApp) {
+      window.Telegram.WebApp.expand();
+      window.Telegram.WebApp.ready();
+    }
+  } catch (e) {
+    // ignore Telegram API errors
   }
 
   return (
@@ -81,6 +92,14 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* Version + debug bar */}
+      <div className="px-4 py-1 text-[10px] text-gray-400 flex justify-between">
+        <span>{APP_VERSION} | page={page}</span>
+        <span id="js-error-log" className="text-red-400 truncate max-w-[200px]">
+          {appError || ''}
+        </span>
+      </div>
 
       {/* Content */}
       <main className="px-4 py-3">

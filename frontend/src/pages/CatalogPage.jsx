@@ -5,13 +5,23 @@ import t from '../i18n/uz.json';
 export default function CatalogPage({ onSelectCategory, onSearch }) {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [searchInput, setSearchInput] = useState('');
 
   useEffect(() => {
-    fetchCategories().then(data => {
-      setCategories(data);
-      setLoading(false);
-    });
+    fetchCategories()
+      .then(data => {
+        if (Array.isArray(data)) {
+          setCategories(data);
+        } else {
+          setError('Categories API unexpected: ' + JSON.stringify(data).slice(0, 100));
+        }
+        setLoading(false);
+      })
+      .catch(err => {
+        setError('Fetch error: ' + (err.message || String(err)));
+        setLoading(false);
+      });
   }, []);
 
   const handleSearch = (e) => {
@@ -22,6 +32,15 @@ export default function CatalogPage({ onSelectCategory, onSearch }) {
   };
 
   const icons = t.category_icons;
+
+  if (error) {
+    return (
+      <div className="text-center py-10">
+        <div className="text-red-500 text-sm font-mono mb-2">CatalogPage Error:</div>
+        <div className="text-red-400 text-xs font-mono">{error}</div>
+      </div>
+    );
+  }
 
   if (loading) {
     return <div className="text-center py-10 text-tg-hint">{t.loading}</div>;
