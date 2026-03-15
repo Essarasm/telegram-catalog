@@ -51,6 +51,15 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active);
         CREATE INDEX IF NOT EXISTS idx_products_cat_prod ON products(category_id, producer_id);
 
+        CREATE TABLE IF NOT EXISTS users (
+            telegram_id INTEGER PRIMARY KEY,
+            phone TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            username TEXT,
+            registered_at TEXT DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS cart_items (
             user_id INTEGER NOT NULL,
             product_id INTEGER NOT NULL,

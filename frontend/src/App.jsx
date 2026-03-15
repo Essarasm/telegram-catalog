@@ -1,13 +1,18 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useCart } from './hooks/useCart';
 import CatalogPage from './pages/CatalogPage';
 import ProducersPage from './pages/ProducersPage';
 import ProductsPage from './pages/ProductsPage';
 import CartPage from './pages/CartPage';
 import ProductDetailPage from './pages/ProductDetailPage';
+import RegisterPage from './pages/RegisterPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v12.1';
+const APP_VERSION = 'v13';
+
+function getTelegramUserId() {
+  return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
+}
 
 export default function App() {
   const [page, setPage] = useState('catalog');
@@ -16,7 +21,22 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [appError, setAppError] = useState(null);
+  const [registered, setRegistered] = useState(null); // null = checking, true/false
   const cart = useCart();
+
+  // Check registration on mount
+  useEffect(() => {
+    const uid = getTelegramUserId();
+    if (!uid) {
+      // Outside Telegram — skip registration gate
+      setRegistered(true);
+      return;
+    }
+    fetch(`/api/users/check?telegram_id=${uid}`)
+      .then(r => r.json())
+      .then(data => setRegistered(data.registered))
+      .catch(() => setRegistered(true)); // on error, let them in
+  }, []);
 
   const navigateTo = (p, data) => {
     try {
@@ -71,6 +91,24 @@ export default function App() {
     }
   } catch (e) {
     // ignore Telegram API errors
+  }
+
+  // Loading state while checking registration
+  if (registered === null) {
+    return (
+      <div className="min-h-screen bg-tg-bg text-tg-text flex items-center justify-center">
+        <div className="text-tg-hint">Yuklanmoqda...</div>
+      </div>
+    );
+  }
+
+  // Registration gate
+  if (registered === false) {
+    return (
+      <div className="min-h-screen bg-tg-bg text-tg-text">
+        <RegisterPage onRegistered={() => setRegistered(true)} />
+      </div>
+    );
   }
 
   return (

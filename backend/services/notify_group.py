@@ -56,8 +56,8 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
         )
 
         # Send the Excel file
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%d_%m_%Y_%H%M")
+        from datetime import datetime, timezone, timedelta
+        timestamp = datetime.now(timezone(timedelta(hours=5))).strftime("%d_%m_%Y_%H%M")
         filename = f"buyurtma_{client_name.replace(' ', '_') or 'noname'}_{timestamp}.xlsx"
 
         httpx.post(

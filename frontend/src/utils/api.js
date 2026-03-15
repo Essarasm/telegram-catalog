@@ -21,7 +21,7 @@ export async function fetchProducts({ categoryId, producerId, search, page = 1, 
   return res.json();
 }
 
-export async function exportOrder(items, format = 'pdf', clientName = '') {
+export async function exportOrder(items, format = 'pdf', clientName = '', telegramId = 0) {
   const res = await fetch(`${API_BASE}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -29,6 +29,7 @@ export async function exportOrder(items, format = 'pdf', clientName = '') {
       items: items.map(i => ({ product_id: i.id, quantity: i.quantity })),
       format,
       client_name: clientName,
+      telegram_id: telegramId,
     }),
   });
   return res.blob();

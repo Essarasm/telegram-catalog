@@ -15,7 +15,8 @@ export default function CartPage({ cart }) {
         ? `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim()
         : '';
 
-      const blob = await exportOrder(cart.items, format, clientName);
+      const telegramId = tgUser?.id || 0;
+      const blob = await exportOrder(cart.items, format, clientName, telegramId);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;

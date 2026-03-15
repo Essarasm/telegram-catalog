@@ -1,7 +1,7 @@
 """Generate order exports as PDF or Excel."""
 import io
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Dict
 
@@ -70,7 +70,7 @@ def generate_pdf(items: List[Dict], client_name: str = "") -> bytes:
     elements.append(Paragraph("BUYURTMA / ЗАКАЗ", title_style))
     elements.append(Spacer(1, 5*mm))
 
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now = datetime.now(timezone(timedelta(hours=5))).strftime("%d.%m.%Y %H:%M")
     info_lines = [f"Sana: {now}"]
     if client_name:
         info_lines.append(f"Mijoz: {client_name}")
@@ -159,7 +159,7 @@ def generate_excel(items: List[Dict], client_name: str = "") -> bytes:
     ws['A1'].font = Font(bold=True, size=14)
     ws['A1'].alignment = Alignment(horizontal='center')
 
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now = datetime.now(timezone(timedelta(hours=5))).strftime("%d.%m.%Y %H:%M")
     ws['A2'] = f"Sana: {now}"
     if client_name:
         ws['A3'] = f"Mijoz: {client_name}"

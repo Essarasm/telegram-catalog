@@ -18,11 +18,23 @@ class ExportRequest(BaseModel):
     items: List[CartItem]
     format: str = "pdf"  # "pdf" or "xlsx"
     client_name: Optional[str] = ""
+    telegram_id: Optional[int] = 0
 
 
 @router.post("")
 def export_order(req: ExportRequest):
     conn = get_db()
+
+    # Look up user phone if telegram_id provided
+    client_label = req.client_name or ""
+    if req.telegram_id:
+        user_row = conn.execute(
+            "SELECT phone, first_name, last_name FROM users WHERE telegram_id = ?",
+            (req.telegram_id,),
+        ).fetchone()
+        if user_row and user_row["phone"]:
+            name_part = client_label or " ".join(filter(None, [user_row["first_name"], user_row["last_name"]]))
+            client_label = f"{name_part} ({user_row['phone']})" if name_part else user_row["phone"]
 
     order_items = []
     for cart_item in req.items:
@@ -63,11 +75,11 @@ def export_order(req: ExportRequest):
         return Response(content="No valid products in order", status_code=400)
 
     # Always generate Excel for group notification
-    excel_data = generate_excel(order_items, req.client_name or "")
+    excel_data = generate_excel(order_items, client_label)
 
     # Send order to Telegram sales managers group (non-blocking best-effort)
     try:
-        send_order_to_group(order_items, excel_data, req.client_name or "")
+        send_order_to_group(order_items, excel_data, client_label)
     except Exception:
         pass  # Don't fail the export if notification fails
 
@@ -78,7 +90,7 @@ def export_order(req: ExportRequest):
             headers={"Content-Disposition": "attachment; filename=buyurtma.xlsx"},
         )
     else:
-        data = generate_pdf(order_items, req.client_name or "")
+        data = generate_pdf(order_items, client_label)
         return Response(
             content=data,
             media_type="application/pdf",
