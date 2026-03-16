@@ -1,14 +1,16 @@
 import { useState } from 'react';
 
 /**
- * Registration gate — single step:
- * One button press collects phone, then immediately requests location.
- * User experiences it as one smooth action.
+ * Registration gate:
+ * 1. Phone is required (one button tap via Telegram requestContact)
+ * 2. Location is optional — user can share or tap "Keyinroq" to skip
  */
 export default function RegisterPage({ onRegistered }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [statusText, setStatusText] = useState(null);
+  const [phoneCollected, setPhoneCollected] = useState(false);
+  const [userData, setUserData] = useState(null);
 
   const saveToServer = (data) => {
     return fetch('/api/users/register', {
@@ -30,7 +32,6 @@ export default function RegisterPage({ onRegistered }) {
               else reject();
             });
           } else {
-            // Fallback to browser
             browserGeo(resolve, reject);
           }
         });
@@ -52,6 +53,7 @@ export default function RegisterPage({ onRegistered }) {
     }
   };
 
+  // Step 1: collect phone
   const startRegistration = () => {
     setLoading(true);
     setError(null);
@@ -64,7 +66,6 @@ export default function RegisterPage({ onRegistered }) {
       return;
     }
 
-    // Step 1: request phone
     tg.requestContact((ok, event) => {
       if (!ok) {
         setError("Telefon raqamni yuborish bekor qilindi");
@@ -80,7 +81,7 @@ export default function RegisterPage({ onRegistered }) {
       }
 
       const user = tg.initDataUnsafe?.user || {};
-      const userData = {
+      const data = {
         telegram_id: user.id || 0,
         phone: contact.phone_number,
         first_name: contact.first_name || user.first_name || '',
@@ -88,38 +89,93 @@ export default function RegisterPage({ onRegistered }) {
         username: user.username || '',
       };
 
-      // Step 2: immediately request location
-      setStatusText("Joylashuvingiz aniqlanmoqda...");
-
-      getLocation()
-        .then(({ lat, lng }) => {
-          setStatusText("Ma'lumotlar saqlanmoqda...");
-          return saveToServer({ ...userData, latitude: lat, longitude: lng });
-        })
-        .then((result) => onRegistered(result?.approved ?? false))
-        .catch(() => {
-          setError("Joylashuvni yuborish majburiy. Iltimos, qayta urinib ko'ring.");
-          setLoading(false);
-          setStatusText(null);
-        });
+      setUserData(data);
+      setPhoneCollected(true);
+      setLoading(false);
     });
   };
 
+  // Step 2a: share location
+  const shareLocation = () => {
+    setLoading(true);
+    setError(null);
+    setStatusText("Joylashuvingiz aniqlanmoqda...");
+
+    getLocation()
+      .then(({ lat, lng }) => {
+        setStatusText("Ma'lumotlar saqlanmoqda...");
+        return saveToServer({ ...userData, latitude: lat, longitude: lng });
+      })
+      .then((result) => onRegistered(result?.approved ?? false))
+      .catch(() => {
+        setError("Joylashuvni aniqlab bo'lmadi. Qayta urinib ko'ring yoki keyinroq yuboring.");
+        setLoading(false);
+        setStatusText(null);
+      });
+  };
+
+  // Step 2b: skip location
+  const skipLocation = () => {
+    setLoading(true);
+    setStatusText("Ma'lumotlar saqlanmoqda...");
+
+    saveToServer(userData)
+      .then((result) => onRegistered(result?.approved ?? false))
+      .catch(() => {
+        setError("Xatolik yuz berdi. Qayta urinib ko'ring.");
+        setLoading(false);
+        setStatusText(null);
+      });
+  };
+
+  // --- Phone collection screen ---
+  if (!phoneCollected) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] px-6 text-center">
+        <div className="text-5xl mb-4">👋</div>
+        <h2 className="text-xl font-bold mb-2">Xush kelibsiz!</h2>
+        <p className="text-tg-hint text-sm mb-6 max-w-[280px]">
+          Buyurtma berish uchun telefon raqamingizni yuboring.
+          Bu faqat bir marta amalga oshiriladi.
+        </p>
+
+        <button
+          onClick={startRegistration}
+          disabled={loading}
+          className="bg-tg-button text-tg-button-text font-semibold rounded-xl px-8 py-3 text-base active:scale-[0.98] transition-transform disabled:opacity-50"
+        >
+          {loading ? "Yuklanmoqda..." : "📱 Telefon raqamni yuborish"}
+        </button>
+
+        {error && <p className="text-red-500 text-sm mt-4">{error}</p>}
+      </div>
+    );
+  }
+
+  // --- Location sharing screen (optional) ---
   return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] px-6 text-center">
-      <div className="text-5xl mb-4">👋</div>
-      <h2 className="text-xl font-bold mb-2">Xush kelibsiz!</h2>
+      <div className="text-5xl mb-4">📍</div>
+      <h2 className="text-xl font-bold mb-2">Joylashuvingizni ulashing</h2>
       <p className="text-tg-hint text-sm mb-6 max-w-[280px]">
-        Buyurtma berish uchun telefon raqamingiz va joylashuvingizni yuboring.
-        Bu faqat bir marta amalga oshiriladi.
+        Yetkazib berishni tezlashtirish uchun joylashuvingizni yuborishingiz mumkin.
+        Bu ixtiyoriy — keyinroq ham yuborishingiz mumkin.
       </p>
 
       <button
-        onClick={startRegistration}
+        onClick={shareLocation}
         disabled={loading}
-        className="bg-tg-button text-tg-button-text font-semibold rounded-xl px-8 py-3 text-base active:scale-[0.98] transition-transform disabled:opacity-50"
+        className="w-full max-w-[280px] bg-tg-button text-tg-button-text font-semibold rounded-xl px-8 py-3 text-base active:scale-[0.98] transition-transform disabled:opacity-50 mb-3"
       >
-        {loading ? (statusText || "Yuklanmoqda...") : "Ro'yxatdan o'tish"}
+        {loading ? (statusText || "Yuklanmoqda...") : "📍 Joylashuvni yuborish"}
+      </button>
+
+      <button
+        onClick={skipLocation}
+        disabled={loading}
+        className="w-full max-w-[280px] text-tg-hint font-medium rounded-xl px-8 py-2.5 text-sm active:scale-[0.98] transition-transform disabled:opacity-50"
+      >
+        Keyinroq →
       </button>
 
       {error && <p className="text-red-500 text-sm mt-4">{error}</p>}

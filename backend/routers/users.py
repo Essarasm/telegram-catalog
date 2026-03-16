@@ -38,15 +38,12 @@ def check_user(telegram_id: int = Query(...)):
     if not row or not row["phone"]:
         return {"registered": False, "approved": False}
 
-    has_location = row["latitude"] is not None
     is_approved = bool(row["is_approved"])
 
-    if has_location and is_approved:
+    if is_approved:
         return {"registered": True, "approved": True, "phone": row["phone"], "first_name": row["first_name"]}
-    elif has_location and not is_approved:
-        return {"registered": True, "approved": False, "phone": row["phone"]}
     else:
-        return {"registered": False, "approved": False}
+        return {"registered": True, "approved": False, "phone": row["phone"]}
 
 
 @router.post("/register")
