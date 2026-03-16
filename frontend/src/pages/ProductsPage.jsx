@@ -65,13 +65,13 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
   }
 
   if (!loading && products.length === 0) {
-    return <div className="text-center py-10 text-tg-hint">{t.no_products}</div>;
+    return <div className="text-center py-10 text-tg-hint text-base">{t.no_products}</div>;
   }
 
   return (
     <div>
-      {/* 2-column product card grid */}
-      <div className="grid grid-cols-2 gap-2.5">
+      {/* 2-column product card grid — sized for ~4 cards visible per screen */}
+      <div className="grid grid-cols-2 gap-3">
         {products.map((product, idx) => {
           const inCart = isInCart(product.id);
           const imgUrl = getImageUrl(product);
@@ -90,49 +90,49 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                 className="cursor-pointer active:opacity-80 transition-opacity"
                 onClick={() => onSelectProduct && onSelectProduct(product)}
               >
-                {/* Product image */}
+                {/* Product image — larger */}
                 <div className="w-full aspect-square bg-tg-bg flex items-center justify-center overflow-hidden">
                   {imgUrl ? (
                     <img src={imgUrl} alt="" className="w-full h-full object-cover" loading="lazy" />
                   ) : (
-                    <span className="text-4xl opacity-20">📷</span>
+                    <span className="text-5xl opacity-20">📷</span>
                   )}
                 </div>
 
-                {/* Product info */}
-                <div className="p-2.5">
-                  <div className="text-xs font-medium leading-tight line-clamp-2 min-h-[2rem]">
+                {/* Product info — larger text */}
+                <div className="p-3">
+                  <div className="text-sm font-medium leading-snug line-clamp-2 min-h-[2.5rem]">
                     {displayName}
                   </div>
                   {approved ? (
-                    <div className="text-sm font-bold text-tg-link mt-1">
+                    <div className="text-base font-bold text-tg-link mt-1.5">
                       {priceStr}
                     </div>
                   ) : (
-                    <div className="text-[10px] text-tg-hint mt-1 italic leading-tight">
+                    <div className="text-xs text-tg-hint mt-1.5 italic leading-tight">
                       Narxni bilish uchun bog'laning
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* Add to cart button */}
+              {/* Add to cart / quantity controls */}
               {approved && (
-                <div className="px-2.5 pb-2.5 mt-auto">
+                <div className="px-3 pb-3 mt-auto">
                   {inCart ? (
-                    <div className="flex items-center justify-between bg-tg-button rounded-lg px-2 py-1.5">
+                    <div className="flex items-center justify-between bg-tg-button rounded-lg px-2 py-2">
                       <button
                         onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
-                        className="text-tg-button-text font-bold text-base w-7 text-center"
+                        className="text-tg-button-text font-bold text-lg w-8 text-center"
                       >
                         −
                       </button>
-                      <span className="text-tg-button-text text-sm font-semibold">
+                      <span className="text-tg-button-text text-base font-bold">
                         {inCart.quantity}
                       </span>
                       <button
                         onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
-                        className="text-tg-button-text font-bold text-base w-7 text-center"
+                        className="text-tg-button-text font-bold text-lg w-8 text-center"
                       >
                         +
                       </button>
@@ -144,7 +144,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                         price: getPriceValue(product.price_usd, product.price_uzs),
                         currency: getPriceCurrency(product.price_usd, product.price_uzs),
                       })}
-                      className="w-full bg-tg-button text-tg-button-text text-xs font-medium rounded-lg py-2 active:scale-95 transition-transform"
+                      className="w-full bg-tg-button text-tg-button-text text-sm font-semibold rounded-lg py-2.5 active:scale-95 transition-transform"
                     >
                       + {t.add_to_cart}
                     </button>
@@ -156,7 +156,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
         })}
       </div>
 
-      {loading && <div className="text-center py-4 text-tg-hint">{t.loading}</div>}
+      {loading && <div className="text-center py-4 text-tg-hint text-base">{t.loading}</div>}
     </div>
   );
 }

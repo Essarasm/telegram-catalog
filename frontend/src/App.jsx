@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useCart } from './hooks/useCart';
 import CatalogPage from './pages/CatalogPage';
 import ProducersPage from './pages/ProducersPage';
@@ -8,7 +8,7 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v16.2';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -24,6 +24,7 @@ export default function App() {
   const [registered, setRegistered] = useState(null);
   const [approved, setApproved] = useState(false);
   const cart = useCart();
+  const goBackRef = useRef(null);
 
   const checkApproval = useCallback(() => {
     const uid = getTelegramUserId();
@@ -92,14 +93,39 @@ export default function App() {
     }
   };
 
-  const goBack = () => {
-    if (page === 'cart') setPage(selectedProducer ? 'products' : selectedCategory ? 'producers' : 'catalog');
-    else if (page === 'product_detail') { setPage('products'); setSelectedProduct(null); }
-    else if (page === 'products' && searchQuery) { setPage('catalog'); setSearchQuery(''); }
-    else if (page === 'products') setPage('producers');
-    else if (page === 'producers') { setPage('catalog'); setSelectedCategory(null); }
-    else setPage('catalog');
-  };
+  const goBack = useCallback(() => {
+    setPage(prev => {
+      if (prev === 'cart') return selectedProducer ? 'products' : selectedCategory ? 'producers' : 'catalog';
+      if (prev === 'product_detail') { setSelectedProduct(null); return 'products'; }
+      if (prev === 'products' && searchQuery) { setSearchQuery(''); return 'catalog'; }
+      if (prev === 'products') return 'producers';
+      if (prev === 'producers') { setSelectedCategory(null); return 'catalog'; }
+      return 'catalog';
+    });
+  }, [selectedProducer, selectedCategory, searchQuery]);
+
+  // Keep ref in sync
+  goBackRef.current = goBack;
+
+  // Telegram native BackButton — show/hide based on page, handle clicks
+  useEffect(() => {
+    const tg = window.Telegram?.WebApp;
+    const bb = tg?.BackButton;
+    if (!bb) return;
+
+    const handler = () => { goBackRef.current?.(); };
+
+    if (page !== 'catalog') {
+      bb.show();
+      bb.onClick(handler);
+    } else {
+      bb.hide();
+    }
+
+    return () => {
+      bb.offClick(handler);
+    };
+  }, [page]);
 
   const getTitle = () => {
     if (page === 'catalog') return t.app_title;
@@ -139,43 +165,25 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-tg-bg text-tg-text pb-20">
-      {/* Top navigation bar — back button on left, title center, cart right */}
+      {/* Compact header — title + cart only (back button is Telegram native) */}
       <header className="sticky top-0 z-50 bg-tg-bg border-b border-tg-hint/20">
-        <div className="flex items-center h-12 px-2">
-          {/* Back button — left-aligned, padded away from edges */}
-          <div className="w-20 flex-shrink-0">
-            {page !== 'catalog' && (
-              <button
-                onClick={goBack}
-                className="flex items-center gap-1 text-tg-link font-medium text-sm pl-2 py-2 pr-3 rounded-lg active:bg-tg-secondary transition-colors"
-              >
-                <span className="text-base">‹</span>
-                <span>{t.back}</span>
-              </button>
-            )}
-          </div>
-
-          {/* Title — centered */}
-          <h1 className="flex-1 text-sm font-semibold text-center truncate px-1">
+        <div className="flex items-center justify-between h-11 px-4">
+          <h1 className="text-base font-semibold truncate flex-1">
             {getTitle()}
           </h1>
-
-          {/* Cart — right-aligned */}
-          <div className="w-20 flex-shrink-0 flex justify-end pr-2">
-            {approved && (
-              <button
-                onClick={() => navigateTo('cart')}
-                className="relative text-xl p-1"
-              >
-                🛒
-                {cart.totalCount > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                    {cart.totalCount}
-                  </span>
-                )}
-              </button>
-            )}
-          </div>
+          {approved && (
+            <button
+              onClick={() => navigateTo('cart')}
+              className="relative text-xl ml-3 p-1"
+            >
+              🛒
+              {cart.totalCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                  {cart.totalCount}
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </header>
 

@@ -37,28 +37,28 @@ export default function ProducersPage({ category, onSelectProducer }) {
   }
 
   if (loading) {
-    return <div className="text-center py-10 text-tg-hint">{t.loading}</div>;
+    return <div className="text-center py-10 text-tg-hint text-base">{t.loading}</div>;
   }
 
   if (producers.length === 0) {
-    return <div className="text-center py-10 text-tg-hint">{t.no_producers}</div>;
+    return <div className="text-center py-10 text-tg-hint text-base">{t.no_producers}</div>;
   }
 
   return (
     <div>
-      <h2 className="text-sm font-semibold text-tg-hint uppercase mb-3">
+      <h2 className="text-base font-semibold text-tg-hint uppercase mb-3">
         {t.producers} ({producers.length})
       </h2>
-      {/* 2-column grid matching category layout */}
-      <div className="grid grid-cols-2 gap-2.5">
+      {/* 2-column grid — taller cards for ~4 visible per screen */}
+      <div className="grid grid-cols-2 gap-3">
         {producers.map(prod => (
           <button
             key={prod.id}
             onClick={() => onSelectProducer(prod)}
-            className="bg-tg-secondary rounded-xl p-4 text-left active:scale-95 transition-transform flex flex-col justify-between min-h-[80px]"
+            className="bg-tg-secondary rounded-xl p-5 text-left active:scale-95 transition-transform flex flex-col justify-between min-h-[110px]"
           >
-            <div className="text-sm font-medium leading-tight">{prod.name}</div>
-            <div className="text-xs text-tg-hint mt-2">
+            <div className="text-base font-semibold leading-snug">{prod.name}</div>
+            <div className="text-sm text-tg-hint mt-3">
               {prod.product_count} {t.products_count}
             </div>
           </button>
