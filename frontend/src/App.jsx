@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useCart } from './hooks/useCart';
 import CatalogPage from './pages/CatalogPage';
 import ProducersPage from './pages/ProducersPage';
@@ -8,7 +8,7 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v15.1';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -25,11 +25,23 @@ export default function App() {
   const [approved, setApproved] = useState(false); // false = no prices, true = full access
   const cart = useCart();
 
+  // Reusable check function
+  const checkApproval = useCallback(() => {
+    const uid = getTelegramUserId();
+    if (!uid) return;
+    fetch(`/api/users/check?telegram_id=${uid}`)
+      .then(r => r.json())
+      .then(data => {
+        setRegistered(data.registered);
+        setApproved(data.approved || false);
+      })
+      .catch(() => {});
+  }, []);
+
   // Check registration on mount
   useEffect(() => {
     const uid = getTelegramUserId();
     if (!uid) {
-      // Outside Telegram — skip registration gate, show prices for dev
       setRegistered(true);
       setApproved(true);
       return;
@@ -42,6 +54,29 @@ export default function App() {
       })
       .catch(() => { setRegistered(true); setApproved(false); });
   }, []);
+
+  // Auto-recheck when app becomes visible (user switches back to Mini App)
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkApproval();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    // Also listen to Telegram's viewport change (when mini app is expanded back)
+    const tg = window.Telegram?.WebApp;
+    if (tg?.onEvent) {
+      tg.onEvent('viewportChanged', checkApproval);
+    }
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (tg?.offEvent) {
+        tg.offEvent('viewportChanged', checkApproval);
+      }
+    };
+  }, [checkApproval]);
 
   const navigateTo = (p, data) => {
     try {
@@ -148,6 +183,31 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {/* Unapproved banner */}
+      {!approved && page === 'catalog' && (
+        <div className="mx-4 mt-2 bg-tg-secondary rounded-xl p-3 text-center">
+          <div className="text-sm text-tg-hint mb-2">
+            Narxlarni ko'rish uchun menejer bilan bog'laning
+          </div>
+          <div className="flex gap-2 justify-center">
+            <a
+              href="https://t.me/axmatov0902"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="bg-tg-button text-tg-button-text text-xs font-medium rounded-lg px-4 py-2"
+            >
+              Telegram orqali yozish
+            </a>
+            <button
+              onClick={checkApproval}
+              className="border border-tg-hint/30 text-tg-hint text-xs font-medium rounded-lg px-4 py-2"
+            >
+              Tekshirish ↻
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Version + debug bar */}
       <div className="px-4 py-1 text-[10px] text-gray-400 flex justify-between">
