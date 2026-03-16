@@ -84,6 +84,16 @@ def get_products_by_ids(ids: str = Query(..., description="Comma-separated produ
     return {"items": [dict(r) for r in rows]}
 
 
+@router.post("/update-prices")
+async def update_prices(file: UploadFile = File(...), admin_key: str = Form("")):
+    """Upload Excel file to update product prices."""
+    if admin_key != "rassvet2026":
+        return JSONResponse(status_code=403, content={"error": "Invalid admin key"})
+    content = await file.read()
+    result = apply_price_updates(content)
+    return result
+
+
 @router.get("/{product_id}")
 def get_product(product_id: int):
     """Get single product details."""
@@ -100,13 +110,3 @@ def get_product(product_id: int):
     if not row:
         return {"error": "Product not found"}, 404
     return dict(row)
-
-
-@router.post("/update-prices")
-async def update_prices(file: UploadFile = File(...), admin_key: str = Form("")):
-    """Upload Excel file to update product prices."""
-    if admin_key != "rassvet2026":
-        return JSONResponse(status_code=403, content={"error": "Invalid admin key"})
-    content = await file.read()
-    result = apply_price_updates(content)
-    return result
