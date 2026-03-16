@@ -185,6 +185,9 @@ def generate_display_name(raw_name, producer_cyrillic):
     # 7. Transliterate to Latin
     name = transliterate(name)
 
+    # 7b. Replace transliterated "NTs" (НЦ = нитроцеллюлозная) with "Nitro"
+    name = re.sub(r'(?<![A-Za-z])NTs(?![A-Za-z])', 'Nitro', name)
+
     # 8. Final cleanup
     name = re.sub(r'\s+', ' ', name).strip()
 
