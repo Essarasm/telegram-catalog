@@ -31,27 +31,10 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
         lines.append(f"👤 Mijoz: <b>{client_name}</b>")
     lines.append(f"📦 Mahsulotlar: {unique_products} ta nomi, {total_quantity} ta dona")
     lines.append("")
-
-    # Item list (compact: name x qty)
-    lines.append("—" * 20)
-    for i, item in enumerate(items, 1):
-        qty = item.get("quantity", 1)
-        price = item.get("price", 0)
-        currency = item.get("currency", "USD")
-        price_str = f"${price:,.2f}" if currency == "USD" else f"{price:,.0f} so'm"
-        name = item.get("name", "?")
-        # Truncate long names for readability in Telegram
-        if len(name) > 50:
-            name = name[:47] + "..."
-        lines.append(f"{i}. {name} — {qty} {item.get('unit', 'шт')} × {price_str}")
-    lines.append("—" * 20)
-    lines.append("")
-
     if usd_total > 0:
         lines.append(f"💵 Jami (USD): <b>${usd_total:,.2f}</b>")
     if uzs_total > 0:
         lines.append(f"💴 Jami (UZS): <b>{uzs_total:,.0f} so'm</b>")
-
     lines.append("")
     lines.append("📎 Excel fayl ilova qilingan")
 
