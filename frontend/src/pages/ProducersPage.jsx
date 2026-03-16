@@ -32,7 +32,6 @@ export default function ProducersPage({ category, onSelectProducer }) {
       <div className="text-center py-10">
         <div className="text-red-500 text-sm font-mono mb-2">ProducersPage Error:</div>
         <div className="text-red-400 text-xs font-mono">{error}</div>
-        <div className="text-xs text-gray-400 mt-2">category.id={category?.id}</div>
       </div>
     );
   }
@@ -50,20 +49,18 @@ export default function ProducersPage({ category, onSelectProducer }) {
       <h2 className="text-sm font-semibold text-tg-hint uppercase mb-3">
         {t.producers} ({producers.length})
       </h2>
-      <div className="space-y-2">
+      {/* 2-column grid matching category layout */}
+      <div className="grid grid-cols-2 gap-2.5">
         {producers.map(prod => (
           <button
             key={prod.id}
             onClick={() => onSelectProducer(prod)}
-            className="w-full bg-tg-secondary rounded-xl p-4 text-left hover:opacity-80 active:scale-[0.98] transition-transform flex items-center justify-between"
+            className="bg-tg-secondary rounded-xl p-4 text-left active:scale-95 transition-transform flex flex-col justify-between min-h-[80px]"
           >
-            <div>
-              <div className="text-sm font-medium">{prod.name}</div>
-              <div className="text-xs text-tg-hint mt-0.5">
-                {prod.product_count} {t.products_count}
-              </div>
+            <div className="text-sm font-medium leading-tight">{prod.name}</div>
+            <div className="text-xs text-tg-hint mt-2">
+              {prod.product_count} {t.products_count}
             </div>
-            <span className="text-tg-hint text-lg">›</span>
           </button>
         ))}
       </div>

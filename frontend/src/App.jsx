@@ -8,7 +8,7 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v15.1';
+const APP_VERSION = 'v16';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -21,11 +21,10 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [appError, setAppError] = useState(null);
-  const [registered, setRegistered] = useState(null); // null = checking, true/false
-  const [approved, setApproved] = useState(false); // false = no prices, true = full access
+  const [registered, setRegistered] = useState(null);
+  const [approved, setApproved] = useState(false);
   const cart = useCart();
 
-  // Reusable check function
   const checkApproval = useCallback(() => {
     const uid = getTelegramUserId();
     if (!uid) return;
@@ -38,7 +37,6 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  // Check registration on mount
   useEffect(() => {
     const uid = getTelegramUserId();
     if (!uid) {
@@ -55,26 +53,16 @@ export default function App() {
       .catch(() => { setRegistered(true); setApproved(false); });
   }, []);
 
-  // Auto-recheck when app becomes visible (user switches back to Mini App)
   useEffect(() => {
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        checkApproval();
-      }
+      if (document.visibilityState === 'visible') checkApproval();
     };
     document.addEventListener('visibilitychange', handleVisibility);
-
-    // Also listen to Telegram's viewport change (when mini app is expanded back)
     const tg = window.Telegram?.WebApp;
-    if (tg?.onEvent) {
-      tg.onEvent('viewportChanged', checkApproval);
-    }
-
+    if (tg?.onEvent) tg.onEvent('viewportChanged', checkApproval);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility);
-      if (tg?.offEvent) {
-        tg.offEvent('viewportChanged', checkApproval);
-      }
+      if (tg?.offEvent) tg.offEvent('viewportChanged', checkApproval);
     };
   }, [checkApproval]);
 
@@ -123,17 +111,13 @@ export default function App() {
     return t.app_title;
   };
 
-  // Expand Telegram Mini App
   try {
     if (window.Telegram?.WebApp) {
       window.Telegram.WebApp.expand();
       window.Telegram.WebApp.ready();
     }
-  } catch (e) {
-    // ignore Telegram API errors
-  }
+  } catch (e) {}
 
-  // Loading state while checking registration
   if (registered === null) {
     return (
       <div className="min-h-screen bg-tg-bg text-tg-text flex items-center justify-center">
@@ -142,7 +126,6 @@ export default function App() {
     );
   }
 
-  // Registration gate — only phone is required
   if (registered === false) {
     return (
       <div className="min-h-screen bg-tg-bg text-tg-text">
@@ -154,33 +137,45 @@ export default function App() {
     );
   }
 
-  // Everyone gets into the catalog — approved prop controls price visibility
   return (
     <div className="min-h-screen bg-tg-bg text-tg-text pb-20">
-      {/* Top bar */}
-      <header className="sticky top-0 z-50 bg-tg-bg border-b border-tg-hint/20 px-4 py-3">
-        <div className="flex items-center justify-between">
-          {page !== 'catalog' && (
-            <button onClick={goBack} className="text-tg-link font-medium text-sm">
-              ← {t.back}
-            </button>
-          )}
-          <h1 className="text-base font-semibold flex-1 text-center truncate">
+      {/* Top navigation bar — back button on left, title center, cart right */}
+      <header className="sticky top-0 z-50 bg-tg-bg border-b border-tg-hint/20">
+        <div className="flex items-center h-12 px-2">
+          {/* Back button — left-aligned, padded away from edges */}
+          <div className="w-20 flex-shrink-0">
+            {page !== 'catalog' && (
+              <button
+                onClick={goBack}
+                className="flex items-center gap-1 text-tg-link font-medium text-sm pl-2 py-2 pr-3 rounded-lg active:bg-tg-secondary transition-colors"
+              >
+                <span className="text-base">‹</span>
+                <span>{t.back}</span>
+              </button>
+            )}
+          </div>
+
+          {/* Title — centered */}
+          <h1 className="flex-1 text-sm font-semibold text-center truncate px-1">
             {getTitle()}
           </h1>
-          {approved && (
-            <button
-              onClick={() => navigateTo('cart')}
-              className="relative text-xl ml-2"
-            >
-              🛒
-              {cart.totalCount > 0 && (
-                <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                  {cart.totalCount}
-                </span>
-              )}
-            </button>
-          )}
+
+          {/* Cart — right-aligned */}
+          <div className="w-20 flex-shrink-0 flex justify-end pr-2">
+            {approved && (
+              <button
+                onClick={() => navigateTo('cart')}
+                className="relative text-xl p-1"
+              >
+                🛒
+                {cart.totalCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                    {cart.totalCount}
+                  </span>
+                )}
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -209,16 +204,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Version + debug bar */}
-      <div className="px-4 py-1 text-[10px] text-gray-400 flex justify-between">
-        <span>{APP_VERSION} | page={page}</span>
-        <span id="js-error-log" className="text-red-400 truncate max-w-[200px]">
-          {appError || ''}
-        </span>
-      </div>
-
       {/* Content */}
-      <main className="px-4 py-3">
+      <main className="px-3 py-3">
         {page === 'catalog' && (
           <CatalogPage
             onSelectCategory={(cat) => navigateTo('producers', cat)}
