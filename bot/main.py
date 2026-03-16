@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "./data/catalog.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 
 
 def get_db():

@@ -1,7 +1,10 @@
 import sqlite3
 import os
 
-DATABASE_PATH = os.getenv("DATABASE_PATH", "./data/catalog.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
+
+# Ensure the data directory exists (needed for Railway volume mount)
+os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
 
 
 def get_db():
