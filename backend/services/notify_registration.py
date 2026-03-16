@@ -62,11 +62,10 @@ def send_registration_notification(
     if status_detail:
         lines.append(status_detail)
 
-    # For unapproved users, add a direct approve link
+    # For unapproved users, show the /approve command (works in the group chat)
     if not is_approved:
-        approve_url = f"https://telegram-catalog-production.up.railway.app/api/users/approve?telegram_id={telegram_id}&admin_key=rassvet2026"
         lines.append("")
-        lines.append(f"✅ <a href=\"{approve_url}\">Tasdiqlash (approve)</a>")
+        lines.append(f"👉 Tasdiqlash: /approve {telegram_id}")
 
     message_text = "\n".join(lines)
 
