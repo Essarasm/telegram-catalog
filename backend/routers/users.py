@@ -4,7 +4,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
+from backend.services.notify_registration import send_registration_notification
 import re
+import threading
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -87,6 +89,26 @@ def register_user(user: UserRegister):
 
     conn.commit()
     conn.close()
+
+    # Notify manager about new registration (non-blocking)
+    try:
+        threading.Thread(
+            target=send_registration_notification,
+            kwargs={
+                "telegram_id": user.telegram_id,
+                "phone": user.phone,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "username": user.username,
+                "latitude": user.latitude,
+                "longitude": user.longitude,
+                "is_approved": bool(is_approved),
+                "client_name": client_name,
+            },
+            daemon=True,
+        ).start()
+    except Exception:
+        pass  # Don't fail registration if notification fails
 
     return {
         "ok": True,

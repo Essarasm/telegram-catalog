@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl } from '../utils/api';
 import t from '../i18n/uz.json';
 
-export default function ProductsPage({ category, producer, searchQuery, cart, onSelectProduct }) {
+export default function ProductsPage({ category, producer, searchQuery, cart, approved, onSelectProduct }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -79,7 +79,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, on
         const imgUrl = getImageUrl(product);
         const isLast = idx === products.length - 1;
         const displayName = product.name_display || product.name;
-        const priceStr = formatPrice(product.price_usd, product.price_uzs);
+        const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
 
         return (
           <div
@@ -109,45 +109,53 @@ export default function ProductsPage({ category, producer, searchQuery, cart, on
                 <div className="text-xs text-tg-hint mt-0.5">
                   {product.unit}{product.weight ? ` · ${product.weight} kg` : ''}
                 </div>
-                <div className="text-sm font-semibold text-tg-link mt-1">
-                  {priceStr}
-                </div>
+                {approved ? (
+                  <div className="text-sm font-semibold text-tg-link mt-1">
+                    {priceStr}
+                  </div>
+                ) : (
+                  <div className="text-xs text-tg-hint mt-1 italic">
+                    Narxni bilish uchun bog'laning
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* Add/quantity controls */}
-            <div className="flex-shrink-0">
-              {inCart ? (
-                <div className="flex items-center gap-2 bg-tg-button rounded-lg px-2 py-1">
+            {/* Add/quantity controls — only for approved users */}
+            {approved && (
+              <div className="flex-shrink-0">
+                {inCart ? (
+                  <div className="flex items-center gap-2 bg-tg-button rounded-lg px-2 py-1">
+                    <button
+                      onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
+                      className="text-tg-button-text font-bold text-lg w-6 text-center"
+                    >
+                      −
+                    </button>
+                    <span className="text-tg-button-text text-sm font-semibold min-w-[20px] text-center">
+                      {inCart.quantity}
+                    </span>
+                    <button
+                      onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
+                      className="text-tg-button-text font-bold text-lg w-6 text-center"
+                    >
+                      +
+                    </button>
+                  </div>
+                ) : (
                   <button
-                    onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
-                    className="text-tg-button-text font-bold text-lg w-6 text-center"
+                    onClick={() => cart.addItem({
+                      ...product,
+                      price: getPriceValue(product.price_usd, product.price_uzs),
+                      currency: getPriceCurrency(product.price_usd, product.price_uzs),
+                    })}
+                    className="bg-tg-button text-tg-button-text text-xs font-medium rounded-lg px-3 py-2 active:scale-95 transition-transform"
                   >
-                    −
+                    + {t.add_to_cart}
                   </button>
-                  <span className="text-tg-button-text text-sm font-semibold min-w-[20px] text-center">
-                    {inCart.quantity}
-                  </span>
-                  <button
-                    onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
-                    className="text-tg-button-text font-bold text-lg w-6 text-center"
-                  >
-                    +
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={() => cart.addItem({
-                    ...product,
-                    price: getPriceValue(product.price_usd, product.price_uzs),
-                    currency: getPriceCurrency(product.price_usd, product.price_uzs),
-                  })}
-                  className="bg-tg-button text-tg-button-text text-xs font-medium rounded-lg px-3 py-2 active:scale-95 transition-transform"
-                >
-                  + {t.add_to_cart}
-                </button>
-              )}
-            </div>
+                )}
+              </div>
+            )}
           </div>
         );
       })}

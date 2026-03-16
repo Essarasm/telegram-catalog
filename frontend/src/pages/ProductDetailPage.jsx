@@ -1,10 +1,10 @@
 import { getImageUrl, formatPrice } from '../utils/api';
 import t from '../i18n/uz.json';
 
-export default function ProductDetailPage({ product, producer, cart, onBack }) {
+export default function ProductDetailPage({ product, producer, cart, approved, onBack }) {
   const imgUrl = getImageUrl(product);
   const displayName = product.name_display || product.name;
-  const priceStr = formatPrice(product.price_usd, product.price_uzs);
+  const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
   const inCart = cart.items.find(i => i.id === product.id);
 
   const getPriceValue = () => {
@@ -45,44 +45,62 @@ export default function ProductDetailPage({ product, producer, cart, onBack }) {
         {product.weight ? <span>{product.weight} kg</span> : null}
       </div>
 
-      {/* Price */}
-      <div className="text-2xl font-bold text-tg-link">
-        {priceStr}
-      </div>
-
-      {/* Add to cart / quantity controls */}
-      <div className="pt-2">
-        {inCart ? (
-          <div className="flex items-center justify-center gap-4 bg-tg-secondary rounded-xl py-3">
-            <button
-              onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
-              className="bg-tg-button text-tg-button-text font-bold text-xl w-10 h-10 rounded-full flex items-center justify-center"
-            >
-              −
-            </button>
-            <span className="text-xl font-semibold min-w-[40px] text-center">
-              {inCart.quantity}
-            </span>
-            <button
-              onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
-              className="bg-tg-button text-tg-button-text font-bold text-xl w-10 h-10 rounded-full flex items-center justify-center"
-            >
-              +
-            </button>
+      {/* Price or contact message */}
+      {approved ? (
+        <div className="text-2xl font-bold text-tg-link">
+          {priceStr}
+        </div>
+      ) : (
+        <div className="bg-tg-secondary rounded-xl p-4 text-center">
+          <div className="text-sm text-tg-hint">
+            Narxlarni ko'rish uchun ro'yxatdan o'ting
           </div>
-        ) : (
-          <button
-            onClick={() => cart.addItem({
-              ...product,
-              price: getPriceValue(),
-              currency: getCurrency(),
-            })}
-            className="w-full bg-tg-button text-tg-button-text font-semibold rounded-xl py-3 text-base active:scale-[0.98] transition-transform"
+          <a
+            href="https://t.me/axmatov0902"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-block mt-2 text-tg-link text-sm font-medium"
           >
-            + {t.add_to_cart}
-          </button>
-        )}
-      </div>
+            Telegram orqali bog'lanish →
+          </a>
+        </div>
+      )}
+
+      {/* Add to cart / quantity controls — only for approved */}
+      {approved && (
+        <div className="pt-2">
+          {inCart ? (
+            <div className="flex items-center justify-center gap-4 bg-tg-secondary rounded-xl py-3">
+              <button
+                onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
+                className="bg-tg-button text-tg-button-text font-bold text-xl w-10 h-10 rounded-full flex items-center justify-center"
+              >
+                −
+              </button>
+              <span className="text-xl font-semibold min-w-[40px] text-center">
+                {inCart.quantity}
+              </span>
+              <button
+                onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
+                className="bg-tg-button text-tg-button-text font-bold text-xl w-10 h-10 rounded-full flex items-center justify-center"
+              >
+                +
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => cart.addItem({
+                ...product,
+                price: getPriceValue(),
+                currency: getCurrency(),
+              })}
+              className="w-full bg-tg-button text-tg-button-text font-semibold rounded-xl py-3 text-base active:scale-[0.98] transition-transform"
+            >
+              + {t.add_to_cart}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

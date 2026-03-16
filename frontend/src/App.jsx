@@ -6,10 +6,9 @@ import ProductsPage from './pages/ProductsPage';
 import CartPage from './pages/CartPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
-import NotApprovedPage from './pages/NotApprovedPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -23,24 +22,25 @@ export default function App() {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [appError, setAppError] = useState(null);
   const [registered, setRegistered] = useState(null); // null = checking, true/false
-  const [approved, setApproved] = useState(null); // null = unknown, true/false
+  const [approved, setApproved] = useState(false); // false = no prices, true = full access
   const cart = useCart();
 
   // Check registration on mount
   useEffect(() => {
     const uid = getTelegramUserId();
     if (!uid) {
-      // Outside Telegram — skip registration gate
+      // Outside Telegram — skip registration gate, show prices for dev
       setRegistered(true);
+      setApproved(true);
       return;
     }
     fetch(`/api/users/check?telegram_id=${uid}`)
       .then(r => r.json())
       .then(data => {
         setRegistered(data.registered);
-        setApproved(data.approved);
+        setApproved(data.approved || false);
       })
-      .catch(() => { setRegistered(true); setApproved(true); }); // on error, let them in
+      .catch(() => { setRegistered(true); setApproved(false); });
   }, []);
 
   const navigateTo = (p, data) => {
@@ -107,7 +107,7 @@ export default function App() {
     );
   }
 
-  // Registration gate
+  // Registration gate — only phone is required
   if (registered === false) {
     return (
       <div className="min-h-screen bg-tg-bg text-tg-text">
@@ -119,15 +119,7 @@ export default function App() {
     );
   }
 
-  // Whitelist check — registered but not approved
-  if (approved === false) {
-    return (
-      <div className="min-h-screen bg-tg-bg text-tg-text">
-        <NotApprovedPage />
-      </div>
-    );
-  }
-
+  // Everyone gets into the catalog — approved prop controls price visibility
   return (
     <div className="min-h-screen bg-tg-bg text-tg-text pb-20">
       {/* Top bar */}
@@ -141,17 +133,19 @@ export default function App() {
           <h1 className="text-base font-semibold flex-1 text-center truncate">
             {getTitle()}
           </h1>
-          <button
-            onClick={() => navigateTo('cart')}
-            className="relative text-xl ml-2"
-          >
-            🛒
-            {cart.totalCount > 0 && (
-              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                {cart.totalCount}
-              </span>
-            )}
-          </button>
+          {approved && (
+            <button
+              onClick={() => navigateTo('cart')}
+              className="relative text-xl ml-2"
+            >
+              🛒
+              {cart.totalCount > 0 && (
+                <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                  {cart.totalCount}
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </header>
 
@@ -183,6 +177,7 @@ export default function App() {
             producer={selectedProducer}
             searchQuery={searchQuery}
             cart={cart}
+            approved={approved}
             onSelectProduct={(product) => navigateTo('product_detail', product)}
           />
         )}
@@ -191,11 +186,12 @@ export default function App() {
             product={selectedProduct}
             producer={selectedProducer}
             cart={cart}
+            approved={approved}
             onBack={goBack}
           />
         )}
         {page === 'cart' && (
-          <CartPage cart={cart} />
+          <CartPage cart={cart} approved={approved} />
         )}
       </main>
     </div>
