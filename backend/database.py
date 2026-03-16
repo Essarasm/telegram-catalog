@@ -62,6 +62,20 @@ def init_db():
             registered_at TEXT DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS allowed_clients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phone_normalized TEXT NOT NULL,
+            name TEXT,
+            location TEXT,
+            source_sheet TEXT,
+            status TEXT DEFAULT 'active',
+            matched_telegram_id INTEGER,
+            credit_score INTEGER,
+            credit_limit REAL,
+            notes TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_allowed_phone ON allowed_clients(phone_normalized);
+
         CREATE TABLE IF NOT EXISTS cart_items (
             user_id INTEGER NOT NULL,
             product_id INTEGER NOT NULL,
@@ -75,7 +89,9 @@ def init_db():
 
     # Migrations: add columns if missing (safe for existing DBs)
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
-    for col, coltype in [("latitude", "REAL"), ("longitude", "REAL")]:
+    for col, coltype in [("latitude", "REAL"), ("longitude", "REAL"),
+                          ("is_approved", "INTEGER DEFAULT 0"),
+                          ("client_id", "INTEGER")]:
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {coltype}")
     conn.commit()

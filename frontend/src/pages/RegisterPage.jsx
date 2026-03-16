@@ -96,7 +96,7 @@ export default function RegisterPage({ onRegistered }) {
           setStatusText("Ma'lumotlar saqlanmoqda...");
           return saveToServer({ ...userData, latitude: lat, longitude: lng });
         })
-        .then(() => onRegistered())
+        .then((result) => onRegistered(result?.approved ?? false))
         .catch(() => {
           setError("Joylashuvni yuborish majburiy. Iltimos, qayta urinib ko'ring.");
           setLoading(false);

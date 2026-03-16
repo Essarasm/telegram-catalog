@@ -6,9 +6,10 @@ import ProductsPage from './pages/ProductsPage';
 import CartPage from './pages/CartPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
+import NotApprovedPage from './pages/NotApprovedPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -22,6 +23,7 @@ export default function App() {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [appError, setAppError] = useState(null);
   const [registered, setRegistered] = useState(null); // null = checking, true/false
+  const [approved, setApproved] = useState(null); // null = unknown, true/false
   const cart = useCart();
 
   // Check registration on mount
@@ -34,8 +36,11 @@ export default function App() {
     }
     fetch(`/api/users/check?telegram_id=${uid}`)
       .then(r => r.json())
-      .then(data => setRegistered(data.registered))
-      .catch(() => setRegistered(true)); // on error, let them in
+      .then(data => {
+        setRegistered(data.registered);
+        setApproved(data.approved);
+      })
+      .catch(() => { setRegistered(true); setApproved(true); }); // on error, let them in
   }, []);
 
   const navigateTo = (p, data) => {
@@ -106,7 +111,19 @@ export default function App() {
   if (registered === false) {
     return (
       <div className="min-h-screen bg-tg-bg text-tg-text">
-        <RegisterPage onRegistered={() => setRegistered(true)} />
+        <RegisterPage onRegistered={(isApproved) => {
+          setRegistered(true);
+          setApproved(isApproved);
+        }} />
+      </div>
+    );
+  }
+
+  // Whitelist check — registered but not approved
+  if (approved === false) {
+    return (
+      <div className="min-h-screen bg-tg-bg text-tg-text">
+        <NotApprovedPage />
       </div>
     );
   }
