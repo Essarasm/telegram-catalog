@@ -55,8 +55,33 @@ def import_clients():
 
     conn.commit()
     total = conn.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0]
+
+    # Retroactively approve existing registered users whose phone matches whitelist
+    existing_users = conn.execute(
+        "SELECT telegram_id, phone FROM users WHERE phone IS NOT NULL"
+    ).fetchall()
+    approved_count = 0
+    for u in existing_users:
+        phone_norm = normalize_phone(u[1])
+        match = conn.execute(
+            "SELECT id FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+            (phone_norm,),
+        ).fetchone()
+        if match:
+            conn.execute(
+                "UPDATE users SET is_approved = 1, client_id = ? WHERE telegram_id = ?",
+                (match[0], u[0]),
+            )
+            approved_count += 1
+
+    # Set is_approved to 0 for any NULL values (from migration)
+    conn.execute("UPDATE users SET is_approved = 0 WHERE is_approved IS NULL")
+    conn.commit()
     conn.close()
+
     print(f"[import_clients] Inserted {rows_inserted} new phones. Total: {total}")
+    if approved_count:
+        print(f"[import_clients] Retroactively approved {approved_count} existing users.")
 
 
 if __name__ == "__main__":
