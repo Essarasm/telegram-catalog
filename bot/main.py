@@ -298,6 +298,85 @@ async def cmd_list(message: types.Message):
     await message.reply("\n".join(lines), parse_mode="HTML")
 
 
+@dp.message(Command("prices"))
+async def cmd_prices(message: types.Message):
+    """Update prices from an Excel file. Reply to a document with /prices."""
+    if not is_admin(message):
+        return
+
+    # Check if replying to a document
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "1. Excel faylni guruhga yuboring\n"
+            "2. Faylga javob sifatida /prices yozing\n\n"
+            "Yoki faylni /prices caption bilan yuboring.",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.endswith(('.xlsx', '.xls')):
+        await message.reply("❌ Faqat Excel (.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply("⏳ Narxlar yangilanmoqda...")
+
+    try:
+        import httpx
+
+        # Download file from Telegram
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        # Send to our API
+        api_url = f"{_BASE_URL}/api/products/update-prices"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        lines = [
+            "✅ <b>Narxlar yangilandi!</b>\n",
+            f"📊 Excel: {result['excel_products']} ta mahsulot",
+            f"🗄 Baza: {result['db_products']} ta mahsulot",
+            f"🔗 Mos kelgan: {result['matched']}",
+            f"✏️ O'zgartirilgan: {result['updated']}",
+        ]
+
+        if result['changes']:
+            lines.append("\n<b>O'zgarishlar:</b>")
+            for c in result['changes'][:20]:
+                old = c['old_usd']
+                new = c['new_usd']
+                arrow = "📈" if new > old else "📉"
+                lines.append(f"{arrow} {c['name']}: ${old:.2f} → ${new:.2f}")
+            if len(result['changes']) > 20:
+                lines.append(f"... va yana {len(result['changes']) - 20} ta")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Price update error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
+
+
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     """Show available admin commands."""
@@ -309,10 +388,25 @@ async def cmd_help(message: types.Message):
         "Foydalanuvchini tasdiqlash\n\n"
         "<b>/list</b>\n"
         "Tasdiqlanmaganlar ro'yxati\n\n"
+        "<b>/prices</b> (reply to Excel file)\n"
+        "Narxlarni yangilash\n\n"
         "<b>/chatid</b>\n"
         "Chat va User ID ko'rish",
         parse_mode="HTML",
     )
+
+
+# ───────────────────────────────────────────
+# Handle document uploads with /prices caption
+# ───────────────────────────────────────────
+
+@dp.message(F.document & F.caption.startswith("/prices"))
+async def handle_prices_document(message: types.Message):
+    """Handle Excel file sent with /prices as caption."""
+    if not is_admin(message):
+        return
+    # Reuse the prices command handler
+    await cmd_prices(message)
 
 
 # ───────────────────────────────────────────
