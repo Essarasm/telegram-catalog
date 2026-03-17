@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl } from '../utils/api';
 import t from '../i18n/uz.json';
 
-const WHOLESALE_QTYS = [1, 5, 10, 25, 50, 100];
+const WHOLESALE_QTYS = [6, 12, 15, 25, 36, 50];
 
 export default function ProductsPage({ category, producer, searchQuery, cart, approved, onSelectProduct }) {
   const [products, setProducts] = useState([]);

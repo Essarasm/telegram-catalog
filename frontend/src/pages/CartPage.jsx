@@ -3,7 +3,7 @@ import { formatCartPrice } from '../utils/api';
 import t from '../i18n/uz.json';
 
 const API_BASE = '/api';
-const QUICK_QTYS = [1, 5, 10, 25, 50, 100];
+const QUICK_QTYS = [6, 12, 15, 25, 36, 50];
 
 export default function CartPage({ cart }) {
   const [exporting, setExporting] = useState(false);
