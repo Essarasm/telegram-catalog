@@ -6,8 +6,29 @@ from typing import Optional
 from backend.database import get_db
 from backend.services.notify_registration import send_registration_notification
 from backend.services.backup_users import save_user_to_backup
+import json
+import os
 import re
 import threading
+
+# Load always-approved IDs from multiple sources (belt + suspenders):
+# 1. ALWAYS_APPROVED_IDS env var on Railway (most reliable — survives everything)
+# 2. approved_overrides.json in the repo (committed to git = permanent)
+_ALWAYS_APPROVED = set()
+
+# Source 1: Environment variable (comma-separated telegram IDs)
+_env_ids = os.getenv("ALWAYS_APPROVED_IDS", "")
+if _env_ids:
+    _ALWAYS_APPROVED = {int(x.strip()) for x in _env_ids.split(",") if x.strip().isdigit()}
+
+# Source 2: JSON file in repo
+_OVERRIDES_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'approved_overrides.json')
+try:
+    with open(_OVERRIDES_PATH, 'r') as _f:
+        _data = json.load(_f)
+        _ALWAYS_APPROVED |= set(_data.get('always_approved_ids', []))
+except Exception:
+    pass
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -39,9 +60,21 @@ def check_user(telegram_id: int = Query(...)):
     conn.close()
 
     if not row or not row["phone"]:
-        return {"registered": False, "approved": False}
+        # Even if not in DB, check hardcoded overrides
+        override = telegram_id in _ALWAYS_APPROVED
+        return {"registered": False, "approved": override}
 
-    is_approved = bool(row["is_approved"])
+    is_approved = bool(row["is_approved"]) or (telegram_id in _ALWAYS_APPROVED)
+
+    # If override says approved but DB doesn't, fix the DB
+    if telegram_id in _ALWAYS_APPROVED and not row["is_approved"]:
+        try:
+            conn2 = get_db()
+            conn2.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = ?", (telegram_id,))
+            conn2.commit()
+            conn2.close()
+        except Exception:
+            pass
 
     if is_approved:
         return {"registered": True, "approved": True, "phone": row["phone"], "first_name": row["first_name"]}
@@ -61,7 +94,7 @@ def register_user(user: UserRegister):
         (phone_norm,),
     ).fetchone()
 
-    is_approved = 1 if client_row else 0
+    is_approved = 1 if (client_row or user.telegram_id in _ALWAYS_APPROVED) else 0
     client_id = client_row["id"] if client_row else None
     client_name = client_row["name"] if client_row else None
 

@@ -1,6 +1,7 @@
 """Telegram bot with Mini App integration and admin commands."""
 import os
 import re
+import json
 import asyncio
 import logging
 from dotenv import load_dotenv
@@ -253,6 +254,35 @@ async def cmd_approve(message: types.Message):
 
     conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?", (client_id, telegram_id))
     conn.commit()
+
+    # Persist to JSON backup (survives volume issues)
+    try:
+        from backend.services.backup_users import save_user_to_backup
+        row = conn.execute(
+            "SELECT telegram_id, phone, first_name, last_name, username, latitude, longitude, is_approved, client_id, registered_at FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        if row:
+            save_user_to_backup(dict(row))
+    except Exception as e:
+        logging.warning(f"backup after /approve failed: {e}")
+
+    # Also add to approved_overrides.json in the repo (ultimate failsafe)
+    try:
+        overrides_path = os.path.join(os.path.dirname(__file__), '..', 'approved_overrides.json')
+        overrides = {"always_approved_ids": []}
+        if os.path.exists(overrides_path):
+            with open(overrides_path, 'r') as f:
+                overrides = json.load(f)
+        ids = set(overrides.get('always_approved_ids', []))
+        if telegram_id not in ids:
+            ids.add(telegram_id)
+            overrides['always_approved_ids'] = sorted(ids)
+            with open(overrides_path, 'w') as f:
+                json.dump(overrides, f, indent=2)
+    except Exception as e:
+        logging.warning(f"overrides update failed: {e}")
+
     conn.close()
 
     await message.reply(

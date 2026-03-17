@@ -1,0 +1,4 @@
+{
+  "_comment": "Telegram IDs that should ALWAYS be approved, regardless of DB state. This file lives in the git repo so it survives any Railway volume wipe.",
+  "always_approved_ids": []
+}

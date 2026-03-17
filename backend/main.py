@@ -41,6 +41,51 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/debug/volume")
+def debug_volume():
+    """Diagnostic: check what exists on /data volume."""
+    import glob
+    data_files = []
+    try:
+        for f in glob.glob("/data/**", recursive=True):
+            try:
+                size = os.path.getsize(f) if os.path.isfile(f) else -1
+                data_files.append({"path": f, "size": size})
+            except Exception:
+                data_files.append({"path": f, "size": "error"})
+    except Exception as e:
+        data_files = [{"error": str(e)}]
+
+    backup_exists = os.path.exists("/data/users_backup.json")
+    db_exists = os.path.exists("/data/catalog.db")
+
+    # Check users in DB
+    users_count = 0
+    approved_count = 0
+    try:
+        from backend.database import get_db
+        conn = get_db()
+        users_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        approved_count = conn.execute("SELECT COUNT(*) FROM users WHERE is_approved = 1").fetchone()[0]
+        conn.close()
+    except Exception:
+        pass
+
+    # Check override sources
+    from backend.routers.users import _ALWAYS_APPROVED
+    env_ids = os.getenv("ALWAYS_APPROVED_IDS", "(not set)")
+
+    return {
+        "db_exists": db_exists,
+        "backup_exists": backup_exists,
+        "users_in_db": users_count,
+        "approved_in_db": approved_count,
+        "always_approved_ids": sorted(_ALWAYS_APPROVED),
+        "env_ALWAYS_APPROVED_IDS": env_ids,
+        "data_files": data_files,
+    }
+
+
 app.include_router(categories.router)
 app.include_router(products.router)
 app.include_router(export.router)
