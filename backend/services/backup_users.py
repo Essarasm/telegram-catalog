@@ -126,6 +126,37 @@ def restore():
     print(f"[backup_users] Restored {restored} users from backup.")
 
 
+def save_user_to_backup(user_dict):
+    """Immediately persist a single user to the backup file.
+
+    Call this after /register or /approve so the backup is always
+    up-to-date — not just at startup time.
+    """
+    try:
+        existing = []
+        if os.path.exists(BACKUP_PATH):
+            try:
+                with open(BACKUP_PATH, 'r') as f:
+                    existing = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                existing = []
+
+        merged = {u['telegram_id']: u for u in existing}
+        tid = user_dict.get('telegram_id')
+        if tid:
+            # If user already exists in backup, preserve is_approved=1
+            old = merged.get(tid, {})
+            old_approved = old.get('is_approved', 0) or 0
+            new_approved = user_dict.get('is_approved', 0) or 0
+            user_dict['is_approved'] = max(old_approved, new_approved)
+            merged[tid] = user_dict
+
+        with open(BACKUP_PATH, 'w') as f:
+            json.dump(list(merged.values()), f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[backup_users] save_user_to_backup error (non-fatal): {e}")
+
+
 if __name__ == "__main__":
     action = sys.argv[1] if len(sys.argv) > 1 else "backup"
     if action == "backup":

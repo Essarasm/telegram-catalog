@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
 from backend.services.notify_registration import send_registration_notification
+from backend.services.backup_users import save_user_to_backup
 import re
 import threading
 
@@ -90,6 +91,19 @@ def register_user(user: UserRegister):
     conn.commit()
     conn.close()
 
+    # Persist to JSON backup so approval survives deploys
+    save_user_to_backup({
+        'telegram_id': user.telegram_id,
+        'phone': user.phone,
+        'first_name': user.first_name,
+        'last_name': user.last_name or '',
+        'username': user.username or '',
+        'latitude': user.latitude,
+        'longitude': user.longitude,
+        'is_approved': is_approved,
+        'client_id': client_id,
+    })
+
     # Notify manager about new registration (non-blocking)
     try:
         threading.Thread(
@@ -124,8 +138,17 @@ def approve_user(telegram_id: int = Query(...), admin_key: str = Query(...)):
         return {"error": "Invalid admin key"}
     conn = get_db()
     conn.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = ?", (telegram_id,))
+    # Read full user row to persist to backup
+    row = conn.execute(
+        "SELECT telegram_id, phone, first_name, last_name, username, latitude, longitude, is_approved, client_id, registered_at FROM users WHERE telegram_id = ?",
+        (telegram_id,),
+    ).fetchone()
     conn.commit()
     conn.close()
+
+    if row:
+        save_user_to_backup(dict(row))
+
     return {"ok": True}
 
 
