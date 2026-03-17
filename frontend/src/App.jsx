@@ -8,10 +8,51 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v16.2';
+const APP_VERSION = 'v16.3';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
+}
+
+// ── Telegram CloudStorage helpers ──
+// Persist registration data client-side so users don't need to
+// re-register when the server DB is wiped during deployments.
+function cloudSave(key, data) {
+  try {
+    window.Telegram?.WebApp?.CloudStorage?.setItem(key, JSON.stringify(data));
+  } catch (e) { /* CloudStorage not available */ }
+}
+
+function cloudLoad(key) {
+  return new Promise((resolve) => {
+    try {
+      const cs = window.Telegram?.WebApp?.CloudStorage;
+      if (!cs) return resolve(null);
+      cs.getItem(key, (err, val) => {
+        if (err || !val) return resolve(null);
+        try { resolve(JSON.parse(val)); } catch { resolve(null); }
+      });
+    } catch { resolve(null); }
+  });
+}
+
+async function silentReRegister(uid) {
+  const cached = await cloudLoad('reg_data');
+  if (!cached || !cached.phone) return null;
+  try {
+    const res = await fetch('/api/users/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        telegram_id: uid,
+        phone: cached.phone,
+        first_name: cached.firstName || '',
+        last_name: cached.lastName || '',
+        username: cached.username || '',
+      }),
+    });
+    return await res.json();
+  } catch { return null; }
 }
 
 export default function App() {
@@ -45,11 +86,35 @@ export default function App() {
       setApproved(true);
       return;
     }
+
+    // Check server first, then fall back to CloudStorage cache
     fetch(`/api/users/check?telegram_id=${uid}`)
       .then(r => r.json())
-      .then(data => {
-        setRegistered(data.registered);
-        setApproved(data.approved || false);
+      .then(async (data) => {
+        if (data.registered) {
+          // Server recognizes user — cache to CloudStorage for future resilience
+          if (data.phone) {
+            cloudSave('reg_data', {
+              phone: data.phone,
+              firstName: data.first_name || '',
+              lastName: '',
+              username: '',
+            });
+          }
+          setRegistered(true);
+          setApproved(data.approved || false);
+        } else {
+          // Server lost user data — try silent re-registration from cache
+          const result = await silentReRegister(uid);
+          if (result && result.ok) {
+            setRegistered(true);
+            setApproved(result.approved || false);
+          } else {
+            // No cache or re-register failed — show RegisterPage
+            setRegistered(false);
+            setApproved(false);
+          }
+        }
       })
       .catch(() => { setRegistered(true); setApproved(false); });
   }, []);

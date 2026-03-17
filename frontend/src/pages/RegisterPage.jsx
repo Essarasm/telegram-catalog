@@ -1,5 +1,12 @@
 import { useState } from 'react';
 
+// Cache registration data in Telegram CloudStorage for auto-restore
+function cloudSave(key, data) {
+  try {
+    window.Telegram?.WebApp?.CloudStorage?.setItem(key, JSON.stringify(data));
+  } catch (e) { /* CloudStorage not available */ }
+}
+
 /**
  * Registration gate:
  * 1. Phone is required (one button tap via Telegram requestContact)
@@ -106,7 +113,15 @@ export default function RegisterPage({ onRegistered }) {
         setStatusText("Ma'lumotlar saqlanmoqda...");
         return saveToServer({ ...userData, latitude: lat, longitude: lng });
       })
-      .then((result) => onRegistered(result?.approved ?? false))
+      .then((result) => {
+        cloudSave('reg_data', {
+          phone: userData.phone,
+          firstName: userData.first_name || '',
+          lastName: userData.last_name || '',
+          username: userData.username || '',
+        });
+        onRegistered(result?.approved ?? false);
+      })
       .catch(() => {
         setError("Joylashuvni aniqlab bo'lmadi. Qayta urinib ko'ring yoki keyinroq yuboring.");
         setLoading(false);
@@ -120,7 +135,15 @@ export default function RegisterPage({ onRegistered }) {
     setStatusText("Ma'lumotlar saqlanmoqda...");
 
     saveToServer(userData)
-      .then((result) => onRegistered(result?.approved ?? false))
+      .then((result) => {
+        cloudSave('reg_data', {
+          phone: userData.phone,
+          firstName: userData.first_name || '',
+          lastName: userData.last_name || '',
+          username: userData.username || '',
+        });
+        onRegistered(result?.approved ?? false);
+      })
       .catch(() => {
         setError("Xatolik yuz berdi. Qayta urinib ko'ring.");
         setLoading(false);
