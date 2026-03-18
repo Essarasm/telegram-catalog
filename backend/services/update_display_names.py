@@ -1,7 +1,7 @@
-"""Update product display names from Rassvet_Master.xlsx.
+"""Update product display names, weights, and categories from Rassvet_Master.xlsx.
 
-Reads the 'Katalog' sheet column A (ID) and column E (Ilovadagi nomi Latin)
-and updates the name_display field in the products table.
+Reads the 'Katalog' sheet and syncs name_display, weight, and category_id
+in the products table from the master spreadsheet.
 
 IMPORTANT: Excel IDs are 4881-7320 but DB IDs are 1-2440 (AUTOINCREMENT).
 The offset is 4880: DB_ID = EXCEL_ID - 4880.
@@ -46,6 +46,13 @@ def update_display_names():
         conn.close()
         return
 
+    # Build category name → id map from DB
+    cat_map = {}
+    for row in conn.execute("SELECT id, name FROM categories").fetchall():
+        cat_map[row[0]] = row[1]
+    # Reverse: name → id
+    cat_name_to_id = {v: k for k, v in cat_map.items()}
+
     print(f"update_display_names: Loading {path} (DB has {existing} products)...")
     wb = load_workbook(path, read_only=True, data_only=True)
     if 'Katalog' not in wb.sheetnames:
@@ -55,12 +62,16 @@ def update_display_names():
         return
 
     ws = wb['Katalog']
-    updated = 0
+    updated_names = 0
+    updated_weights = 0
+    updated_cats = 0
     skipped = 0
 
     for row in ws.iter_rows(min_row=2, values_only=True):
-        excel_id = row[0]   # Column A = Excel ID (4881-7320)
-        name = row[4]       # Column E = Ilovadagi nomi (Latin)
+        excel_id = row[0]       # Column A = Excel ID (4881-7320)
+        category = row[1]       # Column B = Category name
+        name = row[4]           # Column E = Ilovadagi nomi (Latin)
+        weight = row[10]        # Column K = Weight
         if excel_id is None or name is None:
             skipped += 1
             continue
@@ -70,7 +81,7 @@ def update_display_names():
             skipped += 1
             continue
 
-        db_id = excel_id - ID_OFFSET  # Convert: 4881 -> 1, 4882 -> 2, etc.
+        db_id = excel_id - ID_OFFSET
         if db_id < 1:
             skipped += 1
             continue
@@ -80,19 +91,41 @@ def update_display_names():
             skipped += 1
             continue
 
+        # Update name_display
         result = conn.execute(
             "UPDATE products SET name_display = ? WHERE id = ?",
             (name, db_id)
         )
         if result.rowcount > 0:
-            updated += 1
-        else:
-            skipped += 1
+            updated_names += 1
+
+        # Update weight if Excel has a value
+        if weight is not None:
+            try:
+                w = float(weight)
+                conn.execute(
+                    "UPDATE products SET weight = ? WHERE id = ?",
+                    (w, db_id)
+                )
+                updated_weights += 1
+            except (ValueError, TypeError):
+                pass
+
+        # Update category if it differs
+        if category and str(category).strip() in cat_name_to_id:
+            new_cat_id = cat_name_to_id[str(category).strip()]
+            conn.execute(
+                "UPDATE products SET category_id = ? WHERE id = ?",
+                (new_cat_id, db_id)
+            )
+            updated_cats += 1
 
     conn.commit()
     conn.close()
     wb.close()
-    print(f"update_display_names: Updated {updated} product names ({skipped} skipped).")
+    print(f"update_display_names: Updated {updated_names} names, "
+          f"{updated_weights} weights, {updated_cats} categories "
+          f"({skipped} skipped).")
 
 
 if __name__ == '__main__':
