@@ -3,6 +3,9 @@
 Reads the 'Katalog' sheet column A (ID) and column E (Ilovadagi nomi Latin)
 and updates the name_display field in the products table.
 
+IMPORTANT: Excel IDs are 4881-7320 but DB IDs are 1-2440 (AUTOINCREMENT).
+The offset is 4880: DB_ID = EXCEL_ID - 4880.
+
 This runs AFTER import_products to override auto-transliterated names
 with manually corrected Uzbek display names.
 """
@@ -12,6 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from openpyxl import load_workbook
 from backend.database import get_db, init_db
+
+ID_OFFSET = 4880  # Excel ID 4881 = DB ID 1
 
 MASTER_CANDIDATES = [
     os.path.join(os.path.dirname(__file__), '..', '..', 'Rassvet_Master.xlsx'),
@@ -41,7 +46,7 @@ def update_display_names():
         conn.close()
         return
 
-    print(f"update_display_names: Loading {path}...")
+    print(f"update_display_names: Loading {path} (DB has {existing} products)...")
     wb = load_workbook(path, read_only=True, data_only=True)
     if 'Katalog' not in wb.sheetnames:
         print("update_display_names: 'Katalog' sheet not found — skipping.")
@@ -54,14 +59,19 @@ def update_display_names():
     skipped = 0
 
     for row in ws.iter_rows(min_row=2, values_only=True):
-        pid = row[0]   # Column A = ID
-        name = row[4]  # Column E = Ilovadagi nomi (Latin)
-        if pid is None or name is None:
+        excel_id = row[0]   # Column A = Excel ID (4881-7320)
+        name = row[4]       # Column E = Ilovadagi nomi (Latin)
+        if excel_id is None or name is None:
             skipped += 1
             continue
         try:
-            pid = int(pid)
+            excel_id = int(excel_id)
         except (ValueError, TypeError):
+            skipped += 1
+            continue
+
+        db_id = excel_id - ID_OFFSET  # Convert: 4881 -> 1, 4882 -> 2, etc.
+        if db_id < 1:
             skipped += 1
             continue
 
@@ -72,10 +82,12 @@ def update_display_names():
 
         result = conn.execute(
             "UPDATE products SET name_display = ? WHERE id = ?",
-            (name, pid)
+            (name, db_id)
         )
         if result.rowcount > 0:
             updated += 1
+        else:
+            skipped += 1
 
     conn.commit()
     conn.close()
