@@ -8,7 +8,7 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v16.8';
+const APP_VERSION = 'v16.9';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
