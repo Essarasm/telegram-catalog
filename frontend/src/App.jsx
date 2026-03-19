@@ -292,32 +292,59 @@ export default function App() {
             onSelectProducer={(prod) => navigateTo('products', prod)}
           />
         )}
-        {/* Keep ProductsPage mounted when viewing detail to preserve scroll */}
         {(page === 'products' || page === 'product_detail') && (
-          <div style={{ display: page === 'products' ? 'block' : 'none' }}>
-            <ProductsPage
-              category={selectedCategory}
-              producer={selectedProducer}
-              searchQuery={searchQuery}
-              cart={cart}
-              approved={approved}
-              onSelectProduct={(product) => navigateTo('product_detail', product)}
-            />
-          </div>
-        )}
-        {page === 'product_detail' && selectedProduct && (
-          <ProductDetailPage
-            product={selectedProduct}
+          <ProductsPage
+            category={selectedCategory}
             producer={selectedProducer}
+            searchQuery={searchQuery}
             cart={cart}
             approved={approved}
-            onBack={goBack}
+            onSelectProduct={(product) => navigateTo('product_detail', product)}
           />
         )}
         {page === 'cart' && (
           <CartPage cart={cart} approved={approved} />
         )}
       </main>
+
+      {/* Product detail as full-screen overlay — preserves scroll position underneath */}
+      {page === 'product_detail' && selectedProduct && (
+        <div className="fixed inset-0 z-[90] bg-tg-bg overflow-y-auto">
+          {/* Overlay header with back button */}
+          <header className="sticky top-0 z-50 bg-tg-bg border-b border-tg-hint/20">
+            <div className="flex items-center justify-between h-11 px-4">
+              <button onClick={goBack} className="text-tg-link text-sm font-medium mr-3">
+                ← Orqaga
+              </button>
+              <h1 className="text-base font-semibold truncate flex-1">
+                {selectedProducer?.name || t.all_products}
+              </h1>
+              {approved && (
+                <button
+                  onClick={() => navigateTo('cart')}
+                  className="relative text-xl ml-3 p-1"
+                >
+                  🛒
+                  {cart.totalCount > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                      {cart.totalCount}
+                    </span>
+                  )}
+                </button>
+              )}
+            </div>
+          </header>
+          <div className="px-3 py-3">
+            <ProductDetailPage
+              product={selectedProduct}
+              producer={selectedProducer}
+              cart={cart}
+              approved={approved}
+              onBack={goBack}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
