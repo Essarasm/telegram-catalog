@@ -8,7 +8,7 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import t from './i18n/uz.json';
 
-const APP_VERSION = 'v16.9';
+const APP_VERSION = 'v17.0';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -292,15 +292,18 @@ export default function App() {
             onSelectProducer={(prod) => navigateTo('products', prod)}
           />
         )}
-        {page === 'products' && (
-          <ProductsPage
-            category={selectedCategory}
-            producer={selectedProducer}
-            searchQuery={searchQuery}
-            cart={cart}
-            approved={approved}
-            onSelectProduct={(product) => navigateTo('product_detail', product)}
-          />
+        {/* Keep ProductsPage mounted when viewing detail to preserve scroll */}
+        {(page === 'products' || page === 'product_detail') && (
+          <div style={{ display: page === 'products' ? 'block' : 'none' }}>
+            <ProductsPage
+              category={selectedCategory}
+              producer={selectedProducer}
+              searchQuery={searchQuery}
+              cart={cart}
+              approved={approved}
+              onSelectProduct={(product) => navigateTo('product_detail', product)}
+            />
+          </div>
         )}
         {page === 'product_detail' && selectedProduct && (
           <ProductDetailPage
