@@ -1,8 +1,9 @@
 import uuid
+import os
 import time
-import threading
+import glob
 from fastapi import APIRouter
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from backend.database import get_db
@@ -11,17 +12,25 @@ from backend.services.notify_group import send_order_to_group
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
-# Temporary file store for Android download links (auto-expires after 5 min)
-_temp_files = {}  # token -> {data, media_type, filename, created}
-_TEMP_TTL = 300   # 5 minutes
+# Persistent temp directory on Railway volume (survives restarts & worker switches)
+EXPORT_DIR = os.environ.get("EXPORT_DIR", "/data/exports")
+EXPORT_TTL = 1800  # 30 minutes
 
 
-def _cleanup_temp():
-    """Remove expired temp files."""
+def _ensure_dir():
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+
+
+def _cleanup_exports():
+    """Remove expired export files."""
+    _ensure_dir()
     now = time.time()
-    expired = [k for k, v in _temp_files.items() if now - v["created"] > _TEMP_TTL]
-    for k in expired:
-        del _temp_files[k]
+    for f in glob.glob(os.path.join(EXPORT_DIR, "*")):
+        try:
+            if now - os.path.getmtime(f) > EXPORT_TTL:
+                os.remove(f)
+        except OSError:
+            pass
 
 
 class CartItem(BaseModel):
@@ -107,15 +116,14 @@ def export_order(req: ExportRequest):
         media_type = "application/pdf"
         filename = "buyurtma.pdf"
 
-    # Store a temp copy for Android download via GET link
-    _cleanup_temp()
+    # Save to persistent disk for Android download via GET link
+    _cleanup_exports()
+    _ensure_dir()
     token = uuid.uuid4().hex[:12]
-    _temp_files[token] = {
-        "data": data,
-        "media_type": media_type,
-        "filename": filename,
-        "created": time.time(),
-    }
+    ext = "xlsx" if req.format == "xlsx" else "pdf"
+    filepath = os.path.join(EXPORT_DIR, f"{token}.{ext}")
+    with open(filepath, "wb") as f:
+        f.write(data)
 
     return Response(
         content=data,
@@ -129,13 +137,21 @@ def export_order(req: ExportRequest):
 
 @router.get("/download/{token}")
 def download_temp(token: str):
-    """Serve a temporary file by token (used for Android Telegram WebView)."""
-    _cleanup_temp()
-    entry = _temp_files.pop(token, None)
-    if not entry:
-        return Response(content="Link expired or not found", status_code=404)
-    return Response(
-        content=entry["data"],
-        media_type=entry["media_type"],
-        headers={"Content-Disposition": f"inline; filename={entry['filename']}"},
-    )
+    """Serve a file by token from persistent disk (Android Telegram WebView)."""
+    _cleanup_exports()
+
+    # Try both extensions
+    for ext in ["pdf", "xlsx"]:
+        filepath = os.path.join(EXPORT_DIR, f"{token}.{ext}")
+        if os.path.exists(filepath):
+            filename = f"buyurtma.{ext}"
+            media_type = "application/pdf" if ext == "pdf" else \
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            return FileResponse(
+                filepath,
+                media_type=media_type,
+                filename=filename,
+                headers={"Content-Disposition": f"attachment; filename={filename}"},
+            )
+
+    return Response(content="Link expired or not found", status_code=404)
