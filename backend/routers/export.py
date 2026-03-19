@@ -98,12 +98,6 @@ def export_order(req: ExportRequest):
     # Always generate Excel for group notification
     excel_data = generate_excel(order_items, client_label)
 
-    # Send to sales group (best-effort)
-    try:
-        send_order_to_group(order_items, excel_data, client_label)
-    except Exception:
-        pass
-
     # Generate the file in user's chosen format
     if req.format == "xlsx":
         data = excel_data
@@ -114,14 +108,41 @@ def export_order(req: ExportRequest):
         media_type = "application/pdf"
         filename = "buyurtma.pdf"
 
-    # Try sending file to user's Telegram DM
+    # Send Excel to sales group (always, regardless of user format choice)
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        group_ok = send_order_to_group(order_items, excel_data, client_label)
+        if not group_ok:
+            logger.error("send_order_to_group returned False")
+    except Exception as e:
+        logger.error(f"send_order_to_group exception: {e}")
+
+    # Build detailed caption for user DM (same style as group message)
+    from datetime import datetime, timezone, timedelta
+    usd_items = [it for it in order_items if it.get("currency", "USD") == "USD"]
+    uzs_items = [it for it in order_items if it.get("currency", "USD") == "UZS"]
+    usd_total = sum(it["price"] * it["quantity"] for it in usd_items)
+    uzs_total = sum(it["price"] * it["quantity"] for it in uzs_items)
+    total_quantity = sum(it["quantity"] for it in order_items)
+
+    caption_lines = ["\u2705 <b>Buyurtmangiz tayyor!</b>", ""]
+    if client_label:
+        caption_lines.append(f"\U0001f464 Mijoz: <b>{client_label}</b>")
+    caption_lines.append(f"\U0001f4e6 Mahsulotlar: {len(order_items)} ta nomi, {total_quantity} ta dona")
+    caption_lines.append("")
+    if usd_total > 0:
+        caption_lines.append(f"\U0001f4b5 Jami (USD): <b>${usd_total:,.2f}</b>")
+    if uzs_total > 0:
+        caption_lines.append(f"\U0001f4b4 Jami (UZS): <b>{uzs_total:,.0f} so'm</b>")
+    caption = "\n".join(caption_lines)
+
+    # Send file to user's Telegram DM
     sent_to_telegram = False
     if req.telegram_id:
-        from datetime import datetime, timezone, timedelta
         timestamp = datetime.now(timezone(timedelta(hours=5))).strftime("%d_%m_%Y_%H%M")
         user_filename = f"buyurtma_{timestamp}.{req.format if req.format == 'xlsx' else 'pdf'}"
 
-        caption = f"\u2705 <b>Buyurtmangiz tayyor!</b>\n\n\U0001f4e6 {len(order_items)} ta mahsulot"
         sent_to_telegram = send_file_to_user(
             telegram_id=req.telegram_id,
             file_bytes=data,
