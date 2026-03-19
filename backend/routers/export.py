@@ -3,18 +3,17 @@ import os
 import time
 import glob
 from fastapi import APIRouter
-from fastapi.responses import Response, FileResponse
+from fastapi.responses import Response, FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from backend.database import get_db
 from backend.services.export_order import generate_pdf, generate_excel
-from backend.services.notify_group import send_order_to_group
+from backend.services.notify_group import send_order_to_group, send_file_to_user
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
-# Persistent temp directory on Railway volume (survives restarts & worker switches)
 EXPORT_DIR = os.environ.get("EXPORT_DIR", "/data/exports")
-EXPORT_TTL = 1800  # 30 minutes
+EXPORT_TTL = 1800
 
 
 def _ensure_dir():
@@ -22,7 +21,6 @@ def _ensure_dir():
 
 
 def _cleanup_exports():
-    """Remove expired export files."""
     _ensure_dir()
     now = time.time()
     for f in glob.glob(os.path.join(EXPORT_DIR, "*")):
@@ -40,13 +38,12 @@ class CartItem(BaseModel):
 
 class ExportRequest(BaseModel):
     items: List[CartItem]
-    format: str = "pdf"  # "pdf" or "xlsx"
+    format: str = "pdf"
     client_name: Optional[str] = ""
     telegram_id: Optional[int] = 0
 
 
 def _build_order_items(req: ExportRequest):
-    """Look up product details and build order items list."""
     conn = get_db()
 
     client_label = req.client_name or ""
@@ -96,17 +93,18 @@ def export_order(req: ExportRequest):
     order_items, client_label = _build_order_items(req)
 
     if not order_items:
-        return Response(content="No valid products in order", status_code=400)
+        return JSONResponse({"ok": False, "error": "No valid products in order"}, status_code=400)
 
     # Always generate Excel for group notification
     excel_data = generate_excel(order_items, client_label)
 
-    # Send order to Telegram sales managers group (non-blocking best-effort)
+    # Send to sales group (best-effort)
     try:
         send_order_to_group(order_items, excel_data, client_label)
     except Exception:
         pass
 
+    # Generate the file in user's chosen format
     if req.format == "xlsx":
         data = excel_data
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -116,7 +114,30 @@ def export_order(req: ExportRequest):
         media_type = "application/pdf"
         filename = "buyurtma.pdf"
 
-    # Save to persistent disk for Android download via GET link
+    # Try sending file to user's Telegram DM
+    sent_to_telegram = False
+    if req.telegram_id:
+        from datetime import datetime, timezone, timedelta
+        timestamp = datetime.now(timezone(timedelta(hours=5))).strftime("%d_%m_%Y_%H%M")
+        user_filename = f"buyurtma_{timestamp}.{req.format if req.format == 'xlsx' else 'pdf'}"
+
+        caption = f"\u2705 <b>Buyurtmangiz tayyor!</b>\n\n\U0001f4e6 {len(order_items)} ta mahsulot"
+        sent_to_telegram = send_file_to_user(
+            telegram_id=req.telegram_id,
+            file_bytes=data,
+            filename=user_filename,
+            media_type=media_type,
+            caption=caption,
+        )
+
+    # If bot DM worked, return JSON success (no file body needed)
+    if sent_to_telegram:
+        return JSONResponse({
+            "ok": True,
+            "sent_to_telegram": True,
+        })
+
+    # Fallback: save to disk for download link (Android browser method)
     _cleanup_exports()
     _ensure_dir()
     token = uuid.uuid4().hex[:12]
@@ -131,16 +152,14 @@ def export_order(req: ExportRequest):
         headers={
             "Content-Disposition": f"attachment; filename={filename}",
             "X-Download-Token": token,
+            "X-Sent-To-Telegram": "false",
         },
     )
 
 
 @router.get("/download/{token}")
 def download_temp(token: str):
-    """Serve a file by token from persistent disk (Android Telegram WebView)."""
     _cleanup_exports()
-
-    # Try both extensions
     for ext in ["pdf", "xlsx"]:
         filepath = os.path.join(EXPORT_DIR, f"{token}.{ext}")
         if os.path.exists(filepath):
@@ -153,5 +172,4 @@ def download_temp(token: str):
                 filename=filename,
                 headers={"Content-Disposition": f"attachment; filename={filename}"},
             )
-
     return Response(content="Link expired or not found", status_code=404)

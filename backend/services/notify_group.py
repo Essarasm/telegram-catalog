@@ -1,4 +1,4 @@
-"""Send order notifications to a Telegram group chat."""
+"""Send order notifications to Telegram — group chat and user DM."""
 import os
 import io
 import logging
@@ -17,44 +17,36 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
         logger.warning("ORDER_GROUP_CHAT_ID or BOT_TOKEN not set, skipping group notification")
         return False
 
-    # Build a summary message
     usd_items = [it for it in items if it.get("currency", "USD") == "USD"]
     uzs_items = [it for it in items if it.get("currency", "USD") == "UZS"]
-
     usd_total = sum(it["price"] * it["quantity"] for it in usd_items)
     uzs_total = sum(it["price"] * it["quantity"] for it in uzs_items)
     total_quantity = sum(it["quantity"] for it in items)
     unique_products = len(items)
 
-    lines = ["📋 <b>Yangi buyurtma!</b>", ""]
+    lines = ["\U0001f4cb <b>Yangi buyurtma!</b>", ""]
     if client_name:
-        lines.append(f"👤 Mijoz: <b>{client_name}</b>")
-    lines.append(f"📦 Mahsulotlar: {unique_products} ta nomi, {total_quantity} ta dona")
+        lines.append(f"\U0001f464 Mijoz: <b>{client_name}</b>")
+    lines.append(f"\U0001f4e6 Mahsulotlar: {unique_products} ta nomi, {total_quantity} ta dona")
     lines.append("")
     if usd_total > 0:
-        lines.append(f"💵 Jami (USD): <b>${usd_total:,.2f}</b>")
+        lines.append(f"\U0001f4b5 Jami (USD): <b>${usd_total:,.2f}</b>")
     if uzs_total > 0:
-        lines.append(f"💴 Jami (UZS): <b>{uzs_total:,.0f} so'm</b>")
+        lines.append(f"\U0001f4b4 Jami (UZS): <b>{uzs_total:,.0f} so'm</b>")
     lines.append("")
-    lines.append("📎 Excel fayl ilova qilingan")
+    lines.append("\U0001f4ce Excel fayl ilova qilingan")
 
     message_text = "\n".join(lines)
 
     try:
         api_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-        # Send the summary message
         httpx.post(
             f"{api_url}/sendMessage",
-            json={
-                "chat_id": ORDER_GROUP_CHAT_ID,
-                "text": message_text,
-                "parse_mode": "HTML",
-            },
+            json={"chat_id": ORDER_GROUP_CHAT_ID, "text": message_text, "parse_mode": "HTML"},
             timeout=10,
         )
 
-        # Send the Excel file
         from datetime import datetime, timezone, timedelta
         timestamp = datetime.now(timezone(timedelta(hours=5))).strftime("%d_%m_%Y_%H%M")
         filename = f"buyurtma_{client_name.replace(' ', '_') or 'noname'}_{timestamp}.xlsx"
@@ -62,7 +54,8 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
         httpx.post(
             f"{api_url}/sendDocument",
             data={"chat_id": ORDER_GROUP_CHAT_ID},
-            files={"document": (filename, io.BytesIO(excel_bytes), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            files={"document": (filename, io.BytesIO(excel_bytes),
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             timeout=15,
         )
 
@@ -71,4 +64,42 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
 
     except Exception as e:
         logger.error(f"Failed to send order to group: {e}")
+        return False
+
+
+def send_file_to_user(telegram_id: int, file_bytes: bytes, filename: str,
+                      media_type: str, caption: str = ""):
+    """Send a file to a user's Telegram DM via the bot.
+
+    Returns True if sent successfully, False otherwise.
+    """
+    if not BOT_TOKEN or not telegram_id:
+        logger.warning("BOT_TOKEN or telegram_id missing, cannot send to user")
+        return False
+
+    api_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+    try:
+        resp = httpx.post(
+            f"{api_url}/sendDocument",
+            data={
+                "chat_id": telegram_id,
+                "caption": caption,
+                "parse_mode": "HTML",
+            },
+            files={"document": (filename, io.BytesIO(file_bytes), media_type)},
+            timeout=20,
+        )
+        result = resp.json()
+
+        if result.get("ok"):
+            logger.info(f"File '{filename}' sent to user {telegram_id}")
+            return True
+        else:
+            error_desc = result.get("description", "unknown error")
+            logger.error(f"Failed to send file to user {telegram_id}: {error_desc}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Exception sending file to user {telegram_id}: {e}")
         return False

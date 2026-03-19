@@ -44,16 +44,28 @@ export default function CartPage({ cart }) {
         }),
       });
 
+      // Check if the backend sent the file via Telegram DM (JSON response)
+      const contentType = res.headers.get('Content-Type') || '';
+      if (contentType.includes('application/json')) {
+        const json = await res.json();
+        if (json.ok && json.sent_to_telegram) {
+          // File sent to user's Telegram DM — success!
+          setExported('telegram');
+          cart.clearCart();
+          setExporting(false);
+          return;
+        }
+      }
+
+      // Fallback: bot DM failed, use browser download
       const tgApp = window.Telegram?.WebApp;
       const downloadToken = res.headers.get('X-Download-Token');
 
-      // Android Telegram WebView: open a real server URL in system browser
       if (tgApp?.openLink && downloadToken) {
         const origin = window.location.origin;
         const downloadUrl = `${origin}${API_BASE}/export/download/${downloadToken}`;
         tgApp.openLink(downloadUrl);
       } else {
-        // Desktop / iOS — standard blob download
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -64,8 +76,7 @@ export default function CartPage({ cart }) {
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       }
-      setExported(true);
-      // Clear cart after successful export (report sent to sales group)
+      setExported('download');
       cart.clearCart();
     } catch (err) {
       console.error('Export failed:', err);
@@ -191,8 +202,17 @@ export default function CartPage({ cart }) {
       {/* Export buttons */}
       {exported ? (
         <div className="text-center py-4">
-          <div className="text-3xl mb-2">✅</div>
-          <div className="text-base font-medium">{t.order_ready}</div>
+          <div className="text-3xl mb-2">{exported === 'telegram' ? '✅' : '📥'}</div>
+          <div className="text-base font-medium">
+            {exported === 'telegram'
+              ? 'Hisobot Telegram chatga yuborildi!'
+              : t.order_ready}
+          </div>
+          {exported === 'telegram' && (
+            <div className="text-sm text-tg-hint mt-2">
+              Bot bilan chatni oching — fayl o'sha yerda
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
@@ -201,14 +221,14 @@ export default function CartPage({ cart }) {
             disabled={exporting}
             className="w-full bg-tg-button text-tg-button-text rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
           >
-            {exporting ? t.loading : `📄 ${t.download_pdf}`}
+            {exporting ? t.loading : '📄 Hisobot yuborish (PDF)'}
           </button>
           <button
             onClick={() => handleExport('xlsx')}
             disabled={exporting}
             className="w-full bg-green-600 text-white rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
           >
-            {exporting ? t.loading : `📊 ${t.download_excel}`}
+            {exporting ? t.loading : '📊 Hisobot yuborish (Excel)'}
           </button>
         </div>
       )}
