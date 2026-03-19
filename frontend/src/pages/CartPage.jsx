@@ -65,6 +65,8 @@ export default function CartPage({ cart }) {
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       }
       setExported(true);
+      // Clear cart after successful export (report sent to sales group)
+      cart.clearCart();
     } catch (err) {
       console.error('Export failed:', err);
     }
