@@ -421,9 +421,71 @@ async def cmd_help(message: types.Message):
         "<b>/prices</b> (reply to Excel file)\n"
         "Narxlarni yangilash\n\n"
         "<b>/chatid</b>\n"
-        "Chat va User ID ko'rish",
+        "Chat va User ID ko'rish\n\n"
+        "<b>/reports</b>\n"
+        "Oxirgi xatolik xabarlari va mahsulot so'rovlari",
         parse_mode="HTML",
     )
+
+
+@dp.message(Command("reports"))
+async def cmd_reports(message: types.Message):
+    """Show recent issue reports and product requests."""
+    if not is_admin(message):
+        return
+
+    conn = get_db()
+
+    # Recent issue reports
+    reports = conn.execute(
+        """SELECT r.id, p.name_display, p.name, r.report_type, r.note, r.created_at
+           FROM reports r
+           JOIN products p ON p.id = r.product_id
+           ORDER BY r.created_at DESC
+           LIMIT 10""",
+    ).fetchall()
+
+    # Recent product requests
+    requests = conn.execute(
+        """SELECT id, request_text, created_at
+           FROM product_requests
+           ORDER BY created_at DESC
+           LIMIT 10""",
+    ).fetchall()
+    conn.close()
+
+    type_labels = {
+        "wrong_photo": "📷 Rasm",
+        "wrong_price": "💰 Narx",
+        "wrong_name": "📝 Nom",
+        "wrong_category": "📂 Kategoriya",
+        "other": "❓ Boshqa",
+    }
+
+    lines = []
+
+    if reports:
+        lines.append(f"🚩 <b>Xatolik xabarlari ({len(reports)}):</b>\n")
+        for r in reports:
+            name = r["name_display"] or r["name"]
+            tl = type_labels.get(r["report_type"], r["report_type"])
+            line = f"#{r['id']} {tl} — {name}"
+            if r["note"]:
+                line += f"\n   💬 {r['note'][:60]}"
+            lines.append(line)
+    else:
+        lines.append("🚩 Xatolik xabarlari yo'q.")
+
+    lines.append("")
+
+    if requests:
+        lines.append(f"🔍 <b>Mahsulot so'rovlari ({len(requests)}):</b>\n")
+        for pr in requests:
+            lines.append(f"#{pr['id']} {pr['request_text'][:80]}")
+    else:
+        lines.append("🔍 Mahsulot so'rovlari yo'q.")
+
+    await message.reply("\n".join(lines), parse_mode="HTML")
 
 
 # ───────────────────────────────────────────

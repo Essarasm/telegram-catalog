@@ -1,12 +1,30 @@
 import { useState } from 'react';
-import { getImageUrl, formatPrice } from '../utils/api';
+import { getImageUrl, formatPrice, submitReport } from '../utils/api';
 import t from '../i18n/uz.json';
 
 const WHOLESALE_QTYS = [6, 12, 15, 25, 36, 50];
 
+const REPORT_TYPES = [
+  { key: 'wrong_photo', label: t.report_wrong_photo, icon: '📷' },
+  { key: 'wrong_price', label: t.report_wrong_price, icon: '💰' },
+  { key: 'wrong_name', label: t.report_wrong_name, icon: '📝' },
+  { key: 'wrong_category', label: t.report_wrong_category, icon: '📂' },
+  { key: 'other', label: t.report_other, icon: '❓' },
+];
+
+function getTelegramUserId() {
+  return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
+}
+
 export default function ProductDetailPage({ product, producer, cart, approved, onBack }) {
   const [showQtyPicker, setShowQtyPicker] = useState(false);
   const [customQty, setCustomQty] = useState('');
+  const [showReportSheet, setShowReportSheet] = useState(false);
+  const [selectedReportType, setSelectedReportType] = useState(null);
+  const [reportNote, setReportNote] = useState('');
+  const [reportSending, setReportSending] = useState(false);
+  const [reportSent, setReportSent] = useState(false);
+
   const imgUrl = getImageUrl(product);
   const displayName = product.name_display || product.name;
   const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
@@ -26,15 +44,50 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
     setShowQtyPicker(true);
   };
 
+  const handleReportSubmit = async () => {
+    if (!selectedReportType) return;
+    setReportSending(true);
+    try {
+      await submitReport({
+        productId: product.id,
+        telegramId: getTelegramUserId(),
+        reportType: selectedReportType,
+        note: reportNote.trim() || null,
+      });
+      setReportSent(true);
+      setTimeout(() => {
+        setShowReportSheet(false);
+        setReportSent(false);
+        setSelectedReportType(null);
+        setReportNote('');
+      }, 1500);
+    } catch (e) {
+      // silently fail — user sees no change
+    }
+    setReportSending(false);
+  };
+
   return (
     <div className="space-y-4">
-      {/* Large product image */}
-      <div className="w-full aspect-square bg-tg-secondary rounded-2xl overflow-hidden flex items-center justify-center">
+      {/* Large product image with flag button in top-right */}
+      <div className="relative w-full aspect-square bg-tg-secondary rounded-2xl overflow-hidden flex items-center justify-center">
         {imgUrl ? (
           <img src={imgUrl} alt={displayName} className="w-full h-full object-contain" />
         ) : (
           <span className="text-6xl opacity-20">📷</span>
         )}
+
+        {/* Flag / report issue button — top-right corner */}
+        <button
+          onClick={() => setShowReportSheet(true)}
+          className="absolute top-2 right-2 w-10 h-10 rounded-full bg-black/30 backdrop-blur-sm flex items-center justify-center active:bg-black/50 transition-colors"
+          title={t.report_issue}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
+            <line x1="4" y1="22" x2="4" y2="15" />
+          </svg>
+        </button>
       </div>
 
       {/* Producer badge */}
@@ -177,6 +230,79 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
             >
               O'chirish
             </button>
+          </div>
+        </>
+      )}
+
+      {/* Bottom-sheet: Report issue */}
+      {showReportSheet && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/40 z-[100]"
+            onClick={() => { if (!reportSending) { setShowReportSheet(false); setSelectedReportType(null); setReportNote(''); } }}
+          />
+          <div className="fixed bottom-0 left-0 right-0 z-[101] bg-tg-bg rounded-t-2xl p-5 pb-8 shadow-2xl"
+            style={{ maxHeight: '70vh' }}
+          >
+            <div className="w-10 h-1 bg-tg-hint/30 rounded-full mx-auto mb-4" />
+
+            {reportSent ? (
+              /* Success state */
+              <div className="text-center py-6">
+                <div className="text-3xl mb-3">✅</div>
+                <div className="text-base font-semibold">{t.report_sent}</div>
+                <div className="text-sm text-tg-hint mt-1">{t.report_thanks}</div>
+              </div>
+            ) : (
+              /* Report form */
+              <>
+                <div className="text-center mb-4">
+                  <div className="text-sm font-semibold">{t.report_issue}</div>
+                  <div className="text-xs text-tg-hint mt-1 truncate">{displayName}</div>
+                </div>
+
+                {/* Report type buttons */}
+                <div className="space-y-2 mb-4">
+                  {REPORT_TYPES.map(({ key, label, icon }) => (
+                    <button
+                      key={key}
+                      onClick={() => setSelectedReportType(key)}
+                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors ${
+                        selectedReportType === key
+                          ? 'bg-tg-button text-tg-button-text'
+                          : 'bg-tg-secondary text-tg-text active:bg-tg-button/20'
+                      }`}
+                    >
+                      <span className="text-base">{icon}</span>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Optional note */}
+                <textarea
+                  placeholder={t.report_note_placeholder}
+                  value={reportNote}
+                  onChange={(e) => setReportNote(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-xl px-4 py-3 text-sm outline-none border border-tg-hint/30 focus:border-tg-link resize-none mb-4"
+                  style={{ color: 'var(--tg-theme-text-color)', backgroundColor: 'var(--tg-theme-secondary-bg-color)' }}
+                />
+
+                {/* Submit button */}
+                <button
+                  onClick={handleReportSubmit}
+                  disabled={!selectedReportType || reportSending}
+                  className={`w-full rounded-xl py-3 text-base font-semibold transition-all ${
+                    selectedReportType && !reportSending
+                      ? 'bg-tg-button text-tg-button-text active:scale-[0.98]'
+                      : 'bg-tg-hint/20 text-tg-hint'
+                  }`}
+                >
+                  {reportSending ? t.loading : t.report_submit}
+                </button>
+              </>
+            )}
           </div>
         </>
       )}

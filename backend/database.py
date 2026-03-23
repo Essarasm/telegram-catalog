@@ -87,6 +87,28 @@ def init_db():
             PRIMARY KEY (user_id, product_id)
         );
         CREATE INDEX IF NOT EXISTS idx_cart_user ON cart_items(user_id);
+
+        CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            telegram_id INTEGER NOT NULL,
+            report_type TEXT NOT NULL DEFAULT 'other',
+            note TEXT,
+            status TEXT NOT NULL DEFAULT 'new',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reports_product ON reports(product_id);
+        CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
+
+        CREATE TABLE IF NOT EXISTS product_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            request_text TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'new',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_requests_status ON product_requests(status);
     """)
     conn.commit()
 

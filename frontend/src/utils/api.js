@@ -67,6 +67,32 @@ export function formatCartPrice(amount, currency) {
   return `$${Number(amount).toFixed(2)}`;
 }
 
+export async function submitReport({ productId, telegramId, reportType, note }) {
+  const res = await fetch(`${API_BASE}/reports`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      product_id: productId,
+      telegram_id: telegramId,
+      report_type: reportType,
+      note: note || null,
+    }),
+  });
+  return res.json();
+}
+
+export async function submitProductRequest({ telegramId, requestText }) {
+  const res = await fetch(`${API_BASE}/product-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      telegram_id: telegramId,
+      request_text: requestText,
+    }),
+  });
+  return res.json();
+}
+
 export function getImageUrl(product) {
   if (product.image_path) {
     return `/images/${product.image_path}`;

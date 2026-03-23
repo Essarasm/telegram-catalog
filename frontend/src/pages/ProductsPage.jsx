@@ -1,8 +1,67 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl } from '../utils/api';
+import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest } from '../utils/api';
 import t from '../i18n/uz.json';
 
 const WHOLESALE_QTYS = [6, 12, 15, 25, 36, 50];
+
+function getTelegramUserId() {
+  return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
+}
+
+function ProductsEmptyState() {
+  const [requestText, setRequestText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!requestText.trim() || sending) return;
+    setSending(true);
+    try {
+      await submitProductRequest({ telegramId: getTelegramUserId(), requestText: requestText.trim() });
+      setSent(true);
+    } catch (e) { /* silent */ }
+    setSending(false);
+  };
+
+  return (
+    <div className="text-center py-8">
+      <div className="text-tg-hint text-base mb-6">{t.no_products}</div>
+
+      <div className="bg-tg-secondary rounded-xl p-4 text-left">
+        <div className="text-sm font-semibold mb-2">{t.cant_find}</div>
+        {sent ? (
+          <div className="text-center py-3">
+            <div className="text-xl mb-1">✅</div>
+            <div className="text-sm font-medium">{t.cant_find_sent}</div>
+            <div className="text-xs text-tg-hint mt-1">{t.cant_find_thanks}</div>
+          </div>
+        ) : (
+          <>
+            <textarea
+              placeholder={t.cant_find_placeholder}
+              value={requestText}
+              onChange={(e) => setRequestText(e.target.value)}
+              rows={2}
+              className="w-full rounded-xl px-4 py-3 text-sm outline-none border border-tg-hint/30 focus:border-tg-link resize-none mb-3"
+              style={{ color: 'var(--tg-theme-text-color)', backgroundColor: 'var(--tg-theme-bg-color)' }}
+            />
+            <button
+              onClick={handleSubmit}
+              disabled={!requestText.trim() || sending}
+              className={`w-full rounded-xl py-2.5 text-sm font-semibold transition-all ${
+                requestText.trim() && !sending
+                  ? 'bg-tg-button text-tg-button-text active:scale-[0.98]'
+                  : 'bg-tg-hint/20 text-tg-hint'
+              }`}
+            >
+              {sending ? t.loading : t.cant_find_submit}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function ProductsPage({ category, producer, searchQuery, cart, approved, onSelectProduct }) {
   const [products, setProducts] = useState([]);
@@ -69,7 +128,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
   }
 
   if (!loading && products.length === 0) {
-    return <div className="text-center py-10 text-tg-hint text-base">{t.no_products}</div>;
+    return <ProductsEmptyState />;
   }
 
   return (
