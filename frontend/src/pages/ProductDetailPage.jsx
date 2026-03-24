@@ -80,10 +80,10 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
         {/* Flag / report issue button — top-right corner */}
         <button
           onClick={() => setShowReportSheet(true)}
-          className="absolute top-2 right-2 w-10 h-10 rounded-full bg-black/30 backdrop-blur-sm flex items-center justify-center active:bg-black/50 transition-colors"
+          className="absolute top-2 right-2 w-10 h-10 rounded-full bg-amber-500/70 backdrop-blur-sm flex items-center justify-center active:bg-amber-600/80 transition-colors"
           title={t.report_issue}
         >
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z" />
             <line x1="4" y1="22" x2="4" y2="15" />
           </svg>
