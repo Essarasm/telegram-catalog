@@ -1,6 +1,7 @@
 """
-Import allowed clients from the Excel file into the allowed_clients table.
+Import allowed clients from the CSV file into the allowed_clients table.
 Normalizes phone numbers for matching against Telegram contacts.
+Supports client_id_1c and company_name columns for 1C integration.
 """
 import sqlite3
 import os
@@ -31,6 +32,7 @@ def import_clients():
     # Read CSV
     import csv
     rows_inserted = 0
+    rows_updated = 0
     seen_phones = set()
 
     with open(CLIENTS_FILE, "r", encoding="utf-8") as f:
@@ -44,14 +46,49 @@ def import_clients():
             name = row.get("name", "").strip()
             location = row.get("location", "").strip()
             source = row.get("source", "").strip()
+            client_id_1c = row.get("client_id_1c", "").strip()
+            company_name = row.get("company_name", "").strip()
 
-            conn.execute(
-                """INSERT OR IGNORE INTO allowed_clients
-                   (phone_normalized, name, location, source_sheet)
-                   VALUES (?, ?, ?, ?)""",
-                (phone, name, location, source),
-            )
-            rows_inserted += 1
+            # Check if this phone already exists
+            existing = conn.execute(
+                "SELECT id FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+                (phone,),
+            ).fetchone()
+
+            if existing:
+                # Update existing record with new data (preserving non-empty fields)
+                updates = []
+                params = []
+                if name:
+                    updates.append("name = ?")
+                    params.append(name)
+                if location:
+                    updates.append("location = ?")
+                    params.append(location)
+                if source:
+                    updates.append("source_sheet = ?")
+                    params.append(source)
+                if client_id_1c:
+                    updates.append("client_id_1c = ?")
+                    params.append(client_id_1c)
+                if company_name:
+                    updates.append("company_name = ?")
+                    params.append(company_name)
+                if updates:
+                    params.append(existing[0])
+                    conn.execute(
+                        f"UPDATE allowed_clients SET {', '.join(updates)} WHERE id = ?",
+                        params,
+                    )
+                    rows_updated += 1
+            else:
+                conn.execute(
+                    """INSERT INTO allowed_clients
+                       (phone_normalized, name, location, source_sheet, client_id_1c, company_name)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (phone, name, location, source, client_id_1c, company_name),
+                )
+                rows_inserted += 1
 
     conn.commit()
     total = conn.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0]
@@ -79,7 +116,7 @@ def import_clients():
     conn.commit()
     conn.close()
 
-    print(f"[import_clients] Inserted {rows_inserted} new phones. Total: {total}")
+    print(f"[import_clients] Inserted {rows_inserted}, updated {rows_updated}. Total: {total}")
     if approved_count:
         print(f"[import_clients] Retroactively approved {approved_count} existing users.")
 

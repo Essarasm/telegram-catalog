@@ -71,6 +71,8 @@ def init_db():
             name TEXT,
             location TEXT,
             source_sheet TEXT,
+            client_id_1c TEXT,
+            company_name TEXT,
             status TEXT DEFAULT 'active',
             matched_telegram_id INTEGER,
             credit_score INTEGER,
@@ -78,6 +80,7 @@ def init_db():
             notes TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_allowed_phone ON allowed_clients(phone_normalized);
+        CREATE INDEX IF NOT EXISTS idx_allowed_1c ON allowed_clients(client_id_1c);
 
         CREATE TABLE IF NOT EXISTS cart_items (
             user_id INTEGER NOT NULL,
@@ -119,6 +122,13 @@ def init_db():
                           ("client_id", "INTEGER")]:
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {coltype}")
+
+    # Migration: add client_id_1c and company_name to allowed_clients
+    ac_cols = {row[1] for row in conn.execute("PRAGMA table_info(allowed_clients)").fetchall()}
+    for col, coltype in [("client_id_1c", "TEXT"), ("company_name", "TEXT")]:
+        if col not in ac_cols:
+            conn.execute(f"ALTER TABLE allowed_clients ADD COLUMN {col} {coltype}")
+
     conn.commit()
     conn.close()
 
