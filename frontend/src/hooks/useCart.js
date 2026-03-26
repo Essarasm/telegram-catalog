@@ -112,6 +112,16 @@ export function useCart() {
     }).catch(() => {});
   }, []);
 
+  const reloadCart = useCallback(() => {
+    return fetch(`${API}?user_id=${userId.current}`)
+      .then(r => r.json())
+      .then(data => {
+        setItems(data.items || []);
+        return data.items || [];
+      })
+      .catch(() => []);
+  }, []);
+
   const totalCount = items.reduce((sum, i) => sum + i.quantity, 0);
 
   const totals = items.reduce((acc, item) => {
@@ -120,5 +130,5 @@ export function useCart() {
     return acc;
   }, {});
 
-  return { items, loading, addItem, removeItem, updateQuantity, clearCart, totalCount, totals };
+  return { items, loading, addItem, removeItem, updateQuantity, clearCart, reloadCart, totalCount, totals };
 }

@@ -77,6 +77,7 @@ def _build_order_items(req: ExportRequest):
             full_name = f"{row['producer_name']} — {product_name}" if row["producer_name"] else product_name
 
             order_items.append({
+                "product_id": cart_item.product_id,
                 "name": full_name,
                 "unit": row["unit"],
                 "price": price,
@@ -88,12 +89,52 @@ def _build_order_items(req: ExportRequest):
     return order_items, client_label
 
 
+def _save_order_to_db(req: ExportRequest, order_items, client_label):
+    """Persist the order to the orders + order_items tables."""
+    conn = get_db()
+    try:
+        usd_total = sum(it["price"] * it["quantity"] for it in order_items if it.get("currency", "USD") == "USD")
+        uzs_total = sum(it["price"] * it["quantity"] for it in order_items if it.get("currency", "USD") == "UZS")
+
+        # Extract phone from client_label if present (format: "Name (phone)")
+        client_phone = ""
+        if "(" in client_label and client_label.endswith(")"):
+            client_phone = client_label[client_label.rfind("(") + 1:-1]
+
+        cursor = conn.execute(
+            """INSERT INTO orders (telegram_id, client_name, client_phone, total_usd, total_uzs, item_count, status)
+               VALUES (?, ?, ?, ?, ?, ?, 'submitted')""",
+            (req.telegram_id or 0, client_label, client_phone, usd_total, uzs_total, len(order_items)),
+        )
+        order_id = cursor.lastrowid
+
+        for it in order_items:
+            conn.execute(
+                """INSERT INTO order_items (order_id, product_id, product_name, producer_name, quantity, unit, price, currency)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (order_id, it.get("product_id"), it["name"], it.get("producer", ""),
+                 it["quantity"], it.get("unit", ""), it["price"], it.get("currency", "USD")),
+            )
+
+        conn.commit()
+        return order_id
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to save order: {e}")
+        return None
+    finally:
+        conn.close()
+
+
 @router.post("")
 def export_order(req: ExportRequest):
     order_items, client_label = _build_order_items(req)
 
     if not order_items:
         return JSONResponse({"ok": False, "error": "No valid products in order"}, status_code=400)
+
+    # Save order to database for history
+    order_id = _save_order_to_db(req, order_items, client_label)
 
     # Always generate Excel for group notification
     excel_data = generate_excel(order_items, client_label)

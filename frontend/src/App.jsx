@@ -6,6 +6,7 @@ import ProductsPage from './pages/ProductsPage';
 import CartPage from './pages/CartPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
+import CabinetPage from './pages/CabinetPage';
 import t from './i18n/uz.json';
 
 const APP_VERSION = 'v17.0';
@@ -160,6 +161,7 @@ export default function App() {
 
   const goBack = useCallback(() => {
     setPage(prev => {
+      if (prev === 'cabinet') return 'catalog';
       if (prev === 'cart') return selectedProducer ? 'products' : selectedCategory ? 'producers' : 'catalog';
       if (prev === 'product_detail') { setSelectedProduct(null); return 'products'; }
       if (prev === 'products' && searchQuery) { setSearchQuery(''); return 'catalog'; }
@@ -199,6 +201,7 @@ export default function App() {
     if (page === 'products') return selectedProducer?.name || t.all_products;
     if (page === 'product_detail') return selectedProducer?.name || t.all_products;
     if (page === 'cart') return t.cart;
+    if (page === 'cabinet') return t.cabinet;
     return t.app_title;
   };
 
@@ -238,17 +241,26 @@ export default function App() {
             {getTitle()}
           </h1>
           {approved && (
-            <button
-              onClick={() => navigateTo('cart')}
-              className="relative text-xl ml-3 p-1"
-            >
-              🛒
-              {cart.totalCount > 0 && (
-                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                  {cart.totalCount}
-                </span>
-              )}
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => navigateTo('cabinet')}
+                className="text-xl p-1"
+                title={t.cabinet}
+              >
+                🏛️
+              </button>
+              <button
+                onClick={() => navigateTo('cart')}
+                className="relative text-xl p-1"
+              >
+                🛒
+                {cart.totalCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                    {cart.totalCount}
+                  </span>
+                )}
+              </button>
+            </div>
           )}
         </div>
       </header>
@@ -305,6 +317,9 @@ export default function App() {
         {page === 'cart' && (
           <CartPage cart={cart} approved={approved} />
         )}
+        {page === 'cabinet' && (
+          <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')} />
+        )}
       </main>
 
       {/* Product detail as full-screen overlay — preserves scroll position underneath */}
@@ -320,17 +335,25 @@ export default function App() {
                 {selectedProducer?.name || t.all_products}
               </h1>
               {approved && (
-                <button
-                  onClick={() => navigateTo('cart')}
-                  className="relative text-xl ml-3 p-1"
-                >
-                  🛒
-                  {cart.totalCount > 0 && (
-                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                      {cart.totalCount}
-                    </span>
-                  )}
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => navigateTo('cabinet')}
+                    className="text-xl p-1"
+                  >
+                    🏛️
+                  </button>
+                  <button
+                    onClick={() => navigateTo('cart')}
+                    className="relative text-xl p-1"
+                  >
+                    🛒
+                    {cart.totalCount > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                        {cart.totalCount}
+                      </span>
+                    )}
+                  </button>
+                </div>
               )}
             </div>
           </header>

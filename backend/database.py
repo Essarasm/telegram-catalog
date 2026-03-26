@@ -112,6 +112,34 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_product_requests_status ON product_requests(status);
+
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            client_name TEXT,
+            client_phone TEXT,
+            total_usd REAL DEFAULT 0,
+            total_uzs REAL DEFAULT 0,
+            item_count INTEGER DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'submitted',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_orders_telegram ON orders(telegram_id);
+        CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
+
+        CREATE TABLE IF NOT EXISTS order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            product_id INTEGER,
+            product_name TEXT NOT NULL,
+            producer_name TEXT,
+            quantity INTEGER NOT NULL,
+            unit TEXT,
+            price REAL DEFAULT 0,
+            currency TEXT DEFAULT 'USD',
+            FOREIGN KEY (order_id) REFERENCES orders(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
     """)
     conn.commit()
 
