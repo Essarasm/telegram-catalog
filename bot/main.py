@@ -423,7 +423,9 @@ async def cmd_help(message: types.Message):
         "<b>/chatid</b>\n"
         "Chat va User ID ko'rish\n\n"
         "<b>/reports</b>\n"
-        "Oxirgi xatolik xabarlari va mahsulot so'rovlari",
+        "Oxirgi xatolik xabarlari va mahsulot so'rovlari\n\n"
+        "<b>/searches</b> <code>[kunlar]</code>\n"
+        "Qidiruv statistikasi (default: 7 kun)",
         parse_mode="HTML",
     )
 
@@ -484,6 +486,104 @@ async def cmd_reports(message: types.Message):
             lines.append(f"#{pr['id']} {pr['request_text'][:80]}")
     else:
         lines.append("🔍 Mahsulot so'rovlari yo'q.")
+
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(Command("searches"))
+async def cmd_searches(message: types.Message):
+    """Show search analytics: top queries, zero-result queries, and funnel stats."""
+    if not is_admin(message):
+        return
+
+    # Parse optional days argument: /searches 30
+    parts = message.text.split()
+    days = 7
+    if len(parts) > 1 and parts[1].isdigit():
+        days = min(int(parts[1]), 365)
+
+    conn = get_db()
+
+    # Summary stats
+    total = conn.execute(
+        "SELECT COUNT(*) FROM search_logs WHERE created_at >= datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    if total == 0:
+        conn.close()
+        await message.reply(
+            f"🔍 Oxirgi {days} kun ichida qidiruv yo'q.\n\n"
+            "Ma'lumotlar yig'ilishi uchun biroz vaqt kerak.",
+        )
+        return
+
+    unique_users = conn.execute(
+        "SELECT COUNT(DISTINCT telegram_id) FROM search_logs WHERE created_at >= datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    zero_count = conn.execute(
+        "SELECT COUNT(*) FROM search_logs WHERE results_count = 0 AND created_at >= datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    # Top queries
+    top = conn.execute(
+        """SELECT query, COUNT(*) as cnt, ROUND(AVG(results_count),0) as avg_res
+           FROM search_logs WHERE created_at >= datetime('now', ?)
+           GROUP BY query ORDER BY cnt DESC LIMIT 10""",
+        (f"-{days} days",),
+    ).fetchall()
+
+    # Zero-result queries (unmet demand)
+    zeros = conn.execute(
+        """SELECT query, COUNT(*) as cnt, COUNT(DISTINCT telegram_id) as users
+           FROM search_logs
+           WHERE results_count = 0 AND created_at >= datetime('now', ?)
+           GROUP BY query ORDER BY cnt DESC LIMIT 10""",
+        (f"-{days} days",),
+    ).fetchall()
+
+    # Funnel: clicks and cart adds
+    click_count = conn.execute(
+        """SELECT COUNT(DISTINCT sl.id) FROM search_logs sl
+           JOIN search_clicks sc ON sc.search_log_id = sl.id AND sc.action = 'click'
+           WHERE sl.created_at >= datetime('now', ?)""",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    cart_count = conn.execute(
+        """SELECT COUNT(DISTINCT sl.id) FROM search_logs sl
+           JOIN search_clicks sc ON sc.search_log_id = sl.id AND sc.action = 'cart'
+           WHERE sl.created_at >= datetime('now', ?)""",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    conn.close()
+
+    # Build message
+    lines = [
+        f"🔍 <b>Qidiruv statistikasi ({days} kun)</b>\n",
+        f"📊 Jami qidiruvlar: <b>{total}</b>",
+        f"👥 Unikal foydalanuvchilar: <b>{unique_users}</b>",
+        f"❌ Natijasiz: <b>{zero_count}</b> ({round(zero_count/total*100)}%)",
+        f"👆 Bosish bor: <b>{click_count}</b>",
+        f"🛒 Savatga qo'shish: <b>{cart_count}</b>",
+    ]
+
+    if top:
+        lines.append(f"\n📈 <b>Top qidiruvlar:</b>")
+        for i, r in enumerate(top, 1):
+            avg = int(r["avg_res"])
+            lines.append(f"  {i}. <code>{r['query']}</code> — {r['cnt']}x ({avg} natija)")
+
+    if zeros:
+        lines.append(f"\n🚨 <b>Topilmagan (talab bor!):</b>")
+        for i, r in enumerate(zeros, 1):
+            lines.append(f"  {i}. <code>{r['query']}</code> — {r['cnt']}x ({r['users']} kishi)")
+
+    lines.append(f"\n💡 /searches {days*2} — ko'proq kunlik ma'lumot")
 
     await message.reply("\n".join(lines), parse_mode="HTML")
 

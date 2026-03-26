@@ -10,15 +10,30 @@ export async function fetchProducers(categoryId) {
   return res.json();
 }
 
-export async function fetchProducts({ categoryId, producerId, search, page = 1, limit = 30 }) {
+export async function fetchProducts({ categoryId, producerId, search, page = 1, limit = 30, telegramId }) {
   const params = new URLSearchParams();
   if (categoryId) params.set('category_id', categoryId);
   if (producerId) params.set('producer_id', producerId);
   if (search) params.set('search', search);
+  if (telegramId) params.set('telegram_id', telegramId);
   params.set('page', page);
   params.set('limit', limit);
   const res = await fetch(`${API_BASE}/products?${params}`);
   return res.json();
+}
+
+// ── Search analytics ────────────────────────────────────────────
+
+export async function logSearchClick({ searchLogId, telegramId, productId, action = 'click' }) {
+  try {
+    const params = new URLSearchParams({
+      search_log_id: searchLogId || 0,
+      telegram_id: telegramId || 0,
+      product_id: productId,
+      action,
+    });
+    fetch(`${API_BASE}/search/click?${params}`, { method: 'POST' });
+  } catch (e) { /* silent — analytics should never break UX */ }
 }
 
 export async function exportOrder(items, format = 'pdf', clientName = '', telegramId = 0) {

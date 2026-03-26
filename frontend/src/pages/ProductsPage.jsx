@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest } from '../utils/api';
+import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest, logSearchClick } from '../utils/api';
 import t from '../i18n/uz.json';
 
 const WHOLESALE_QTYS = [6, 12, 15, 25, 36, 50];
@@ -82,6 +82,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
         search: searchQuery,
         page: pageNum,
         limit: 30,
+        telegramId: getTelegramUserId(),
       });
       if (data && data.items) {
         setProducts(prev => reset ? data.items : [...prev, ...data.items]);
@@ -151,7 +152,12 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
               {/* Clickable card area */}
               <div
                 className="cursor-pointer active:opacity-80 transition-opacity"
-                onClick={() => onSelectProduct && onSelectProduct(product)}
+                onClick={() => {
+                  if (searchQuery) {
+                    logSearchClick({ telegramId: getTelegramUserId(), productId: product.id, action: 'click' });
+                  }
+                  onSelectProduct && onSelectProduct(product);
+                }}
               >
                 {/* Product image — larger */}
                 <div className="w-full aspect-square bg-tg-bg flex items-center justify-center overflow-hidden">
@@ -205,11 +211,17 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                     </div>
                   ) : (
                     <button
-                      onClick={(e) => { e.stopPropagation(); cart.addItem({
-                        ...product,
-                        price: getPriceValue(product.price_usd, product.price_uzs),
-                        currency: getPriceCurrency(product.price_usd, product.price_uzs),
-                      }); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        cart.addItem({
+                          ...product,
+                          price: getPriceValue(product.price_usd, product.price_uzs),
+                          currency: getPriceCurrency(product.price_usd, product.price_uzs),
+                        });
+                        if (searchQuery) {
+                          logSearchClick({ telegramId: getTelegramUserId(), productId: product.id, action: 'cart' });
+                        }
+                      }}
                       className="w-full bg-tg-button text-tg-button-text text-sm font-semibold rounded-lg py-2.5 active:scale-95 transition-transform"
                     >
                       + {t.add_to_cart}

@@ -1,3 +1,4 @@
+import threading
 from fastapi import APIRouter, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from typing import Optional, List
@@ -7,11 +8,27 @@ from backend.services.update_prices import apply_price_updates
 router = APIRouter(prefix="/api/products", tags=["products"])
 
 
+def _log_search_bg(telegram_id, query, results_count, category_id, producer_id):
+    """Background thread: log search to search_logs table."""
+    try:
+        conn = get_db()
+        conn.execute(
+            """INSERT INTO search_logs (telegram_id, query, results_count, category_id, producer_id)
+               VALUES (?, ?, ?, ?, ?)""",
+            (telegram_id, query.strip().lower(), results_count, category_id, producer_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # Never fail the product request because of logging
+
+
 @router.get("")
 def list_products(
     category_id: Optional[int] = None,
     producer_id: Optional[int] = None,
     search: Optional[str] = None,
+    telegram_id: Optional[int] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
 ):
@@ -30,13 +47,20 @@ def list_products(
         params.append(producer_id)
 
     if search:
-        conditions.append("(p.name LIKE ? OR p.name_display LIKE ?)")
-        params.extend([f"%{search}%", f"%{search}%"])
+        search_term = search.strip()
+        # Search in product name, display name, AND producer name
+        conditions.append(
+            "(p.name LIKE ? OR p.name_display LIKE ? OR pr.name LIKE ?)"
+        )
+        params.extend([f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"])
 
     where = " AND ".join(conditions)
 
     total = conn.execute(
-        f"SELECT COUNT(*) FROM products p WHERE {where}", params
+        f"""SELECT COUNT(*) FROM products p
+            JOIN producers pr ON pr.id = p.producer_id
+            WHERE {where}""",
+        params,
     ).fetchone()[0]
 
     rows = conn.execute(
@@ -52,6 +76,14 @@ def list_products(
         params + [limit, offset],
     ).fetchall()
     conn.close()
+
+    # Log search in background (only on first page to avoid duplicates from pagination)
+    if search and page == 1:
+        threading.Thread(
+            target=_log_search_bg,
+            args=(telegram_id or 0, search, total, category_id, producer_id),
+            daemon=True,
+        ).start()
 
     return {
         "items": [dict(r) for r in rows],

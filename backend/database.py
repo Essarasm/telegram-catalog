@@ -139,6 +139,36 @@ def init_db():
             FOREIGN KEY (order_id) REFERENCES orders(id)
         );
         CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
+
+        -- Search analytics: log every search query
+        CREATE TABLE IF NOT EXISTS search_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER,
+            query TEXT NOT NULL,
+            results_count INTEGER DEFAULT 0,
+            category_id INTEGER,
+            producer_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_search_logs_query ON search_logs(query);
+        CREATE INDEX IF NOT EXISTS idx_search_logs_user ON search_logs(telegram_id);
+        CREATE INDEX IF NOT EXISTS idx_search_logs_created ON search_logs(created_at);
+        CREATE INDEX IF NOT EXISTS idx_search_logs_results ON search_logs(results_count);
+
+        -- Search analytics: track product clicks from search results
+        CREATE TABLE IF NOT EXISTS search_clicks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            search_log_id INTEGER,
+            telegram_id INTEGER,
+            product_id INTEGER NOT NULL,
+            action TEXT DEFAULT 'click',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (search_log_id) REFERENCES search_logs(id),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_search_clicks_search ON search_clicks(search_log_id);
+        CREATE INDEX IF NOT EXISTS idx_search_clicks_product ON search_clicks(product_id);
+        CREATE INDEX IF NOT EXISTS idx_search_clicks_action ON search_clicks(action);
     """)
     conn.commit()
 
