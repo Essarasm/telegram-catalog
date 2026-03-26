@@ -1,11 +1,12 @@
 """Import products from the Catalog Clean sheet into SQLite.
 
 Reads the 'Catalog Clean' sheet from the FINAL xlsx file.
-Columns: A=Kategoriya, B=Ishlab chiqaruvchi, C=Mahsulot nomi,
-         D=Og'irligi, E=Birlik, F=Narx UZS, G=Narx USD
+Columns: A=Kategoriya, B=Ishlab chiqaruvchi, C=Mahsulot nomi (curated Latin),
+         D=Og'irligi, E=Birlik, F=Narx UZS, G=Narx USD,
+         L=Asl nomi (Original Cyrillic)
 
-- name field: ORIGINAL Cyrillic (preserved for future Russian language support)
-- name_display field: clean Latin transliteration for Uzbek display
+- name field: ORIGINAL Cyrillic from col L (preserved for bilingual/search support)
+- name_display field: CURATED Latin name from col C (hand-adjusted in Rassvet_Master col E)
 """
 import sys
 import os
@@ -263,13 +264,15 @@ def import_from_catalog_clean(xlsx_path: str):
     print(f"Processing {len(rows)} rows...")
 
     for row in rows:
-        category = row[0].value   # A
-        producer = row[1].value   # B
-        name = row[2].value       # C
-        weight_val = row[3].value if len(row) > 3 else None  # D
-        unit = row[4].value if len(row) > 4 else 'sht'       # E
-        price_uzs = row[5].value if len(row) > 5 else None    # F
-        price_usd = row[6].value if len(row) > 6 else None    # G
+        category = row[0].value    # A — Kategoriya
+        producer = row[1].value    # B — Ishlab chiqaruvchi
+        name = row[2].value        # C — Curated Latin display name
+        weight_val = row[3].value if len(row) > 3 else None   # D
+        unit = row[4].value if len(row) > 4 else 'sht'        # E
+        price_uzs = row[5].value if len(row) > 5 else None     # F
+        price_usd = row[6].value if len(row) > 6 else None     # G
+        # Col L (index 11) = Original Cyrillic name
+        original_cyrillic_col = row[11].value if len(row) > 11 else None  # L
 
         if not category or not producer or not name:
             skipped += 1
@@ -327,11 +330,17 @@ def import_from_catalog_clean(xlsx_path: str):
         except (ValueError, TypeError):
             pass
 
-        # name = ORIGINAL Cyrillic (for Russian bilingual support)
-        original_cyrillic = name
+        # name = ORIGINAL Cyrillic from col L (for bilingual/search support)
+        # Falls back to col C if col L is empty (backwards compatibility)
+        original_cyrillic = str(original_cyrillic_col).strip() if original_cyrillic_col else name
 
-        # name_display = clean Latin for Uzbek display
-        display_name = generate_display_name(name, producer)
+        # name_display = CURATED Latin name from col C
+        # (hand-adjusted in Rassvet_Master.xlsx col E, synced to Catalog Clean col C)
+        # Falls back to auto-generated display name only if col C looks like Cyrillic
+        display_name = name
+        if any('\u0400' <= c <= '\u04ff' for c in display_name):
+            # Col C still has Cyrillic — auto-generate as fallback
+            display_name = generate_display_name(display_name, producer)
 
         conn.execute(
             """INSERT INTO products
