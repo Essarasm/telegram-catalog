@@ -80,7 +80,6 @@ def init_db():
             notes TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_allowed_phone ON allowed_clients(phone_normalized);
-        CREATE INDEX IF NOT EXISTS idx_allowed_1c ON allowed_clients(client_id_1c);
 
         CREATE TABLE IF NOT EXISTS cart_items (
             user_id INTEGER NOT NULL,
@@ -156,6 +155,9 @@ def init_db():
     for col, coltype in [("client_id_1c", "TEXT"), ("company_name", "TEXT")]:
         if col not in ac_cols:
             conn.execute(f"ALTER TABLE allowed_clients ADD COLUMN {col} {coltype}")
+
+    # Create index on client_id_1c (after migration ensures column exists)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_1c ON allowed_clients(client_id_1c)")
 
     conn.commit()
     conn.close()
