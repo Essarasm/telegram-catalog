@@ -205,13 +205,29 @@ export default function App() {
     return t.app_title;
   };
 
-  try {
-    if (window.Telegram?.WebApp) {
-      window.Telegram.WebApp.expand();
-      window.Telegram.WebApp.ready();
-      window.Telegram.WebApp.enableClosingConfirmation();
-    }
-  } catch (e) {}
+  // ── Telegram WebApp initialization ──
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  useEffect(() => {
+    try {
+      const tg = window.Telegram?.WebApp;
+      if (!tg) return;
+      tg.ready();
+      tg.expand();
+      tg.enableClosingConfirmation();
+      tg.disableVerticalSwipes();  // prevent accidental close when scrolling
+      // Request true fullscreen (Bot API 8.0+) — like EVOS delivery
+      if (tg.requestFullscreen) {
+        tg.requestFullscreen();
+        setIsFullscreen(true);
+        tg.onEvent?.('fullscreenChanged', () => {
+          setIsFullscreen(!!tg.isFullscreen);
+        });
+      }
+      // Dark header for immersive feel
+      tg.setHeaderColor?.('#000000');
+      tg.setBottomBarColor?.('bg_color');
+    } catch (e) {}
+  }, []);
 
   if (registered === null) {
     return (
@@ -232,11 +248,36 @@ export default function App() {
     );
   }
 
+  const handleClose = () => {
+    try { window.Telegram?.WebApp?.close(); } catch (e) {}
+  };
+
+  // Safe area inset from Telegram (avoids notches/dynamic island)
+  const safeTop = window.Telegram?.WebApp?.safeAreaInset?.top || 0;
+  const contentSafeTop = window.Telegram?.WebApp?.contentSafeAreaInset?.top || 0;
+  const topPad = isFullscreen ? Math.max(safeTop, contentSafeTop) : 0;
+
   return (
     <div className="min-h-screen bg-tg-bg text-tg-text pb-20">
-      {/* Compact header — title + cart only (back button is Telegram native) */}
-      <header className="sticky top-0 z-50 bg-tg-bg border-b border-tg-hint/20">
+      {/* Safe area spacer for fullscreen mode */}
+      {topPad > 0 && <div style={{ height: topPad }} className="bg-tg-bg" />}
+
+      {/* Compact header — close button + title + cart */}
+      <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
         <div className="flex items-center justify-between h-11 px-4">
+          {/* Close button — visible in fullscreen, matches EVOS style */}
+          {isFullscreen && page === 'catalog' ? (
+            <button
+              onClick={handleClose}
+              className="flex items-center gap-1 text-tg-hint text-sm font-medium mr-2 px-2 py-1 rounded-lg active:bg-tg-secondary transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+              Yopish
+            </button>
+          ) : null}
           <h1 className="text-base font-semibold truncate flex-1">
             {getTitle()}
           </h1>
@@ -325,8 +366,10 @@ export default function App() {
       {/* Product detail as full-screen overlay — preserves scroll position underneath */}
       {page === 'product_detail' && selectedProduct && (
         <div className="fixed inset-0 z-[90] bg-tg-bg overflow-y-auto">
+          {/* Safe area spacer */}
+          {topPad > 0 && <div style={{ height: topPad }} className="bg-tg-bg" />}
           {/* Overlay header with back button */}
-          <header className="sticky top-0 z-50 bg-tg-bg border-b border-tg-hint/20">
+          <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
             <div className="flex items-center justify-between h-11 px-4">
               <button onClick={goBack} className="text-tg-link text-sm font-medium mr-3">
                 ← Orqaga
