@@ -1,35 +1,39 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
 
 
-class CacheControlMiddleware(BaseHTTPMiddleware):
-    """Smart caching: aggressive for images/assets, no-cache for HTML."""
-    async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        path = request.url.path
+class CacheControlMiddleware:
+    """Pure ASGI middleware for smart cache headers. Avoids BaseHTTPMiddleware streaming bugs."""
+    def __init__(self, app):
+        self.app = app
 
-        # HTML — no cache (Telegram WebView caches aggressively)
-        if path == "/" or path.endswith(".html"):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-        # Product images — cache 7 days (they rarely change)
-        elif path.startswith("/images/"):
-            response.headers["Cache-Control"] = "public, max-age=604800, stale-while-revalidate=86400"
+        path = scope.get("path", "")
 
-        # Hashed frontend assets (JS/CSS) — cache 1 year (filename changes on rebuild)
-        elif "/assets/" in path and (path.endswith(".js") or path.endswith(".css")):
-            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        async def send_with_cache(message):
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                if path == "/" or path.endswith(".html"):
+                    headers.append((b"cache-control", b"no-cache, no-store, must-revalidate"))
+                    headers.append((b"pragma", b"no-cache"))
+                    headers.append((b"expires", b"0"))
+                elif path.startswith("/images/"):
+                    headers.append((b"cache-control", b"public, max-age=604800, stale-while-revalidate=86400"))
+                elif "/assets/" in path and (path.endswith(".js") or path.endswith(".css")):
+                    headers.append((b"cache-control", b"public, max-age=31536000, immutable"))
+                message["headers"] = headers
+            await send(message)
 
-        return response
+        await self.app(scope, receive, send_with_cache)
 
 load_dotenv()
 
