@@ -174,11 +174,24 @@ export default function App() {
   // Keep ref in sync
   goBackRef.current = goBack;
 
-  // Hide Telegram's native BackButton (it shows in phone's language, not Uzbek)
-  // We render our own Uzbek back/close buttons in the header instead
+  // Telegram native BackButton — show/hide based on page, handle clicks
   useEffect(() => {
-    const bb = window.Telegram?.WebApp?.BackButton;
-    if (bb) bb.hide();
+    const tg = window.Telegram?.WebApp;
+    const bb = tg?.BackButton;
+    if (!bb) return;
+
+    const handler = () => { goBackRef.current?.(); };
+
+    if (page !== 'catalog') {
+      bb.show();
+      bb.onClick(handler);
+    } else {
+      bb.hide();
+    }
+
+    return () => {
+      bb.offClick(handler);
+    };
   }, [page]);
 
   const getTitle = () => {
@@ -257,8 +270,8 @@ export default function App() {
       {/* Compact header — close button + title + cart */}
       <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
         <div className="flex items-center justify-between h-11 px-4">
-          {/* Close (catalog) or Back (other pages) — always in Uzbek */}
-          {page === 'catalog' ? (
+          {/* Close button — visible in fullscreen on catalog, matches EVOS style */}
+          {isFullscreen && page === 'catalog' ? (
             <button
               onClick={handleClose}
               className="flex items-center gap-1 text-tg-hint text-sm font-medium mr-2 px-2 py-1 rounded-lg active:bg-tg-secondary transition-colors"
@@ -269,17 +282,7 @@ export default function App() {
               </svg>
               {t.close}
             </button>
-          ) : (
-            <button
-              onClick={goBack}
-              className="flex items-center gap-1 text-tg-link text-sm font-medium mr-2 px-2 py-1 rounded-lg active:bg-tg-secondary transition-colors"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="15 18 9 12 15 6" />
-              </svg>
-              {t.back}
-            </button>
-          )}
+          ) : null}
           <h1 className="text-base font-semibold truncate flex-1">
             {getTitle()}
           </h1>
@@ -373,11 +376,8 @@ export default function App() {
           {/* Overlay header with back button */}
           <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
             <div className="flex items-center justify-between h-11 px-4">
-              <button onClick={goBack} className="flex items-center gap-1 text-tg-link text-sm font-medium mr-3 px-2 py-1 rounded-lg active:bg-tg-secondary transition-colors">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="15 18 9 12 15 6" />
-                </svg>
-                {t.back}
+              <button onClick={goBack} className="text-tg-link text-sm font-medium mr-3">
+                ← {t.back}
               </button>
               <h1 className="text-base font-semibold truncate flex-1">
                 {selectedProducer?.name || t.all_products}
