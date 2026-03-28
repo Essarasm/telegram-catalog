@@ -283,6 +283,8 @@ export default function App() {
               {t.close}
             </button>
           ) : null}
+          {/* Spacer when Telegram native BackButton is visible — prevents title overlap */}
+          {page !== 'catalog' && <div className="w-16 shrink-0" />}
           <h1 className="text-base font-semibold truncate flex-1">
             {getTitle()}
           </h1>
