@@ -3,20 +3,32 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 
-class NoCacheMiddleware(BaseHTTPMiddleware):
-    """Prevent Telegram WebView from caching HTML aggressively."""
+class CacheControlMiddleware(BaseHTTPMiddleware):
+    """Smart caching: aggressive for images/assets, no-cache for HTML."""
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         path = request.url.path
+
+        # HTML — no cache (Telegram WebView caches aggressively)
         if path == "/" or path.endswith(".html"):
             response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
+
+        # Product images — cache 7 days (they rarely change)
+        elif path.startswith("/images/"):
+            response.headers["Cache-Control"] = "public, max-age=604800, stale-while-revalidate=86400"
+
+        # Hashed frontend assets (JS/CSS) — cache 1 year (filename changes on rebuild)
+        elif "/assets/" in path and (path.endswith(".js") or path.endswith(".css")):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+
         return response
 
 load_dotenv()
@@ -26,7 +38,10 @@ from backend.routers import categories, products, export, cart, users, reports, 
 
 app = FastAPI(title="Katalog API", version="1.0.0")
 
-app.add_middleware(NoCacheMiddleware)
+# GZip compression — compresses API JSON responses and text assets
+# min_size=500 avoids compressing tiny responses where overhead > savings
+app.add_middleware(GZipMiddleware, minimum_size=500)
+app.add_middleware(CacheControlMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
