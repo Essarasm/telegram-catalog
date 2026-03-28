@@ -174,24 +174,11 @@ export default function App() {
   // Keep ref in sync
   goBackRef.current = goBack;
 
-  // Telegram native BackButton — show/hide based on page, handle clicks
+  // Hide Telegram's native BackButton (it shows in phone's language, not Uzbek)
+  // We render our own Uzbek back/close buttons in the header instead
   useEffect(() => {
-    const tg = window.Telegram?.WebApp;
-    const bb = tg?.BackButton;
-    if (!bb) return;
-
-    const handler = () => { goBackRef.current?.(); };
-
-    if (page !== 'catalog') {
-      bb.show();
-      bb.onClick(handler);
-    } else {
-      bb.hide();
-    }
-
-    return () => {
-      bb.offClick(handler);
-    };
+    const bb = window.Telegram?.WebApp?.BackButton;
+    if (bb) bb.hide();
   }, [page]);
 
   const getTitle = () => {
@@ -211,21 +198,26 @@ export default function App() {
     try {
       const tg = window.Telegram?.WebApp;
       if (!tg) return;
+      // Critical: signal the app is ready (this lets Telegram show it)
       tg.ready();
       tg.expand();
-      tg.enableClosingConfirmation();
-      tg.disableVerticalSwipes();  // prevent accidental close when scrolling
-      // Request true fullscreen (Bot API 8.0+) — like EVOS delivery
-      if (tg.requestFullscreen) {
-        tg.requestFullscreen();
-        setIsFullscreen(true);
-        tg.onEvent?.('fullscreenChanged', () => {
-          setIsFullscreen(!!tg.isFullscreen);
-        });
-      }
-      // Dark header for immersive feel
-      tg.setHeaderColor?.('#000000');
-      tg.setBottomBarColor?.('bg_color');
+      // Defer non-critical calls so the app renders faster
+      setTimeout(() => {
+        try {
+          tg.enableClosingConfirmation?.();
+          tg.disableVerticalSwipes?.();
+          tg.setHeaderColor?.('#000000');
+          tg.setBottomBarColor?.('bg_color');
+          // Request true fullscreen (Bot API 8.0+)
+          if (tg.requestFullscreen) {
+            tg.requestFullscreen();
+            setIsFullscreen(true);
+            tg.onEvent?.('fullscreenChanged', () => {
+              setIsFullscreen(!!tg.isFullscreen);
+            });
+          }
+        } catch (e) {}
+      }, 50);
     } catch (e) {}
   }, []);
 
@@ -265,8 +257,8 @@ export default function App() {
       {/* Compact header — close button + title + cart */}
       <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
         <div className="flex items-center justify-between h-11 px-4">
-          {/* Close button — visible in fullscreen, matches EVOS style */}
-          {isFullscreen && page === 'catalog' ? (
+          {/* Close (catalog) or Back (other pages) — always in Uzbek */}
+          {page === 'catalog' ? (
             <button
               onClick={handleClose}
               className="flex items-center gap-1 text-tg-hint text-sm font-medium mr-2 px-2 py-1 rounded-lg active:bg-tg-secondary transition-colors"
@@ -275,9 +267,19 @@ export default function App() {
                 <line x1="18" y1="6" x2="6" y2="18" />
                 <line x1="6" y1="6" x2="18" y2="18" />
               </svg>
-              Yopish
+              {t.close}
             </button>
-          ) : null}
+          ) : (
+            <button
+              onClick={goBack}
+              className="flex items-center gap-1 text-tg-link text-sm font-medium mr-2 px-2 py-1 rounded-lg active:bg-tg-secondary transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="15 18 9 12 15 6" />
+              </svg>
+              {t.back}
+            </button>
+          )}
           <h1 className="text-base font-semibold truncate flex-1">
             {getTitle()}
           </h1>
@@ -371,8 +373,11 @@ export default function App() {
           {/* Overlay header with back button */}
           <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
             <div className="flex items-center justify-between h-11 px-4">
-              <button onClick={goBack} className="text-tg-link text-sm font-medium mr-3">
-                ← Orqaga
+              <button onClick={goBack} className="flex items-center gap-1 text-tg-link text-sm font-medium mr-3 px-2 py-1 rounded-lg active:bg-tg-secondary transition-colors">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="15 18 9 12 15 6" />
+                </svg>
+                {t.back}
               </button>
               <h1 className="text-base font-semibold truncate flex-1">
                 {selectedProducer?.name || t.all_products}
