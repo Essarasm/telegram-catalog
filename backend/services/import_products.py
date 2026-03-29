@@ -14,7 +14,7 @@ import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from openpyxl import load_workbook
-from backend.database import get_db, init_db
+from backend.database import get_db, init_db, build_search_text
 
 
 # ── Cyrillic → Latin transliteration ────────────────────────────
@@ -342,13 +342,16 @@ def import_from_catalog_clean(xlsx_path: str):
             # Col C still has Cyrillic — auto-generate as fallback
             display_name = generate_display_name(display_name, producer)
 
+        # Build cross-language search index
+        search_text = build_search_text(original_cyrillic, display_name, producer_latin)
+
         conn.execute(
             """INSERT INTO products
                (name, name_display, category_id, producer_id, unit,
-                price_usd, price_uzs, weight, is_active)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                price_usd, price_uzs, weight, is_active, search_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
             (original_cyrillic, display_name, cat_map[category], prod_map[producer_latin],
-             unit, p_usd, p_uzs, weight)
+             unit, p_usd, p_uzs, weight, search_text)
         )
         imported += 1
 

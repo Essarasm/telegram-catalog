@@ -2,7 +2,7 @@ import threading
 from fastapi import APIRouter, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from typing import Optional, List
-from backend.database import get_db
+from backend.database import get_db, transliterate_to_latin
 from backend.services.update_prices import apply_price_updates
 
 router = APIRouter(prefix="/api/products", tags=["products"])
@@ -47,19 +47,19 @@ def list_products(
         params.append(producer_id)
 
     if search:
-        search_term = search.strip()
-        # Search in product name, display name, AND producer name
+        search_term = search.strip().lower()
+        # Transliterate query to Latin so Cyrillic input matches Latin names and vice versa
+        search_latin = transliterate_to_latin(search_term)
+        # Search against the pre-built search_text index (contains Cyrillic + Latin + transliterated)
         conditions.append(
-            "(p.name LIKE ? OR p.name_display LIKE ? OR pr.name LIKE ?)"
+            "(p.search_text LIKE ? OR p.search_text LIKE ?)"
         )
-        params.extend([f"%{search_term}%", f"%{search_term}%", f"%{search_term}%"])
+        params.extend([f"%{search_term}%", f"%{search_latin}%"])
 
     where = " AND ".join(conditions)
 
     total = conn.execute(
-        f"""SELECT COUNT(*) FROM products p
-            JOIN producers pr ON pr.id = p.producer_id
-            WHERE {where}""",
+        f"SELECT COUNT(*) FROM products p WHERE {where}",
         params,
     ).fetchone()[0]
 

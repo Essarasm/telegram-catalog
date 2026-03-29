@@ -189,8 +189,69 @@ def init_db():
     # Create index on client_id_1c (after migration ensures column exists)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_1c ON allowed_clients(client_id_1c)")
 
+    # Migration: add search_text column to products (cross-language search index)
+    prod_cols = {row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
+    if "search_text" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN search_text TEXT DEFAULT ''")
+        # Populate search_text for existing products
+        _rebuild_search_text(conn)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_products_search_text ON products(search_text)")
+
     conn.commit()
     conn.close()
+
+
+# ── Cyrillic ↔ Latin transliteration for search ─────────────────
+
+_CYR2LAT = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e',
+    'ё': 'yo', 'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k',
+    'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r',
+    'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'kh', 'ц': 'ts',
+    'ч': 'ch', 'ш': 'sh', 'щ': 'shch', 'ъ': '', 'ы': 'y', 'ь': '',
+    'э': 'e', 'ю': 'yu', 'я': 'ya',
+}
+
+
+def transliterate_to_latin(text):
+    """Transliterate Cyrillic text to Latin (lowercase)."""
+    result = []
+    for ch in text.lower():
+        result.append(_CYR2LAT.get(ch, ch))
+    return ''.join(result)
+
+
+def build_search_text(name_cyrillic, name_display, producer_name):
+    """Build a combined search index string for a product.
+
+    Combines: original 1C name (Cyrillic) + display name (Latin) +
+    transliterated version of Cyrillic + producer name.
+    All lowercased for case-insensitive LIKE matching.
+    """
+    parts = []
+    if name_cyrillic:
+        cyr = name_cyrillic.strip().lower()
+        parts.append(cyr)
+        parts.append(transliterate_to_latin(cyr))
+    if name_display:
+        parts.append(name_display.strip().lower())
+    if producer_name:
+        parts.append(producer_name.strip().lower())
+    return ' '.join(parts)
+
+
+def _rebuild_search_text(conn):
+    """Populate search_text for all products (used during migration)."""
+    rows = conn.execute(
+        """SELECT p.id, p.name, p.name_display, pr.name as producer_name
+           FROM products p
+           JOIN producers pr ON pr.id = p.producer_id"""
+    ).fetchall()
+    for r in rows:
+        st = build_search_text(r["name"], r["name_display"], r["producer_name"])
+        conn.execute("UPDATE products SET search_text = ? WHERE id = ?", (st, r["id"]))
+    conn.commit()
 
 
 if __name__ == "__main__":
