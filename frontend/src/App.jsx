@@ -199,10 +199,47 @@ export default function App() {
     if (page === 'producers') return selectedCategory?.name || t.producers;
     if (page === 'products' && searchQuery) return t.search_results;
     if (page === 'products') return selectedProducer?.name || t.all_products;
-    if (page === 'product_detail') return selectedProducer?.name || t.all_products;
+    if (page === 'product_detail') return selectedProduct?.name || t.all_products;
     if (page === 'cart') return t.cart;
     if (page === 'cabinet') return t.cabinet;
     return t.app_title;
+  };
+
+  // Breadcrumb trail — shows where the user is in the catalog hierarchy
+  const getBreadcrumbs = () => {
+    const crumbs = [];
+    if (page === 'catalog') return crumbs; // no breadcrumb on home
+
+    // Always start with catalog root
+    crumbs.push({ label: t.categories, action: () => { setSelectedCategory(null); setSelectedProducer(null); setSearchQuery(''); setPage('catalog'); } });
+
+    if (page === 'producers' && selectedCategory) {
+      crumbs.push({ label: selectedCategory.name });
+    }
+    if ((page === 'products' || page === 'product_detail') && !searchQuery) {
+      if (selectedCategory) {
+        crumbs.push({ label: selectedCategory.name, action: () => { setSelectedProducer(null); setPage('producers'); } });
+      }
+      if (selectedProducer) {
+        crumbs.push({ label: selectedProducer.name, action: page === 'product_detail' ? () => { setSelectedProduct(null); setPage('products'); } : undefined });
+      }
+      if (page === 'product_detail' && selectedProduct) {
+        crumbs.push({ label: selectedProduct.name });
+      }
+    }
+    if ((page === 'products' || page === 'product_detail') && searchQuery) {
+      crumbs.push({ label: `"${searchQuery}"` });
+      if (page === 'product_detail' && selectedProduct) {
+        crumbs.push({ label: selectedProduct.name });
+      }
+    }
+    if (page === 'cart') {
+      crumbs.push({ label: t.cart });
+    }
+    if (page === 'cabinet') {
+      crumbs.push({ label: t.cabinet });
+    }
+    return crumbs;
   };
 
   // ── Telegram WebApp initialization ──
@@ -253,10 +290,6 @@ export default function App() {
     );
   }
 
-  const handleClose = () => {
-    try { window.Telegram?.WebApp?.close(); } catch (e) {}
-  };
-
   // Safe area insets from Telegram:
   // - safeAreaInset.top = device hardware (notch / dynamic island)
   // - contentSafeAreaInset.top = Telegram UI controls (back button, ˅ dropdown, ⋯ menu)
@@ -270,47 +303,57 @@ export default function App() {
       {/* Safe area spacer for fullscreen mode */}
       {topPad > 0 && <div style={{ height: topPad }} className="bg-tg-bg" />}
 
-      {/* Compact header — close button + title + cart */}
+      {/* Header — title + breadcrumbs + cart icons */}
       <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
-        <div className={`flex items-center justify-between h-11 px-4 ${isFullscreen ? 'pr-16' : ''}`}>
-          {/* Close button — visible in fullscreen on catalog, matches EVOS style */}
-          {isFullscreen && page === 'catalog' ? (
-            <button
-              onClick={handleClose}
-              className="flex items-center gap-1 text-tg-hint text-sm font-medium mr-2 px-2 py-1 rounded-lg active:bg-tg-secondary transition-colors"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-              {t.close}
-            </button>
-          ) : null}
-          {/* Spacer when Telegram native BackButton is visible — prevents title overlap */}
-          {page !== 'catalog' && <div className="w-16 shrink-0" />}
-          <h1 className="text-base font-semibold truncate flex-1">
-            {getTitle()}
-          </h1>
-          {approved && (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => navigateTo('cabinet')}
-                className="text-xl p-1"
-                title={t.cabinet}
-              >
-                🏛️
-              </button>
-              <button
-                onClick={() => navigateTo('cart')}
-                className="relative text-xl p-1"
-              >
-                🛒
-                {cart.totalCount > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                    {cart.totalCount}
-                  </span>
-                )}
-              </button>
+        <div className={`px-4 ${isFullscreen ? 'pr-16' : ''}`}>
+          {/* Top row: title + icons */}
+          <div className="flex items-center justify-between h-11">
+            {/* Spacer when Telegram native BackButton is visible */}
+            {page !== 'catalog' && <div className="w-16 shrink-0" />}
+            <h1 className="text-base font-semibold truncate flex-1">
+              {getTitle()}
+            </h1>
+            {approved && (
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => navigateTo('cabinet')}
+                  className="text-xl p-1"
+                  title={t.cabinet}
+                >
+                  🏛️
+                </button>
+                <button
+                  onClick={() => navigateTo('cart')}
+                  className="relative text-xl p-1"
+                >
+                  🛒
+                  {cart.totalCount > 0 && (
+                    <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                      {cart.totalCount}
+                    </span>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+          {/* Breadcrumb row — tappable path showing where the user is */}
+          {getBreadcrumbs().length > 0 && (
+            <div className="flex items-center gap-1 pb-2 -mt-1 overflow-x-auto scrollbar-hide">
+              {getBreadcrumbs().map((crumb, i, arr) => (
+                <span key={i} className="flex items-center gap-1 shrink-0">
+                  {crumb.action ? (
+                    <button
+                      onClick={crumb.action}
+                      className="text-xs text-tg-link active:underline"
+                    >
+                      {crumb.label}
+                    </button>
+                  ) : (
+                    <span className="text-xs text-tg-hint">{crumb.label}</span>
+                  )}
+                  {i < arr.length - 1 && <span className="text-xs text-tg-hint/50">›</span>}
+                </span>
+              ))}
             </div>
           )}
         </div>
@@ -378,34 +421,55 @@ export default function App() {
         <div className="fixed inset-0 z-[90] bg-tg-bg overflow-y-auto">
           {/* Safe area spacer */}
           {topPad > 0 && <div style={{ height: topPad }} className="bg-tg-bg" />}
-          {/* Overlay header with back button */}
+          {/* Overlay header with breadcrumbs */}
           <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
-            <div className={`flex items-center justify-between h-11 px-4 ${isFullscreen ? 'pr-16' : ''}`}>
-              <button onClick={goBack} className="text-tg-link text-sm font-medium mr-3">
-                ← {t.back}
-              </button>
-              <h1 className="text-base font-semibold truncate flex-1">
-                {selectedProducer?.name || t.all_products}
-              </h1>
-              {approved && (
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => navigateTo('cabinet')}
-                    className="text-xl p-1"
-                  >
-                    🏛️
-                  </button>
-                  <button
-                    onClick={() => navigateTo('cart')}
-                    className="relative text-xl p-1"
-                  >
-                    🛒
-                    {cart.totalCount > 0 && (
-                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                        {cart.totalCount}
-                      </span>
-                    )}
-                  </button>
+            <div className={`px-4 ${isFullscreen ? 'pr-16' : ''}`}>
+              <div className="flex items-center justify-between h-11">
+                {/* Spacer for native BackButton */}
+                <div className="w-16 shrink-0" />
+                <h1 className="text-base font-semibold truncate flex-1">
+                  {selectedProduct?.name || t.all_products}
+                </h1>
+                {approved && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => navigateTo('cabinet')}
+                      className="text-xl p-1"
+                    >
+                      🏛️
+                    </button>
+                    <button
+                      onClick={() => navigateTo('cart')}
+                      className="relative text-xl p-1"
+                    >
+                      🛒
+                      {cart.totalCount > 0 && (
+                        <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                          {cart.totalCount}
+                        </span>
+                      )}
+                    </button>
+                  </div>
+                )}
+              </div>
+              {/* Breadcrumb for product detail */}
+              {getBreadcrumbs().length > 0 && (
+                <div className="flex items-center gap-1 pb-2 -mt-1 overflow-x-auto scrollbar-hide">
+                  {getBreadcrumbs().map((crumb, i, arr) => (
+                    <span key={i} className="flex items-center gap-1 shrink-0">
+                      {crumb.action ? (
+                        <button
+                          onClick={crumb.action}
+                          className="text-xs text-tg-link active:underline"
+                        >
+                          {crumb.label}
+                        </button>
+                      ) : (
+                        <span className="text-xs text-tg-hint">{crumb.label}</span>
+                      )}
+                      {i < arr.length - 1 && <span className="text-xs text-tg-hint/50">›</span>}
+                    </span>
+                  ))}
                 </div>
               )}
             </div>
