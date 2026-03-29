@@ -257,10 +257,13 @@ export default function App() {
     try { window.Telegram?.WebApp?.close(); } catch (e) {}
   };
 
-  // Safe area inset from Telegram (avoids notches/dynamic island)
+  // Safe area insets from Telegram:
+  // - safeAreaInset.top = device hardware (notch / dynamic island)
+  // - contentSafeAreaInset.top = Telegram UI controls (back button, ˅ dropdown, ⋯ menu)
+  // These are additive — content must clear BOTH the notch AND Telegram's controls
   const safeTop = window.Telegram?.WebApp?.safeAreaInset?.top || 0;
   const contentSafeTop = window.Telegram?.WebApp?.contentSafeAreaInset?.top || 0;
-  const topPad = isFullscreen ? Math.max(safeTop, contentSafeTop) : 0;
+  const topPad = isFullscreen ? safeTop + contentSafeTop : 0;
 
   return (
     <div className="min-h-screen bg-tg-bg text-tg-text pb-20">
@@ -269,7 +272,7 @@ export default function App() {
 
       {/* Compact header — close button + title + cart */}
       <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
-        <div className="flex items-center justify-between h-11 px-4">
+        <div className={`flex items-center justify-between h-11 px-4 ${isFullscreen ? 'pr-16' : ''}`}>
           {/* Close button — visible in fullscreen on catalog, matches EVOS style */}
           {isFullscreen && page === 'catalog' ? (
             <button
@@ -377,7 +380,7 @@ export default function App() {
           {topPad > 0 && <div style={{ height: topPad }} className="bg-tg-bg" />}
           {/* Overlay header with back button */}
           <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
-            <div className="flex items-center justify-between h-11 px-4">
+            <div className={`flex items-center justify-between h-11 px-4 ${isFullscreen ? 'pr-16' : ''}`}>
               <button onClick={goBack} className="text-tg-link text-sm font-medium mr-3">
                 ← {t.back}
               </button>
