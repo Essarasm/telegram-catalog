@@ -49,6 +49,22 @@ class UserRegister(BaseModel):
     longitude: Optional[float] = None
 
 
+def _find_user_in_backup(telegram_id):
+    """Last-resort: look up a user directly in the JSON backup file."""
+    try:
+        backup_path = os.getenv("USERS_BACKUP_PATH", "/data/users_backup.json")
+        if not os.path.exists(backup_path):
+            return None
+        with open(backup_path, 'r') as f:
+            users = json.load(f)
+        for u in users:
+            if u.get('telegram_id') == telegram_id and u.get('phone'):
+                return u
+    except Exception as e:
+        print(f"[users] _find_user_in_backup error: {e}")
+    return None
+
+
 @router.get("/check")
 def check_user(telegram_id: int = Query(...)):
     """Check if user is registered AND approved."""
@@ -60,7 +76,47 @@ def check_user(telegram_id: int = Query(...)):
     conn.close()
 
     if not row or not row["phone"]:
-        # Even if not in DB, check hardcoded overrides
+        # DB doesn't have this user — check JSON backup as fallback
+        backup_user = _find_user_in_backup(telegram_id)
+        if backup_user:
+            # Re-insert from backup into DB so future checks are fast
+            try:
+                conn2 = get_db()
+                conn2.execute(
+                    """INSERT INTO users (telegram_id, phone, first_name, last_name,
+                       username, latitude, longitude, is_approved, client_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(telegram_id) DO UPDATE SET
+                           phone = excluded.phone,
+                           first_name = COALESCE(excluded.first_name, users.first_name),
+                           is_approved = MAX(excluded.is_approved, users.is_approved)""",
+                    (
+                        backup_user.get('telegram_id'),
+                        backup_user.get('phone'),
+                        backup_user.get('first_name', ''),
+                        backup_user.get('last_name', ''),
+                        backup_user.get('username', ''),
+                        backup_user.get('latitude'),
+                        backup_user.get('longitude'),
+                        backup_user.get('is_approved', 0),
+                        backup_user.get('client_id'),
+                    ),
+                )
+                conn2.commit()
+                conn2.close()
+                print(f"[users] Recovered user {telegram_id} from JSON backup into DB")
+            except Exception as e:
+                print(f"[users] Failed to re-insert backup user {telegram_id}: {e}")
+
+            is_approved = bool(backup_user.get('is_approved')) or (telegram_id in _ALWAYS_APPROVED)
+            return {
+                "registered": True,
+                "approved": is_approved,
+                "phone": backup_user.get('phone'),
+                "first_name": backup_user.get('first_name', ''),
+            }
+
+        # Even if not in DB or backup, check hardcoded overrides
         override = telegram_id in _ALWAYS_APPROVED
         return {"registered": False, "approved": override}
 

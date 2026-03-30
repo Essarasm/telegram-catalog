@@ -19,9 +19,25 @@ function getTelegramUserId() {
 // Persist registration data client-side so users don't need to
 // re-register when the server DB is wiped during deployments.
 function cloudSave(key, data) {
-  try {
-    window.Telegram?.WebApp?.CloudStorage?.setItem(key, JSON.stringify(data));
-  } catch (e) { /* CloudStorage not available */ }
+  return new Promise((resolve) => {
+    try {
+      const cs = window.Telegram?.WebApp?.CloudStorage;
+      if (!cs) return resolve(false);
+      cs.setItem(key, JSON.stringify(data), (err) => {
+        if (err) {
+          console.warn('[cloudSave] failed:', err);
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      });
+      // Fallback timeout — resolve after 2s even if callback never fires
+      setTimeout(() => resolve(false), 2000);
+    } catch (e) {
+      console.warn('[cloudSave] exception:', e);
+      resolve(false);
+    }
+  });
 }
 
 function cloudLoad(key) {
@@ -95,7 +111,7 @@ export default function App() {
         if (data.registered) {
           // Server recognizes user — cache to CloudStorage for future resilience
           if (data.phone) {
-            cloudSave('reg_data', {
+            await cloudSave('reg_data', {
               phone: data.phone,
               firstName: data.first_name || '',
               lastName: '',
@@ -282,7 +298,17 @@ export default function App() {
   if (registered === false) {
     return (
       <div className="min-h-screen bg-tg-bg text-tg-text">
-        <RegisterPage onRegistered={(isApproved) => {
+        <RegisterPage onRegistered={async (isApproved, regData) => {
+          // Save to CloudStorage from parent as safety net
+          // (RegisterPage also saves, but this ensures it's done)
+          if (regData?.phone) {
+            await cloudSave('reg_data', {
+              phone: regData.phone,
+              firstName: regData.firstName || '',
+              lastName: regData.lastName || '',
+              username: regData.username || '',
+            });
+          }
           setRegistered(true);
           setApproved(isApproved);
         }} />

@@ -60,12 +60,30 @@ def backup():
             merged[u['telegram_id']] = u
         final = list(merged.values())
 
-        with open(BACKUP_PATH, 'w') as f:
-            json.dump(final, f, ensure_ascii=False, indent=2)
+        # Ensure backup directory exists
+        backup_dir = os.path.dirname(BACKUP_PATH)
+        if backup_dir and not os.path.exists(backup_dir):
+            os.makedirs(backup_dir, exist_ok=True)
+
+        # Atomic write via temp file
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=backup_dir or '/data', suffix='.json.tmp')
+        try:
+            with os.fdopen(tmp_fd, 'w') as f:
+                json.dump(final, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, BACKUP_PATH)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
         print(f"[backup_users] Backed up {len(final)} users to {BACKUP_PATH}")
 
     except Exception as e:
         print(f"[backup_users] Backup error (non-fatal): {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def restore():
@@ -132,29 +150,61 @@ def save_user_to_backup(user_dict):
     Call this after /register or /approve so the backup is always
     up-to-date — not just at startup time.
     """
+    import tempfile
+
+    tid = user_dict.get('telegram_id')
+    if not tid:
+        print("[backup_users] save_user_to_backup: no telegram_id, skipping")
+        return
+
     try:
+        # Ensure backup directory exists
+        backup_dir = os.path.dirname(BACKUP_PATH)
+        if backup_dir and not os.path.exists(backup_dir):
+            os.makedirs(backup_dir, exist_ok=True)
+            print(f"[backup_users] Created backup directory: {backup_dir}")
+
         existing = []
         if os.path.exists(BACKUP_PATH):
             try:
                 with open(BACKUP_PATH, 'r') as f:
                     existing = json.load(f)
-            except (json.JSONDecodeError, IOError):
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"[backup_users] Could not read existing backup: {e}")
                 existing = []
 
-        merged = {u['telegram_id']: u for u in existing}
-        tid = user_dict.get('telegram_id')
-        if tid:
-            # If user already exists in backup, preserve is_approved=1
-            old = merged.get(tid, {})
-            old_approved = old.get('is_approved', 0) or 0
-            new_approved = user_dict.get('is_approved', 0) or 0
-            user_dict['is_approved'] = max(old_approved, new_approved)
-            merged[tid] = user_dict
+        merged = {u['telegram_id']: u for u in existing if 'telegram_id' in u}
 
-        with open(BACKUP_PATH, 'w') as f:
-            json.dump(list(merged.values()), f, ensure_ascii=False, indent=2)
+        # If user already exists in backup, preserve is_approved=1
+        old = merged.get(tid, {})
+        old_approved = old.get('is_approved', 0) or 0
+        new_approved = user_dict.get('is_approved', 0) or 0
+        user_dict['is_approved'] = max(old_approved, new_approved)
+        merged[tid] = user_dict
+
+        # Atomic write: write to temp file first, then rename
+        final_data = list(merged.values())
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=backup_dir or '/data',
+            suffix='.json.tmp'
+        )
+        try:
+            with os.fdopen(tmp_fd, 'w') as f:
+                json.dump(final_data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, BACKUP_PATH)
+            print(f"[backup_users] Saved user {tid} to backup ({len(final_data)} total users)")
+        except Exception as e:
+            # Clean up temp file if rename failed
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise e
+
     except Exception as e:
-        print(f"[backup_users] save_user_to_backup error (non-fatal): {e}")
+        print(f"[backup_users] save_user_to_backup ERROR for user {tid}: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":

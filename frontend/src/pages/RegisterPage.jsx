@@ -2,9 +2,25 @@ import { useState } from 'react';
 
 // Cache registration data in Telegram CloudStorage for auto-restore
 function cloudSave(key, data) {
-  try {
-    window.Telegram?.WebApp?.CloudStorage?.setItem(key, JSON.stringify(data));
-  } catch (e) { /* CloudStorage not available */ }
+  return new Promise((resolve) => {
+    try {
+      const cs = window.Telegram?.WebApp?.CloudStorage;
+      if (!cs) return resolve(false);
+      cs.setItem(key, JSON.stringify(data), (err) => {
+        if (err) {
+          console.warn('[cloudSave] RegisterPage failed:', err);
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      });
+      // Fallback timeout — resolve after 2s even if callback never fires
+      setTimeout(() => resolve(false), 2000);
+    } catch (e) {
+      console.warn('[cloudSave] RegisterPage exception:', e);
+      resolve(false);
+    }
+  });
 }
 
 /**
@@ -103,52 +119,52 @@ export default function RegisterPage({ onRegistered }) {
   };
 
   // Step 2a: share location
-  const shareLocation = () => {
+  const shareLocation = async () => {
     setLoading(true);
     setError(null);
     setStatusText("Joylashuvingiz aniqlanmoqda...");
 
-    getLocation()
-      .then(({ lat, lng }) => {
-        setStatusText("Ma'lumotlar saqlanmoqda...");
-        return saveToServer({ ...userData, latitude: lat, longitude: lng });
-      })
-      .then((result) => {
-        cloudSave('reg_data', {
-          phone: userData.phone,
-          firstName: userData.first_name || '',
-          lastName: userData.last_name || '',
-          username: userData.username || '',
-        });
-        onRegistered(result?.approved ?? false);
-      })
-      .catch(() => {
-        setError("Joylashuvni aniqlab bo'lmadi. Qayta urinib ko'ring yoki keyinroq yuboring.");
-        setLoading(false);
-        setStatusText(null);
-      });
+    try {
+      const { lat, lng } = await getLocation();
+      setStatusText("Ma'lumotlar saqlanmoqda...");
+      const result = await saveToServer({ ...userData, latitude: lat, longitude: lng });
+      const regData = {
+        phone: userData.phone,
+        firstName: userData.first_name || '',
+        lastName: userData.last_name || '',
+        username: userData.username || '',
+      };
+      // Await CloudStorage save before declaring registration complete
+      await cloudSave('reg_data', regData);
+      onRegistered(result?.approved ?? false, regData);
+    } catch {
+      setError("Joylashuvni aniqlab bo'lmadi. Qayta urinib ko'ring yoki keyinroq yuboring.");
+      setLoading(false);
+      setStatusText(null);
+    }
   };
 
   // Step 2b: skip location
-  const skipLocation = () => {
+  const skipLocation = async () => {
     setLoading(true);
     setStatusText("Ma'lumotlar saqlanmoqda...");
 
-    saveToServer(userData)
-      .then((result) => {
-        cloudSave('reg_data', {
-          phone: userData.phone,
-          firstName: userData.first_name || '',
-          lastName: userData.last_name || '',
-          username: userData.username || '',
-        });
-        onRegistered(result?.approved ?? false);
-      })
-      .catch(() => {
-        setError("Xatolik yuz berdi. Qayta urinib ko'ring.");
-        setLoading(false);
-        setStatusText(null);
-      });
+    try {
+      const result = await saveToServer(userData);
+      const regData = {
+        phone: userData.phone,
+        firstName: userData.first_name || '',
+        lastName: userData.last_name || '',
+        username: userData.username || '',
+      };
+      // Await CloudStorage save before declaring registration complete
+      await cloudSave('reg_data', regData);
+      onRegistered(result?.approved ?? false, regData);
+    } catch {
+      setError("Xatolik yuz berdi. Qayta urinib ko'ring.");
+      setLoading(false);
+      setStatusText(null);
+    }
   };
 
   // --- Phone collection screen ---
