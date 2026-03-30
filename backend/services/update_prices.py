@@ -6,7 +6,7 @@ Enhanced matching logic:
 3. Reports unmatched products from both sides (Excel not in DB, DB not in Excel)
 
 Safety guards:
-- Skip incoming prices below MIN_PRICE_USD (likely 1C placeholders like $0.09)
+- Skip incoming prices below PLACEHOLDER_PRICE (likely 1C placeholders like $0.09)
 - Reject price drops exceeding MAX_DROP_PCT (likely data errors)
 """
 import io
@@ -28,9 +28,10 @@ COL_UZS = 6         # Цена (UZS)
 COL_USD = 15        # ЦенаВал (wholesale USD)
 COL_WEIGHT = 18     # Вес
 
-# Safety thresholds
-MIN_PRICE_USD = 0.50     # Skip prices below this (likely 1C placeholders like $0.09)
-MAX_DROP_PCT = 80        # Reject price drops larger than this % (likely data errors)
+# Safety thresholds — placeholder detection
+# $0.09 is the known 1C placeholder value; block only exact placeholder, not low wholesale prices
+PLACEHOLDER_PRICE = 0.10  # Prices at or below this coming FROM 1C are treated as placeholders
+MAX_DROP_PCT = 80         # Reject price drops larger than this % (likely data errors)
 
 
 def normalize_name(name: str) -> str:
@@ -122,8 +123,8 @@ def apply_price_updates(file_bytes: bytes) -> dict:
             new_uzs = ep['uzs']
 
             # ── Safety guard 1: skip low incoming prices (1C placeholders) ──
-            if new_usd < MIN_PRICE_USD:
-                if old_usd >= MIN_PRICE_USD:
+            if new_usd < PLACEHOLDER_PRICE:
+                if old_usd >= PLACEHOLDER_PRICE:
                     # Would overwrite real price with placeholder — skip
                     skipped_low_price += 1
                     continue
@@ -131,14 +132,14 @@ def apply_price_updates(file_bytes: bytes) -> dict:
                 continue
 
             # ── Safety guard 2: reject suspiciously large price drops ──
-            if old_usd > MIN_PRICE_USD and new_usd < old_usd:
+            if old_usd > PLACEHOLDER_PRICE and new_usd < old_usd:
                 drop_pct = (old_usd - new_usd) / old_usd * 100
                 if drop_pct > MAX_DROP_PCT:
                     skipped_big_drop += 1
                     continue
 
             # Track placeholder → real price fixes
-            if old_usd < MIN_PRICE_USD and new_usd >= MIN_PRICE_USD:
+            if old_usd < PLACEHOLDER_PRICE and new_usd >= PLACEHOLDER_PRICE:
                 placeholder_fixes += 1
 
             needs_update = False

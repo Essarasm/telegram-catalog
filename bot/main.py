@@ -405,7 +405,7 @@ async def cmd_prices(message: types.Message):
         if skipped_low or skipped_drop:
             lines.append(f"\n🛡 <b>Xavfsizlik filtri:</b>")
             if skipped_low:
-                lines.append(f"  ⏭ Past narx ($<0.50 placeholder): {skipped_low} ta o'tkazildi")
+                lines.append(f"  ⏭ Placeholder narx ($0.09): {skipped_low} ta o'tkazildi")
             if skipped_drop:
                 lines.append(f"  ⏭ Katta tushish (>80%): {skipped_drop} ta o'tkazildi")
         if placeholder_fixes:
