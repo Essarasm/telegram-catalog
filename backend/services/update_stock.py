@@ -49,15 +49,27 @@ def normalize_name(name: str) -> str:
 def detect_stock_column(df) -> Optional[int]:
     """Try to auto-detect which column has stock quantities.
 
-    Looks for header rows containing 'Остаток', 'Количество', 'Кол-во', 'Stock', 'Qty'.
+    Looks for header rows containing stock-related keywords in Russian/English.
+    Handles variations like 'Кол-во', 'Кол - во', 'Кол.во', 'кол', etc.
     Falls back to candidate column indices.
     """
-    # Check first 5 rows for header keywords
-    stock_keywords = ['остаток', 'количество', 'кол-во', 'stock', 'qty', 'кол.', 'запас']
-    for row_idx in range(min(5, len(df))):
+    # Check first 10 rows for header keywords (some 1C exports have title rows)
+    stock_keywords = [
+        'остаток', 'количество', 'кол-во', 'кол -во', 'кол - во',
+        'кол.во', 'кол.', 'stock', 'qty', 'запас', 'наличие',
+        'остат', 'колич', 'кол‑во',  # em-dash variant
+    ]
+    for row_idx in range(min(10, len(df))):
         for col_idx in range(len(df.columns)):
             cell = str(df.iloc[row_idx, col_idx]).strip().lower()
+            # Normalize dashes and spaces for matching
+            cell_normalized = re.sub(r'[\s\-\u2013\u2014\u2010\u2011]+', '', cell)
+            if any(kw.replace('-', '').replace(' ', '') in cell_normalized for kw in stock_keywords):
+                logger.info(f"Found stock column at row {row_idx}, col {col_idx}: '{df.iloc[row_idx, col_idx]}'")
+                return col_idx
+            # Also check the raw cell with simple 'in'
             if any(kw in cell for kw in stock_keywords):
+                logger.info(f"Found stock column at row {row_idx}, col {col_idx}: '{df.iloc[row_idx, col_idx]}'")
                 return col_idx
 
     # Fallback: try candidate columns, pick the one with most numeric values
@@ -70,6 +82,8 @@ def detect_stock_column(df) -> Optional[int]:
                 best_count = numeric_count
                 best_col = col
 
+    if best_col is not None:
+        logger.info(f"Fallback: using column {best_col} (most numeric values: {best_count})")
     return best_col
 
 
@@ -83,16 +97,28 @@ def compute_stock_status(quantity: Optional[float]) -> str:
         return "in_stock"
 
 
+def detect_name_column(df) -> int:
+    """Detect which column contains product names.
+
+    Looks for header keywords like 'Наименование', 'Номенклатура', 'Товар', 'Название'.
+    Falls back to column 1 (B) or the first text-heavy column.
+    """
+    name_keywords = ['наименование', 'номенклатура', 'товар', 'название', 'продукт', 'name']
+    for row_idx in range(min(10, len(df))):
+        for col_idx in range(len(df.columns)):
+            cell = str(df.iloc[row_idx, col_idx]).strip().lower()
+            if any(kw in cell for kw in name_keywords):
+                logger.info(f"Found name column at row {row_idx}, col {col_idx}: '{df.iloc[row_idx, col_idx]}'")
+                return col_idx
+    return COL_NAME  # Default: column B (index 1)
+
+
 def parse_stock_excel(file_bytes: bytes, stock_col: Optional[int] = None) -> Dict[str, dict]:
     """Parse stock Excel and return name→{quantity, status} mapping."""
     df = pd.read_excel(io.BytesIO(file_bytes), header=None)
 
-    # Filter for products only (if type column exists)
-    has_type_col = COL_TYPE < len(df.columns)
-    if has_type_col:
-        products = df[(df[COL_TYPE] == 'Товар') & df[COL_NAME].notna()]
-    else:
-        products = df[df[COL_NAME].notna()]
+    # Auto-detect name column
+    name_col = detect_name_column(df)
 
     # Detect stock column
     if stock_col is None:
@@ -102,11 +128,24 @@ def parse_stock_excel(file_bytes: bytes, stock_col: Optional[int] = None) -> Dic
         logger.warning("Could not detect stock quantity column")
         return {}
 
-    logger.info(f"Using column {stock_col} for stock quantities")
+    # Filter for products only (if type column exists and has "Товар" values)
+    has_type_col = COL_TYPE < len(df.columns)
+    type_has_tovar = has_type_col and (df[COL_TYPE] == 'Товар').any()
+    if type_has_tovar:
+        products = df[(df[COL_TYPE] == 'Товар') & df[name_col].notna()]
+    else:
+        # No type column or no "Товар" values — use all rows with names
+        products = df[df[name_col].notna()]
+        # Skip header-like rows (first few rows that aren't product data)
+        products = products[products[name_col].apply(
+            lambda x: isinstance(x, str) and len(str(x).strip()) > 3
+        )]
+
+    logger.info(f"Using name column {name_col}, stock column {stock_col}")
 
     stocks = {}
     for _, row in products.iterrows():
-        name = str(row[COL_NAME]).strip()
+        name = str(row[name_col]).strip()
         qty = pd.to_numeric(row[stock_col] if stock_col < len(row) else None, errors='coerce')
 
         if name:
