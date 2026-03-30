@@ -398,6 +398,19 @@ async def cmd_prices(message: types.Message):
             if normalized > 0:
                 lines.append(f"🔍 Moslik: aniq={exact}, normalizatsiya={normalized}")
 
+        # Safety guard stats
+        skipped_low = result.get('skipped_low_price', 0)
+        skipped_drop = result.get('skipped_big_drop', 0)
+        placeholder_fixes = result.get('placeholder_fixes', 0)
+        if skipped_low or skipped_drop:
+            lines.append(f"\n🛡 <b>Xavfsizlik filtri:</b>")
+            if skipped_low:
+                lines.append(f"  ⏭ Past narx ($<0.50 placeholder): {skipped_low} ta o'tkazildi")
+            if skipped_drop:
+                lines.append(f"  ⏭ Katta tushish (>80%): {skipped_drop} ta o'tkazildi")
+        if placeholder_fixes:
+            lines.append(f"🔧 Placeholder → haqiqiy narx: {placeholder_fixes} ta tuzatildi")
+
         if result['changes']:
             lines.append("\n<b>O'zgarishlar:</b>")
             for c in result['changes'][:20]:
@@ -544,12 +557,15 @@ async def cmd_catalog(message: types.Message):
     if not doc:
         await message.reply(
             "❌ <b>Foydalanish:</b>\n"
-            "1. Yangilangan Rassvet_Master.xlsx faylni yuboring\n"
+            "1. Excel faylni yuboring (Rassvet_Master yoki 1C export)\n"
             "2. Faylga javob sifatida /catalog yozing\n\n"
-            "Bu buyruq:\n"
+            "<b>Rassvet_Master rejimi:</b>\n"
             "• Yangi mahsulotlarni qo'shadi\n"
             "• Mavjud mahsulotlarni yangilaydi\n"
-            "• Excel'da yo'q mahsulotlarni o'chiradi",
+            "• Excel'da yo'q mahsulotlarni o'chiradi\n\n"
+            "<b>1C Номенклатура rejimi:</b>\n"
+            "• Narx va og'irlikni yangilaydi\n"
+            "• Yangi mahsulotlarni aniqlaydi (qo'l bilan kiritish kerak)",
             parse_mode="HTML",
         )
         return
@@ -585,47 +601,101 @@ async def cmd_catalog(message: types.Message):
             await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
             return
 
-        lines = [
-            "✅ <b>Katalog yangilandi!</b>\n",
-            f"📊 Excel: {result.get('excel_products', 0)} ta mahsulot",
-            f"🗄 Bazadagi: {result.get('db_products_before', 0)} ta",
-            "",
-        ]
+        fmt = result.get('format', 'catalog_clean')
 
-        new_count = result.get('new_products', 0)
-        updated_count = result.get('updated_products', 0)
-        deactivated_count = result.get('deactivated_products', 0)
-        reactivated_count = result.get('reactivated_products', 0)
+        if fmt == '1c_nomenklatura':
+            # ── 1C Номенклатура response ──
+            lines = [
+                "✅ <b>1C sinxronizatsiya bajarildi!</b>\n",
+                f"📊 1C mahsulotlar: {result.get('excel_products', 0)}",
+                f"🗄 Bazadagi: {result.get('db_products_before', 0)}",
+                f"🔗 Mos kelgan: {result.get('matched', 0)}",
+                f"✏️ Yangilangan: {result.get('updated_products', 0)}",
+            ]
 
-        if new_count:
-            lines.append(f"🆕 Yangi qo'shildi: {new_count}")
-        if updated_count:
-            lines.append(f"✏️ Yangilandi: {updated_count}")
-        if reactivated_count:
-            lines.append(f"♻️ Qayta faollashtirildi: {reactivated_count}")
-        if deactivated_count:
-            lines.append(f"🚫 O'chirildi: {deactivated_count}")
+            pc = result.get('price_changes', 0)
+            wc = result.get('weight_changes', 0)
+            pf = result.get('placeholder_fixes', 0)
+            if pc:
+                lines.append(f"💰 Narx o'zgarishlari: {pc}")
+            if wc:
+                lines.append(f"⚖️ Og'irlik o'zgarishlari: {wc}")
+            if pf:
+                lines.append(f"🔧 Placeholder → haqiqiy: {pf}")
 
-        if not any([new_count, updated_count, deactivated_count, reactivated_count]):
-            lines.append("ℹ️ O'zgarish yo'q — katalog yangi.")
+            # Safety stats
+            sl = result.get('skipped_low_price', 0)
+            sd = result.get('skipped_big_drop', 0)
+            if sl or sd:
+                lines.append(f"\n🛡 <b>Xavfsizlik filtri:</b>")
+                if sl:
+                    lines.append(f"  ⏭ Past narx o'tkazildi: {sl}")
+                if sd:
+                    lines.append(f"  ⏭ Katta tushish o'tkazildi: {sd}")
 
-        # Show sample new products
-        new_names = result.get('new_product_names', [])
-        if new_names:
-            lines.append(f"\n<b>Yangi mahsulotlar:</b>")
-            for n in new_names[:10]:
-                lines.append(f"  • {n}")
-            if len(new_names) > 10:
-                lines.append(f"  ... va yana {len(new_names) - 10} ta")
+            # Sample price changes
+            samples = result.get('sample_price_changes', [])
+            if samples:
+                lines.append(f"\n<b>Narx o'zgarishlari (namuna):</b>")
+                for c in samples[:10]:
+                    arrow = "📈" if c['new'] > c['old'] else "📉"
+                    lines.append(f"{arrow} {c['name']}: ${c['old']:.2f} → ${c['new']:.2f}")
+                if len(samples) > 10:
+                    lines.append(f"  ... va yana {len(samples) - 10} ta")
 
-        # Show deactivated products
-        deact_names = result.get('deactivated_names', [])
-        if deact_names:
-            lines.append(f"\n<b>O'chirilganlar:</b>")
-            for n in deact_names[:10]:
-                lines.append(f"  • {n}")
-            if len(deact_names) > 10:
-                lines.append(f"  ... va yana {len(deact_names) - 10} ta")
+            # New products detected
+            new_total = result.get('new_in_1c_total', 0)
+            new_names = result.get('new_in_1c', [])
+            if new_total:
+                lines.append(f"\n🆕 <b>1C'da yangi ({new_total} ta — katalogda yo'q):</b>")
+                for n in new_names[:10]:
+                    lines.append(f"  • {n}")
+                if new_total > 10:
+                    lines.append(f"  ... va yana {new_total - 10} ta")
+                lines.append("ℹ️ Yangi mahsulotlar qo'l bilan Rassvet_Master'ga kiritilishi kerak")
+        else:
+            # ── Catalog Clean response (original) ──
+            lines = [
+                "✅ <b>Katalog yangilandi!</b>\n",
+                f"📊 Excel: {result.get('excel_products', 0)} ta mahsulot",
+                f"🗄 Bazadagi: {result.get('db_products_before', 0)} ta",
+                "",
+            ]
+
+            new_count = result.get('new_products', 0)
+            updated_count = result.get('updated_products', 0)
+            deactivated_count = result.get('deactivated_products', 0)
+            reactivated_count = result.get('reactivated_products', 0)
+
+            if new_count:
+                lines.append(f"🆕 Yangi qo'shildi: {new_count}")
+            if updated_count:
+                lines.append(f"✏️ Yangilandi: {updated_count}")
+            if reactivated_count:
+                lines.append(f"♻️ Qayta faollashtirildi: {reactivated_count}")
+            if deactivated_count:
+                lines.append(f"🚫 O'chirildi: {deactivated_count}")
+
+            if not any([new_count, updated_count, deactivated_count, reactivated_count]):
+                lines.append("ℹ️ O'zgarish yo'q — katalog yangi.")
+
+            # Show sample new products
+            new_names = result.get('new_product_names', [])
+            if new_names:
+                lines.append(f"\n<b>Yangi mahsulotlar:</b>")
+                for n in new_names[:10]:
+                    lines.append(f"  • {n}")
+                if len(new_names) > 10:
+                    lines.append(f"  ... va yana {len(new_names) - 10} ta")
+
+            # Show deactivated products
+            deact_names = result.get('deactivated_names', [])
+            if deact_names:
+                lines.append(f"\n<b>O'chirilganlar:</b>")
+                for n in deact_names[:10]:
+                    lines.append(f"  • {n}")
+                if len(deact_names) > 10:
+                    lines.append(f"  ... va yana {len(deact_names) - 10} ta")
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
 
