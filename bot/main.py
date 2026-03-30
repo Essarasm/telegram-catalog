@@ -398,19 +398,6 @@ async def cmd_prices(message: types.Message):
             if normalized > 0:
                 lines.append(f"🔍 Moslik: aniq={exact}, normalizatsiya={normalized}")
 
-        # Safety guard stats
-        skipped_low = result.get('skipped_low_price', 0)
-        skipped_drop = result.get('skipped_big_drop', 0)
-        placeholder_fixes = result.get('placeholder_fixes', 0)
-        if skipped_low or skipped_drop:
-            lines.append(f"\n🛡 <b>Xavfsizlik filtri:</b>")
-            if skipped_low:
-                lines.append(f"  ⏭ Placeholder narx ($0.09): {skipped_low} ta o'tkazildi")
-            if skipped_drop:
-                lines.append(f"  ⏭ Katta tushish (>80%): {skipped_drop} ta o'tkazildi")
-        if placeholder_fixes:
-            lines.append(f"🔧 Placeholder → haqiqiy narx: {placeholder_fixes} ta tuzatildi")
-
         if result['changes']:
             lines.append("\n<b>O'zgarishlar:</b>")
             for c in result['changes'][:20]:
@@ -615,23 +602,10 @@ async def cmd_catalog(message: types.Message):
 
             pc = result.get('price_changes', 0)
             wc = result.get('weight_changes', 0)
-            pf = result.get('placeholder_fixes', 0)
             if pc:
                 lines.append(f"💰 Narx o'zgarishlari: {pc}")
             if wc:
                 lines.append(f"⚖️ Og'irlik o'zgarishlari: {wc}")
-            if pf:
-                lines.append(f"🔧 Placeholder → haqiqiy: {pf}")
-
-            # Safety stats
-            sl = result.get('skipped_low_price', 0)
-            sd = result.get('skipped_big_drop', 0)
-            if sl or sd:
-                lines.append(f"\n🛡 <b>Xavfsizlik filtri:</b>")
-                if sl:
-                    lines.append(f"  ⏭ Past narx o'tkazildi: {sl}")
-                if sd:
-                    lines.append(f"  ⏭ Katta tushish o'tkazildi: {sd}")
 
             # Sample price changes
             samples = result.get('sample_price_changes', [])

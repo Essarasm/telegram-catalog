@@ -28,10 +28,6 @@ from backend.database import get_db, init_db, build_search_text
 
 logger = logging.getLogger(__name__)
 
-# Safety thresholds (shared with update_prices.py)
-PLACEHOLDER_PRICE = 0.10  # 1C placeholder is $0.09 — block only this, not real low prices
-MAX_DROP_PCT = 80
-
 # 1C column indices (0-based, from Номенклатура export)
 C1_NAME = 1          # Наименование
 C1_TYPE = 2          # Тип номенклатуры (== "Товар" for products)
@@ -368,9 +364,6 @@ def _refresh_from_1c(file_bytes: bytes) -> dict:
     updated = 0
     price_changes = []
     weight_changes = []
-    skipped_low_price = 0
-    skipped_big_drop = 0
-    placeholder_fixes = 0
     new_in_1c = []  # Products in 1C but not in our DB
 
     for _, row in products.iterrows():
@@ -395,40 +388,17 @@ def _refresh_from_1c(file_bytes: bytes) -> dict:
         matched += 1
         changes_made = False
 
-        # ── Price update with safety guards ──
+        # ── Price update — 1C is single source of truth ──
         if pd.notna(usd_1c) and usd_1c > 0:
             old_usd = product["price_usd"] or 0
-
-            if usd_1c < PLACEHOLDER_PRICE:
-                if old_usd >= PLACEHOLDER_PRICE:
-                    skipped_low_price += 1
-                # Skip: incoming price is a placeholder
-            elif old_usd > PLACEHOLDER_PRICE and usd_1c < old_usd:
-                drop_pct = (old_usd - usd_1c) / old_usd * 100
-                if drop_pct > MAX_DROP_PCT:
-                    skipped_big_drop += 1
-                else:
-                    # Legitimate price decrease
-                    if abs(old_usd - usd_1c) > 0.001:
-                        conn.execute("UPDATE products SET price_usd = ? WHERE id = ?",
-                                     (float(usd_1c), product["id"]))
-                        price_changes.append({
-                            "name": (product["name_display"] or product["name"])[:50],
-                            "old": old_usd, "new": float(usd_1c)
-                        })
-                        changes_made = True
-            else:
-                # Price increase or placeholder fix
-                if abs(old_usd - usd_1c) > 0.001:
-                    if old_usd < PLACEHOLDER_PRICE:
-                        placeholder_fixes += 1
-                    conn.execute("UPDATE products SET price_usd = ? WHERE id = ?",
-                                 (float(usd_1c), product["id"]))
-                    price_changes.append({
-                        "name": (product["name_display"] or product["name"])[:50],
-                        "old": old_usd, "new": float(usd_1c)
-                    })
-                    changes_made = True
+            if abs(old_usd - usd_1c) > 0.001:
+                conn.execute("UPDATE products SET price_usd = ? WHERE id = ?",
+                             (float(usd_1c), product["id"]))
+                price_changes.append({
+                    "name": (product["name_display"] or product["name"])[:50],
+                    "old": old_usd, "new": float(usd_1c)
+                })
+                changes_made = True
 
         # ── Weight update ──
         if pd.notna(weight_1c) and weight_1c > 0:
@@ -457,9 +427,6 @@ def _refresh_from_1c(file_bytes: bytes) -> dict:
         "updated_products": updated,
         "price_changes": len(price_changes),
         "weight_changes": len(weight_changes),
-        "placeholder_fixes": placeholder_fixes,
-        "skipped_low_price": skipped_low_price,
-        "skipped_big_drop": skipped_big_drop,
         "new_in_1c": new_in_1c[:30],
         "new_in_1c_total": len(new_in_1c),
         "sample_price_changes": price_changes[:15],
