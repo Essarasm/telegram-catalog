@@ -103,9 +103,27 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
       </h2>
 
       {/* Details row */}
-      <div className="flex items-center gap-4 text-sm text-tg-hint">
+      <div className="flex flex-wrap items-center gap-3 text-sm text-tg-hint">
         {product.unit && <span>{t.unit || 'Birlik'}: {product.unit}</span>}
         {product.weight ? <span>{product.weight} kg</span> : null}
+        {product.stock_status === 'in_stock' && (
+          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-500/15 text-green-600">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+            {t.stock_in_stock}
+          </span>
+        )}
+        {product.stock_status === 'low_stock' && (
+          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+            {t.stock_low_stock}
+          </span>
+        )}
+        {product.stock_status === 'out_of_stock' && (
+          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-red-500/15 text-red-500">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+            {t.stock_out_of_stock}
+          </span>
+        )}
       </div>
 
       {/* Price or contact message */}

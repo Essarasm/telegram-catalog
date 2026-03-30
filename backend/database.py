@@ -189,8 +189,18 @@ def init_db():
     # Create index on client_id_1c (after migration ensures column exists)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_1c ON allowed_clients(client_id_1c)")
 
-    # Migration: add search_text column to products (cross-language search index)
+    # Migration: add stock columns to products
     prod_cols = {row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
+    for col, coltype in [
+        ("stock_quantity", "REAL DEFAULT NULL"),
+        ("stock_status", "TEXT DEFAULT NULL"),
+        ("stock_updated_at", "TEXT DEFAULT NULL"),
+    ]:
+        if col not in prod_cols:
+            conn.execute(f"ALTER TABLE products ADD COLUMN {col} {coltype}")
+            prod_cols.add(col)
+
+    # Migration: add search_text column to products (cross-language search index)
     if "search_text" not in prod_cols:
         conn.execute("ALTER TABLE products ADD COLUMN search_text TEXT DEFAULT ''")
         # Populate search_text for existing products

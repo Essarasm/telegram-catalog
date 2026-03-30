@@ -1,8 +1,15 @@
-"""Update product prices from an Excel file."""
+"""Update product prices from an Excel file.
+
+Enhanced matching logic:
+1. Exact match on original Cyrillic name (p.name)
+2. Normalized match (stripped whitespace, lowercase)
+3. Reports unmatched products from both sides (Excel not in DB, DB not in Excel)
+"""
 import io
 import re
 import logging
 from typing import Dict, List, Tuple
+from difflib import SequenceMatcher
 
 import pandas as pd
 from backend.database import get_db
@@ -16,6 +23,19 @@ COL_UNIT = 5        # Единица измерения
 COL_UZS = 6         # Цена (UZS)
 COL_USD = 15        # ЦенаВал (wholesale USD)
 COL_WEIGHT = 18     # Вес
+
+
+def normalize_name(name: str) -> str:
+    """Normalize a product name for fuzzy matching."""
+    if not name:
+        return ""
+    # Lowercase, strip, collapse whitespace, remove extra punctuation
+    n = name.strip().lower()
+    n = re.sub(r'\s+', ' ', n)
+    # Remove leading/trailing punctuation
+    n = re.sub(r'^[\s\-\u2013\u2014/\\:,.«»"]+', '', n)
+    n = re.sub(r'[\s\-\u2013\u2014/\\:,.«»"]+$', '', n)
+    return n
 
 
 def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
@@ -40,21 +60,53 @@ def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
 
 
 def apply_price_updates(file_bytes: bytes) -> dict:
-    """Apply price updates from Excel to the database. Returns summary."""
+    """Apply price updates from Excel to the database. Returns detailed summary."""
     excel_prices = parse_price_excel(file_bytes)
     if not excel_prices:
         return {"ok": False, "error": "No products found in Excel"}
 
     conn = get_db()
-    db_products = conn.execute("SELECT id, name, price_usd, price_uzs FROM products").fetchall()
+    db_products = conn.execute(
+        "SELECT id, name, name_display, price_usd, price_uzs, weight FROM products WHERE is_active = 1"
+    ).fetchall()
 
-    updated = []
+    # Build normalized lookup for DB products
+    db_by_exact = {}      # exact name → product
+    db_by_normalized = {}  # normalized name → product
     for p in db_products:
         db_name = p["name"].strip()
-        if db_name in excel_prices:
-            ep = excel_prices[db_name]
-            old_usd = p["price_usd"] or 0
-            old_uzs = p["price_uzs"] or 0
+        db_by_exact[db_name] = p
+        norm = normalize_name(db_name)
+        if norm not in db_by_normalized:
+            db_by_normalized[norm] = p
+
+    updated = []
+    matched_db_ids = set()
+    matched_excel_names = set()
+    match_methods = {"exact": 0, "normalized": 0}
+
+    for excel_name, ep in excel_prices.items():
+        product = None
+        method = None
+
+        # 1. Exact match
+        if excel_name in db_by_exact:
+            product = db_by_exact[excel_name]
+            method = "exact"
+        else:
+            # 2. Normalized match
+            norm_excel = normalize_name(excel_name)
+            if norm_excel in db_by_normalized:
+                product = db_by_normalized[norm_excel]
+                method = "normalized"
+
+        if product:
+            matched_db_ids.add(product["id"])
+            matched_excel_names.add(excel_name)
+            match_methods[method] = match_methods.get(method, 0) + 1
+
+            old_usd = product["price_usd"] or 0
+            old_uzs = product["price_uzs"] or 0
             new_usd = ep['usd']
             new_uzs = ep['uzs']
 
@@ -64,28 +116,57 @@ def apply_price_updates(file_bytes: bytes) -> dict:
             if new_uzs > 0 and abs(old_uzs - new_uzs) > 0.5:
                 needs_update = True
 
-            if needs_update:
-                conn.execute(
-                    "UPDATE products SET price_usd = ?, price_uzs = ? WHERE id = ?",
-                    (new_usd, new_uzs if new_uzs > 0 else old_uzs, p["id"]),
-                )
-                updated.append({
-                    "id": p["id"],
-                    "name": db_name[:50],
+            # Also update weight if provided and different
+            old_weight = product["weight"] or 0
+            new_weight = ep.get('weight')
+            weight_changed = False
+            if new_weight and abs(old_weight - new_weight) > 0.001:
+                weight_changed = True
+
+            if needs_update or weight_changed:
+                update_sql = "UPDATE products SET price_usd = ?, price_uzs = ?"
+                params = [new_usd, new_uzs if new_uzs > 0 else old_uzs]
+
+                if weight_changed:
+                    update_sql += ", weight = ?"
+                    params.append(new_weight)
+
+                update_sql += " WHERE id = ?"
+                params.append(product["id"])
+                conn.execute(update_sql, params)
+
+                change_record = {
+                    "id": product["id"],
+                    "name": (product["name_display"] or product["name"])[:50],
                     "old_usd": old_usd,
                     "new_usd": new_usd,
-                })
+                }
+                if weight_changed:
+                    change_record["old_weight"] = old_weight
+                    change_record["new_weight"] = new_weight
+                updated.append(change_record)
 
     conn.commit()
-    conn.close()
 
-    matched = sum(1 for p in db_products if p["name"].strip() in excel_prices)
+    # Find unmatched items
+    unmatched_excel = []
+    for name in excel_prices:
+        if name not in matched_excel_names:
+            unmatched_excel.append(name[:60])
+
+    unmatched_db_count = len(db_products) - len(matched_db_ids)
+
+    conn.close()
 
     return {
         "ok": True,
         "excel_products": len(excel_prices),
         "db_products": len(db_products),
-        "matched": matched,
+        "matched": len(matched_db_ids),
         "updated": len(updated),
         "changes": updated,
+        "match_methods": match_methods,
+        "unmatched_excel": unmatched_excel[:30],  # Top 30 unmatched from Excel
+        "unmatched_excel_total": len(unmatched_excel),
+        "unmatched_db_count": unmatched_db_count,
     }

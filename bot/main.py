@@ -390,6 +390,14 @@ async def cmd_prices(message: types.Message):
             f"✏️ O'zgartirilgan: {result['updated']}",
         ]
 
+        # Show match method breakdown if available
+        methods = result.get('match_methods', {})
+        if methods:
+            exact = methods.get('exact', 0)
+            normalized = methods.get('normalized', 0)
+            if normalized > 0:
+                lines.append(f"🔍 Moslik: aniq={exact}, normalizatsiya={normalized}")
+
         if result['changes']:
             lines.append("\n<b>O'zgarishlar:</b>")
             for c in result['changes'][:20]:
@@ -400,10 +408,229 @@ async def cmd_prices(message: types.Message):
             if len(result['changes']) > 20:
                 lines.append(f"... va yana {len(result['changes']) - 20} ta")
 
+        # Show unmatched summary
+        unmatched_total = result.get('unmatched_excel_total', 0)
+        if unmatched_total > 0:
+            lines.append(f"\n⚠️ <b>Mos kelmagan ({unmatched_total} ta Excel'dan):</b>")
+            for name in result.get('unmatched_excel', [])[:10]:
+                lines.append(f"  • {name}")
+            if unmatched_total > 10:
+                lines.append(f"  ... va yana {unmatched_total - 10} ta")
+
+        unmatched_db = result.get('unmatched_db_count', 0)
+        if unmatched_db > 0:
+            lines.append(f"\nℹ️ Bazada {unmatched_db} ta mahsulot Excel'da topilmadi")
+
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Price update error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
+
+
+@dp.message(Command("stock"))
+async def cmd_stock(message: types.Message):
+    """Update stock/inventory levels from an Excel file. Reply to a document with /stock."""
+    if not is_admin(message):
+        return
+
+    # Check if replying to a document
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "1. 1C'dan inventarizatsiya Excel faylni yuboring\n"
+            "2. Faylga javob sifatida /stock yozing\n\n"
+            "Yoki faylni /stock caption bilan yuboring.\n\n"
+            "<b>Holatlar:</b>\n"
+            "🟢 Mavjud (>10)\n"
+            "🟡 Kam qoldi (1-10)\n"
+            "🔴 Tugagan (0)",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.endswith(('.xlsx', '.xls')):
+        await message.reply("❌ Faqat Excel (.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply("⏳ Inventarizatsiya yangilanmoqda...")
+
+    try:
+        import httpx
+
+        # Download file from Telegram
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        # Send to our API
+        api_url = f"{_BASE_URL}/api/products/update-stock"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        sc = result.get('status_counts', {})
+        lines = [
+            "✅ <b>Inventarizatsiya yangilandi!</b>\n",
+            f"📊 Excel: {result['excel_products']} ta mahsulot",
+            f"🗄 Baza: {result['db_products']} ta mahsulot",
+            f"🔗 Mos kelgan: {result['matched']}",
+            "",
+            "<b>Holat:</b>",
+            f"🟢 Mavjud: {sc.get('in_stock', 0)}",
+            f"🟡 Kam qoldi: {sc.get('low_stock', 0)}",
+            f"🔴 Tugagan: {sc.get('out_of_stock', 0)}",
+        ]
+
+        # Show notable status changes
+        changes = result.get('status_changes', [])
+        if changes:
+            lines.append(f"\n<b>Holat o'zgarishlari ({len(changes)}):</b>")
+            status_emoji = {"in_stock": "🟢", "low_stock": "🟡", "out_of_stock": "🔴", "unknown": "⚪"}
+            for c in changes[:15]:
+                old_e = status_emoji.get(c['old_status'], '⚪')
+                new_e = status_emoji.get(c['new_status'], '⚪')
+                lines.append(f"  {old_e}→{new_e} {c['name']}")
+            if len(changes) > 15:
+                lines.append(f"  ... va yana {len(changes) - 15} ta")
+
+        unmatched = result.get('unmatched_count', 0)
+        if unmatched > 0:
+            lines.append(f"\n⚠️ {unmatched} ta Excel mahsulot bazada topilmadi")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Stock update error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
+
+
+@dp.message(Command("catalog"))
+async def cmd_catalog(message: types.Message):
+    """Refresh catalog from an Excel file without full redeploy.
+
+    Reply to an Excel with /catalog to:
+    - Add new products not in the database
+    - Update existing product details (category, producer, weight, unit)
+    - Mark products not in Excel as discontinued (is_active=0)
+    """
+    if not is_admin(message):
+        return
+
+    # Check if replying to a document
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "1. Yangilangan Rassvet_Master.xlsx faylni yuboring\n"
+            "2. Faylga javob sifatida /catalog yozing\n\n"
+            "Bu buyruq:\n"
+            "• Yangi mahsulotlarni qo'shadi\n"
+            "• Mavjud mahsulotlarni yangilaydi\n"
+            "• Excel'da yo'q mahsulotlarni o'chiradi",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.endswith(('.xlsx', '.xls')):
+        await message.reply("❌ Faqat Excel (.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply("⏳ Katalog yangilanmoqda... (bu biroz vaqt olishi mumkin)")
+
+    try:
+        import httpx
+
+        # Download file from Telegram
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        # Send to our API
+        api_url = f"{_BASE_URL}/api/products/refresh-catalog"
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        lines = [
+            "✅ <b>Katalog yangilandi!</b>\n",
+            f"📊 Excel: {result.get('excel_products', 0)} ta mahsulot",
+            f"🗄 Bazadagi: {result.get('db_products_before', 0)} ta",
+            "",
+        ]
+
+        new_count = result.get('new_products', 0)
+        updated_count = result.get('updated_products', 0)
+        deactivated_count = result.get('deactivated_products', 0)
+        reactivated_count = result.get('reactivated_products', 0)
+
+        if new_count:
+            lines.append(f"🆕 Yangi qo'shildi: {new_count}")
+        if updated_count:
+            lines.append(f"✏️ Yangilandi: {updated_count}")
+        if reactivated_count:
+            lines.append(f"♻️ Qayta faollashtirildi: {reactivated_count}")
+        if deactivated_count:
+            lines.append(f"🚫 O'chirildi: {deactivated_count}")
+
+        if not any([new_count, updated_count, deactivated_count, reactivated_count]):
+            lines.append("ℹ️ O'zgarish yo'q — katalog yangi.")
+
+        # Show sample new products
+        new_names = result.get('new_product_names', [])
+        if new_names:
+            lines.append(f"\n<b>Yangi mahsulotlar:</b>")
+            for n in new_names[:10]:
+                lines.append(f"  • {n}")
+            if len(new_names) > 10:
+                lines.append(f"  ... va yana {len(new_names) - 10} ta")
+
+        # Show deactivated products
+        deact_names = result.get('deactivated_names', [])
+        if deact_names:
+            lines.append(f"\n<b>O'chirilganlar:</b>")
+            for n in deact_names[:10]:
+                lines.append(f"  • {n}")
+            if len(deact_names) > 10:
+                lines.append(f"  ... va yana {len(deact_names) - 10} ta")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Catalog refresh error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
 
 
@@ -420,6 +647,10 @@ async def cmd_help(message: types.Message):
         "Tasdiqlanmaganlar ro'yxati\n\n"
         "<b>/prices</b> (reply to Excel file)\n"
         "Narxlarni yangilash\n\n"
+        "<b>/stock</b> (reply to Excel file)\n"
+        "Inventarizatsiya (qoldiq) yangilash\n\n"
+        "<b>/catalog</b> (reply to Excel file)\n"
+        "Katalogni yangilash (yangi/o'chirilgan mahsulotlar)\n\n"
         "<b>/chatid</b>\n"
         "Chat va User ID ko'rish\n\n"
         "<b>/reports</b>\n"
@@ -589,7 +820,7 @@ async def cmd_searches(message: types.Message):
 
 
 # ───────────────────────────────────────────
-# Handle document uploads with /prices caption
+# Handle document uploads with command captions
 # ───────────────────────────────────────────
 
 @dp.message(F.document & F.caption.startswith("/prices"))
@@ -597,8 +828,23 @@ async def handle_prices_document(message: types.Message):
     """Handle Excel file sent with /prices as caption."""
     if not is_admin(message):
         return
-    # Reuse the prices command handler
     await cmd_prices(message)
+
+
+@dp.message(F.document & F.caption.startswith("/stock"))
+async def handle_stock_document(message: types.Message):
+    """Handle Excel file sent with /stock as caption."""
+    if not is_admin(message):
+        return
+    await cmd_stock(message)
+
+
+@dp.message(F.document & F.caption.startswith("/catalog"))
+async def handle_catalog_document(message: types.Message):
+    """Handle Excel file sent with /catalog as caption."""
+    if not is_admin(message):
+        return
+    await cmd_catalog(message)
 
 
 # ───────────────────────────────────────────

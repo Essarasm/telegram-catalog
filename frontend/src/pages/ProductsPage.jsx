@@ -173,15 +173,27 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                   <div className="text-sm font-medium leading-snug line-clamp-2 min-h-[2.5rem]">
                     {displayName}
                   </div>
-                  {approved ? (
-                    <div className="text-base font-bold text-tg-link mt-1.5">
-                      {priceStr}
-                    </div>
-                  ) : (
-                    <div className="text-xs text-tg-hint mt-1.5 italic leading-tight">
-                      Narxni bilish uchun bog'laning
-                    </div>
-                  )}
+                  <div className="flex items-center gap-2 mt-1.5">
+                    {approved ? (
+                      <div className="text-base font-bold text-tg-link">
+                        {priceStr}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-tg-hint italic leading-tight">
+                        Narxni bilish uchun bog'laning
+                      </div>
+                    )}
+                    {product.stock_status === 'out_of_stock' && (
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-500/15 text-red-500 whitespace-nowrap">
+                        {t.stock_out_of_stock}
+                      </span>
+                    )}
+                    {product.stock_status === 'low_stock' && (
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 whitespace-nowrap">
+                        {t.stock_low_stock}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 

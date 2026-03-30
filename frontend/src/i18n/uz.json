@@ -63,6 +63,9 @@
   "reorder_success": "Mahsulotlar savatga qo'shildi!",
   "reorder_partial": "ta mahsulot endi mavjud emas",
   "items_count": "ta mahsulot",
+  "stock_in_stock": "Mavjud",
+  "stock_low_stock": "Kam qoldi",
+  "stock_out_of_stock": "Tugagan",
   "category_icons": {
     "Bo'yoq & Emal": "🪣",
     "Suv emulsiya va Gruntovka": "🎨",
