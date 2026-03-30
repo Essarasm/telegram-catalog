@@ -1,17 +1,15 @@
 """Update product stock/inventory levels from an Excel file.
 
-Expected Excel format from 1C:
-- Column B (index 1): Product name (Наименование) — matches products.name (Cyrillic)
-- Column C (index 2): Тип номенклатуры — filter for "Товар" only
-- One or more quantity columns (auto-detected, or configurable)
+Supports the 1C "Прайс лист" export format:
+- .xls (cp1251 encoding) or .xlsx
+- Layout: Col 1=№, Col 2=Наименование, Col 3=Ед.изм., Col 4=кол-во, Col 5=кол-во упак.
+- Header row auto-detected, category rows skipped
+- Product names match products.name (Cyrillic) in the database
 
 Stock status thresholds:
 - stock_quantity > 10: "in_stock"
 - 0 < stock_quantity <= 10: "low_stock"
 - stock_quantity == 0 or NULL: "out_of_stock"
-
-The exact column for quantity will be auto-detected or can be configured
-when the actual 1C export format is known.
 """
 import io
 import re
@@ -22,14 +20,6 @@ import pandas as pd
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
-
-# Default column indices (0-based) — same as price Excel
-COL_NAME = 1         # Наименование
-COL_TYPE = 2         # Тип номенклатуры (== "Товар")
-
-# Stock quantity column — will be configured once 1C export format is known
-# For now, try common positions: column D (3), or search for "Остаток"/"Количество" header
-COL_STOCK_CANDIDATES = [3, 4, 7, 8, 9, 10]
 
 # Stock status thresholds
 THRESHOLD_LOW = 10   # <= this = "low_stock"
@@ -46,47 +36,6 @@ def normalize_name(name: str) -> str:
     return n
 
 
-def detect_stock_column(df) -> Optional[int]:
-    """Try to auto-detect which column has stock quantities.
-
-    Looks for header rows containing stock-related keywords in Russian/English.
-    Handles variations like 'Кол-во', 'Кол - во', 'Кол.во', 'кол', etc.
-    Falls back to candidate column indices.
-    """
-    # Check first 10 rows for header keywords (some 1C exports have title rows)
-    stock_keywords = [
-        'остаток', 'количество', 'кол-во', 'кол -во', 'кол - во',
-        'кол.во', 'кол.', 'stock', 'qty', 'запас', 'наличие',
-        'остат', 'колич', 'кол‑во',  # em-dash variant
-    ]
-    for row_idx in range(min(10, len(df))):
-        for col_idx in range(len(df.columns)):
-            cell = str(df.iloc[row_idx, col_idx]).strip().lower()
-            # Normalize dashes and spaces for matching
-            cell_normalized = re.sub(r'[\s\-\u2013\u2014\u2010\u2011]+', '', cell)
-            if any(kw.replace('-', '').replace(' ', '') in cell_normalized for kw in stock_keywords):
-                logger.info(f"Found stock column at row {row_idx}, col {col_idx}: '{df.iloc[row_idx, col_idx]}'")
-                return col_idx
-            # Also check the raw cell with simple 'in'
-            if any(kw in cell for kw in stock_keywords):
-                logger.info(f"Found stock column at row {row_idx}, col {col_idx}: '{df.iloc[row_idx, col_idx]}'")
-                return col_idx
-
-    # Fallback: try candidate columns, pick the one with most numeric values
-    best_col = None
-    best_count = 0
-    for col in COL_STOCK_CANDIDATES:
-        if col < len(df.columns):
-            numeric_count = pd.to_numeric(df[col], errors='coerce').notna().sum()
-            if numeric_count > best_count:
-                best_count = numeric_count
-                best_col = col
-
-    if best_col is not None:
-        logger.info(f"Fallback: using column {best_col} (most numeric values: {best_count})")
-    return best_col
-
-
 def compute_stock_status(quantity: Optional[float]) -> str:
     """Compute stock status from quantity."""
     if quantity is None or quantity <= 0:
@@ -97,70 +46,166 @@ def compute_stock_status(quantity: Optional[float]) -> str:
         return "in_stock"
 
 
-def detect_name_column(df) -> int:
-    """Detect which column contains product names.
+def read_excel_with_encoding(file_bytes: bytes) -> pd.DataFrame:
+    """Read Excel file, handling .xls cp1251 encoding issues.
 
-    Looks for header keywords like 'Наименование', 'Номенклатура', 'Товар', 'Название'.
-    Falls back to column 1 (B) or the first text-heavy column.
+    Old .xls files from 1C often lack a CODEPAGE record, causing pandas/xlrd
+    to default to iso-8859-1 which garbles Cyrillic text. We try multiple
+    approaches to get proper decoding.
     """
-    name_keywords = ['наименование', 'номенклатура', 'товар', 'название', 'продукт', 'name']
-    for row_idx in range(min(10, len(df))):
+    # First try: read with xlrd and cp1251 override (for .xls files)
+    try:
+        import xlrd
+        wb = xlrd.open_workbook(file_contents=file_bytes, encoding_override='cp1251')
+        ws = wb.sheet_by_index(0)
+        data = []
+        for i in range(ws.nrows):
+            row = []
+            for j in range(ws.ncols):
+                row.append(ws.cell_value(i, j))
+            data.append(row)
+        wb.release_resources()
+        df = pd.DataFrame(data)
+        # Verify Cyrillic came through (check for common Russian chars)
+        sample = ' '.join(str(v) for v in df.iloc[:10].values.flatten() if v)
+        if any('\u0400' <= c <= '\u04ff' for c in sample):
+            logger.info("Read .xls with cp1251 encoding override — Cyrillic OK")
+            return df
+    except Exception as e:
+        logger.info(f"xlrd cp1251 read failed: {e}")
+
+    # Second try: standard pandas read (works for .xlsx and some .xls)
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes), header=None)
+        sample = ' '.join(str(v) for v in df.iloc[:10].values.flatten() if v)
+        if any('\u0400' <= c <= '\u04ff' for c in sample):
+            logger.info("Read with pandas — Cyrillic OK")
+            return df
+        logger.info("Pandas read succeeded but no Cyrillic detected, trying xlrd fallback")
+    except Exception as e:
+        logger.info(f"Pandas read failed: {e}")
+
+    # Third try: xlrd without encoding override
+    try:
+        import xlrd
+        wb = xlrd.open_workbook(file_contents=file_bytes)
+        ws = wb.sheet_by_index(0)
+        data = []
+        for i in range(ws.nrows):
+            row = [ws.cell_value(i, j) for j in range(ws.ncols)]
+            data.append(row)
+        wb.release_resources()
+        df = pd.DataFrame(data)
+        logger.info("Read .xls with xlrd default encoding")
+        return df
+    except Exception as e:
+        logger.info(f"xlrd default read failed: {e}")
+
+    # Last resort: pandas with no special handling
+    return pd.read_excel(io.BytesIO(file_bytes), header=None)
+
+
+def detect_columns(df) -> dict:
+    """Auto-detect column layout from header rows.
+
+    Returns dict with 'name_col', 'stock_col', 'pkg_col', 'header_row'.
+    """
+    name_keywords = ['наименование', 'номенклатура', 'название', 'товар', 'name']
+    stock_keywords = [
+        'кол-во', 'колво', 'количество', 'остаток', 'qty', 'stock',
+        'запас', 'наличие', 'кол.', 'кол ',
+    ]
+
+    result = {'name_col': None, 'stock_col': None, 'pkg_col': None, 'header_row': None}
+
+    for row_idx in range(min(15, len(df))):
         for col_idx in range(len(df.columns)):
-            cell = str(df.iloc[row_idx, col_idx]).strip().lower()
-            if any(kw in cell for kw in name_keywords):
-                logger.info(f"Found name column at row {row_idx}, col {col_idx}: '{df.iloc[row_idx, col_idx]}'")
-                return col_idx
-    return COL_NAME  # Default: column B (index 1)
+            cell_raw = str(df.iloc[row_idx, col_idx]).strip()
+            cell = cell_raw.lower()
+            # Normalize: remove newlines, collapse spaces
+            cell_clean = re.sub(r'\s+', ' ', cell).strip()
+            cell_nodash = re.sub(r'[\s\-\u2013\u2014\u2010\u2011]+', '', cell)
+
+            # Detect name column
+            if result['name_col'] is None:
+                if any(kw in cell_clean for kw in name_keywords):
+                    result['name_col'] = col_idx
+                    result['header_row'] = row_idx
+                    logger.info(f"Name column: col {col_idx} at row {row_idx} [{cell_raw}]")
+
+            # Detect stock column (first кол-во match = quantity, second = packages)
+            for kw in stock_keywords:
+                kw_nodash = kw.replace('-', '').replace(' ', '')
+                if kw_nodash in cell_nodash or kw in cell_clean:
+                    if result['stock_col'] is None:
+                        result['stock_col'] = col_idx
+                        result['header_row'] = row_idx
+                        logger.info(f"Stock column: col {col_idx} at row {row_idx} [{cell_raw}]")
+                    elif result['pkg_col'] is None and col_idx != result['stock_col']:
+                        # Second кол-во column = packages
+                        if 'упак' in cell_clean:
+                            result['pkg_col'] = col_idx
+                            logger.info(f"Package column: col {col_idx} at row {row_idx} [{cell_raw}]")
+                        elif result['stock_col'] is not None:
+                            result['pkg_col'] = col_idx
+                            logger.info(f"Package column (assumed): col {col_idx} [{cell_raw}]")
+                    break
+
+    # Defaults if not detected
+    if result['name_col'] is None:
+        result['name_col'] = 2  # Col C (common in 1C exports)
+    if result['header_row'] is None:
+        result['header_row'] = 0
+
+    return result
 
 
-def parse_stock_excel(file_bytes: bytes, stock_col: Optional[int] = None) -> Dict[str, dict]:
+def parse_stock_excel(file_bytes: bytes) -> Dict[str, dict]:
     """Parse stock Excel and return name→{quantity, status} mapping."""
-    df = pd.read_excel(io.BytesIO(file_bytes), header=None)
+    df = read_excel_with_encoding(file_bytes)
 
-    # Auto-detect name column
-    name_col = detect_name_column(df)
-
-    # Detect stock column
-    if stock_col is None:
-        stock_col = detect_stock_column(df)
-
-    if stock_col is None:
-        logger.warning("Could not detect stock quantity column")
+    if df.empty:
+        logger.warning("Empty DataFrame after reading Excel")
         return {}
 
-    # Filter for products only (if type column exists and has "Товар" values)
-    has_type_col = COL_TYPE < len(df.columns)
-    type_has_tovar = has_type_col and (df[COL_TYPE] == 'Товар').any()
-    if type_has_tovar:
-        products = df[(df[COL_TYPE] == 'Товар') & df[name_col].notna()]
-    else:
-        # No type column or no "Товар" values — use all rows with names
-        products = df[df[name_col].notna()]
-        # Skip header-like rows (first few rows that aren't product data)
-        products = products[products[name_col].apply(
-            lambda x: isinstance(x, str) and len(str(x).strip()) > 3
-        )]
+    # Detect layout
+    cols = detect_columns(df)
+    name_col = cols['name_col']
+    stock_col = cols['stock_col']
+    header_row = cols['header_row']
 
-    logger.info(f"Using name column {name_col}, stock column {stock_col}")
+    if stock_col is None:
+        logger.warning("Could not detect stock quantity column in any header row")
+        return {}
 
+    logger.info(f"Layout: name={name_col}, stock={stock_col}, header_row={header_row}")
+
+    # Extract product rows (skip header and category rows)
     stocks = {}
-    for _, row in products.iterrows():
-        name = str(row[name_col]).strip()
-        qty = pd.to_numeric(row[stock_col] if stock_col < len(row) else None, errors='coerce')
+    for i in range(header_row + 1, len(df)):
+        name_val = df.iloc[i, name_col] if name_col < len(df.columns) else None
+        stock_val = df.iloc[i, stock_col] if stock_col < len(df.columns) else None
 
-        if name:
-            quantity = float(qty) if pd.notna(qty) else 0
-            stocks[name] = {
-                'quantity': quantity,
-                'status': compute_stock_status(quantity),
-            }
+        # Skip empty/non-string names and category headers
+        if not isinstance(name_val, str) or len(name_val.strip()) < 4:
+            continue
 
+        name = name_val.strip()
+        qty = pd.to_numeric(stock_val, errors='coerce')
+        quantity = float(qty) if pd.notna(qty) else 0
+
+        stocks[name] = {
+            'quantity': quantity,
+            'status': compute_stock_status(quantity),
+        }
+
+    logger.info(f"Parsed {len(stocks)} products from stock file")
     return stocks
 
 
-def apply_stock_updates(file_bytes: bytes, stock_col: Optional[int] = None) -> dict:
+def apply_stock_updates(file_bytes: bytes) -> dict:
     """Apply stock updates from Excel to the database. Returns summary."""
-    excel_stocks = parse_stock_excel(file_bytes, stock_col)
+    excel_stocks = parse_stock_excel(file_bytes)
     if not excel_stocks:
         return {"ok": False, "error": "No stock data found in Excel. Could not detect quantity column."}
 
@@ -186,7 +231,6 @@ def apply_stock_updates(file_bytes: bytes, stock_col: Optional[int] = None) -> d
     for excel_name, stock_data in excel_stocks.items():
         product = None
 
-        # Exact match first, then normalized
         if excel_name in db_by_exact:
             product = db_by_exact[excel_name]
         else:
@@ -203,7 +247,6 @@ def apply_stock_updates(file_bytes: bytes, stock_col: Optional[int] = None) -> d
 
             status_counts[new_status] = status_counts.get(new_status, 0) + 1
 
-            # Check if update needed
             qty_changed = old_qty is None or abs((old_qty or 0) - new_qty) > 0.001
             status_changed = old_status != new_status
 
@@ -215,7 +258,6 @@ def apply_stock_updates(file_bytes: bytes, stock_col: Optional[int] = None) -> d
                     (new_qty, new_status, product["id"]),
                 )
 
-                # Track notable changes (status transitions)
                 if status_changed and old_status is not None:
                     updated.append({
                         "id": product["id"],
