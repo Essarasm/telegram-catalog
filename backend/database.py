@@ -169,6 +169,28 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_search_clicks_search ON search_clicks(search_log_id);
         CREATE INDEX IF NOT EXISTS idx_search_clicks_product ON search_clicks(product_id);
         CREATE INDEX IF NOT EXISTS idx_search_clicks_action ON search_clicks(action);
+
+        -- Financial data: client balance snapshots from 1C оборотно-сальдовая
+        CREATE TABLE IF NOT EXISTS client_balances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name_1c TEXT NOT NULL,
+            client_id INTEGER,
+            currency TEXT NOT NULL DEFAULT 'UZS',
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            opening_debit REAL DEFAULT 0,
+            opening_credit REAL DEFAULT 0,
+            period_debit REAL DEFAULT 0,
+            period_credit REAL DEFAULT 0,
+            closing_debit REAL DEFAULT 0,
+            closing_credit REAL DEFAULT 0,
+            imported_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(client_name_1c, period_start, currency)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cb_client_name ON client_balances(client_name_1c);
+        CREATE INDEX IF NOT EXISTS idx_cb_client_id ON client_balances(client_id);
+        CREATE INDEX IF NOT EXISTS idx_cb_period ON client_balances(period_start);
+        CREATE INDEX IF NOT EXISTS idx_cb_currency ON client_balances(currency);
     """)
     conn.commit()
 

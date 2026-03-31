@@ -38,7 +38,7 @@ class CacheControlMiddleware:
 load_dotenv()
 
 from backend.database import init_db
-from backend.routers import categories, products, export, cart, users, reports, cabinet, search
+from backend.routers import categories, products, export, cart, users, reports, cabinet, search, finance
 
 app = FastAPI(title="Katalog API", version="1.0.0")
 
@@ -113,6 +113,7 @@ app.include_router(users.router)
 app.include_router(reports.router)
 app.include_router(cabinet.router)
 app.include_router(search.router)
+app.include_router(finance.router)
 
 # Serve product images
 images_dir = Path(os.getenv("IMAGES_DIR", "./images"))

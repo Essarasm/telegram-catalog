@@ -3,6 +3,7 @@ import { formatCartPrice } from '../utils/api';
 import t from '../i18n/uz.json';
 
 const API = '/api/cabinet';
+const FINANCE_API = '/api/finance';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -21,6 +22,24 @@ const STATUS_ICONS = {
   delivered: '🚚',
   completed: '✔️',
 };
+
+function formatUzs(amount) {
+  if (!amount && amount !== 0) return '0';
+  // Format as "1 234 567" (space-separated thousands)
+  const num = Math.round(Math.abs(amount));
+  return num.toLocaleString('ru-RU').replace(/,/g, ' ');
+}
+
+function formatPeriod(start, end) {
+  if (!start) return '';
+  try {
+    const d = new Date(start);
+    const months = ['Yan', 'Fev', 'Mar', 'Apr', 'May', 'Iyun', 'Iyul', 'Avg', 'Sen', 'Okt', 'Noy', 'Dek'];
+    return `${months[d.getMonth()]} ${d.getFullYear()}`;
+  } catch {
+    return start;
+  }
+}
 
 function formatDate(dateStr) {
   if (!dateStr) return '';
@@ -47,6 +66,8 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [reorderDialog, setReorderDialog] = useState(null); // order_id or null
   const [reordering, setReordering] = useState(false);
   const [toast, setToast] = useState(null);
+  const [balance, setBalance] = useState(null);
+  const [balanceLoading, setBalanceLoading] = useState(true);
 
   const userId = getTelegramUserId();
 
@@ -54,6 +75,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   useEffect(() => {
     if (!userId) {
       setLoading(false);
+      setBalanceLoading(false);
       return;
     }
     fetch(`${API}/orders?telegram_id=${userId}`)
@@ -63,6 +85,17 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+
+    // Load balance data
+    fetch(`${FINANCE_API}/balance?telegram_id=${userId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok && data.has_balance) {
+          setBalance(data.balance);
+        }
+        setBalanceLoading(false);
+      })
+      .catch(() => setBalanceLoading(false));
   }, [userId]);
 
   // Toggle expand — load detail when expanding
@@ -126,7 +159,77 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     return <div className="text-center py-16 text-tg-hint">{t.loading}</div>;
   }
 
-  if (orders.length === 0) {
+  // Balance card component
+  const BalanceCard = () => {
+    if (balanceLoading || !balance) return null;
+
+    const currencies = balance.balances_by_currency || {};
+    const hasCurrencies = Object.keys(currencies).length > 0;
+
+    // Fallback to top-level balance (UZS)
+    const uzs = currencies.UZS || {
+      balance: balance.balance || 0,
+      period_debit: balance.period_debit || 0,
+      period_credit: balance.period_credit || 0,
+      period_start: balance.period_start,
+    };
+    const usd = currencies.USD;
+
+    const renderCurrencyBalance = (data, currencyLabel, formatFn, suffix) => {
+      if (!data) return null;
+      const bal = data.balance || 0;
+      const isDebt = bal > 0;
+      return (
+        <div className="mb-2">
+          <div className="text-center mb-2">
+            <div className={`text-xl font-bold ${isDebt ? 'text-red-500' : 'text-green-500'}`}>
+              {isDebt ? '' : '−'}{formatFn(bal)} {suffix}
+            </div>
+          </div>
+          <div className="flex justify-between text-xs">
+            <div className="text-center flex-1">
+              <div className="text-tg-hint">{t.balance_shipped || "Jo'natilgan"}</div>
+              <div className="font-semibold mt-0.5">{formatFn(data.period_debit || 0)}</div>
+            </div>
+            <div className="w-px bg-tg-hint/20" />
+            <div className="text-center flex-1">
+              <div className="text-tg-hint">{t.balance_paid || "To'langan"}</div>
+              <div className="font-semibold mt-0.5 text-green-600">{formatFn(data.period_credit || 0)}</div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    const formatUsd = (v) => '$' + Math.abs(Math.round(v)).toLocaleString('en-US');
+
+    return (
+      <div className="mb-4">
+        <div className="text-sm text-tg-hint mb-2">{t.balance_title || "Moliyaviy holat"}</div>
+        <div className="bg-tg-secondary rounded-xl p-4">
+          <div className="text-xs text-tg-hint text-center mb-2">{t.balance_current || "Joriy qarz"}</div>
+
+          {/* UZS balance */}
+          {renderCurrencyBalance(uzs, 'UZS', formatUzs, t.balance_currency || "so'm")}
+
+          {/* USD balance (if available) */}
+          {usd && (
+            <>
+              <div className="border-t border-tg-hint/20 my-2" />
+              {renderCurrencyBalance(usd, 'USD', formatUsd, '')}
+            </>
+          )}
+
+          {/* Period label */}
+          <div className="text-[10px] text-tg-hint text-center mt-2">
+            {formatPeriod(uzs.period_start || balance.period_start)} · {t.balance_updated || "yangilangan"}: {formatDate(balance.imported_at)}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  if (orders.length === 0 && !balance) {
     return (
       <div className="text-center py-16">
         <div className="text-5xl mb-4">🏛️</div>
@@ -138,6 +241,8 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
 
   return (
     <div>
+      <BalanceCard />
+
       <div className="text-sm text-tg-hint mb-3">
         {t.order_history} ({orders.length})
       </div>
