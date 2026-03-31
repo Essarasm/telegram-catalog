@@ -6,6 +6,8 @@ Enhanced matching logic:
 3. Reports unmatched products from both sides (Excel not in DB, DB not in Excel)
 
 1C is the single source of truth — all prices from 1C are accepted as-is.
+
+Supports both .xlsx and .xls (cp1251 encoding from 1C).
 """
 import io
 import re
@@ -17,7 +19,7 @@ from backend.database import get_db
 
 logger = logging.getLogger(__name__)
 
-# Excel column indices (0-based)
+# Excel column indices (0-based) — matches both Номенклатура .xlsx and Справочник .xls
 COL_NAME = 1        # Наименование
 COL_TYPE = 2        # Тип номенклатуры (== "Товар" for products)
 COL_UNIT = 5        # Единица измерения
@@ -37,24 +39,105 @@ def normalize_name(name: str) -> str:
     return n
 
 
+def read_excel_with_encoding(file_bytes: bytes) -> list:
+    """Read Excel file, handling .xls cp1251 encoding from 1C.
+
+    Returns list of rows, where each row is a list of cell values.
+    """
+    # Try xlrd with cp1251 override first (for .xls from 1C)
+    try:
+        import xlrd
+        wb = xlrd.open_workbook(file_contents=file_bytes, encoding_override='cp1251')
+        sh = wb.sheet_by_index(0)
+        rows = []
+        for r in range(sh.nrows):
+            row = []
+            for c in range(sh.ncols):
+                row.append(sh.cell_value(r, c))
+            rows.append(row)
+        logger.info(f"Read {len(rows)} rows via xlrd (cp1251 override)")
+        return rows
+    except Exception as e:
+        logger.info(f"xlrd cp1251 failed ({e}), trying pandas")
+
+    # Fallback: pandas (works for .xlsx and well-formed .xls)
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes), header=None)
+        rows = [df.columns.tolist()] + df.values.tolist()
+        logger.info(f"Read {len(rows)} rows via pandas")
+        return rows
+    except Exception as e:
+        logger.info(f"pandas failed ({e}), trying xlrd default")
+
+    # Last resort: xlrd without encoding override
+    import xlrd
+    wb = xlrd.open_workbook(file_contents=file_bytes)
+    sh = wb.sheet_by_index(0)
+    rows = []
+    for r in range(sh.nrows):
+        row = [sh.cell_value(r, c) for c in range(sh.ncols)]
+        rows.append(row)
+    logger.info(f"Read {len(rows)} rows via xlrd (default encoding)")
+    return rows
+
+
 def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
-    """Parse price Excel and return name→{usd, uzs, weight} mapping."""
-    df = pd.read_excel(io.BytesIO(file_bytes), header=None)
-    products = df[(df[COL_TYPE] == 'Товар') & df[COL_NAME].notna()]
+    """Parse price Excel and return name→{usd, uzs, weight} mapping.
+
+    Handles both .xlsx and .xls (cp1251) formats from 1C.
+    """
+    rows = read_excel_with_encoding(file_bytes)
+    if not rows:
+        return {}
 
     prices = {}
-    for _, row in products.iterrows():
-        name = str(row[COL_NAME]).strip()
-        usd = pd.to_numeric(row[COL_USD], errors='coerce')
-        uzs = pd.to_numeric(row[COL_UZS], errors='coerce')
-        weight = pd.to_numeric(row[COL_WEIGHT], errors='coerce')
+    for row in rows:
+        # Ensure row has enough columns
+        if len(row) <= max(COL_NAME, COL_TYPE, COL_USD, COL_WEIGHT):
+            continue
 
-        if name and pd.notna(usd) and usd > 0:
-            prices[name] = {
-                'usd': float(usd),
-                'uzs': float(uzs) if pd.notna(uzs) and uzs > 0 else 0,
-                'weight': float(weight) if pd.notna(weight) and weight > 0 else None,
-            }
+        # Filter: only rows where COL_TYPE == "Товар"
+        type_val = str(row[COL_TYPE]).strip()
+        if type_val != 'Товар':
+            continue
+
+        name = str(row[COL_NAME]).strip()
+        if not name:
+            continue
+
+        # Parse USD price
+        try:
+            usd_raw = str(row[COL_USD]).strip()
+            usd = float(usd_raw) if usd_raw else 0
+        except (ValueError, TypeError):
+            usd = 0
+
+        if usd <= 0:
+            continue
+
+        # Parse UZS price
+        try:
+            uzs_raw = str(row[COL_UZS]).strip()
+            uzs = float(uzs_raw) if uzs_raw else 0
+        except (ValueError, TypeError):
+            uzs = 0
+
+        # Parse weight
+        try:
+            weight_raw = str(row[COL_WEIGHT]).strip()
+            weight = float(weight_raw) if weight_raw else None
+            if weight is not None and weight <= 0:
+                weight = None
+        except (ValueError, TypeError):
+            weight = None
+
+        prices[name] = {
+            'usd': usd,
+            'uzs': uzs if uzs > 0 else 0,
+            'weight': weight,
+        }
+
+    logger.info(f"Parsed {len(prices)} products with USD prices from Excel")
     return prices
 
 
