@@ -45,16 +45,6 @@ function formatPeriod(start) {
   }
 }
 
-function formatShortMonth(start) {
-  if (!start) return '';
-  try {
-    const d = new Date(start);
-    return MONTHS[d.getMonth()];
-  } catch {
-    return '';
-  }
-}
-
 function formatDate(dateStr) {
   if (!dateStr) return '';
   try {
@@ -82,10 +72,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [toast, setToast] = useState(null);
   const [balance, setBalance] = useState(null);
   const [balanceLoading, setBalanceLoading] = useState(true);
-  const [history, setHistory] = useState(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyCurrency, setHistoryCurrency] = useState('USD');
 
   const userId = getTelegramUserId();
 
@@ -109,52 +95,11 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       .then(data => {
         if (data.ok && data.has_balance) {
           setBalance(data.balance);
-          // Pre-load history for "last activity" indicator
-          fetch(`${FINANCE_API}/balance-history?telegram_id=${userId}`)
-            .then(r => r.json())
-            .then(hData => {
-              if (hData.ok && hData.history) {
-                setHistory(hData.history);
-                if (hData.history.USD && hData.history.USD.length > 0) {
-                  setHistoryCurrency('USD');
-                } else if (hData.history.UZS && hData.history.UZS.length > 0) {
-                  setHistoryCurrency('UZS');
-                }
-              }
-            })
-            .catch(() => {});
         }
         setBalanceLoading(false);
       })
       .catch(() => setBalanceLoading(false));
   }, [userId]);
-
-  // Load history when opened
-  const toggleHistory = () => {
-    if (historyOpen) {
-      setHistoryOpen(false);
-      return;
-    }
-    setHistoryOpen(true);
-    if (history) return; // already loaded
-
-    setHistoryLoading(true);
-    fetch(`${FINANCE_API}/balance-history?telegram_id=${userId}`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.ok && data.history) {
-          setHistory(data.history);
-          // Default to USD if available, else UZS
-          if (data.history.USD && data.history.USD.length > 0) {
-            setHistoryCurrency('USD');
-          } else if (data.history.UZS && data.history.UZS.length > 0) {
-            setHistoryCurrency('UZS');
-          }
-        }
-        setHistoryLoading(false);
-      })
-      .catch(() => setHistoryLoading(false));
-  };
 
   // Toggle expand order detail
   const toggleExpand = async (orderId) => {
@@ -216,27 +161,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     return <div className="text-center py-16 text-tg-hint">{t.loading}</div>;
   }
 
-  // ── Helper: find last activity period from history ──
-  const findLastActivity = (historyData) => {
-    if (!historyData) return null;
-    // Search all currencies, find the latest month with any activity
-    let lastActivityPeriod = null;
-    for (const cur of ['UZS', 'USD']) {
-      const periods = historyData[cur] || [];
-      for (let i = periods.length - 1; i >= 0; i--) {
-        const p = periods[i];
-        if ((p.period_debit || 0) > 0 || (p.period_credit || 0) > 0) {
-          const candidate = p.period_start;
-          if (!lastActivityPeriod || candidate > lastActivityPeriod) {
-            lastActivityPeriod = candidate;
-          }
-          break;
-        }
-      }
-    }
-    return lastActivityPeriod;
-  };
-
   // ── Helper: balance status label ──
   const getBalanceLabel = (bal) => {
     if (bal > 0) return t.balance_debt;
@@ -244,7 +168,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     return t.balance_settled;
   };
 
-  // ── Balance Card ──
+  // ── Balance Card — current balance only, no history ──
   const BalanceCard = () => {
     if (balanceLoading || !balance) return null;
 
@@ -298,13 +222,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       );
     };
 
-    // Find last activity from history (if loaded) for the "last activity" line
-    const lastActivityPeriod = history ? findLastActivity(history) : null;
-    // Check if current period has zero activity across all currencies
-    const currentHasNoActivity =
-      ((uzs.period_debit || 0) === 0 && (uzs.period_credit || 0) === 0) &&
-      (!usd || ((usd.period_debit || 0) === 0 && (usd.period_credit || 0) === 0));
-
     return (
       <div className="mb-4">
         <div className="text-sm text-tg-hint mb-2">{t.balance_title}</div>
@@ -319,164 +236,19 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
             </>
           )}
 
-          {/* Last activity hint — shown when current month has no activity */}
-          {currentHasNoActivity && lastActivityPeriod && (
-            <div className="text-[10px] text-tg-hint text-center mt-1 mb-1">
-              {t.balance_last_activity}: <span className="font-medium text-tg-text">{formatPeriod(lastActivityPeriod)}</span>
-            </div>
-          )}
-
           <div className="text-[10px] text-tg-hint text-center mt-2">
             {formatPeriod(uzs.period_start || balance.period_start)} · {t.balance_updated}: {formatDate(balance.imported_at)}
           </div>
-
-          {/* History toggle button */}
-          <button
-            onClick={toggleHistory}
-            className="w-full mt-3 pt-2 border-t border-tg-hint/20 text-xs text-tg-link text-center active:opacity-60"
-          >
-            {historyOpen ? '▲' : '▼'} {t.balance_history}
-          </button>
-        </div>
-
-        {/* History panel (slides open below the balance card) */}
-        {historyOpen && (
-          <div className="bg-tg-secondary rounded-xl p-4 mt-2">
-            {historyLoading ? (
-              <div className="text-center py-4 text-tg-hint text-xs">{t.loading}</div>
-            ) : !history || ((!history.UZS || history.UZS.length === 0) && (!history.USD || history.USD.length === 0)) ? (
-              <div className="text-center py-4 text-tg-hint text-xs">{t.balance_no_history}</div>
-            ) : (
-              <BalanceHistory
-                history={history}
-                currency={historyCurrency}
-                onCurrencyChange={setHistoryCurrency}
-              />
-            )}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // ── Balance History Component ──
-  const BalanceHistory = ({ history, currency, onCurrencyChange }) => {
-    const hasUzs = history.UZS && history.UZS.length > 0;
-    const hasUsd = history.USD && history.USD.length > 0;
-    const periods = history[currency] || [];
-
-    if (periods.length === 0) return null;
-
-    const fmt = currency === 'USD' ? formatUsd : formatUzs;
-    const suffix = currency === 'USD' ? '' : " so'm";
-
-    // Find max values for scaling the bars
-    const maxDebit = Math.max(...periods.map(p => Math.abs(p.period_debit || 0)), 1);
-    const maxCredit = Math.max(...periods.map(p => Math.abs(p.period_credit || 0)), 1);
-    const maxVal = Math.max(maxDebit, maxCredit);
-
-    return (
-      <div>
-        {/* Currency tabs */}
-        {hasUzs && hasUsd && (
-          <div className="flex gap-2 mb-3">
-            {['USD', 'UZS'].map(cur => (
-              <button
-                key={cur}
-                onClick={() => onCurrencyChange(cur)}
-                className={`flex-1 text-xs py-1.5 rounded-lg font-medium transition-colors ${
-                  currency === cur
-                    ? 'bg-tg-button text-tg-button-text'
-                    : 'bg-tg-bg text-tg-hint'
-                }`}
-              >
-                {cur === 'USD' ? '💵 USD' : "💴 UZS"}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Legend */}
-        <div className="flex gap-4 mb-3 text-[10px]">
-          <div className="flex items-center gap-1">
-            <div className="w-2.5 h-2.5 rounded-sm bg-red-400/80" />
-            <span className="text-tg-hint">{t.balance_shipments}</span>
-          </div>
-          <div className="flex items-center gap-1">
-            <div className="w-2.5 h-2.5 rounded-sm bg-green-400/80" />
-            <span className="text-tg-hint">{t.balance_payments}</span>
-          </div>
-        </div>
-
-        {/* Bar chart */}
-        <div className="space-y-1.5">
-          {periods.map((p, idx) => {
-            const debit = Math.abs(p.period_debit || 0);
-            const credit = Math.abs(p.period_credit || 0);
-            const debitPct = (debit / maxVal) * 100;
-            const creditPct = (credit / maxVal) * 100;
-            const bal = p.balance || 0;
-            const isDebt = bal > 0;
-            const isZeroBal = bal === 0;
-            const hasActivity = debit > 0 || credit > 0;
-
-            return (
-              <div key={idx} className={`flex items-center gap-2 ${!hasActivity ? 'opacity-50' : ''}`}>
-                {/* Month label */}
-                <div className="text-[10px] text-tg-hint w-7 text-right flex-shrink-0">
-                  {formatShortMonth(p.period_start)}
-                </div>
-
-                {/* Bars or zero-activity dash */}
-                <div className="flex-1 min-w-0">
-                  {hasActivity ? (
-                    <>
-                      {/* Debit (shipments) bar */}
-                      <div className="h-2.5 bg-tg-bg rounded-sm overflow-hidden mb-0.5">
-                        <div
-                          className="h-full bg-red-400/80 rounded-sm transition-all duration-300"
-                          style={{ width: `${Math.max(debitPct, 0.5)}%` }}
-                        />
-                      </div>
-                      {/* Credit (payments) bar */}
-                      <div className="h-2.5 bg-tg-bg rounded-sm overflow-hidden">
-                        <div
-                          className="h-full bg-green-400/80 rounded-sm transition-all duration-300"
-                          style={{ width: `${Math.max(creditPct, 0.5)}%` }}
-                        />
-                      </div>
-                    </>
-                  ) : (
-                    /* Zero-activity: gray dashed line */
-                    <div className="h-5.5 flex items-center">
-                      <div className="w-full border-t border-dashed border-tg-hint/30" />
-                    </div>
-                  )}
-                </div>
-
-                {/* Balance label */}
-                <div className={`text-[10px] font-medium w-14 text-right flex-shrink-0 ${
-                  isZeroBal ? 'text-tg-hint' : isDebt ? 'text-red-500' : 'text-green-500'
-                }`}>
-                  {isZeroBal ? '—' : currency === 'USD'
-                    ? `${isDebt ? '' : '-'}$${Math.abs(Math.round(bal)).toLocaleString()}`
-                    : `${isDebt ? '' : '-'}${formatUzs(bal)}`
-                  }
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Summary line */}
-        <div className="mt-3 pt-2 border-t border-tg-hint/20 text-[10px] text-tg-hint text-center">
-          {periods.length} {periods.length === 1 ? 'oy' : 'oy'} · {formatPeriod(periods[0]?.period_start)} — {formatPeriod(periods[periods.length - 1]?.period_start)}
         </div>
       </div>
     );
   };
 
-  if (orders.length === 0 && !balance) {
+  // ── Last order only ──
+  const lastOrder = orders.length > 0 ? orders[0] : null;
+  const isExpanded = lastOrder && expandedId === lastOrder.id;
+
+  if (!lastOrder && !balance) {
     return (
       <div className="text-center py-16">
         <div className="text-5xl mb-4">🏛️</div>
@@ -490,93 +262,87 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     <div>
       <BalanceCard />
 
-      <div className="text-sm text-tg-hint mb-3">
-        {t.order_history} ({orders.length})
-      </div>
+      {lastOrder && (
+        <>
+          <div className="text-sm text-tg-hint mb-2">{t.order_history}</div>
 
-      <div className="space-y-2">
-        {orders.map(order => {
-          const isExpanded = expandedId === order.id;
-
-          return (
-            <div key={order.id} className="bg-tg-secondary rounded-xl overflow-hidden">
-              {/* Order summary row */}
-              <button
-                onClick={() => toggleExpand(order.id)}
-                className="w-full text-left p-3 active:bg-tg-hint/10 transition-colors"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold">
-                        #{order.id}
-                      </span>
-                      <span className="text-xs px-2 py-0.5 rounded-full bg-tg-bg text-tg-hint">
-                        {STATUS_ICONS[order.status]} {STATUS_LABELS[order.status] || order.status}
-                      </span>
-                    </div>
-                    <div className="text-xs text-tg-hint mt-1">
-                      {formatDate(order.created_at)} · {order.item_count} {t.items_count}
-                    </div>
+          <div className="bg-tg-secondary rounded-xl overflow-hidden">
+            {/* Order summary row */}
+            <button
+              onClick={() => toggleExpand(lastOrder.id)}
+              className="w-full text-left p-3 active:bg-tg-hint/10 transition-colors"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">
+                      #{lastOrder.id}
+                    </span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-tg-bg text-tg-hint">
+                      {STATUS_ICONS[lastOrder.status]} {STATUS_LABELS[lastOrder.status] || lastOrder.status}
+                    </span>
                   </div>
-                  <div className="text-right ml-2">
-                    {order.total_usd > 0 && (
-                      <div className="text-sm font-bold">{formatCartPrice(order.total_usd, 'USD')}</div>
-                    )}
-                    {order.total_uzs > 0 && (
-                      <div className="text-sm font-bold">{formatCartPrice(order.total_uzs, 'UZS')}</div>
-                    )}
-                    <div className="text-xs text-tg-hint mt-0.5">
-                      {isExpanded ? '▲' : '▼'}
-                    </div>
+                  <div className="text-xs text-tg-hint mt-1">
+                    {formatDate(lastOrder.created_at)} · {lastOrder.item_count} {t.items_count}
                   </div>
                 </div>
-              </button>
-
-              {/* Expanded detail */}
-              {isExpanded && (
-                <div className="border-t border-tg-hint/20 px-3 pb-3">
-                  {loadingDetail ? (
-                    <div className="text-center py-4 text-tg-hint text-sm">{t.loading}</div>
-                  ) : (
-                    <>
-                      <div className="mt-2 space-y-1.5">
-                        {expandedItems.map((item, idx) => (
-                          <div key={idx} className="flex items-center gap-2 py-1">
-                            <div className="flex-1 min-w-0">
-                              <div className="text-xs font-medium truncate">{item.product_name}</div>
-                              {item.producer_name && (
-                                <div className="text-[10px] text-tg-hint">{item.producer_name}</div>
-                              )}
-                            </div>
-                            <div className="text-xs text-tg-hint whitespace-nowrap">
-                              {item.quantity} {item.unit}
-                            </div>
-                            <div className="text-xs font-semibold whitespace-nowrap min-w-[50px] text-right">
-                              {formatCartPrice(item.price * item.quantity, item.currency)}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleReorderTap(order.id);
-                        }}
-                        disabled={reordering}
-                        className="w-full mt-3 bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
-                      >
-                        {reordering ? t.loading : `🔄 ${t.reorder}`}
-                      </button>
-                    </>
+                <div className="text-right ml-2">
+                  {lastOrder.total_usd > 0 && (
+                    <div className="text-sm font-bold">{formatCartPrice(lastOrder.total_usd, 'USD')}</div>
                   )}
+                  {lastOrder.total_uzs > 0 && (
+                    <div className="text-sm font-bold">{formatCartPrice(lastOrder.total_uzs, 'UZS')}</div>
+                  )}
+                  <div className="text-xs text-tg-hint mt-0.5">
+                    {isExpanded ? '▲' : '▼'}
+                  </div>
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+              </div>
+            </button>
+
+            {/* Expanded detail */}
+            {isExpanded && (
+              <div className="border-t border-tg-hint/20 px-3 pb-3">
+                {loadingDetail ? (
+                  <div className="text-center py-4 text-tg-hint text-sm">{t.loading}</div>
+                ) : (
+                  <>
+                    <div className="mt-2 space-y-1.5">
+                      {expandedItems.map((item, idx) => (
+                        <div key={idx} className="flex items-center gap-2 py-1">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-medium truncate">{item.product_name}</div>
+                            {item.producer_name && (
+                              <div className="text-[10px] text-tg-hint">{item.producer_name}</div>
+                            )}
+                          </div>
+                          <div className="text-xs text-tg-hint whitespace-nowrap">
+                            {item.quantity} {item.unit}
+                          </div>
+                          <div className="text-xs font-semibold whitespace-nowrap min-w-[50px] text-right">
+                            {formatCartPrice(item.price * item.quantity, item.currency)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleReorderTap(lastOrder.id);
+                      }}
+                      disabled={reordering}
+                      className="w-full mt-3 bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
+                    >
+                      {reordering ? t.loading : `🔄 ${t.reorder}`}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </>
+      )}
 
       {/* Reorder confirmation dialog */}
       {reorderDialog && (
