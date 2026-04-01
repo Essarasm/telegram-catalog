@@ -418,29 +418,92 @@ def get_client_balance(client_id: int) -> Optional[dict]:
     }
 
 
-def get_client_balance_history(client_id: int, limit: int = 12) -> List[dict]:
-    """Get balance history for a client (last N periods)."""
+def get_client_balance_history(client_id: int, limit: int = 24) -> dict:
+    """Get balance history for a client, separated by currency.
+
+    Returns dict with 'UZS' and 'USD' keys, each containing a list of
+    period snapshots sorted chronologically (oldest first, for charting).
+    """
     conn = get_db()
     rows = conn.execute(
-        """SELECT period_start, period_end,
+        """SELECT currency, period_start, period_end,
                   opening_debit, opening_credit,
                   period_debit, period_credit,
                   closing_debit, closing_credit
            FROM client_balances
            WHERE client_id = ?
-           ORDER BY period_start DESC
-           LIMIT ?""",
-        (client_id, limit),
+           ORDER BY currency, period_start ASC""",
+        (client_id,),
     ).fetchall()
     conn.close()
 
-    return [
-        {
+    history = {}
+    for r in rows:
+        cur = r["currency"]
+        if cur not in history:
+            history[cur] = []
+        history[cur].append({
             "period_start": r["period_start"],
             "period_end": r["period_end"],
             "period_debit": r["period_debit"],
             "period_credit": r["period_credit"],
+            "closing_debit": r["closing_debit"],
+            "closing_credit": r["closing_credit"],
             "balance": (r["closing_debit"] or 0) - (r["closing_credit"] or 0),
-        }
-        for r in rows
-    ]
+        })
+
+    # Trim to limit per currency
+    for cur in history:
+        if len(history[cur]) > limit:
+            history[cur] = history[cur][-limit:]
+
+    return history
+
+
+def bulk_import_balances(file_list: List[tuple]) -> dict:
+    """Import multiple balance files at once.
+
+    Args:
+        file_list: List of (filename, file_bytes) tuples.
+
+    Returns summary of all imports.
+    """
+    results = []
+    total_inserted = 0
+    total_updated = 0
+    total_matched = 0
+    errors = []
+
+    for filename, file_bytes in file_list:
+        result = apply_balance_import(file_bytes)
+        if result.get("ok"):
+            total_inserted += result.get("inserted", 0)
+            total_updated += result.get("updated", 0)
+            total_matched += result.get("matched_to_app", 0)
+            results.append({
+                "file": filename,
+                "currency": result.get("currency"),
+                "period": result.get("period"),
+                "clients": result.get("total_clients_in_file", 0),
+                "matched": result.get("matched_to_app", 0),
+            })
+        else:
+            errors.append({"file": filename, "error": result.get("error", "Unknown")})
+
+    conn = get_db()
+    db_clients = conn.execute("SELECT COUNT(DISTINCT client_name_1c) FROM client_balances").fetchone()[0]
+    db_periods = conn.execute("SELECT COUNT(DISTINCT period_start || currency) FROM client_balances").fetchone()[0]
+    conn.close()
+
+    return {
+        "ok": True,
+        "files_processed": len(results),
+        "files_failed": len(errors),
+        "total_inserted": total_inserted,
+        "total_updated": total_updated,
+        "total_matched": total_matched,
+        "results": results,
+        "errors": errors,
+        "db_total_clients": db_clients,
+        "db_total_periods": db_periods,
+    }

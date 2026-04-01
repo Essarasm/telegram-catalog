@@ -1,8 +1,14 @@
 """Financial data API — client balances from 1C оборотно-сальдовая."""
 from fastapi import APIRouter, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
+from typing import List
 from backend.database import get_db
-from backend.services.import_balances import apply_balance_import, get_client_balance, get_client_balance_history
+from backend.services.import_balances import (
+    apply_balance_import,
+    get_client_balance,
+    get_client_balance_history,
+    bulk_import_balances,
+)
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
 
@@ -25,6 +31,35 @@ async def import_balances(
         return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
 
     result = apply_balance_import(file_bytes)
+    return result
+
+
+@router.post("/bulk-import")
+async def bulk_import(
+    files: List[UploadFile] = File(...),
+    admin_key: str = Form(""),
+):
+    """Import multiple balance XLS files at once.
+
+    Accepts up to 30 files (15 months × 2 currencies).
+    Used for one-time historical data import.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+    if not files:
+        return JSONResponse({"ok": False, "error": "No files"}, status_code=400)
+
+    file_list = []
+    for f in files:
+        data = await f.read()
+        if data:
+            file_list.append((f.filename or "unknown.xls", data))
+
+    if not file_list:
+        return JSONResponse({"ok": False, "error": "All files empty"}, status_code=400)
+
+    result = bulk_import_balances(file_list)
     return result
 
 
@@ -66,9 +101,13 @@ def client_balance(telegram_id: int = Query(...)):
 @router.get("/balance-history")
 def client_balance_history(
     telegram_id: int = Query(...),
-    limit: int = Query(12, ge=1, le=24),
+    limit: int = Query(24, ge=1, le=36),
 ):
-    """Get balance history for a client (last N periods)."""
+    """Get balance history for a client, separated by currency.
+
+    Returns {UZS: [...], USD: [...]} with monthly snapshots
+    sorted chronologically (oldest first, for charting).
+    """
     conn = get_db()
 
     user = conn.execute(
@@ -78,7 +117,7 @@ def client_balance_history(
 
     if not user or not user["client_id"]:
         conn.close()
-        return {"ok": True, "history": []}
+        return {"ok": True, "history": {}}
 
     history = get_client_balance_history(user["client_id"], limit)
     conn.close()

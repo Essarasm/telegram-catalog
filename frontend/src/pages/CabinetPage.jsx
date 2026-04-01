@@ -23,28 +23,42 @@ const STATUS_ICONS = {
   completed: '✔️',
 };
 
+const MONTHS = t.balance_month_short || ['Yan', 'Fev', 'Mar', 'Apr', 'May', 'Iyun', 'Iyul', 'Avg', 'Sen', 'Okt', 'Noy', 'Dek'];
+
 function formatUzs(amount) {
   if (!amount && amount !== 0) return '0';
-  // Format as "1 234 567" (space-separated thousands)
   const num = Math.round(Math.abs(amount));
   return num.toLocaleString('ru-RU').replace(/,/g, ' ');
 }
 
-function formatPeriod(start, end) {
+function formatUsd(v) {
+  return '$' + Math.abs(Math.round(v)).toLocaleString('en-US');
+}
+
+function formatPeriod(start) {
   if (!start) return '';
   try {
     const d = new Date(start);
-    const months = ['Yan', 'Fev', 'Mar', 'Apr', 'May', 'Iyun', 'Iyul', 'Avg', 'Sen', 'Okt', 'Noy', 'Dek'];
-    return `${months[d.getMonth()]} ${d.getFullYear()}`;
+    return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
   } catch {
     return start;
+  }
+}
+
+function formatShortMonth(start) {
+  if (!start) return '';
+  try {
+    const d = new Date(start);
+    return MONTHS[d.getMonth()];
+  } catch {
+    return '';
   }
 }
 
 function formatDate(dateStr) {
   if (!dateStr) return '';
   try {
-    const d = new Date(dateStr + 'Z'); // UTC from SQLite
+    const d = new Date(dateStr + 'Z');
     return d.toLocaleDateString('uz-UZ', {
       day: 'numeric',
       month: 'short',
@@ -63,15 +77,19 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [expandedId, setExpandedId] = useState(null);
   const [expandedItems, setExpandedItems] = useState([]);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [reorderDialog, setReorderDialog] = useState(null); // order_id or null
+  const [reorderDialog, setReorderDialog] = useState(null);
   const [reordering, setReordering] = useState(false);
   const [toast, setToast] = useState(null);
   const [balance, setBalance] = useState(null);
   const [balanceLoading, setBalanceLoading] = useState(true);
+  const [history, setHistory] = useState(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyCurrency, setHistoryCurrency] = useState('USD');
 
   const userId = getTelegramUserId();
 
-  // Load orders list
+  // Load orders and balance
   useEffect(() => {
     if (!userId) {
       setLoading(false);
@@ -86,7 +104,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       })
       .catch(() => setLoading(false));
 
-    // Load balance data
     fetch(`${FINANCE_API}/balance?telegram_id=${userId}`)
       .then(r => r.json())
       .then(data => {
@@ -98,14 +115,40 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       .catch(() => setBalanceLoading(false));
   }, [userId]);
 
-  // Toggle expand — load detail when expanding
+  // Load history when opened
+  const toggleHistory = () => {
+    if (historyOpen) {
+      setHistoryOpen(false);
+      return;
+    }
+    setHistoryOpen(true);
+    if (history) return; // already loaded
+
+    setHistoryLoading(true);
+    fetch(`${FINANCE_API}/balance-history?telegram_id=${userId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok && data.history) {
+          setHistory(data.history);
+          // Default to USD if available, else UZS
+          if (data.history.USD && data.history.USD.length > 0) {
+            setHistoryCurrency('USD');
+          } else if (data.history.UZS && data.history.UZS.length > 0) {
+            setHistoryCurrency('UZS');
+          }
+        }
+        setHistoryLoading(false);
+      })
+      .catch(() => setHistoryLoading(false));
+  };
+
+  // Toggle expand order detail
   const toggleExpand = async (orderId) => {
     if (expandedId === orderId) {
       setExpandedId(null);
       setExpandedItems([]);
       return;
     }
-
     setExpandedId(orderId);
     setLoadingDetail(true);
     try {
@@ -159,14 +202,11 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     return <div className="text-center py-16 text-tg-hint">{t.loading}</div>;
   }
 
-  // Balance card component
+  // ── Balance Card ──
   const BalanceCard = () => {
     if (balanceLoading || !balance) return null;
 
     const currencies = balance.balances_by_currency || {};
-    const hasCurrencies = Object.keys(currencies).length > 0;
-
-    // Fallback to top-level balance (UZS)
     const uzs = currencies.UZS || {
       balance: balance.balance || 0,
       period_debit: balance.period_debit || 0,
@@ -175,7 +215,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     };
     const usd = currencies.USD;
 
-    const renderCurrencyBalance = (data, currencyLabel, formatFn, suffix) => {
+    const renderCurrencyBalance = (data, formatFn, suffix) => {
       if (!data) return null;
       const bal = data.balance || 0;
       const isDebt = bal > 0;
@@ -188,12 +228,12 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
           </div>
           <div className="flex justify-between text-xs">
             <div className="text-center flex-1">
-              <div className="text-tg-hint">{t.balance_shipped || "Jo'natilgan"}</div>
+              <div className="text-tg-hint">{t.balance_shipped}</div>
               <div className="font-semibold mt-0.5">{formatFn(data.period_debit || 0)}</div>
             </div>
             <div className="w-px bg-tg-hint/20" />
             <div className="text-center flex-1">
-              <div className="text-tg-hint">{t.balance_paid || "To'langan"}</div>
+              <div className="text-tg-hint">{t.balance_paid}</div>
               <div className="font-semibold mt-0.5 text-green-600">{formatFn(data.period_credit || 0)}</div>
             </div>
           </div>
@@ -201,29 +241,151 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       );
     };
 
-    const formatUsd = (v) => '$' + Math.abs(Math.round(v)).toLocaleString('en-US');
-
     return (
       <div className="mb-4">
-        <div className="text-sm text-tg-hint mb-2">{t.balance_title || "Moliyaviy holat"}</div>
+        <div className="text-sm text-tg-hint mb-2">{t.balance_title}</div>
         <div className="bg-tg-secondary rounded-xl p-4">
-          <div className="text-xs text-tg-hint text-center mb-2">{t.balance_current || "Joriy qarz"}</div>
+          <div className="text-xs text-tg-hint text-center mb-2">{t.balance_current}</div>
 
-          {/* UZS balance */}
-          {renderCurrencyBalance(uzs, 'UZS', formatUzs, t.balance_currency || "so'm")}
+          {renderCurrencyBalance(uzs, formatUzs, t.balance_currency || "so'm")}
 
-          {/* USD balance (if available) */}
           {usd && (
             <>
               <div className="border-t border-tg-hint/20 my-2" />
-              {renderCurrencyBalance(usd, 'USD', formatUsd, '')}
+              {renderCurrencyBalance(usd, formatUsd, '')}
             </>
           )}
 
-          {/* Period label */}
           <div className="text-[10px] text-tg-hint text-center mt-2">
-            {formatPeriod(uzs.period_start || balance.period_start)} · {t.balance_updated || "yangilangan"}: {formatDate(balance.imported_at)}
+            {formatPeriod(uzs.period_start || balance.period_start)} · {t.balance_updated}: {formatDate(balance.imported_at)}
           </div>
+
+          {/* History toggle button */}
+          <button
+            onClick={toggleHistory}
+            className="w-full mt-3 pt-2 border-t border-tg-hint/20 text-xs text-tg-link text-center active:opacity-60"
+          >
+            {historyOpen ? '▲' : '▼'} {t.balance_history}
+          </button>
+        </div>
+
+        {/* History panel (slides open below the balance card) */}
+        {historyOpen && (
+          <div className="bg-tg-secondary rounded-xl p-4 mt-2">
+            {historyLoading ? (
+              <div className="text-center py-4 text-tg-hint text-xs">{t.loading}</div>
+            ) : !history || ((!history.UZS || history.UZS.length === 0) && (!history.USD || history.USD.length === 0)) ? (
+              <div className="text-center py-4 text-tg-hint text-xs">{t.balance_no_history}</div>
+            ) : (
+              <BalanceHistory
+                history={history}
+                currency={historyCurrency}
+                onCurrencyChange={setHistoryCurrency}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Balance History Component ──
+  const BalanceHistory = ({ history, currency, onCurrencyChange }) => {
+    const hasUzs = history.UZS && history.UZS.length > 0;
+    const hasUsd = history.USD && history.USD.length > 0;
+    const periods = history[currency] || [];
+
+    if (periods.length === 0) return null;
+
+    const fmt = currency === 'USD' ? formatUsd : formatUzs;
+    const suffix = currency === 'USD' ? '' : " so'm";
+
+    // Find max values for scaling the bars
+    const maxDebit = Math.max(...periods.map(p => Math.abs(p.period_debit || 0)), 1);
+    const maxCredit = Math.max(...periods.map(p => Math.abs(p.period_credit || 0)), 1);
+    const maxVal = Math.max(maxDebit, maxCredit);
+
+    return (
+      <div>
+        {/* Currency tabs */}
+        {hasUzs && hasUsd && (
+          <div className="flex gap-2 mb-3">
+            {['USD', 'UZS'].map(cur => (
+              <button
+                key={cur}
+                onClick={() => onCurrencyChange(cur)}
+                className={`flex-1 text-xs py-1.5 rounded-lg font-medium transition-colors ${
+                  currency === cur
+                    ? 'bg-tg-button text-tg-button-text'
+                    : 'bg-tg-bg text-tg-hint'
+                }`}
+              >
+                {cur === 'USD' ? '💵 USD' : "💴 UZS"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Legend */}
+        <div className="flex gap-4 mb-3 text-[10px]">
+          <div className="flex items-center gap-1">
+            <div className="w-2.5 h-2.5 rounded-sm bg-red-400/80" />
+            <span className="text-tg-hint">{t.balance_shipments}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-2.5 h-2.5 rounded-sm bg-green-400/80" />
+            <span className="text-tg-hint">{t.balance_payments}</span>
+          </div>
+        </div>
+
+        {/* Bar chart */}
+        <div className="space-y-1.5">
+          {periods.map((p, idx) => {
+            const debitPct = (Math.abs(p.period_debit || 0) / maxVal) * 100;
+            const creditPct = (Math.abs(p.period_credit || 0) / maxVal) * 100;
+            const bal = p.balance || 0;
+            const isDebt = bal > 0;
+
+            return (
+              <div key={idx} className="flex items-center gap-2">
+                {/* Month label */}
+                <div className="text-[10px] text-tg-hint w-7 text-right flex-shrink-0">
+                  {formatShortMonth(p.period_start)}
+                </div>
+
+                {/* Bars */}
+                <div className="flex-1 min-w-0">
+                  {/* Debit (shipments) bar */}
+                  <div className="h-2.5 bg-tg-bg rounded-sm overflow-hidden mb-0.5">
+                    <div
+                      className="h-full bg-red-400/80 rounded-sm transition-all duration-300"
+                      style={{ width: `${Math.max(debitPct, 0.5)}%` }}
+                    />
+                  </div>
+                  {/* Credit (payments) bar */}
+                  <div className="h-2.5 bg-tg-bg rounded-sm overflow-hidden">
+                    <div
+                      className="h-full bg-green-400/80 rounded-sm transition-all duration-300"
+                      style={{ width: `${Math.max(creditPct, 0.5)}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Balance label */}
+                <div className={`text-[10px] font-medium w-14 text-right flex-shrink-0 ${isDebt ? 'text-red-500' : 'text-green-500'}`}>
+                  {currency === 'USD'
+                    ? `${isDebt ? '' : '-'}$${Math.abs(Math.round(bal)).toLocaleString()}`
+                    : `${isDebt ? '' : '-'}${formatUzs(bal)}`
+                  }
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Summary line */}
+        <div className="mt-3 pt-2 border-t border-tg-hint/20 text-[10px] text-tg-hint text-center">
+          {periods.length} {periods.length === 1 ? 'oy' : 'oy'} · {formatPeriod(periods[0]?.period_start)} — {formatPeriod(periods[periods.length - 1]?.period_start)}
         </div>
       </div>
     );
@@ -293,7 +455,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                     <div className="text-center py-4 text-tg-hint text-sm">{t.loading}</div>
                   ) : (
                     <>
-                      {/* Items list */}
                       <div className="mt-2 space-y-1.5">
                         {expandedItems.map((item, idx) => (
                           <div key={idx} className="flex items-center gap-2 py-1">
@@ -313,7 +474,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                         ))}
                       </div>
 
-                      {/* Reorder button */}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
