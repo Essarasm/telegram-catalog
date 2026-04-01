@@ -764,6 +764,162 @@ async def cmd_balances(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
 
 
+@dp.message(Command("testclient"))
+async def cmd_testclient(message: types.Message):
+    """Link admin's account to a 1C client for testing the Cabinet balance view.
+
+    Usage:
+        /testclient              — show current link + top clients to choose from
+        /testclient КЛИЕНТ       — search by name and link to first match
+        /testclient #123         — link to allowed_clients.id directly
+        /testclient clear        — remove the test link
+    """
+    if not is_admin(message):
+        return
+
+    telegram_id = message.from_user.id
+    conn = get_db()
+    parts = message.text.split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    # Ensure this admin has a users record
+    user = conn.execute("SELECT client_id FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+    if not user:
+        conn.execute(
+            "INSERT INTO users (telegram_id, first_name, is_approved) VALUES (?, ?, 1)",
+            (telegram_id, message.from_user.first_name or "Admin"),
+        )
+        conn.commit()
+        user = conn.execute("SELECT client_id FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+
+    # /testclient clear — remove link
+    if arg.lower() == 'clear':
+        conn.execute("UPDATE users SET client_id = NULL WHERE telegram_id = ?", (telegram_id,))
+        conn.commit()
+        conn.close()
+        await message.reply("✅ Test link removed. Cabinet will show no balance data.")
+        return
+
+    # /testclient #ID — link by allowed_clients.id
+    if arg.startswith('#') and arg[1:].isdigit():
+        target_id = int(arg[1:])
+        target = conn.execute(
+            "SELECT id, name, client_id_1c FROM allowed_clients WHERE id = ?", (target_id,)
+        ).fetchone()
+        if not target:
+            conn.close()
+            await message.reply(f"❌ allowed_clients ID {target_id} not found.")
+            return
+        conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?", (target_id, telegram_id))
+        conn.commit()
+        # Check if this client has balance data
+        bal_count = conn.execute(
+            "SELECT COUNT(*) FROM client_balances WHERE client_id = ?", (target_id,)
+        ).fetchone()[0]
+        conn.close()
+        await message.reply(
+            f"✅ Linked to: <b>{target['name'] or '—'}</b>\n"
+            f"1C: <code>{target['client_id_1c'] or '—'}</code>\n"
+            f"Balance records: {bal_count}\n\n"
+            f"Open 🏛️ Cabinet to see their data.",
+            parse_mode="HTML",
+        )
+        return
+
+    # /testclient NAME — search by client_id_1c name
+    if arg:
+        search = f"%{arg}%"
+        matches = conn.execute(
+            """SELECT ac.id, ac.name, ac.client_id_1c,
+                      (SELECT COUNT(*) FROM client_balances WHERE client_id = ac.id) as bal_count
+               FROM allowed_clients ac
+               WHERE ac.client_id_1c LIKE ? OR ac.name LIKE ?
+               ORDER BY bal_count DESC
+               LIMIT 10""",
+            (search, search),
+        ).fetchall()
+
+        if not matches:
+            conn.close()
+            await message.reply(f"❌ No clients found matching '{arg}'.")
+            return
+
+        if len(matches) == 1 or matches[0]["bal_count"] > 0:
+            # Auto-link to the best match (one with most balance data)
+            best = matches[0]
+            conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?", (best["id"], telegram_id))
+            conn.commit()
+            conn.close()
+            await message.reply(
+                f"✅ Linked to: <b>{best['name'] or '—'}</b>\n"
+                f"1C: <code>{best['client_id_1c'] or '—'}</code>\n"
+                f"Balance records: {best['bal_count']}\n\n"
+                f"Open 🏛️ Cabinet to see their data.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Multiple matches — show list
+        lines = [f"🔍 Found {len(matches)} matches for '{arg}':\n"]
+        for m in matches:
+            lines.append(
+                f"  <code>/testclient #{m['id']}</code> — {m['name'] or '—'}"
+                f" | 1C: {m['client_id_1c'] or '—'}"
+                f" | {m['bal_count']} bal"
+            )
+        conn.close()
+        await message.reply("\n".join(lines), parse_mode="HTML")
+        return
+
+    # /testclient (no args) — show current state + suggestions
+    current_name = "—"
+    current_1c = "—"
+    current_bal = 0
+    if user["client_id"]:
+        linked = conn.execute(
+            "SELECT name, client_id_1c FROM allowed_clients WHERE id = ?", (user["client_id"],)
+        ).fetchone()
+        if linked:
+            current_name = linked["name"] or "—"
+            current_1c = linked["client_id_1c"] or "—"
+            current_bal = conn.execute(
+                "SELECT COUNT(*) FROM client_balances WHERE client_id = ?", (user["client_id"],)
+            ).fetchone()[0]
+
+    # Find top clients with the most balance data
+    top = conn.execute(
+        """SELECT ac.id, ac.name, ac.client_id_1c, COUNT(cb.id) as bal_count
+           FROM allowed_clients ac
+           JOIN client_balances cb ON cb.client_id = ac.id
+           GROUP BY ac.id
+           ORDER BY bal_count DESC
+           LIMIT 5""",
+    ).fetchall()
+    conn.close()
+
+    lines = [
+        f"🔗 <b>Current test link:</b>\n"
+        f"  Client: {current_name}\n"
+        f"  1C: <code>{current_1c}</code>\n"
+        f"  Balance records: {current_bal}\n",
+    ]
+
+    if top:
+        lines.append("<b>Top clients (most data):</b>\n")
+        for t_row in top:
+            lines.append(
+                f"  <code>/testclient #{t_row['id']}</code> — {t_row['name'] or '—'}"
+                f" ({t_row['bal_count']} records)"
+            )
+
+    lines.append("\n<b>Usage:</b>")
+    lines.append("<code>/testclient КЛИЕНТ</code> — search by name")
+    lines.append("<code>/testclient #ID</code> — link by ID")
+    lines.append("<code>/testclient clear</code> — remove link")
+
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     """Show available admin commands."""
@@ -783,6 +939,8 @@ async def cmd_help(message: types.Message):
         "Katalogni yangilash (yangi/o'chirilgan mahsulotlar)\n\n"
         "<b>/balances</b> (reply to XLS file)\n"
         "Mijoz qarzlari yangilash (1C оборотно-сальдовая)\n\n"
+        "<b>/testclient</b> <code>[имя или #ID]</code>\n"
+        "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
         "Chat va User ID ko'rish\n\n"
         "<b>/reports</b>\n"
