@@ -1,6 +1,6 @@
-"""Update product display names, weights, and categories from Rassvet_Master.xlsx.
+"""Update product display names, weights, units, and categories from Rassvet_Master.xlsx.
 
-Reads the 'Katalog' sheet and syncs name_display, weight, and category_id
+Reads the 'Katalog' sheet and syncs name_display, weight, unit, and category_id
 in the products table from the master spreadsheet.
 
 IMPORTANT: Excel IDs are 4881-7320 but DB IDs are 1-2440 (AUTOINCREMENT).
@@ -111,9 +111,10 @@ def update_display_names():
         renamed_cats += 1
         print(f"  Category renamed: '{old_name}' → '{new_name}'")
 
-    # ── Phase 2: Sync product display names, weights, categories ────
+    # ── Phase 2: Sync product display names, weights, units, categories ────
     updated_names = 0
     updated_weights = 0
+    updated_units = 0
     updated_cats = 0
     skipped = 0
 
@@ -121,6 +122,7 @@ def update_display_names():
         excel_id = row[0]       # Column A = Excel ID (4881-7320)
         category = row[1]       # Column B = Category name
         name = row[4]           # Column E = Ilovadagi nomi (Latin)
+        unit = row[7]           # Column H = Birlik (unit type)
         weight = row[10]        # Column K = Weight
         if excel_id is None or name is None:
             skipped += 1
@@ -161,6 +163,16 @@ def update_display_names():
             except (ValueError, TypeError):
                 pass
 
+        # Update unit if Excel has a value
+        if unit is not None:
+            unit_str = str(unit).strip()
+            if unit_str:
+                conn.execute(
+                    "UPDATE products SET unit = ? WHERE id = ?",
+                    (unit_str, db_id)
+                )
+                updated_units += 1
+
         # Update category if it differs
         if category and str(category).strip() in db_cat_name_to_id:
             new_cat_id = db_cat_name_to_id[str(category).strip()]
@@ -175,7 +187,8 @@ def update_display_names():
     wb.close()
     print(f"update_display_names: Renamed {renamed_cats} categories, "
           f"updated {updated_names} names, {updated_weights} weights, "
-          f"{updated_cats} category assignments ({skipped} skipped).")
+          f"{updated_units} units, {updated_cats} category assignments "
+          f"({skipped} skipped).")
 
 
 if __name__ == '__main__':
