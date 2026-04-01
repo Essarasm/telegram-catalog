@@ -32,6 +32,11 @@ if _admin_env:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def html_escape(text: str) -> str:
+    """Escape HTML special characters for Telegram parse_mode=HTML."""
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -751,7 +756,7 @@ async def cmd_balances(message: types.Message):
         if unmatched > 0:
             lines.append(f"\n⚠️ <b>Bog'lanmagan ({unmatched} ta):</b>")
             for name in result.get('unmatched_sample', [])[:10]:
-                lines.append(f"  • {name}")
+                lines.append(f"  • {html_escape(name)}")
             if unmatched > 10:
                 lines.append(f"  ... va yana {unmatched - 10} ta")
 
@@ -818,8 +823,8 @@ async def cmd_testclient(message: types.Message):
         ).fetchone()[0]
         conn.close()
         await message.reply(
-            f"✅ Linked to: <b>{target['name'] or '—'}</b>\n"
-            f"1C: <code>{target['client_id_1c'] or '—'}</code>\n"
+            f"✅ Linked to: <b>{html_escape(target['name'] or '—')}</b>\n"
+            f"1C: <code>{html_escape(target['client_id_1c'] or '—')}</code>\n"
             f"Balance records: {bal_count}\n\n"
             f"Open 🏛️ Cabinet to see their data.",
             parse_mode="HTML",
@@ -851,8 +856,8 @@ async def cmd_testclient(message: types.Message):
             conn.commit()
             conn.close()
             await message.reply(
-                f"✅ Linked to: <b>{best['name'] or '—'}</b>\n"
-                f"1C: <code>{best['client_id_1c'] or '—'}</code>\n"
+                f"✅ Linked to: <b>{html_escape(best['name'] or '—')}</b>\n"
+                f"1C: <code>{html_escape(best['client_id_1c'] or '—')}</code>\n"
                 f"Balance records: {best['bal_count']}\n\n"
                 f"Open 🏛️ Cabinet to see their data.",
                 parse_mode="HTML",
@@ -860,11 +865,11 @@ async def cmd_testclient(message: types.Message):
             return
 
         # Multiple matches — show list
-        lines = [f"🔍 Found {len(matches)} matches for '{arg}':\n"]
+        lines = [f"🔍 Found {len(matches)} matches for '{html_escape(arg)}':\n"]
         for m in matches:
             lines.append(
-                f"  <code>/testclient #{m['id']}</code> — {m['name'] or '—'}"
-                f" | 1C: {m['client_id_1c'] or '—'}"
+                f"  <code>/testclient #{m['id']}</code> — {html_escape(m['name'] or '—')}"
+                f" | 1C: {html_escape(m['client_id_1c'] or '—')}"
                 f" | {m['bal_count']} bal"
             )
         conn.close()
@@ -880,8 +885,8 @@ async def cmd_testclient(message: types.Message):
             "SELECT name, client_id_1c FROM allowed_clients WHERE id = ?", (user["client_id"],)
         ).fetchone()
         if linked:
-            current_name = linked["name"] or "—"
-            current_1c = linked["client_id_1c"] or "—"
+            current_name = html_escape(linked["name"] or "—")
+            current_1c = html_escape(linked["client_id_1c"] or "—")
             current_bal = conn.execute(
                 "SELECT COUNT(*) FROM client_balances WHERE client_id = ?", (user["client_id"],)
             ).fetchone()[0]
@@ -908,7 +913,7 @@ async def cmd_testclient(message: types.Message):
         lines.append("<b>Top clients (most data):</b>\n")
         for t_row in top:
             lines.append(
-                f"  <code>/testclient #{t_row['id']}</code> — {t_row['name'] or '—'}"
+                f"  <code>/testclient #{t_row['id']}</code> — {html_escape(t_row['name'] or '—')}"
                 f" ({t_row['bal_count']} records)"
             )
 
