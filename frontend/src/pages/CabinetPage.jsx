@@ -109,6 +109,20 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       .then(data => {
         if (data.ok && data.has_balance) {
           setBalance(data.balance);
+          // Pre-load history for "last activity" indicator
+          fetch(`${FINANCE_API}/balance-history?telegram_id=${userId}`)
+            .then(r => r.json())
+            .then(hData => {
+              if (hData.ok && hData.history) {
+                setHistory(hData.history);
+                if (hData.history.USD && hData.history.USD.length > 0) {
+                  setHistoryCurrency('USD');
+                } else if (hData.history.UZS && hData.history.UZS.length > 0) {
+                  setHistoryCurrency('UZS');
+                }
+              }
+            })
+            .catch(() => {});
         }
         setBalanceLoading(false);
       })
@@ -202,6 +216,34 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     return <div className="text-center py-16 text-tg-hint">{t.loading}</div>;
   }
 
+  // ── Helper: find last activity period from history ──
+  const findLastActivity = (historyData) => {
+    if (!historyData) return null;
+    // Search all currencies, find the latest month with any activity
+    let lastActivityPeriod = null;
+    for (const cur of ['UZS', 'USD']) {
+      const periods = historyData[cur] || [];
+      for (let i = periods.length - 1; i >= 0; i--) {
+        const p = periods[i];
+        if ((p.period_debit || 0) > 0 || (p.period_credit || 0) > 0) {
+          const candidate = p.period_start;
+          if (!lastActivityPeriod || candidate > lastActivityPeriod) {
+            lastActivityPeriod = candidate;
+          }
+          break;
+        }
+      }
+    }
+    return lastActivityPeriod;
+  };
+
+  // ── Helper: balance status label ──
+  const getBalanceLabel = (bal) => {
+    if (bal > 0) return t.balance_debt;
+    if (bal < 0) return t.balance_overpayment;
+    return t.balance_settled;
+  };
+
   // ── Balance Card ──
   const BalanceCard = () => {
     if (balanceLoading || !balance) return null;
@@ -219,33 +261,54 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       if (!data) return null;
       const bal = data.balance || 0;
       const isDebt = bal > 0;
+      const isZero = bal === 0;
+      const hasActivity = (data.period_debit || 0) > 0 || (data.period_credit || 0) > 0;
+      const label = getBalanceLabel(bal);
+
       return (
         <div className="mb-2">
+          {/* Smart balance label */}
+          <div className="text-[10px] text-tg-hint text-center mb-1">{label}</div>
           <div className="text-center mb-2">
-            <div className={`text-xl font-bold ${isDebt ? 'text-red-500' : 'text-green-500'}`}>
-              {isDebt ? '' : '−'}{formatFn(bal)} {suffix}
+            <div className={`text-xl font-bold ${isZero ? 'text-tg-hint' : isDebt ? 'text-red-500' : 'text-green-500'}`}>
+              {isZero ? '0' : isDebt ? '' : '−'}{isZero ? '' : formatFn(bal)} {suffix}
             </div>
           </div>
-          <div className="flex justify-between text-xs">
-            <div className="text-center flex-1">
-              <div className="text-tg-hint">{t.balance_shipped}</div>
-              <div className="font-semibold mt-0.5">{formatFn(data.period_debit || 0)}</div>
+
+          {hasActivity ? (
+            /* Normal activity display */
+            <div className="flex justify-between text-xs">
+              <div className="text-center flex-1">
+                <div className="text-tg-hint">{t.balance_shipped}</div>
+                <div className="font-semibold mt-0.5">{formatFn(data.period_debit || 0)}</div>
+              </div>
+              <div className="w-px bg-tg-hint/20" />
+              <div className="text-center flex-1">
+                <div className="text-tg-hint">{t.balance_paid}</div>
+                <div className="font-semibold mt-0.5 text-green-600">{formatFn(data.period_credit || 0)}</div>
+              </div>
             </div>
-            <div className="w-px bg-tg-hint/20" />
-            <div className="text-center flex-1">
-              <div className="text-tg-hint">{t.balance_paid}</div>
-              <div className="font-semibold mt-0.5 text-green-600">{formatFn(data.period_credit || 0)}</div>
+          ) : (
+            /* Zero-activity indicator */
+            <div className="text-center text-xs text-tg-hint py-1">
+              <div>{t.balance_no_activity}</div>
             </div>
-          </div>
+          )}
         </div>
       );
     };
+
+    // Find last activity from history (if loaded) for the "last activity" line
+    const lastActivityPeriod = history ? findLastActivity(history) : null;
+    // Check if current period has zero activity across all currencies
+    const currentHasNoActivity =
+      ((uzs.period_debit || 0) === 0 && (uzs.period_credit || 0) === 0) &&
+      (!usd || ((usd.period_debit || 0) === 0 && (usd.period_credit || 0) === 0));
 
     return (
       <div className="mb-4">
         <div className="text-sm text-tg-hint mb-2">{t.balance_title}</div>
         <div className="bg-tg-secondary rounded-xl p-4">
-          <div className="text-xs text-tg-hint text-center mb-2">{t.balance_current}</div>
 
           {renderCurrencyBalance(uzs, formatUzs, t.balance_currency || "so'm")}
 
@@ -254,6 +317,13 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
               <div className="border-t border-tg-hint/20 my-2" />
               {renderCurrencyBalance(usd, formatUsd, '')}
             </>
+          )}
+
+          {/* Last activity hint — shown when current month has no activity */}
+          {currentHasNoActivity && lastActivityPeriod && (
+            <div className="text-[10px] text-tg-hint text-center mt-1 mb-1">
+              {t.balance_last_activity}: <span className="font-medium text-tg-text">{formatPeriod(lastActivityPeriod)}</span>
+            </div>
           )}
 
           <div className="text-[10px] text-tg-hint text-center mt-2">
@@ -341,39 +411,54 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         {/* Bar chart */}
         <div className="space-y-1.5">
           {periods.map((p, idx) => {
-            const debitPct = (Math.abs(p.period_debit || 0) / maxVal) * 100;
-            const creditPct = (Math.abs(p.period_credit || 0) / maxVal) * 100;
+            const debit = Math.abs(p.period_debit || 0);
+            const credit = Math.abs(p.period_credit || 0);
+            const debitPct = (debit / maxVal) * 100;
+            const creditPct = (credit / maxVal) * 100;
             const bal = p.balance || 0;
             const isDebt = bal > 0;
+            const isZeroBal = bal === 0;
+            const hasActivity = debit > 0 || credit > 0;
 
             return (
-              <div key={idx} className="flex items-center gap-2">
+              <div key={idx} className={`flex items-center gap-2 ${!hasActivity ? 'opacity-50' : ''}`}>
                 {/* Month label */}
                 <div className="text-[10px] text-tg-hint w-7 text-right flex-shrink-0">
                   {formatShortMonth(p.period_start)}
                 </div>
 
-                {/* Bars */}
+                {/* Bars or zero-activity dash */}
                 <div className="flex-1 min-w-0">
-                  {/* Debit (shipments) bar */}
-                  <div className="h-2.5 bg-tg-bg rounded-sm overflow-hidden mb-0.5">
-                    <div
-                      className="h-full bg-red-400/80 rounded-sm transition-all duration-300"
-                      style={{ width: `${Math.max(debitPct, 0.5)}%` }}
-                    />
-                  </div>
-                  {/* Credit (payments) bar */}
-                  <div className="h-2.5 bg-tg-bg rounded-sm overflow-hidden">
-                    <div
-                      className="h-full bg-green-400/80 rounded-sm transition-all duration-300"
-                      style={{ width: `${Math.max(creditPct, 0.5)}%` }}
-                    />
-                  </div>
+                  {hasActivity ? (
+                    <>
+                      {/* Debit (shipments) bar */}
+                      <div className="h-2.5 bg-tg-bg rounded-sm overflow-hidden mb-0.5">
+                        <div
+                          className="h-full bg-red-400/80 rounded-sm transition-all duration-300"
+                          style={{ width: `${Math.max(debitPct, 0.5)}%` }}
+                        />
+                      </div>
+                      {/* Credit (payments) bar */}
+                      <div className="h-2.5 bg-tg-bg rounded-sm overflow-hidden">
+                        <div
+                          className="h-full bg-green-400/80 rounded-sm transition-all duration-300"
+                          style={{ width: `${Math.max(creditPct, 0.5)}%` }}
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    /* Zero-activity: gray dashed line */
+                    <div className="h-5.5 flex items-center">
+                      <div className="w-full border-t border-dashed border-tg-hint/30" />
+                    </div>
+                  )}
                 </div>
 
                 {/* Balance label */}
-                <div className={`text-[10px] font-medium w-14 text-right flex-shrink-0 ${isDebt ? 'text-red-500' : 'text-green-500'}`}>
-                  {currency === 'USD'
+                <div className={`text-[10px] font-medium w-14 text-right flex-shrink-0 ${
+                  isZeroBal ? 'text-tg-hint' : isDebt ? 'text-red-500' : 'text-green-500'
+                }`}>
+                  {isZeroBal ? '—' : currency === 'USD'
                     ? `${isDebt ? '' : '-'}$${Math.abs(Math.round(bal)).toLocaleString()}`
                     : `${isDebt ? '' : '-'}${formatUzs(bal)}`
                   }
