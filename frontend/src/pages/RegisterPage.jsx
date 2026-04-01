@@ -1,27 +1,5 @@
 import { useState } from 'react';
-
-// Cache registration data in Telegram CloudStorage for auto-restore
-function cloudSave(key, data) {
-  return new Promise((resolve) => {
-    try {
-      const cs = window.Telegram?.WebApp?.CloudStorage;
-      if (!cs) return resolve(false);
-      cs.setItem(key, JSON.stringify(data), (err) => {
-        if (err) {
-          console.warn('[cloudSave] RegisterPage failed:', err);
-          resolve(false);
-        } else {
-          resolve(true);
-        }
-      });
-      // Fallback timeout — resolve after 2s even if callback never fires
-      setTimeout(() => resolve(false), 2000);
-    } catch (e) {
-      console.warn('[cloudSave] RegisterPage exception:', e);
-      resolve(false);
-    }
-  });
-}
+import { cloudSave } from '../utils/cloudStorage';
 
 /**
  * Registration gate:

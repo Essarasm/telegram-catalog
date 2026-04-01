@@ -8,49 +8,12 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import CabinetPage from './pages/CabinetPage';
 import t from './i18n/uz.json';
+import { cloudSave, cloudLoad } from './utils/cloudStorage';
 
 const APP_VERSION = 'v17.0';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
-}
-
-// ── Telegram CloudStorage helpers ──
-// Persist registration data client-side so users don't need to
-// re-register when the server DB is wiped during deployments.
-function cloudSave(key, data) {
-  return new Promise((resolve) => {
-    try {
-      const cs = window.Telegram?.WebApp?.CloudStorage;
-      if (!cs) return resolve(false);
-      cs.setItem(key, JSON.stringify(data), (err) => {
-        if (err) {
-          console.warn('[cloudSave] failed:', err);
-          resolve(false);
-        } else {
-          resolve(true);
-        }
-      });
-      // Fallback timeout — resolve after 2s even if callback never fires
-      setTimeout(() => resolve(false), 2000);
-    } catch (e) {
-      console.warn('[cloudSave] exception:', e);
-      resolve(false);
-    }
-  });
-}
-
-function cloudLoad(key) {
-  return new Promise((resolve) => {
-    try {
-      const cs = window.Telegram?.WebApp?.CloudStorage;
-      if (!cs) return resolve(null);
-      cs.getItem(key, (err, val) => {
-        if (err || !val) return resolve(null);
-        try { resolve(JSON.parse(val)); } catch { resolve(null); }
-      });
-    } catch { resolve(null); }
-  });
 }
 
 async function silentReRegister(uid) {
