@@ -831,52 +831,55 @@ async def cmd_testclient(message: types.Message):
         )
         return
 
-    # /testclient NAME — search by client_id_1c name
+    # /testclient NAME — search by name (Cyrillic or Latin), always show list
     if arg:
         search = f"%{arg}%"
+        # Search across allowed_clients (name, client_id_1c) AND client_balances (client_name_1c)
+        # This covers Cyrillic 1C names even if client_id_1c wasn't populated
         matches = conn.execute(
             """SELECT ac.id, ac.name, ac.client_id_1c,
                       (SELECT COUNT(*) FROM client_balances WHERE client_id = ac.id) as bal_count
                FROM allowed_clients ac
                WHERE ac.client_id_1c LIKE ? OR ac.name LIKE ?
+                  OR ac.id IN (
+                      SELECT DISTINCT client_id FROM client_balances
+                      WHERE client_name_1c LIKE ? AND client_id IS NOT NULL
+                  )
                ORDER BY bal_count DESC
-               LIMIT 10""",
-            (search, search),
+               LIMIT 15""",
+            (search, search, search),
         ).fetchall()
 
         if not matches:
             conn.close()
-            await message.reply(f"❌ No clients found matching '{arg}'.")
-            return
-
-        if len(matches) == 1 or matches[0]["bal_count"] > 0:
-            # Auto-link to the best match (one with most balance data)
-            best = matches[0]
-            conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?", (best["id"], telegram_id))
-            conn.commit()
-            conn.close()
             await message.reply(
-                f"✅ Linked to: <b>{html_escape(best['name'] or '—')}</b>\n"
-                f"1C: <code>{html_escape(best['client_id_1c'] or '—')}</code>\n"
-                f"Balance records: {best['bal_count']}\n\n"
-                f"Open 🏛️ Cabinet to see their data.",
+                f"❌ '{html_escape(arg)}' bo'yicha hech narsa topilmadi.\n\n"
+                f"💡 1C dagi nom bilan qidiring, masalan:\n"
+                f"<code>/testclient Улугбек</code>",
                 parse_mode="HTML",
             )
             return
 
-        # Multiple matches — show list
-        lines = [f"🔍 Found {len(matches)} matches for '{html_escape(arg)}':\n"]
+        # Always show the list — never auto-assign
+        lines = [f"🔍 <b>{len(matches)}</b> ta natija '{html_escape(arg)}' bo'yicha:\n"]
         for m in matches:
+            name_1c = html_escape(m['client_id_1c'] or '—')
+            name_app = html_escape(m['name'] or '—')
+            # Show both names if they differ, otherwise just one
+            if m['client_id_1c'] and m['name'] and m['client_id_1c'].strip() != m['name'].strip():
+                display = f"{name_1c}\n      📱 {name_app}"
+            else:
+                display = name_1c if m['client_id_1c'] else name_app
             lines.append(
-                f"  <code>/testclient #{m['id']}</code> — {html_escape(m['name'] or '—')}"
-                f" | 1C: {html_escape(m['client_id_1c'] or '—')}"
-                f" | {m['bal_count']} bal"
+                f"  <code>/testclient #{m['id']}</code> — {display}"
+                f"  [{m['bal_count']} oy]"
             )
+        lines.append(f"\n👆 Kerakli mijozni tanlang — <code>/testclient #ID</code>")
         conn.close()
         await message.reply("\n".join(lines), parse_mode="HTML")
         return
 
-    # /testclient (no args) — show current state + suggestions
+    # /testclient (no args) — show current state + usage hints
     current_name = "—"
     current_1c = "—"
     current_bal = 0
@@ -890,37 +893,19 @@ async def cmd_testclient(message: types.Message):
             current_bal = conn.execute(
                 "SELECT COUNT(*) FROM client_balances WHERE client_id = ?", (user["client_id"],)
             ).fetchone()[0]
-
-    # Find top clients with the most balance data
-    top = conn.execute(
-        """SELECT ac.id, ac.name, ac.client_id_1c, COUNT(cb.id) as bal_count
-           FROM allowed_clients ac
-           JOIN client_balances cb ON cb.client_id = ac.id
-           GROUP BY ac.id
-           ORDER BY bal_count DESC
-           LIMIT 5""",
-    ).fetchall()
     conn.close()
 
     lines = [
-        f"🔗 <b>Current test link:</b>\n"
-        f"  Client: {current_name}\n"
+        f"🔗 <b>Joriy bog'lanish:</b>\n"
+        f"  Mijoz: {current_name}\n"
         f"  1C: <code>{current_1c}</code>\n"
-        f"  Balance records: {current_bal}\n",
+        f"  Balans yozuvlari: {current_bal} oy\n",
     ]
 
-    if top:
-        lines.append("<b>Top clients (most data):</b>\n")
-        for t_row in top:
-            lines.append(
-                f"  <code>/testclient #{t_row['id']}</code> — {html_escape(t_row['name'] or '—')}"
-                f" ({t_row['bal_count']} records)"
-            )
-
-    lines.append("\n<b>Usage:</b>")
-    lines.append("<code>/testclient КЛИЕНТ</code> — search by name")
-    lines.append("<code>/testclient #ID</code> — link by ID")
-    lines.append("<code>/testclient clear</code> — remove link")
+    lines.append("<b>Foydalanish:</b>")
+    lines.append("<code>/testclient Улугбек</code> — 1C nomi bo'yicha qidirish")
+    lines.append("<code>/testclient #123</code> — ID bo'yicha bog'lash")
+    lines.append("<code>/testclient clear</code> — bog'lanishni o'chirish")
 
     await message.reply("\n".join(lines), parse_mode="HTML")
 
