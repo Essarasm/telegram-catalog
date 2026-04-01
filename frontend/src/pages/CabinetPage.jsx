@@ -168,7 +168,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     return t.balance_settled;
   };
 
-  // ── Balance Card — current balance only, no history ──
+  // ── Balance Card — unified layout, no repeated labels ──
   const BalanceCard = () => {
     if (balanceLoading || !balance) return null;
 
@@ -180,62 +180,82 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       period_start: balance.period_start,
     };
     const usd = currencies.USD;
+    const hasBoth = !!usd;
 
-    const renderCurrencyBalance = (data, formatFn, suffix) => {
-      if (!data) return null;
-      const bal = data.balance || 0;
-      const isDebt = bal > 0;
-      const isZero = bal === 0;
-      const hasActivity = (data.period_debit || 0) > 0 || (data.period_credit || 0) > 0;
-      const label = getBalanceLabel(bal);
+    const balUzs = uzs.balance || 0;
+    const balUsd = usd ? (usd.balance || 0) : 0;
 
-      return (
-        <div className="mb-2">
-          {/* Smart balance label */}
-          <div className="text-[10px] text-tg-hint text-center mb-1">{label}</div>
-          <div className="text-center mb-2">
-            <div className={`text-xl font-bold ${isZero ? 'text-tg-hint' : isDebt ? 'text-red-500' : 'text-green-500'}`}>
-              {isZero ? '0' : isDebt ? '' : '−'}{isZero ? '' : formatFn(bal)} {suffix}
-            </div>
-          </div>
-
-          {hasActivity ? (
-            /* Normal activity display */
-            <div className="flex justify-between text-xs">
-              <div className="text-center flex-1">
-                <div className="text-tg-hint">{t.balance_shipped}</div>
-                <div className="font-semibold mt-0.5">{formatFn(data.period_debit || 0)}</div>
-              </div>
-              <div className="w-px bg-tg-hint/20" />
-              <div className="text-center flex-1">
-                <div className="text-tg-hint">{t.balance_paid}</div>
-                <div className="font-semibold mt-0.5 text-green-600">{formatFn(data.period_credit || 0)}</div>
-              </div>
-            </div>
-          ) : (
-            /* Zero-activity indicator */
-            <div className="text-center text-xs text-tg-hint py-1">
-              <div>{t.balance_no_activity}</div>
-            </div>
-          )}
-        </div>
-      );
+    const balColor = (v) => v === 0 ? 'text-tg-hint' : v > 0 ? 'text-red-500' : 'text-green-500';
+    const fmtBal = (v, fn, suffix) => {
+      if (v === 0) return <span className="text-tg-hint">0 {suffix}</span>;
+      return <>{v > 0 ? '' : '−'}{fn(v)} {suffix}</>;
     };
+
+    const hasAnyActivity =
+      (uzs.period_debit || 0) > 0 || (uzs.period_credit || 0) > 0 ||
+      (usd && ((usd.period_debit || 0) > 0 || (usd.period_credit || 0) > 0));
 
     return (
       <div className="mb-4">
         <div className="text-sm text-tg-hint mb-2">{t.balance_title}</div>
         <div className="bg-tg-secondary rounded-xl p-4">
 
-          {renderCurrencyBalance(uzs, formatUzs, t.balance_currency || "so'm")}
-
-          {usd && (
-            <>
-              <div className="border-t border-tg-hint/20 my-2" />
-              {renderCurrencyBalance(usd, formatUsd, '')}
-            </>
+          {/* ── Balances: side-by-side if both currencies ── */}
+          <div className="text-[10px] text-tg-hint text-center mb-1">{t.balance_current}</div>
+          {hasBoth ? (
+            <div className="flex items-baseline justify-center gap-4 mb-3">
+              <div className="text-center">
+                <div className={`text-xl font-bold ${balColor(balUzs)}`}>
+                  {fmtBal(balUzs, formatUzs, t.balance_currency || "so'm")}
+                </div>
+              </div>
+              <div className="text-tg-hint/30 text-lg font-light">│</div>
+              <div className="text-center">
+                <div className={`text-xl font-bold ${balColor(balUsd)}`}>
+                  {fmtBal(balUsd, formatUsd, '')}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center mb-3">
+              <div className={`text-xl font-bold ${balColor(balUzs)}`}>
+                {fmtBal(balUzs, formatUzs, t.balance_currency || "so'm")}
+              </div>
+            </div>
           )}
 
+          {/* ── Shipped / Paid breakdown — single table ── */}
+          {hasAnyActivity ? (
+            <div className="border-t border-tg-hint/20 pt-2">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-tg-hint">
+                    <th className="text-left font-normal pb-1"></th>
+                    <th className="text-right font-normal pb-1">UZS</th>
+                    {hasBoth && <th className="text-right font-normal pb-1">USD</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="text-tg-hint py-0.5">{t.balance_shipped}</td>
+                    <td className="text-right font-semibold py-0.5">{formatUzs(uzs.period_debit || 0)}</td>
+                    {hasBoth && <td className="text-right font-semibold py-0.5">{formatUsd(usd.period_debit || 0)}</td>}
+                  </tr>
+                  <tr>
+                    <td className="text-tg-hint py-0.5">{t.balance_paid}</td>
+                    <td className="text-right font-semibold text-green-600 py-0.5">{formatUzs(uzs.period_credit || 0)}</td>
+                    {hasBoth && <td className="text-right font-semibold text-green-600 py-0.5">{formatUsd(usd.period_credit || 0)}</td>}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-center text-xs text-tg-hint py-1">
+              {t.balance_no_activity}
+            </div>
+          )}
+
+          {/* ── Period footer ── */}
           <div className="text-[10px] text-tg-hint text-center mt-2">
             {formatPeriod(uzs.period_start || balance.period_start)} · {t.balance_updated}: {formatDate(balance.imported_at)}
           </div>
