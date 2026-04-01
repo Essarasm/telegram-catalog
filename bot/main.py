@@ -48,6 +48,8 @@ def get_db():
     import sqlite3
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
+    # Register Unicode-aware LOWER for Cyrillic search (SQLite built-in only handles ASCII)
+    conn.create_function("LOWER", 1, lambda s: s.lower() if s else s)
     return conn
 
 
@@ -833,17 +835,17 @@ async def cmd_testclient(message: types.Message):
 
     # /testclient NAME — search by name (Cyrillic or Latin), always show list
     if arg:
-        search = f"%{arg}%"
+        search = f"%{arg.lower()}%"
+        # Case-insensitive search using LOWER() — needed for Cyrillic (LIKE is ASCII-only)
         # Search across allowed_clients (name, client_id_1c) AND client_balances (client_name_1c)
-        # This covers Cyrillic 1C names even if client_id_1c wasn't populated
         matches = conn.execute(
             """SELECT ac.id, ac.name, ac.client_id_1c,
                       (SELECT COUNT(*) FROM client_balances WHERE client_id = ac.id) as bal_count
                FROM allowed_clients ac
-               WHERE ac.client_id_1c LIKE ? OR ac.name LIKE ?
+               WHERE LOWER(ac.client_id_1c) LIKE ? OR LOWER(ac.name) LIKE ?
                   OR ac.id IN (
                       SELECT DISTINCT client_id FROM client_balances
-                      WHERE client_name_1c LIKE ? AND client_id IS NOT NULL
+                      WHERE LOWER(client_name_1c) LIKE ? AND client_id IS NOT NULL
                   )
                ORDER BY bal_count DESC
                LIMIT 15""",
