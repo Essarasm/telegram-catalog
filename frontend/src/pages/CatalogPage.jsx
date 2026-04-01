@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { fetchCategories } from '../utils/api';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { fetchCategories, fetchSearchSuggestions } from '../utils/api';
 import t from '../i18n/uz.json';
 
 export default function CatalogPage({ onSelectCategory, onSearch }) {
@@ -7,6 +7,12 @@ export default function CatalogPage({ onSelectCategory, onSearch }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [searchInput, setSearchInput] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedIdx, setSelectedIdx] = useState(-1);
+  const suggestTimer = useRef(null);
+  const inputRef = useRef(null);
+  const suggestionsRef = useRef(null);
 
   useEffect(() => {
     fetchCategories()
@@ -24,11 +30,59 @@ export default function CatalogPage({ onSelectCategory, onSearch }) {
       });
   }, []);
 
+  // Debounced suggestion fetching
+  const fetchSuggestions = useCallback((query) => {
+    if (suggestTimer.current) clearTimeout(suggestTimer.current);
+    if (!query || query.length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    suggestTimer.current = setTimeout(async () => {
+      const results = await fetchSearchSuggestions(query);
+      setSuggestions(results);
+      setShowSuggestions(results.length > 0);
+      setSelectedIdx(-1);
+    }, 200);
+  }, []);
+
+  const handleInputChange = (e) => {
+    const val = e.target.value;
+    setSearchInput(val);
+    fetchSuggestions(val.trim());
+  };
+
   const handleSearch = (e) => {
     e.preventDefault();
     if (searchInput.trim()) {
+      setShowSuggestions(false);
       onSearch(searchInput.trim());
     }
+  };
+
+  const handleSuggestionClick = (text) => {
+    setSearchInput(text);
+    setShowSuggestions(false);
+    onSearch(text);
+  };
+
+  const handleKeyDown = (e) => {
+    if (!showSuggestions || suggestions.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setSelectedIdx(prev => Math.min(prev + 1, suggestions.length - 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setSelectedIdx(prev => Math.max(prev - 1, -1));
+    } else if (e.key === 'Enter' && selectedIdx >= 0) {
+      e.preventDefault();
+      handleSuggestionClick(suggestions[selectedIdx].text);
+    }
+  };
+
+  const handleBlur = () => {
+    // Delay to allow click on suggestion
+    setTimeout(() => setShowSuggestions(false), 200);
   };
 
   const icons = t.category_icons;
@@ -48,13 +102,17 @@ export default function CatalogPage({ onSelectCategory, onSearch }) {
 
   return (
     <div>
-      {/* Search */}
-      <form onSubmit={handleSearch} className="mb-4">
+      {/* Search with autocomplete */}
+      <form onSubmit={handleSearch} className="mb-4 relative">
         <div className="relative">
           <input
+            ref={inputRef}
             type="text"
             value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
+            onChange={handleInputChange}
+            onKeyDown={handleKeyDown}
+            onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+            onBlur={handleBlur}
             placeholder={t.search}
             className="w-full bg-tg-secondary rounded-xl px-4 py-3 pr-10 text-sm outline-none focus:ring-2 focus:ring-tg-button"
           />
@@ -62,6 +120,34 @@ export default function CatalogPage({ onSelectCategory, onSearch }) {
             🔍
           </button>
         </div>
+
+        {/* Autocomplete dropdown */}
+        {showSuggestions && suggestions.length > 0 && (
+          <div
+            ref={suggestionsRef}
+            className="absolute left-0 right-0 top-full mt-1 bg-tg-secondary rounded-xl shadow-lg z-50 overflow-hidden border border-tg-hint/20"
+          >
+            {suggestions.map((s, idx) => (
+              <button
+                key={idx}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => handleSuggestionClick(s.text)}
+                className={`w-full text-left px-4 py-2.5 text-sm flex items-center gap-2 transition-colors ${
+                  idx === selectedIdx ? 'bg-tg-button/15' : 'active:bg-tg-button/10'
+                }`}
+              >
+                <span className="text-tg-hint text-xs">
+                  {s.type === 'query' ? '🔍' : '📦'}
+                </span>
+                <span className="flex-1 truncate">{s.text}</span>
+                {s.count && s.count > 1 && (
+                  <span className="text-xs text-tg-hint">{s.count}x</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
       </form>
 
       {/* Categories grid */}

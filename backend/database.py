@@ -245,6 +245,22 @@ _CYR2LAT = {
     'э': 'e', 'ю': 'yu', 'я': 'ya',
 }
 
+# Uzbek Latin special characters → ASCII equivalents for search normalization
+_UZ_NORMALIZE = {
+    "o'": "o", "g'": "g", "sh": "sh",
+    "O'": "o", "G'": "g", "Sh": "sh",
+    "'": "",  # lone apostrophe (used in o'ram, g'isht)
+}
+
+
+def normalize_uzbek(text):
+    """Normalize Uzbek special characters for search matching.
+    o' → o, g' → g so that 'oram' matches 'o\\'ram'."""
+    t = text
+    for src, dst in _UZ_NORMALIZE.items():
+        t = t.replace(src, dst)
+    return t
+
 
 def transliterate_to_latin(text):
     """Transliterate Cyrillic text to Latin (lowercase)."""
@@ -254,11 +270,12 @@ def transliterate_to_latin(text):
     return ''.join(result)
 
 
-def build_search_text(name_cyrillic, name_display, producer_name):
+def build_search_text(name_cyrillic, name_display, producer_name, unit=None, category_name=None):
     """Build a combined search index string for a product.
 
     Combines: original 1C name (Cyrillic) + display name (Latin) +
-    transliterated version of Cyrillic + producer name.
+    transliterated version of Cyrillic + producer name + unit + category.
+    Also includes Uzbek-normalized variants (o'→o, g'→g).
     All lowercased for case-insensitive LIKE matching.
     """
     parts = []
@@ -267,23 +284,61 @@ def build_search_text(name_cyrillic, name_display, producer_name):
         parts.append(cyr)
         parts.append(transliterate_to_latin(cyr))
     if name_display:
-        parts.append(name_display.strip().lower())
+        disp = name_display.strip().lower()
+        parts.append(disp)
+        # Add Uzbek-normalized version if different
+        norm = normalize_uzbek(disp)
+        if norm != disp:
+            parts.append(norm)
     if producer_name:
-        parts.append(producer_name.strip().lower())
+        prod = producer_name.strip().lower()
+        parts.append(prod)
+        norm = normalize_uzbek(prod)
+        if norm != prod:
+            parts.append(norm)
+    if unit:
+        parts.append(unit.strip().lower())
+    if category_name:
+        cat = category_name.strip().lower()
+        parts.append(cat)
+        norm = normalize_uzbek(cat)
+        if norm != cat:
+            parts.append(norm)
     return ' '.join(parts)
 
 
 def _rebuild_search_text(conn):
     """Populate search_text for all products (used during migration)."""
+    rebuild_all_search_text(conn)
+
+
+def rebuild_all_search_text(conn=None):
+    """Rebuild search_text for ALL products. Call after name/unit/category changes.
+
+    Can be called with an existing connection or will create its own.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_db()
     rows = conn.execute(
-        """SELECT p.id, p.name, p.name_display, pr.name as producer_name
+        """SELECT p.id, p.name, p.name_display, pr.name as producer_name,
+                  p.unit, c.name as category_name
            FROM products p
-           JOIN producers pr ON pr.id = p.producer_id"""
+           JOIN producers pr ON pr.id = p.producer_id
+           JOIN categories c ON c.id = p.category_id"""
     ).fetchall()
+    count = 0
     for r in rows:
-        st = build_search_text(r["name"], r["name_display"], r["producer_name"])
+        st = build_search_text(
+            r["name"], r["name_display"], r["producer_name"],
+            r["unit"], r["category_name"]
+        )
         conn.execute("UPDATE products SET search_text = ? WHERE id = ?", (st, r["id"]))
+        count += 1
     conn.commit()
+    if own_conn:
+        conn.close()
+    return count
 
 
 if __name__ == "__main__":

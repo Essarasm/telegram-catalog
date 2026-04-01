@@ -92,5 +92,7 @@
     "Terilar, silliqlash kamarlari": "🪚",
     "Elektrodlar": "⚡",
     "Plyonka": "🗞️"
-  }
+  },
+  "did_you_mean": "Balki siz qidirdingiz:",
+  "fuzzy_results": "O'xshash natijalar"
 }

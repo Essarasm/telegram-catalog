@@ -432,6 +432,7 @@ export default function App() {
             cart={cart}
             approved={approved}
             onSelectProduct={(product) => navigateTo('product_detail', product)}
+            onSearch={(q) => navigateTo('search', q)}
           />
         )}
         {page === 'cart' && (

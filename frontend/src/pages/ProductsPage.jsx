@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest, logSearchClick } from '../utils/api';
+import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest, logSearchClick, fetchDidYouMean } from '../utils/api';
 import t from '../i18n/uz.json';
 
 const WHOLESALE_QTYS = [6, 12, 15, 25, 36, 50];
@@ -8,7 +8,43 @@ function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
 }
 
-function ProductsEmptyState() {
+function DidYouMean({ query, onSuggestionClick }) {
+  const [suggestions, setSuggestions] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetchDidYouMean(query).then(results => {
+      if (!cancelled) {
+        setSuggestions(results);
+        setLoading(false);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [query]);
+
+  if (loading || suggestions.length === 0) return null;
+
+  return (
+    <div className="mb-4 bg-tg-secondary rounded-xl p-3">
+      <div className="text-sm text-tg-hint mb-2">Balki siz qidirdingiz:</div>
+      <div className="flex flex-wrap gap-2">
+        {suggestions.map((s, i) => (
+          <button
+            key={i}
+            onClick={() => onSuggestionClick(s.text)}
+            className="bg-tg-button/15 text-tg-link text-sm font-medium rounded-lg px-3 py-1.5 active:scale-95 transition-transform"
+          >
+            {s.text}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProductsEmptyState({ searchQuery, onSuggestionClick }) {
   const [requestText, setRequestText] = useState('');
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
@@ -25,6 +61,11 @@ function ProductsEmptyState() {
 
   return (
     <div className="text-center py-8">
+      {/* "Did you mean?" suggestions for typo correction */}
+      {searchQuery && (
+        <DidYouMean query={searchQuery} onSuggestionClick={onSuggestionClick} />
+      )}
+
       <div className="text-tg-hint text-base mb-6">{t.no_products}</div>
 
       <div className="bg-tg-secondary rounded-xl p-4 text-left">
@@ -63,12 +104,13 @@ function ProductsEmptyState() {
   );
 }
 
-export default function ProductsPage({ category, producer, searchQuery, cart, approved, onSelectProduct }) {
+export default function ProductsPage({ category, producer, searchQuery, cart, approved, onSelectProduct, onSearch }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
+  const [isFuzzy, setIsFuzzy] = useState(false);
   const [qtyPickerId, setQtyPickerId] = useState(null);
   const [customQty, setCustomQty] = useState('');
   const observer = useRef();
@@ -87,6 +129,11 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
       if (data && data.items) {
         setProducts(prev => reset ? data.items : [...prev, ...data.items]);
         setHasMore(pageNum < data.pages);
+        if (reset && data.fuzzy) {
+          setIsFuzzy(true);
+        } else if (reset) {
+          setIsFuzzy(false);
+        }
       } else {
         setError('Products API unexpected: ' + JSON.stringify(data).slice(0, 100));
       }
@@ -101,6 +148,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
     setPage(1);
     setProducts([]);
     setError(null);
+    setIsFuzzy(false);
     loadProducts(1, true);
   }, [category?.id, producer?.id, searchQuery, loadProducts]);
 
@@ -119,6 +167,13 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
 
   const isInCart = (id) => cart.items.find(i => i.id === id);
 
+  // Handle "Did you mean?" suggestion click
+  const handleSuggestionClick = (text) => {
+    if (onSearch) {
+      onSearch(text);
+    }
+  };
+
   if (error) {
     return (
       <div className="text-center py-10">
@@ -129,11 +184,21 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
   }
 
   if (!loading && products.length === 0) {
-    return <ProductsEmptyState />;
+    return <ProductsEmptyState searchQuery={searchQuery} onSuggestionClick={handleSuggestionClick} />;
   }
 
   return (
     <div>
+      {/* Fuzzy match indicator */}
+      {isFuzzy && searchQuery && (
+        <div className="mb-3 bg-tg-secondary rounded-xl px-3 py-2 flex items-center gap-2">
+          <span className="text-sm">🔍</span>
+          <span className="text-xs text-tg-hint">
+            O'xshash natijalar: <span className="font-medium text-tg-text">"{searchQuery}"</span>
+          </span>
+        </div>
+      )}
+
       {/* 2-column product card grid — sized for ~4 cards visible per screen */}
       <div className="grid grid-cols-2 gap-3">
         {products.map((product, idx) => {

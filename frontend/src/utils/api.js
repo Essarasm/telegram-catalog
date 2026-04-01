@@ -36,6 +36,26 @@ export async function logSearchClick({ searchLogId, telegramId, productId, actio
   } catch (e) { /* silent — analytics should never break UX */ }
 }
 
+// ── Search suggestions & "Did you mean?" ────────────────────────
+
+export async function fetchSearchSuggestions(query) {
+  if (!query || query.length < 1) return [];
+  try {
+    const res = await fetch(`${API_BASE}/search/suggestions?q=${encodeURIComponent(query)}&limit=6`);
+    const data = await res.json();
+    return data.suggestions || [];
+  } catch (e) { return []; }
+}
+
+export async function fetchDidYouMean(query) {
+  if (!query || query.length < 2) return [];
+  try {
+    const res = await fetch(`${API_BASE}/search/did-you-mean?q=${encodeURIComponent(query)}&limit=3`);
+    const data = await res.json();
+    return data.suggestions || [];
+  } catch (e) { return []; }
+}
+
 export async function exportOrder(items, format = 'pdf', clientName = '', telegramId = 0) {
   const res = await fetch(`${API_BASE}/export`, {
     method: 'POST',

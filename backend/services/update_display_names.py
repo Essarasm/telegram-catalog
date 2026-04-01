@@ -14,7 +14,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from openpyxl import load_workbook
-from backend.database import get_db, init_db
+from backend.database import get_db, init_db, rebuild_all_search_text
 
 ID_OFFSET = 4880  # Excel ID 4881 = DB ID 1
 
@@ -183,6 +183,12 @@ def update_display_names():
             updated_cats += 1
 
     conn.commit()
+
+    # Rebuild search_text index to reflect updated names, units, categories
+    print("update_display_names: Rebuilding search_text index...")
+    count = rebuild_all_search_text(conn)
+    print(f"update_display_names: Rebuilt search_text for {count} products.")
+
     conn.close()
     wb.close()
     print(f"update_display_names: Renamed {renamed_cats} categories, "

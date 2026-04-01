@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from typing import Optional
-from backend.database import get_db
+from backend.database import get_db, transliterate_to_latin, normalize_uzbek
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -222,3 +222,164 @@ def search_summary(days: int = Query(7, ge=1, le=365)):
         "zero_result_searches": zero_result_count,
         "zero_result_pct": round(zero_result_count / total * 100, 1) if total else 0,
     }
+
+
+# ── Autocomplete / Suggestions ─────────────────────────────────────
+
+@router.get("/suggestions")
+def search_suggestions(
+    q: str = Query("", min_length=1),
+    limit: int = Query(8, ge=1, le=20),
+):
+    """Return search suggestions based on:
+    1. Popular past queries matching the prefix
+    2. Product names matching the prefix
+    Designed for autocomplete dropdown as user types.
+    """
+    if not q or len(q.strip()) < 1:
+        return {"suggestions": []}
+
+    query = q.strip().lower()
+    query_latin = transliterate_to_latin(query)
+    query_norm = normalize_uzbek(query)
+    conn = get_db()
+    suggestions = []
+    seen = set()
+
+    # 1. Popular queries that start with or contain the prefix
+    rows = conn.execute(
+        """SELECT query, COUNT(*) as cnt
+           FROM search_logs
+           WHERE results_count > 0
+             AND (query LIKE ? OR query LIKE ? OR query LIKE ?)
+           GROUP BY query
+           ORDER BY cnt DESC
+           LIMIT ?""",
+        (f"{query}%", f"{query_latin}%", f"{query_norm}%", limit),
+    ).fetchall()
+    for r in rows:
+        q_text = r["query"]
+        if q_text not in seen:
+            suggestions.append({"text": q_text, "type": "query", "count": r["cnt"]})
+            seen.add(q_text)
+
+    # 2. Product names matching the prefix (fill remaining slots)
+    remaining = limit - len(suggestions)
+    if remaining > 0:
+        rows = conn.execute(
+            """SELECT DISTINCT COALESCE(p.name_display, p.name) as display_name
+               FROM products p
+               WHERE p.is_active = 1
+                 AND (p.search_text LIKE ? OR p.search_text LIKE ? OR p.search_text LIKE ?)
+               LIMIT ?""",
+            (f"%{query}%", f"%{query_latin}%", f"%{query_norm}%", remaining * 2),
+        ).fetchall()
+        for r in rows:
+            name = r["display_name"]
+            name_lower = name.lower()
+            if name_lower not in seen and len(suggestions) < limit:
+                suggestions.append({"text": name, "type": "product"})
+                seen.add(name_lower)
+
+    conn.close()
+    return {"suggestions": suggestions}
+
+
+@router.get("/did-you-mean")
+def did_you_mean(
+    q: str = Query("", min_length=2),
+    limit: int = Query(3, ge=1, le=10),
+):
+    """When a search returns zero results, suggest alternative queries.
+    Uses edit distance against popular queries and product names.
+    """
+    if not q or len(q.strip()) < 2:
+        return {"suggestions": []}
+
+    query = q.strip().lower()
+    query_latin = transliterate_to_latin(query)
+    query_norm = normalize_uzbek(query)
+    conn = get_db()
+
+    candidates = []
+
+    # 1. Check popular queries with results
+    rows = conn.execute(
+        """SELECT query, COUNT(*) as cnt
+           FROM search_logs
+           WHERE results_count > 0
+           GROUP BY query
+           HAVING cnt >= 2
+           ORDER BY cnt DESC
+           LIMIT 200""",
+    ).fetchall()
+    for r in rows:
+        candidates.append((r["query"], r["cnt"], "query"))
+
+    # 2. Get product display names (sample for performance)
+    rows = conn.execute(
+        """SELECT DISTINCT LOWER(COALESCE(name_display, name)) as nm
+           FROM products WHERE is_active = 1"""
+    ).fetchall()
+    for r in rows:
+        candidates.append((r["nm"], 1, "product"))
+
+    # Score candidates by edit distance / similarity
+    scored = []
+    for text, popularity, source in candidates:
+        if not text:
+            continue
+        # Check edit distance for each query variant
+        best_dist = min(
+            _edit_distance_bounded(query, text, 4),
+            _edit_distance_bounded(query_latin, text, 4),
+            _edit_distance_bounded(query_norm, text, 4),
+        )
+        # Also check individual words in multi-word product names
+        for word in text.split():
+            if len(word) >= 3:
+                best_dist = min(
+                    best_dist,
+                    _edit_distance_bounded(query, word, 3),
+                    _edit_distance_bounded(query_latin, word, 3),
+                )
+        if best_dist <= 3 and best_dist > 0:  # Close but not identical
+            # Higher score = better suggestion (lower distance, higher popularity)
+            score = (4 - best_dist) * 100 + min(popularity, 50)
+            scored.append((score, text, source))
+
+    scored.sort(key=lambda x: -x[0])
+
+    # Deduplicate and limit
+    seen = set()
+    suggestions = []
+    for _, text, source in scored:
+        if text not in seen and len(suggestions) < limit:
+            suggestions.append({"text": text, "type": source})
+            seen.add(text)
+
+    conn.close()
+    return {"suggestions": suggestions}
+
+
+def _edit_distance_bounded(s1, s2, max_dist):
+    """Levenshtein edit distance, but stop early if exceeding max_dist."""
+    if abs(len(s1) - len(s2)) > max_dist:
+        return max_dist + 1
+    if len(s1) < len(s2):
+        s1, s2 = s2, s1
+    if len(s2) == 0:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1]
+        row_min = i + 1
+        for j, c2 in enumerate(s2):
+            cost = 0 if c1 == c2 else 1
+            val = min(curr[j] + 1, prev[j + 1] + 1, prev[j] + cost)
+            curr.append(val)
+            row_min = min(row_min, val)
+        if row_min > max_dist:
+            return max_dist + 1
+        prev = curr
+    return prev[-1]
