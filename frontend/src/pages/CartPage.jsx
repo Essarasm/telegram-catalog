@@ -5,9 +5,113 @@ import t from '../i18n/uz.json';
 const API_BASE = '/api';
 const QUICK_QTYS = [6, 12, 15, 25, 36, 50];
 
+/* ───────────────────────────────────────────
+   Order Preview — HTML table mirroring the PDF
+   ─────────────────────────────────────────── */
+function OrderPreview({ items, onConfirm, onBack, exporting }) {
+  const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+  const clientName = tgUser
+    ? `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim()
+    : '';
+
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const dateStr = `${pad(now.getDate())}.${pad(now.getMonth() + 1)}.${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+  const usdItems = items.filter(i => (i.currency || 'USD') === 'USD');
+  const uzsItems = items.filter(i => (i.currency || 'USD') === 'UZS');
+
+  const fmt = (val, cur) => {
+    if (cur === 'UZS') return `${Number(val).toLocaleString('uz-UZ')} so'm`;
+    return `$${Number(val).toFixed(2)}`;
+  };
+
+  const renderTable = (list, currency) => {
+    let grandTotal = 0;
+    return (
+      <div className="mb-4">
+        <div className="text-sm font-semibold mb-1.5" style={{ color: 'var(--tg-theme-text-color)' }}>
+          Mahsulotlar ({currency})
+        </div>
+        <div className="overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--tg-theme-hint-color, #999)', borderWidth: '0.5px' }}>
+          <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ backgroundColor: '#2563EB', color: '#fff' }}>
+                <th className="px-2 py-1.5 text-center font-semibold">#</th>
+                <th className="px-2 py-1.5 text-left font-semibold">Mahsulot nomi</th>
+                <th className="px-2 py-1.5 text-center font-semibold">Birlik</th>
+                <th className="px-2 py-1.5 text-right font-semibold">Miqdor</th>
+                <th className="px-2 py-1.5 text-right font-semibold">Narx</th>
+                <th className="px-2 py-1.5 text-right font-semibold">Jami</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((item, idx) => {
+                const qty = item.quantity || 1;
+                const price = item.price || 0;
+                const total = qty * price;
+                grandTotal += total;
+                return (
+                  <tr key={item.id} style={{ backgroundColor: idx % 2 === 0 ? 'var(--tg-theme-bg-color)' : 'var(--tg-theme-secondary-bg-color)' }}>
+                    <td className="px-2 py-1.5 text-center" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{idx + 1}</td>
+                    <td className="px-2 py-1.5 text-left" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{item.name_display || item.name}</td>
+                    <td className="px-2 py-1.5 text-center" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{item.unit || 'шт'}</td>
+                    <td className="px-2 py-1.5 text-right" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{qty}</td>
+                    <td className="px-2 py-1.5 text-right" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{fmt(price, currency)}</td>
+                    <td className="px-2 py-1.5 text-right font-medium" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{fmt(total, currency)}</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ backgroundColor: 'var(--tg-theme-secondary-bg-color)' }}>
+                <td colSpan="5" className="px-2 py-2 text-right font-bold">JAMI:</td>
+                <td className="px-2 py-2 text-right font-bold">{fmt(grandTotal, currency)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="text-center mb-3">
+        <div className="text-base font-bold">BUYURTMA / ЗАКАЗ</div>
+        <div className="text-xs text-tg-hint mt-1">Sana: {dateStr}</div>
+        {clientName && <div className="text-xs text-tg-hint">Mijoz: {clientName}</div>}
+      </div>
+
+      {/* Tables by currency */}
+      {usdItems.length > 0 && renderTable(usdItems, 'USD')}
+      {uzsItems.length > 0 && renderTable(uzsItems, 'UZS')}
+
+      {/* Action buttons */}
+      <div className="space-y-2 mt-4">
+        <button
+          onClick={onConfirm}
+          disabled={exporting}
+          className="w-full bg-tg-button text-tg-button-text rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
+        >
+          {exporting ? t.loading : '✅ Tasdiqlash va yuborish'}
+        </button>
+        <button
+          onClick={onBack}
+          disabled={exporting}
+          className="w-full text-center text-sm py-2 disabled:opacity-50"
+          style={{ color: 'var(--tg-theme-link-color)' }}
+        >
+          ← {t.back}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function CartPage({ cart }) {
   const [exporting, setExporting] = useState(false);
   const [exported, setExported] = useState(false);
+  const [previewFormat, setPreviewFormat] = useState(null); // 'pdf' | 'xlsx' | null
   const [editItem, setEditItem] = useState(null); // item being edited in bottom sheet
   const [editValue, setEditValue] = useState('');
   const inputRef = useRef(null);
@@ -51,6 +155,7 @@ export default function CartPage({ cart }) {
         if (json.ok && json.sent_to_telegram) {
           // File sent to user's Telegram DM — success!
           setExported('telegram');
+          setPreviewFormat(null);
           cart.clearCart();
           setExporting(false);
           return;
@@ -77,6 +182,7 @@ export default function CartPage({ cart }) {
         setTimeout(() => URL.revokeObjectURL(url), 5000);
       }
       setExported('download');
+      setPreviewFormat(null);
       cart.clearCart();
     } catch (err) {
       console.error('Export failed:', err);
@@ -122,6 +228,20 @@ export default function CartPage({ cart }) {
         <div className="text-5xl mb-4">🛒</div>
         <div className="text-lg font-medium">{t.cart_empty}</div>
         <div className="text-sm text-tg-hint mt-1">{t.cart_empty_desc}</div>
+      </div>
+    );
+  }
+
+  // ─── Preview mode: show order table before sending ───
+  if (previewFormat) {
+    return (
+      <div>
+        <OrderPreview
+          items={cart.items}
+          exporting={exporting}
+          onConfirm={() => handleExport(previewFormat)}
+          onBack={() => setPreviewFormat(null)}
+        />
       </div>
     );
   }
@@ -217,18 +337,18 @@ export default function CartPage({ cart }) {
       ) : (
         <div className="space-y-3">
           <button
-            onClick={() => handleExport('pdf')}
+            onClick={() => setPreviewFormat('pdf')}
             disabled={exporting}
             className="w-full bg-tg-button text-tg-button-text rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
           >
-            {exporting ? t.loading : '📄 Hisobot yuborish (PDF)'}
+            📄 Hisobot yuborish (PDF)
           </button>
           <button
-            onClick={() => handleExport('xlsx')}
+            onClick={() => setPreviewFormat('xlsx')}
             disabled={exporting}
             className="w-full bg-green-600 text-white rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
           >
-            {exporting ? t.loading : '📊 Hisobot yuborish (Excel)'}
+            📊 Hisobot yuborish (Excel)
           </button>
         </div>
       )}
