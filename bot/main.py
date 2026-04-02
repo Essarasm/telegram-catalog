@@ -1147,6 +1147,8 @@ async def cmd_help(message: types.Message):
         "Chat va User ID ko'rish\n\n"
         "<b>/reports</b>\n"
         "Oxirgi xatolik xabarlari va mahsulot so'rovlari\n\n"
+        "<b>/wrongphotos</b>\n"
+        "Noto'g'ri rasm xabarlari (mahsulot bo'yicha)\n\n"
         "<b>/searches</b> <code>[kunlar]</code>\n"
         "Qidiruv statistikasi (default: 7 kun)",
         parse_mode="HTML",
@@ -1163,16 +1165,16 @@ async def cmd_reports(message: types.Message):
 
     # Recent issue reports
     reports = conn.execute(
-        """SELECT r.id, p.name_display, p.name, r.report_type, r.note, r.created_at
+        """SELECT r.id, p.name_display, p.name, r.report_type, r.note, r.status, r.created_at
            FROM reports r
            JOIN products p ON p.id = r.product_id
            ORDER BY r.created_at DESC
-           LIMIT 10""",
+           LIMIT 15""",
     ).fetchall()
 
     # Recent product requests
     requests = conn.execute(
-        """SELECT id, request_text, created_at
+        """SELECT id, request_text, status, created_at
            FROM product_requests
            ORDER BY created_at DESC
            LIMIT 10""",
@@ -1187,6 +1189,13 @@ async def cmd_reports(message: types.Message):
         "other": "❓ Boshqa",
     }
 
+    status_icons = {
+        "new": "🔴",
+        "reviewed": "🟡",
+        "fixed": "✅",
+        "dismissed": "⚪",
+    }
+
     lines = []
 
     if reports:
@@ -1194,7 +1203,8 @@ async def cmd_reports(message: types.Message):
         for r in reports:
             name = r["name_display"] or r["name"]
             tl = type_labels.get(r["report_type"], r["report_type"])
-            line = f"#{r['id']} {tl} — {name}"
+            si = status_icons.get(r["status"], "❓")
+            line = f"#{r['id']} {si} {tl} — {name}"
             if r["note"]:
                 line += f"\n   💬 {r['note'][:60]}"
             lines.append(line)
@@ -1206,9 +1216,49 @@ async def cmd_reports(message: types.Message):
     if requests:
         lines.append(f"🔍 <b>Mahsulot so'rovlari ({len(requests)}):</b>\n")
         for pr in requests:
-            lines.append(f"#{pr['id']} {pr['request_text'][:80]}")
+            si = status_icons.get(pr["status"], "❓")
+            lines.append(f"#{pr['id']} {si} {pr['request_text'][:80]}")
     else:
         lines.append("🔍 Mahsulot so'rovlari yo'q.")
+
+    lines.append("\n🔴 new  🟡 reviewed  ✅ fixed  ⚪ dismissed")
+
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(Command("wrongphotos"))
+async def cmd_wrongphotos(message: types.Message):
+    """Show wrong_photo reports grouped by product, sorted by priority (report count)."""
+    if not is_admin(message):
+        return
+
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT r.product_id, p.name_display, p.name, p.image_path,
+                  COUNT(*) as cnt,
+                  GROUP_CONCAT(r.id) as rids
+           FROM reports r
+           JOIN products p ON p.id = r.product_id
+           WHERE r.report_type = 'wrong_photo' AND r.status = 'new'
+           GROUP BY r.product_id
+           ORDER BY cnt DESC""",
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        await message.reply("✅ Noto'g'ri rasm xabarlari yo'q (hammasi hal qilingan).")
+        return
+
+    total_reports = sum(r["cnt"] for r in rows)
+    lines = [f"📷 <b>Noto'g'ri rasm xabarlari:</b> {total_reports} ta xabar, {len(rows)} ta mahsulot\n"]
+
+    for r in rows:
+        name = r["name_display"] or r["name"]
+        has_photo = "🖼" if r["image_path"] else "❌"
+        rids = r["rids"]
+        lines.append(f"  {has_photo} <b>#{r['product_id']}</b> {name} — {r['cnt']}x (#{rids})")
+
+    lines.append(f"\n💡 Rasmni o'chirish: PATCH /api/reports/ID/status {{\"status\": \"fixed\"}}")
 
     await message.reply("\n".join(lines), parse_mode="HTML")
 

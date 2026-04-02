@@ -1,7 +1,8 @@
 """Issue reports and product request endpoints."""
 import os
 import logging
-from fastapi import APIRouter, Query
+from pathlib import Path
+from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
@@ -11,6 +12,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["reports"])
 
 REPORT_TYPES = ["wrong_photo", "wrong_price", "wrong_name", "wrong_category", "other"]
+VALID_STATUSES = ["new", "reviewed", "fixed", "dismissed"]
+
+# Resolve images/ directory relative to repo root
+IMAGES_DIR = Path(__file__).resolve().parent.parent.parent / "images"
 
 
 # ── Pydantic models ──
@@ -20,6 +25,10 @@ class ReportCreate(BaseModel):
     telegram_id: int
     report_type: str = "other"
     note: Optional[str] = None
+
+
+class ReportStatusUpdate(BaseModel):
+    status: str
 
 
 class ProductRequestCreate(BaseModel):
@@ -150,6 +159,89 @@ def list_reports(
         "items": [dict(r) for r in rows],
         "count": len(rows),
     }
+
+
+# ── Wrong photo summary (must be before /{report_id} routes for path resolution) ──
+
+@router.get("/reports/wrong-photos")
+def wrong_photo_summary():
+    """Admin endpoint: wrong_photo reports grouped by product, sorted by report count (priority)."""
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT r.product_id, p.name_display, p.name as product_name, p.image_path,
+                  COUNT(*) as report_count,
+                  GROUP_CONCAT(r.id) as report_ids,
+                  MIN(r.created_at) as first_reported,
+                  MAX(r.created_at) as last_reported
+           FROM reports r
+           JOIN products p ON p.id = r.product_id
+           WHERE r.report_type = 'wrong_photo' AND r.status = 'new'
+           GROUP BY r.product_id
+           ORDER BY report_count DESC, last_reported DESC""",
+    ).fetchall()
+    conn.close()
+
+    items = []
+    for r in rows:
+        items.append({
+            "product_id": r["product_id"],
+            "product_name": r["name_display"] or r["product_name"],
+            "has_photo": bool(r["image_path"]),
+            "report_count": r["report_count"],
+            "report_ids": [int(x) for x in r["report_ids"].split(",")],
+            "first_reported": r["first_reported"],
+            "last_reported": r["last_reported"],
+        })
+
+    return {"items": items, "count": len(items)}
+
+
+# ── Report status update ──
+
+@router.patch("/reports/{report_id}/status")
+def update_report_status(report_id: int, body: ReportStatusUpdate):
+    """Admin endpoint: update report status. TODO: add auth gate in future."""
+    if body.status not in VALID_STATUSES:
+        raise HTTPException(400, f"Invalid status. Must be one of: {VALID_STATUSES}")
+
+    conn = get_db()
+
+    report = conn.execute(
+        "SELECT r.id, r.product_id, r.report_type, r.status as old_status FROM reports r WHERE r.id = ?",
+        (report_id,),
+    ).fetchone()
+    if not report:
+        conn.close()
+        raise HTTPException(404, "Report not found")
+
+    conn.execute("UPDATE reports SET status = ? WHERE id = ?", (body.status, report_id))
+    conn.commit()
+
+    result = {"ok": True, "report_id": report_id, "old_status": report["old_status"], "new_status": body.status}
+
+    # If marking a wrong_photo report as "fixed", remove the photo
+    if report["report_type"] == "wrong_photo" and body.status == "fixed":
+        product_id = report["product_id"]
+        photo_path = IMAGES_DIR / f"{product_id}.jpg"
+        photo_removed = False
+
+        if photo_path.exists():
+            photo_path.unlink()
+            photo_removed = True
+            logger.info(f"Removed wrong photo: {photo_path}")
+
+        # Clear image_path in DB so frontend falls back to emoji
+        conn2 = get_db()
+        conn2.execute("UPDATE products SET image_path = NULL WHERE id = ?", (product_id,))
+        conn2.commit()
+        conn2.close()
+        logger.info(f"Cleared image_path for product #{product_id}")
+
+        result["photo_removed"] = photo_removed
+        result["product_id"] = product_id
+
+    conn.close()
+    return result
 
 
 # ── Product requests ──
