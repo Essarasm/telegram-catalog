@@ -191,6 +191,26 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_cb_client_id ON client_balances(client_id);
         CREATE INDEX IF NOT EXISTS idx_cb_period ON client_balances(period_start);
         CREATE INDEX IF NOT EXISTS idx_cb_currency ON client_balances(currency);
+
+        -- Debtors snapshot: current debt per client from 1C "Дебиторская задолженность"
+        CREATE TABLE IF NOT EXISTS client_debts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name_1c TEXT NOT NULL,
+            client_id INTEGER,
+            debt_uzs REAL DEFAULT 0,
+            debt_usd REAL DEFAULT 0,
+            last_transaction_date TEXT,
+            last_transaction_no TEXT,
+            aging_0_30 REAL DEFAULT 0,
+            aging_31_60 REAL DEFAULT 0,
+            aging_61_90 REAL DEFAULT 0,
+            aging_91_120 REAL DEFAULT 0,
+            aging_120_plus REAL DEFAULT 0,
+            report_date TEXT NOT NULL,
+            imported_at DATETIME DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_debts_client_id ON client_debts(client_id);
+        CREATE INDEX IF NOT EXISTS idx_client_debts_report_date ON client_debts(report_date);
     """)
     conn.commit()
 

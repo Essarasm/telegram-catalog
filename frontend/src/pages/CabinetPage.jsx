@@ -168,10 +168,67 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     return t.balance_settled;
   };
 
-  // ── Balance Card — unified layout, no repeated labels ──
+  // ── Balance Card — shows debt from дебиторка or fallback to оборотка ──
   const BalanceCard = () => {
     if (balanceLoading || !balance) return null;
 
+    const debtUzs = balance.debt_uzs ?? null;
+    const debtUsd = balance.debt_usd ?? null;
+    const isDebtSource = debtUzs !== null;
+
+    // Debt source (дебиторка) — simple debt display
+    if (isDebtSource) {
+      const hasUzs = debtUzs > 0;
+      const hasUsd = debtUsd > 0;
+      const isSettled = !hasUzs && !hasUsd;
+
+      return (
+        <div className="mb-4">
+          <div className="text-sm text-tg-hint mb-2">{t.balance_title}</div>
+          <div className="bg-tg-secondary rounded-xl p-4">
+            <div className="text-[10px] text-tg-hint text-center mb-1">{t.balance_current}</div>
+
+            {isSettled ? (
+              <div className="text-center mb-2">
+                <div className="text-xl font-bold text-tg-hint">{t.balance_settled}</div>
+              </div>
+            ) : (
+              <div className="flex items-baseline justify-center gap-4 mb-2">
+                {hasUzs && (
+                  <div className="text-center">
+                    <div className="text-xl font-bold text-red-500">
+                      {formatUzs(debtUzs)} {t.balance_currency || "so'm"}
+                    </div>
+                  </div>
+                )}
+                {hasUzs && hasUsd && (
+                  <div className="text-tg-hint/30 text-lg font-light">│</div>
+                )}
+                {hasUsd && (
+                  <div className="text-center">
+                    <div className="text-xl font-bold text-red-500">
+                      {formatUsd(debtUsd)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!isSettled && (
+              <div className="text-center text-xs text-red-400 mb-1">
+                {t.balance_debt}
+              </div>
+            )}
+
+            <div className="text-[10px] text-tg-hint text-center mt-2">
+              {t.balance_updated}: {formatDate(balance.imported_at)}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Fallback: оборотка-based balance (legacy)
     const currencies = balance.balances_by_currency || {};
     const uzs = currencies.UZS || {
       balance: balance.balance || 0,
@@ -199,8 +256,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       <div className="mb-4">
         <div className="text-sm text-tg-hint mb-2">{t.balance_title}</div>
         <div className="bg-tg-secondary rounded-xl p-4">
-
-          {/* ── Balances: side-by-side if both currencies ── */}
           <div className="text-[10px] text-tg-hint text-center mb-1">{t.balance_current}</div>
           {hasBoth ? (
             <div className="flex items-baseline justify-center gap-4 mb-3">
@@ -224,7 +279,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
             </div>
           )}
 
-          {/* ── Shipped / Paid breakdown — single table ── */}
           {hasAnyActivity ? (
             <div className="border-t border-tg-hint/20 pt-2">
               <table className="w-full text-xs">
@@ -255,7 +309,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
             </div>
           )}
 
-          {/* ── Updated timestamp ── */}
           <div className="text-[10px] text-tg-hint text-center mt-2">
             {t.balance_updated}: {formatDate(balance.imported_at)}
           </div>

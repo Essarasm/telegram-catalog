@@ -1137,8 +1137,10 @@ async def cmd_help(message: types.Message):
         "Inventarizatsiya (qoldiq) yangilash\n\n"
         "<b>/catalog</b> (reply to Excel file)\n"
         "Katalogni yangilash (yangi/o'chirilgan mahsulotlar)\n\n"
+        "<b>/debtors</b> (reply to XLS file)\n"
+        "Дебиторка yuklash (1C дебиторская задолженность)\n\n"
         "<b>/balances</b> (reply to XLS file)\n"
-        "Mijoz qarzlari yangilash (1C оборотно-сальдовая)\n\n"
+        "Оборотка yuklash (1C оборотно-сальдовая)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
@@ -1361,6 +1363,93 @@ async def handle_album_document(message: types.Message):
     if gid not in _album_buffers:
         _album_buffers[gid] = {"messages": [], "processed": False}
     _album_buffers[gid]["messages"].append(message)
+
+
+# ───────────────────────────────────────────
+# /debtors — import дебиторская задолженность
+# ───────────────────────────────────────────
+
+@dp.message(Command("debtors"))
+async def cmd_debtors(message: types.Message):
+    """Import client debts from 1C 'Дебиторская задолженность на дату'.
+    Reply to XLS file with /debtors, or send file with /debtors caption.
+    """
+    if not is_admin(message):
+        return
+
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "1C'dan «Дебиторская задолженность на дату» XLS faylni\n"
+            "/debtors caption bilan yuboring.\n\n"
+            "Yoki faylga javob sifatida /debtors yozing.",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.endswith(('.xls', '.xlsx')):
+        await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply("⏳ Дебиторка yuklanmoqda...")
+
+    try:
+        import httpx
+
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        api_url = f"{_BASE_URL}/api/finance/import-debts"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        lines = [
+            f"✅ <b>Дебиторка yuklandi!</b>\n",
+            f"📅 Sana: {result.get('report_date', '?')}",
+            f"👥 Qarzdorlar: {result['total_clients']}",
+            f"🔗 Ilovaga bog'langan: {result['matched_to_app']}",
+            f"\n💴 Jami UZS: {round(result['total_uzs']):,}".replace(',', ' '),
+            f"💵 Jami USD: ${result['total_usd']:,.2f}",
+        ]
+
+        unmatched = result.get('unmatched_count', 0)
+        if unmatched > 0:
+            lines.append(f"\n⚠️ Bog'lanmagan ({unmatched}):")
+            for name in result.get('unmatched_sample', [])[:10]:
+                lines.append(f"  • {html_escape(name)}")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Debtors import error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
+
+
+@dp.message(F.document & F.caption.startswith("/debtors"))
+async def handle_debtors_document(message: types.Message):
+    """Handle XLS file sent with /debtors as caption."""
+    if not is_admin(message):
+        return
+    await cmd_debtors(message)
 
 
 # ───────────────────────────────────────────
