@@ -743,16 +743,30 @@ async def cmd_balances(message: types.Message):
             await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
             return
 
-        currency = result.get('currency', 'UZS')
-        currency_emoji = '💵' if currency == 'USD' else '💴'
+        sections = result.get('sections', [])
         lines = [
-            f"✅ <b>Moliyaviy ma'lumotlar yuklandi!</b> {currency_emoji} {currency}\n",
+            f"✅ <b>Moliyaviy ma'lumotlar yuklandi!</b>\n",
             f"📅 Davr: {result.get('period', '?')}",
+        ]
+
+        # Show per-section breakdown if multiple currencies
+        if len(sections) > 1:
+            for sec in sections:
+                cur = sec['currency']
+                emoji = '💵' if cur == 'USD' else '💴'
+                lines.append(f"\n{emoji} <b>{cur}:</b>")
+                lines.append(f"  👥 Mijozlar: {sec['clients']}")
+                lines.append(f"  🆕 Yangi: {sec['inserted']}")
+                lines.append(f"  ✏️ Yangilangan: {sec['updated']}")
+                lines.append(f"  🔗 Bog'langan: {sec['matched']}")
+            lines.append(f"\n<b>Jami:</b>")
+
+        lines.extend([
             f"👥 Mijozlar: {result['total_clients_in_file']}",
             f"🆕 Yangi: {result['inserted']}",
             f"✏️ Yangilangan: {result['updated']}",
             f"🔗 Ilovaga bog'langan: {result['matched_to_app']}",
-        ]
+        ])
 
         unmatched = result.get('unmatched_count', 0)
         if unmatched > 0:

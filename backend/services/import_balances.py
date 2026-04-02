@@ -1,7 +1,12 @@
 """Import client balances from 1C оборотно-сальдовая ведомость (turnover balance sheet).
 
-Parses XLS files exported from 1C account 40.10 and upserts client balance
-snapshots into the client_balances table.
+Parses XLS files exported from 1C and upserts client balance snapshots
+into the client_balances table.
+
+Supports three file formats:
+    1. Single account file (40.10 or 40.11) — one currency per file
+    2. Combined file (счет 40) with sub-account sections — "40.10" and "40.11"
+       rows act as section dividers, each section parsed with its own currency
 
 File format (7 columns):
     Row 0-5: Headers
@@ -93,13 +98,100 @@ def _parse_number(val) -> float:
         return 0.0
 
 
+def _parse_clients_simple(sh, start_row: int, end_row: int) -> list:
+    """Parse client rows in simple (UZS / combined) format.
+
+    Each non-indented row is a client; indented rows are sub-details (skipped).
+    """
+    _SKIP = {'Валюта USD', 'Валюта EUR', 'В валюте', 'Итого', 'Итого развернутое', ''}
+    clients = []
+    for i in range(start_row, end_row):
+        name = str(sh.cell_value(i, 0))
+        if name.startswith('   '):
+            continue
+        client_name = name.strip()
+        if not client_name or client_name in _SKIP:
+            continue
+        # Skip sub-account section headers like "40.10", "40.11"
+        if client_name in _ACCOUNT_CURRENCY:
+            continue
+        # Skip <...> and <> marker rows at section level
+        if client_name.startswith('<'):
+            continue
+
+        clients.append({
+            "client_name_1c": client_name,
+            "opening_debit": _parse_number(sh.cell_value(i, 1)),
+            "opening_credit": _parse_number(sh.cell_value(i, 2)),
+            "period_debit": _parse_number(sh.cell_value(i, 3)),
+            "period_credit": _parse_number(sh.cell_value(i, 4)),
+            "closing_debit": _parse_number(sh.cell_value(i, 5)),
+            "closing_credit": _parse_number(sh.cell_value(i, 6)),
+        })
+    return clients
+
+
+def _parse_clients_usd(sh, start_row: int, end_row: int) -> list:
+    """Parse client rows in USD format (with 'В валюте' aggregate rows)."""
+    clients = []
+    current_client = None
+    got_aggregate = False
+
+    for i in range(start_row, end_row):
+        raw_name = str(sh.cell_value(i, 0))
+        name = raw_name.strip()
+
+        if not name or name in ('Итого', 'Итого развернутое'):
+            continue
+        if name in _ACCOUNT_CURRENCY:
+            continue
+
+        # "В валюте" row — capture only the first one per client (aggregate)
+        if name == 'В валюте' and current_client and not got_aggregate:
+            current_client["opening_debit"] = _parse_number(sh.cell_value(i, 1))
+            current_client["opening_credit"] = _parse_number(sh.cell_value(i, 2))
+            current_client["period_debit"] = _parse_number(sh.cell_value(i, 3))
+            current_client["period_credit"] = _parse_number(sh.cell_value(i, 4))
+            current_client["closing_debit"] = _parse_number(sh.cell_value(i, 5))
+            current_client["closing_credit"] = _parse_number(sh.cell_value(i, 6))
+            got_aggregate = True
+            continue
+
+        # Skip currency labels, sub-row "В валюте", and indented rows
+        if name == 'В валюте' or name.startswith('Валюта') or raw_name.startswith('   '):
+            continue
+
+        # New client name row
+        if current_client and current_client["client_name_1c"]:
+            clients.append(current_client)
+
+        current_client = {
+            "client_name_1c": name,
+            "opening_debit": 0, "opening_credit": 0,
+            "period_debit": 0, "period_credit": 0,
+            "closing_debit": 0, "closing_credit": 0,
+        }
+        got_aggregate = False
+
+    if current_client and current_client["client_name_1c"]:
+        clients.append(current_client)
+
+    return clients
+
+
 def parse_balance_xls(file_bytes: bytes) -> dict:
     """Parse оборотно-сальдовая XLS file and return structured data.
 
+    Supports three formats:
+    1. Single-account file (header contains "40.10" or "40.11")
+    2. Combined file (header contains "40") with "40.10" and "40.11" section rows
+    3. Combined file without section markers — treated as UZS
+
     Returns dict with:
+        - sections: list of {currency, clients} dicts (one per currency found)
         - period_start, period_end: ISO date strings
-        - clients: list of dicts with client balance data
-        - totals: summary row
+    For backward compatibility, also includes top-level 'currency' and 'clients'
+    (from the first/only section).
     """
     try:
         import xlrd
@@ -116,99 +208,71 @@ def parse_balance_xls(file_bytes: bytes) -> dict:
     if sh.nrows < 7:
         return {"ok": False, "error": "File too short — expected оборотно-сальдовая format"}
 
-    # Detect currency from account number in row 1
-    header_text = str(sh.cell_value(1, 0))
-    currency = 'UZS'  # default
-    for account, cur in _ACCOUNT_CURRENCY.items():
-        if account in header_text:
-            currency = cur
-            break
-
     # Parse period from row 3
     period_text = str(sh.cell_value(3, 0))
     period_start, period_end = _parse_period(period_text)
     if not period_start or not period_end:
         return {"ok": False, "error": f"Could not parse period from: '{period_text}'"}
 
-    # Skip rows that are currency breakdown labels (in USD files)
-    _SKIP_LABELS = {'Валюта USD', 'Валюта EUR', 'В валюте', 'Итого', 'Итого развернутое', ''}
+    # Detect format: single account or combined
+    header_text = str(sh.cell_value(1, 0))
 
-    # For USD files, we need to aggregate "В валюте" rows per client
-    # For UZS files, just read client-level rows directly
-    clients = []
+    # Check for sub-account section rows in the data (combined format)
+    section_rows = {}  # account -> row number
+    for r in range(6, min(sh.nrows, sh.nrows)):
+        val = str(sh.cell_value(r, 0)).strip()
+        if val in _ACCOUNT_CURRENCY and val not in section_rows:
+            section_rows[val] = r
 
-    if currency == 'UZS':
-        # Simple format: each non-indented row is a client
-        for i in range(6, sh.nrows):
-            name = str(sh.cell_value(i, 0))
-            if name.startswith('   '):
-                continue
-            if name.strip() in _SKIP_LABELS:
-                continue
+    if section_rows:
+        # Combined file with section dividers (e.g. "40.10" at row 6, "40.11" at row 1238)
+        logger.info(f"Combined balance file detected. Sections: {section_rows}")
+        sections = []
 
-            client_name = name.strip()
-            if not client_name:
-                continue
+        # Sort sections by row number
+        sorted_sections = sorted(section_rows.items(), key=lambda x: x[1])
 
-            clients.append({
-                "client_name_1c": client_name,
-                "opening_debit": _parse_number(sh.cell_value(i, 1)),
-                "opening_credit": _parse_number(sh.cell_value(i, 2)),
-                "period_debit": _parse_number(sh.cell_value(i, 3)),
-                "period_credit": _parse_number(sh.cell_value(i, 4)),
-                "closing_debit": _parse_number(sh.cell_value(i, 5)),
-                "closing_credit": _parse_number(sh.cell_value(i, 6)),
-            })
+        for idx, (account, start_row) in enumerate(sorted_sections):
+            currency = _ACCOUNT_CURRENCY[account]
+            # End row is the next section's start, or end of file (minus totals)
+            if idx + 1 < len(sorted_sections):
+                end_row = sorted_sections[idx + 1][1]
+            else:
+                end_row = sh.nrows - 2  # skip Итого rows
+
+            # In combined files, both sections use the simple format
+            # (values directly on client rows, no "В валюте" intermediary)
+            clients = _parse_clients_simple(sh, start_row + 1, end_row)
+
+            logger.info(f"Section {account} ({currency}): {len(clients)} clients")
+            sections.append({"currency": currency, "clients": clients})
+
+        # Flatten all clients for backward compatibility
+        all_clients = []
+        for s in sections:
+            all_clients.extend(s["clients"])
+
+        return {
+            "ok": True,
+            "period_start": period_start,
+            "period_end": period_end,
+            "period_text": period_text.strip(),
+            "currency": sections[0]["currency"] if sections else "UZS",
+            "clients": all_clients,  # backward compat (not used when sections present)
+            "sections": sections,
+        }
+
+    # Single-account file
+    currency = 'UZS'  # default
+    for account, cur in _ACCOUNT_CURRENCY.items():
+        if account in header_text:
+            currency = cur
+            break
+
+    if currency == 'USD':
+        clients = _parse_clients_usd(sh, 6, sh.nrows)
     else:
-        # USD format structure per client:
-        #   ClientName       (non-indented, all values empty)
-        #   Валюта USD       (currency label)
-        #   В валюте         (AGGREGATE values - this is what we capture)
-        #      <contract>    (indented sub-contract)
-        #   Валюта USD       (sub-contract currency)
-        #   В валюте         (sub-contract values - skip these)
-        #
-        # Strategy: capture the FIRST "В валюте" after each client name.
-        current_client = None
-        got_aggregate = False  # True after capturing first "В валюте" for current client
-
-        for i in range(6, sh.nrows):
-            raw_name = str(sh.cell_value(i, 0))
-            name = raw_name.strip()
-
-            if not name or name in ('Итого', 'Итого развернутое'):
-                continue
-
-            # "В валюте" row — capture only the first one per client (aggregate)
-            if name == 'В валюте' and current_client and not got_aggregate:
-                current_client["opening_debit"] = _parse_number(sh.cell_value(i, 1))
-                current_client["opening_credit"] = _parse_number(sh.cell_value(i, 2))
-                current_client["period_debit"] = _parse_number(sh.cell_value(i, 3))
-                current_client["period_credit"] = _parse_number(sh.cell_value(i, 4))
-                current_client["closing_debit"] = _parse_number(sh.cell_value(i, 5))
-                current_client["closing_credit"] = _parse_number(sh.cell_value(i, 6))
-                got_aggregate = True
-                continue
-
-            # Skip currency labels, sub-row "В валюте", and indented rows
-            if name == 'В валюте' or name.startswith('Валюта') or raw_name.startswith('   '):
-                continue
-
-            # New client name row (non-indented, not a label)
-            if current_client and current_client["client_name_1c"]:
-                clients.append(current_client)
-
-            current_client = {
-                "client_name_1c": name,
-                "opening_debit": 0, "opening_credit": 0,
-                "period_debit": 0, "period_credit": 0,
-                "closing_debit": 0, "closing_credit": 0,
-            }
-            got_aggregate = False
-
-        # Don't forget the last client
-        if current_client and current_client["client_name_1c"]:
-            clients.append(current_client)
+        clients = _parse_clients_simple(sh, 6, sh.nrows)
 
     return {
         "ok": True,
@@ -217,6 +281,7 @@ def parse_balance_xls(file_bytes: bytes) -> dict:
         "period_text": period_text.strip(),
         "currency": currency,
         "clients": clients,
+        "sections": [{"currency": currency, "clients": clients}],
     }
 
 
@@ -251,6 +316,7 @@ def _try_match_client(client_name_1c: str, conn) -> Optional[int]:
 def apply_balance_import(file_bytes: bytes) -> dict:
     """Parse balance XLS and upsert into client_balances table.
 
+    Handles both single-currency and combined (multi-section) files.
     Returns detailed summary of the import.
     """
     parsed = parse_balance_xls(file_bytes)
@@ -259,10 +325,14 @@ def apply_balance_import(file_bytes: bytes) -> dict:
 
     period_start = parsed["period_start"]
     period_end = parsed["period_end"]
-    currency = parsed.get("currency", "UZS")
-    clients = parsed["clients"]
+    sections = parsed.get("sections", [])
 
-    if not clients:
+    if not sections:
+        return {"ok": False, "error": "No client data found in file"}
+
+    # Check that at least one section has clients
+    total_clients_in_file = sum(len(s["clients"]) for s in sections)
+    if total_clients_in_file == 0:
         return {"ok": False, "error": "No client data found in file"}
 
     conn = get_db()
@@ -271,55 +341,74 @@ def apply_balance_import(file_bytes: bytes) -> dict:
     updated = 0
     matched = 0
     unmatched_names = []
+    section_summaries = []
 
-    for c in clients:
-        # Try to match client to allowed_clients
-        client_id = _try_match_client(c["client_name_1c"], conn)
-        if client_id:
-            matched += 1
-        else:
-            unmatched_names.append(c["client_name_1c"])
+    for section in sections:
+        currency = section["currency"]
+        clients = section["clients"]
+        sec_inserted = 0
+        sec_updated = 0
+        sec_matched = 0
 
-        # Upsert balance record (unique on client_name + period + currency)
-        existing = conn.execute(
-            "SELECT id FROM client_balances WHERE client_name_1c = ? AND period_start = ? AND currency = ?",
-            (c["client_name_1c"], period_start, currency),
-        ).fetchone()
+        for c in clients:
+            # Try to match client to allowed_clients
+            client_id = _try_match_client(c["client_name_1c"], conn)
+            if client_id:
+                matched += 1
+                sec_matched += 1
+            else:
+                unmatched_names.append(c["client_name_1c"])
 
-        if existing:
-            conn.execute(
-                """UPDATE client_balances SET
-                    client_id = ?,
-                    period_end = ?,
-                    opening_debit = ?, opening_credit = ?,
-                    period_debit = ?, period_credit = ?,
-                    closing_debit = ?, closing_credit = ?,
-                    imported_at = datetime('now')
-                   WHERE id = ?""",
-                (
-                    client_id, period_end,
-                    c["opening_debit"], c["opening_credit"],
-                    c["period_debit"], c["period_credit"],
-                    c["closing_debit"], c["closing_credit"],
-                    existing[0],
-                ),
-            )
-            updated += 1
-        else:
-            conn.execute(
-                """INSERT INTO client_balances
-                   (client_name_1c, client_id, currency, period_start, period_end,
-                    opening_debit, opening_credit, period_debit, period_credit,
-                    closing_debit, closing_credit)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    c["client_name_1c"], client_id, currency, period_start, period_end,
-                    c["opening_debit"], c["opening_credit"],
-                    c["period_debit"], c["period_credit"],
-                    c["closing_debit"], c["closing_credit"],
-                ),
-            )
-            inserted += 1
+            # Upsert balance record (unique on client_name + period + currency)
+            existing = conn.execute(
+                "SELECT id FROM client_balances WHERE client_name_1c = ? AND period_start = ? AND currency = ?",
+                (c["client_name_1c"], period_start, currency),
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    """UPDATE client_balances SET
+                        client_id = ?,
+                        period_end = ?,
+                        opening_debit = ?, opening_credit = ?,
+                        period_debit = ?, period_credit = ?,
+                        closing_debit = ?, closing_credit = ?,
+                        imported_at = datetime('now')
+                       WHERE id = ?""",
+                    (
+                        client_id, period_end,
+                        c["opening_debit"], c["opening_credit"],
+                        c["period_debit"], c["period_credit"],
+                        c["closing_debit"], c["closing_credit"],
+                        existing[0],
+                    ),
+                )
+                updated += 1
+                sec_updated += 1
+            else:
+                conn.execute(
+                    """INSERT INTO client_balances
+                       (client_name_1c, client_id, currency, period_start, period_end,
+                        opening_debit, opening_credit, period_debit, period_credit,
+                        closing_debit, closing_credit)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        c["client_name_1c"], client_id, currency, period_start, period_end,
+                        c["opening_debit"], c["opening_credit"],
+                        c["period_debit"], c["period_credit"],
+                        c["closing_debit"], c["closing_credit"],
+                    ),
+                )
+                inserted += 1
+                sec_inserted += 1
+
+        section_summaries.append({
+            "currency": currency,
+            "clients": len(clients),
+            "inserted": sec_inserted,
+            "updated": sec_updated,
+            "matched": sec_matched,
+        })
 
     conn.commit()
 
@@ -333,13 +422,16 @@ def apply_balance_import(file_bytes: bytes) -> dict:
 
     conn.close()
 
+    # Primary currency for display (first section)
+    primary_currency = sections[0]["currency"] if sections else "UZS"
+
     return {
         "ok": True,
         "period": parsed["period_text"],
         "period_start": period_start,
         "period_end": period_end,
-        "currency": currency,
-        "total_clients_in_file": len(clients),
+        "currency": primary_currency,
+        "total_clients_in_file": total_clients_in_file,
         "inserted": inserted,
         "updated": updated,
         "matched_to_app": matched,
@@ -347,6 +439,7 @@ def apply_balance_import(file_bytes: bytes) -> dict:
         "unmatched_sample": unmatched_names[:20],
         "db_total_clients": total_clients,
         "db_total_periods": total_periods,
+        "sections": section_summaries,
     }
 
 
