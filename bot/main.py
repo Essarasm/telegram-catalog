@@ -686,24 +686,101 @@ async def cmd_catalog(message: types.Message):
 
 
 @dp.message(Command("balances"))
+async def _download_and_import(doc, status_label: str = "") -> dict:
+    """Download a Telegram document and import it as a balance file.
+    Returns the API result dict.
+    """
+    import httpx
+
+    file = await bot.get_file(doc.file_id)
+    file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(file_url)
+        file_bytes = resp.content
+
+    api_url = f"{_BASE_URL}/api/finance/import-balances"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            api_url,
+            files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
+            data={"admin_key": "rassvet2026"},
+        )
+        return resp.json()
+
+
+def _format_import_result(result: dict, file_label: str = "") -> str:
+    """Format a single import result into readable lines."""
+    sections = result.get('sections', [])
+    lines = []
+
+    if file_label:
+        lines.append(f"📄 <b>{html_escape(file_label)}</b>")
+
+    lines.append(f"📅 Davr: {result.get('period', '?')}")
+
+    if len(sections) > 1:
+        for sec in sections:
+            cur = sec['currency']
+            emoji = '💵' if cur == 'USD' else '💴'
+            lines.append(f"  {emoji} {cur}: {sec['clients']} mijoz, {sec['inserted']} yangi, {sec['updated']} yangilangan")
+
+    lines.extend([
+        f"👥 Mijozlar: {result['total_clients_in_file']}",
+        f"🆕 Yangi: {result['inserted']} · ✏️ Yangilangan: {result['updated']}",
+        f"🔗 Bog'langan: {result['matched_to_app']}",
+    ])
+
+    skipped = result.get('skipped_zero', 0)
+    if skipped > 0:
+        lines.append(f"⏭️ Bo'sh qatorlar: {skipped}")
+
+    unmatched = result.get('unmatched_count', 0)
+    if unmatched > 0:
+        lines.append(f"⚠️ Bog'lanmagan: {unmatched}")
+
+    return "\n".join(lines)
+
+
 async def cmd_balances(message: types.Message):
-    """Import client balances from 1C оборотно-сальдовая. Reply to XLS file with /balances."""
+    """Import client balances from 1C оборотно-сальдовая.
+
+    Supports:
+    - Single file: send XLS with /balances caption, or reply /balances to a file
+    - Multiple files: send 2+ XLS as album, then reply /balances to any of them
+    """
     if not is_admin(message):
         return
 
-    # Check if replying to a document
-    doc = None
-    if message.reply_to_message and message.reply_to_message.document:
-        doc = message.reply_to_message.document
-    elif message.document:
-        doc = message.document
+    # Collect documents to process
+    docs = []
 
-    if not doc:
+    # Check if replying to an album (media group)
+    if message.reply_to_message and message.reply_to_message.media_group_id:
+        gid = message.reply_to_message.media_group_id
+        if gid in _album_buffers and _album_buffers[gid]["messages"]:
+            for m in _album_buffers[gid]["messages"]:
+                if m.document and m.document.file_name and m.document.file_name.endswith(('.xls', '.xlsx')):
+                    docs.append(m.document)
+            _album_buffers[gid]["processed"] = True
+
+    # Single file: reply to document or caption on document
+    if not docs:
+        doc = None
+        if message.reply_to_message and message.reply_to_message.document:
+            doc = message.reply_to_message.document
+        elif message.document:
+            doc = message.document
+
+        if doc:
+            docs.append(doc)
+
+    if not docs:
         await message.reply(
             "❌ <b>Foydalanish:</b>\n"
-            "1. 1C'dan оборотно-сальдовая (счет 40.10) XLS faylni yuboring\n"
-            "2. Faylga javob sifatida /balances yozing\n\n"
-            "Yoki faylni /balances caption bilan yuboring.\n\n"
+            "1️⃣ <b>Bitta fayl:</b> XLS faylni /balances caption bilan yuboring\n"
+            "2️⃣ <b>Ikki fayl:</b> Ikkala XLS ni album sifatida yuboring,"
+            " so'ng istalgan biriga /balances deb javob yozing\n\n"
             "<b>Ma'lumotlar:</b>\n"
             "💳 Дебет = отгрузки (jo'natilgan tovarlar)\n"
             "💰 Кредит = оплаты (to'lovlar)\n"
@@ -712,73 +789,45 @@ async def cmd_balances(message: types.Message):
         )
         return
 
-    if not doc.file_name or not doc.file_name.endswith(('.xls', '.xlsx')):
-        await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
-        return
-
-    status_msg = await message.reply("⏳ Moliyaviy ma'lumotlar yuklanmoqda...")
-
-    try:
-        import httpx
-
-        # Download file from Telegram
-        file = await bot.get_file(doc.file_id)
-        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
-
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(file_url)
-            file_bytes = resp.content
-
-        # Send to our API
-        api_url = f"{_BASE_URL}/api/finance/import-balances"
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                api_url,
-                files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
-                data={"admin_key": "rassvet2026"},
-            )
-            result = resp.json()
-
-        if not result.get("ok"):
-            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+    # Validate all files
+    for doc in docs:
+        if not doc.file_name or not doc.file_name.endswith(('.xls', '.xlsx')):
+            await message.reply(f"❌ Faqat Excel fayllar: {doc.file_name}")
             return
 
-        sections = result.get('sections', [])
-        lines = [
-            f"✅ <b>Moliyaviy ma'lumotlar yuklandi!</b>\n",
-            f"📅 Davr: {result.get('period', '?')}",
-        ]
+    file_count = len(docs)
+    status_msg = await message.reply(
+        f"⏳ {file_count} ta fayl yuklanmoqda..." if file_count > 1
+        else "⏳ Moliyaviy ma'lumotlar yuklanmoqda..."
+    )
 
-        # Show per-section breakdown if multiple currencies
-        if len(sections) > 1:
-            for sec in sections:
-                cur = sec['currency']
-                emoji = '💵' if cur == 'USD' else '💴'
-                lines.append(f"\n{emoji} <b>{cur}:</b>")
-                lines.append(f"  👥 Mijozlar: {sec['clients']}")
-                lines.append(f"  🆕 Yangi: {sec['inserted']}")
-                lines.append(f"  ✏️ Yangilangan: {sec['updated']}")
-                lines.append(f"  🔗 Bog'langan: {sec['matched']}")
-            lines.append(f"\n<b>Jami:</b>")
+    try:
+        all_lines = [f"✅ <b>Moliyaviy ma'lumotlar yuklandi!</b>\n"]
 
-        lines.extend([
-            f"👥 Mijozlar: {result['total_clients_in_file']}",
-            f"🆕 Yangi: {result['inserted']}",
-            f"✏️ Yangilangan: {result['updated']}",
-            f"🔗 Ilovaga bog'langan: {result['matched_to_app']}",
-        ])
+        for i, doc in enumerate(docs):
+            result = await _download_and_import(doc)
+            if not result.get("ok"):
+                all_lines.append(f"❌ {html_escape(doc.file_name)}: {result.get('error', 'Unknown')}")
+                continue
+            label = doc.file_name if file_count > 1 else ""
+            all_lines.append(_format_import_result(result, label))
+            if i < file_count - 1:
+                all_lines.append("")  # separator
 
-        unmatched = result.get('unmatched_count', 0)
-        if unmatched > 0:
-            lines.append(f"\n⚠️ <b>Bog'lanmagan ({unmatched} ta):</b>")
-            for name in result.get('unmatched_sample', [])[:10]:
-                lines.append(f"  • {html_escape(name)}")
-            if unmatched > 10:
-                lines.append(f"  ... va yana {unmatched - 10} ta")
+        # DB totals
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(
+                f"{_BASE_URL}/api/admin/debug-query",
+                params={
+                    "admin_key": "rassvet2026",
+                    "q": "SELECT COUNT(DISTINCT client_name_1c) as c, COUNT(DISTINCT period_start||currency) as p FROM client_balances",
+                },
+            )
+            db = r.json().get("rows", [{}])[0]
+            all_lines.append(f"\n📊 Bazada jami: {db.get('c', '?')} mijoz, {db.get('p', '?')} davr")
 
-        lines.append(f"\n📊 Bazada jami: {result['db_total_clients']} mijoz, {result['db_total_periods']} davr")
-
-        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+        await status_msg.edit_text("\n".join(all_lines), parse_mode="HTML")
 
     except Exception as e:
         logger.error(f"Balance import error: {e}")
@@ -1293,6 +1342,24 @@ async def handle_balances_document(message: types.Message):
     if not is_admin(message):
         return
     await cmd_balances(message)
+
+
+# ── Multi-file balance import (media group / album) ──
+_album_buffers: dict = {}  # group_id -> {files: [], timer: ...}
+
+
+@dp.message(F.media_group_id & F.document)
+async def handle_album_document(message: types.Message):
+    """Collect album files for multi-file balance import.
+    Send 2+ XLS files as an album, then reply /balances to any of them.
+    Files are buffered briefly so they can be imported together.
+    """
+    if not is_admin(message):
+        return
+    gid = message.media_group_id
+    if gid not in _album_buffers:
+        _album_buffers[gid] = {"messages": [], "processed": False}
+    _album_buffers[gid]["messages"].append(message)
 
 
 # ───────────────────────────────────────────
