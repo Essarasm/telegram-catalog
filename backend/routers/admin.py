@@ -45,6 +45,30 @@ def debug_query(
     return {"ok": True, "rows": result, "count": len(result)}
 
 
+@router.post("/set-test-client")
+def set_test_client(
+    telegram_id: int = Query(...),
+    client_id: int = Query(...),
+    admin_key: str = Query(...),
+):
+    """Set a user's client_id for testing. Same as /testclient but via API."""
+    _check_admin(admin_key)
+    conn = get_db()
+    conn.execute(
+        "UPDATE users SET client_id = ? WHERE telegram_id = ?",
+        (client_id, telegram_id),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT u.client_id, ac.name, ac.client_id_1c FROM users u "
+        "LEFT JOIN allowed_clients ac ON u.client_id = ac.id "
+        "WHERE u.telegram_id = ?",
+        (telegram_id,),
+    ).fetchone()
+    conn.close()
+    return {"ok": True, "client_id": row["client_id"], "name": row["name"], "client_id_1c": row["client_id_1c"]}
+
+
 @router.post("/cleanup-zero-balances")
 def cleanup_zero_balances(admin_key: str = Query(...)):
     """Delete all-zero balance records from client_balances.
