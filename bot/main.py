@@ -685,8 +685,7 @@ async def cmd_catalog(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
 
 
-@dp.message(Command("balances"))
-async def _download_and_import(doc, status_label: str = "") -> dict:
+async def _download_and_import(doc) -> dict:
     """Download a Telegram document and import it as a balance file.
     Returns the API result dict.
     """
@@ -742,6 +741,7 @@ def _format_import_result(result: dict, file_label: str = "") -> str:
     return "\n".join(lines)
 
 
+@dp.message(Command("balances"))
 async def cmd_balances(message: types.Message):
     """Import client balances from 1C оборотно-сальдовая.
 
