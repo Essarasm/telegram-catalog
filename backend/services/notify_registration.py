@@ -21,6 +21,7 @@ def send_registration_notification(
     longitude: float = None,
     is_approved: bool = False,
     client_name: str = None,
+    client_id_1c: str = None,
 ):
     """Notify manager about a new registration."""
     if not BOT_TOKEN:
@@ -38,7 +39,12 @@ def send_registration_notification(
 
     if is_approved:
         status = "✅ Avtomatik tasdiqlangan"
-        status_detail = f"Mijoz: {client_name}" if client_name else ""
+        detail_parts = []
+        if client_name:
+            detail_parts.append(f"Mijoz: {client_name}")
+        if client_id_1c and client_id_1c != client_name:
+            detail_parts.append(f"🏢 1C: {client_id_1c}")
+        status_detail = "\n".join(detail_parts)
     else:
         status = "⏳ Tasdiqlanmagan (narxlar yashirin)"
         status_detail = "Tasdiqlash uchun quyidagi linkni bosing"

@@ -146,13 +146,14 @@ def register_user(user: UserRegister):
 
     # Check if phone is in allowed_clients
     client_row = conn.execute(
-        "SELECT id, name, location FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+        "SELECT id, name, location, client_id_1c FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
         (phone_norm,),
     ).fetchone()
 
     is_approved = 1 if (client_row or user.telegram_id in _ALWAYS_APPROVED) else 0
     client_id = client_row["id"] if client_row else None
     client_name = client_row["name"] if client_row else None
+    client_id_1c = client_row["client_id_1c"] if client_row else None
 
     conn.execute(
         """INSERT INTO users (telegram_id, phone, first_name, last_name, username, latitude, longitude, is_approved, client_id)
@@ -207,6 +208,7 @@ def register_user(user: UserRegister):
                 "longitude": user.longitude,
                 "is_approved": bool(is_approved),
                 "client_name": client_name,
+                "client_id_1c": client_id_1c,
             },
             daemon=True,
         ).start()

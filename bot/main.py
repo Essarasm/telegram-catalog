@@ -847,6 +847,117 @@ async def cmd_testclient(message: types.Message):
         )
         return
 
+    # /testclient addclient NAME — auto-create allowed_clients record from client_balances
+    if arg.lower() == 'addclient' and len(parts) > 1:
+        rest = message.text.split(maxsplit=2)
+        if len(rest) < 3 or not rest[2].strip():
+            conn.close()
+            await message.reply(
+                "❌ <b>Foydalanish:</b>\n"
+                "<code>/testclient addclient 1C nomi</code>",
+                parse_mode="HTML",
+            )
+            return
+        client_name_1c = rest[2].strip()
+        # Verify this name exists in client_balances
+        cb_exists = conn.execute(
+            "SELECT COUNT(*) FROM client_balances WHERE client_name_1c = ?",
+            (client_name_1c,),
+        ).fetchone()[0]
+        if not cb_exists:
+            conn.close()
+            await message.reply(f"❌ 1C'da <b>{html_escape(client_name_1c)}</b> topilmadi.", parse_mode="HTML")
+            return
+        # Check if already in allowed_clients
+        existing = conn.execute(
+            "SELECT id FROM allowed_clients WHERE client_id_1c = ? LIMIT 1",
+            (client_name_1c,),
+        ).fetchone()
+        if existing:
+            conn.close()
+            await message.reply(
+                f"ℹ️ Allaqachon ro'yxatda: #{existing['id']}\n"
+                f"<code>/testclient #{existing['id']}</code>",
+                parse_mode="HTML",
+            )
+            return
+        # Create allowed_clients record with client_id_1c set
+        conn.execute(
+            "INSERT INTO allowed_clients (phone_normalized, name, client_id_1c, source_sheet, status) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("", client_name_1c, client_name_1c, "bot_from_1c", "active"),
+        )
+        new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        # Link client_balances records to this new allowed_clients.id
+        conn.execute(
+            "UPDATE client_balances SET client_id = ? WHERE client_name_1c = ? AND client_id IS NULL",
+            (new_id, client_name_1c),
+        )
+        conn.commit()
+        conn.close()
+        await message.reply(
+            f"✅ Mijoz qo'shildi!\n\n"
+            f"🏢 1C nomi: <b>{html_escape(client_name_1c)}</b>\n"
+            f"🆔 ID: #{new_id}\n\n"
+            f"Bog'lash: <code>/testclient #{new_id}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    # /testclient link TELEGRAM_ID CLIENT_ID — link any user to a client
+    if arg.lower() == 'link' and len(parts) > 1:
+        rest = message.text.split(maxsplit=2)
+        link_args = rest[2].strip().split() if len(rest) > 2 else []
+        if len(link_args) == 2 and link_args[0].isdigit() and link_args[1].isdigit():
+            tg_id = int(link_args[0])
+            client_id = int(link_args[1])
+            client = conn.execute(
+                "SELECT id, name, client_id_1c FROM allowed_clients WHERE id = ?",
+                (client_id,),
+            ).fetchone()
+            if not client:
+                conn.close()
+                await message.reply(f"❌ Mijoz #{client_id} topilmadi.")
+                return
+            conn.execute(
+                "UPDATE users SET client_id = ?, is_approved = 1 WHERE telegram_id = ?",
+                (client_id, tg_id),
+            )
+            conn.execute(
+                "UPDATE allowed_clients SET matched_telegram_id = ? WHERE id = ?",
+                (tg_id, client_id),
+            )
+            conn.commit()
+            # Persist to backup
+            try:
+                from backend.services.backup_users import save_user_to_backup
+                row = conn.execute(
+                    "SELECT telegram_id, phone, first_name, last_name, username, "
+                    "latitude, longitude, is_approved, client_id FROM users WHERE telegram_id = ?",
+                    (tg_id,),
+                ).fetchone()
+                if row:
+                    save_user_to_backup(dict(row))
+            except Exception as e:
+                logging.warning(f"backup after /testclient link failed: {e}")
+            conn.close()
+            name = html_escape(client["client_id_1c"] or client["name"] or f"#{client_id}")
+            await message.reply(
+                f"✅ Bog'landi!\n"
+                f"👤 Telegram ID: <code>{tg_id}</code>\n"
+                f"🏢 Mijoz: {name} (#{client_id})",
+                parse_mode="HTML",
+            )
+            return
+        else:
+            conn.close()
+            await message.reply(
+                "❌ <b>Foydalanish:</b>\n"
+                "<code>/testclient link TELEGRAM_ID CLIENT_ID</code>",
+                parse_mode="HTML",
+            )
+            return
+
     # /testclient NAME — search by name (Cyrillic or Latin), always show list
     if arg:
         search = f"%{arg.lower()}%"
@@ -866,7 +977,23 @@ async def cmd_testclient(message: types.Message):
             (search, search, search),
         ).fetchall()
 
-        if not matches:
+        # Fallback: search client_balances for clients NOT in allowed_clients
+        cb_only = []
+        if len(matches) < 15:
+            cb_only = conn.execute(
+                """SELECT DISTINCT cb.client_name_1c,
+                          COUNT(*) as bal_count,
+                          MAX(cb.period_end) as latest_period
+                   FROM client_balances cb
+                   WHERE LOWER(cb.client_name_1c) LIKE ?
+                     AND (cb.client_id IS NULL
+                          OR cb.client_id NOT IN (SELECT id FROM allowed_clients))
+                   GROUP BY cb.client_name_1c
+                   LIMIT ?""",
+                (search, 15 - len(matches)),
+            ).fetchall()
+
+        if not matches and not cb_only:
             conn.close()
             await message.reply(
                 f"❌ '{html_escape(arg)}' bo'yicha hech narsa topilmadi.\n\n"
@@ -876,21 +1003,38 @@ async def cmd_testclient(message: types.Message):
             )
             return
 
-        # Always show the list — never auto-assign
-        lines = [f"🔍 <b>{len(matches)}</b> ta natija '{html_escape(arg)}' bo'yicha:\n"]
-        for m in matches:
-            name_1c = html_escape(m['client_id_1c'] or '—')
-            name_app = html_escape(m['name'] or '—')
-            # Show both names if they differ, otherwise just one
-            if m['client_id_1c'] and m['name'] and m['client_id_1c'].strip() != m['name'].strip():
-                display = f"{name_1c}\n      📱 {name_app}"
-            else:
-                display = name_1c if m['client_id_1c'] else name_app
-            lines.append(
-                f"  <code>/testclient #{m['id']}</code> — {display}"
-                f"  [{m['bal_count']} oy]"
-            )
-        lines.append(f"\n👆 Kerakli mijozni tanlang — <code>/testclient #ID</code>")
+        lines = []
+
+        if matches:
+            lines.append(f"🔍 <b>{len(matches)}</b> ta natija '{html_escape(arg)}' bo'yicha:\n")
+            lines.append("<b>📋 Ro'yxatdagi mijozlar:</b>")
+            for m in matches:
+                name_1c = html_escape(m['client_id_1c'] or '—')
+                name_app = html_escape(m['name'] or '—')
+                # Show both names if they differ, otherwise just one
+                if m['client_id_1c'] and m['name'] and m['client_id_1c'].strip() != m['name'].strip():
+                    display = f"{name_1c}\n      📱 {name_app}"
+                else:
+                    display = name_1c if m['client_id_1c'] else name_app
+                lines.append(
+                    f"  <code>/testclient #{m['id']}</code> — {display}"
+                    f"  [{m['bal_count']} oy]"
+                )
+
+        if cb_only:
+            lines.append("")
+            lines.append("<b>📒 Faqat 1C'da (ro'yxatda yo'q):</b>")
+            for c in cb_only:
+                name = html_escape(c['client_name_1c'])
+                lines.append(f"  🟡 <b>{name}</b>")
+                lines.append(f"     📊 {c['bal_count']} yozuv | oxirgi: {c['latest_period'] or '?'}")
+                lines.append(f"     ➕ <code>/testclient addclient {c['client_name_1c']}</code>")
+
+        if matches:
+            lines.append(f"\n👆 Kerakli mijozni tanlang — <code>/testclient #ID</code>")
+        elif cb_only:
+            lines.append(f"\n💡 Avval <code>/testclient addclient ...</code> bilan ro'yxatga qo'shing")
+
         conn.close()
         await message.reply("\n".join(lines), parse_mode="HTML")
         return
