@@ -474,7 +474,8 @@ def get_client_balance(client_id: int) -> Optional[dict]:
     """
     conn = get_db()
 
-    # Get latest balance per currency
+    # Get latest balance per currency — use MAX(period_end) so cumulative
+    # records (period_end = today) take priority over older monthly ones
     rows = conn.execute(
         """SELECT cb.client_name_1c, cb.currency, cb.period_start, cb.period_end,
                   cb.opening_debit, cb.opening_credit,
@@ -483,13 +484,13 @@ def get_client_balance(client_id: int) -> Optional[dict]:
                   cb.imported_at
            FROM client_balances cb
            INNER JOIN (
-               SELECT client_id, currency, MAX(period_start) as max_period
+               SELECT client_id, currency, MAX(period_end) as max_end
                FROM client_balances
                WHERE client_id = ?
                GROUP BY client_id, currency
            ) latest ON cb.client_id = latest.client_id
                    AND cb.currency = latest.currency
-                   AND cb.period_start = latest.max_period""",
+                   AND cb.period_end = latest.max_end""",
         (client_id,),
     ).fetchall()
     conn.close()
