@@ -34,7 +34,7 @@ async def notify_report_to_group(report_id: int, product_name: str, report_type:
     try:
         import httpx
         bot_token = os.getenv("BOT_TOKEN", "")
-        group_id = int(os.getenv("ORDER_GROUP_CHAT_ID", "0"))
+        group_id = int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))
         if not bot_token or not group_id:
             return
 
@@ -67,7 +67,7 @@ async def notify_product_request_to_group(request_id: int, request_text: str):
     try:
         import httpx
         bot_token = os.getenv("BOT_TOKEN", "")
-        group_id = int(os.getenv("ORDER_GROUP_CHAT_ID", "0"))
+        group_id = int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))
         if not bot_token or not group_id:
             return
 

@@ -21,6 +21,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 _BASE_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.railway.app")
 WEBAPP_URL = f"{_BASE_URL}?v=15"
 ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
+ADMIN_GROUP_CHAT_ID = int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))
 
 # Admin user IDs who can use /add, /approve, /list commands
 # Add Alisher's ID and other manager IDs via env var or hardcode below
@@ -60,11 +61,11 @@ def normalize_phone(raw: str) -> str:
 
 
 def is_admin(message: types.Message) -> bool:
-    """Check if user is an admin. Allow from sales group or listed admin IDs."""
+    """Check if user is an admin. Allow from sales/admin groups or listed admin IDs."""
     if ADMIN_IDS and message.from_user.id in ADMIN_IDS:
         return True
-    # Allow commands from the sales managers group
-    if message.chat.id == ORDER_GROUP_CHAT_ID:
+    # Allow commands from the sales managers group or admin/ops group
+    if message.chat.id in (ORDER_GROUP_CHAT_ID, ADMIN_GROUP_CHAT_ID):
         return True
     return False
 

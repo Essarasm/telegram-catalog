@@ -6,7 +6,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-# Alisher's Telegram user ID — will be resolved on first use
+ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051")
+# Legacy fallbacks (kept for backward compatibility)
 MANAGER_USERNAME = "axmatov0902"
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID", "")
 
@@ -28,8 +29,8 @@ def send_registration_notification(
         logger.warning("BOT_TOKEN not set, skipping registration notification")
         return
 
-    # Send to the sales group instead (guaranteed to work, no need for personal chat ID)
-    chat_id = MANAGER_CHAT_ID or os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463")
+    # Send to the admin/ops group (registration is admin business, not sales)
+    chat_id = MANAGER_CHAT_ID or ADMIN_GROUP_CHAT_ID
     if not chat_id:
         return
 
