@@ -45,6 +45,34 @@ def debug_query(
     return {"ok": True, "rows": result, "count": len(result)}
 
 
+@router.post("/cleanup-zero-balances")
+def cleanup_zero_balances(admin_key: str = Query(...)):
+    """Delete all-zero balance records from client_balances.
+
+    These are records where all 6 financial columns are 0 — they carry
+    no information and can mask real balances when they become the
+    'latest period' for a client.
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+    count = conn.execute(
+        """SELECT COUNT(*) FROM client_balances
+           WHERE opening_debit = 0 AND opening_credit = 0
+             AND period_debit = 0 AND period_credit = 0
+             AND closing_debit = 0 AND closing_credit = 0"""
+    ).fetchone()[0]
+
+    conn.execute(
+        """DELETE FROM client_balances
+           WHERE opening_debit = 0 AND opening_credit = 0
+             AND period_debit = 0 AND period_credit = 0
+             AND closing_debit = 0 AND closing_credit = 0"""
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "deleted": count}
+
+
 # ── Revenue Trend ────────────────────────────────────────────────
 
 @router.get("/revenue")

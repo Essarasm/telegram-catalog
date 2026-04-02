@@ -343,6 +343,8 @@ def apply_balance_import(file_bytes: bytes) -> dict:
     unmatched_names = []
     section_summaries = []
 
+    skipped_zero = 0
+
     for section in sections:
         currency = section["currency"]
         clients = section["clients"]
@@ -351,6 +353,20 @@ def apply_balance_import(file_bytes: bytes) -> dict:
         sec_matched = 0
 
         for c in clients:
+            # Skip rows where ALL 6 financial columns are 0 — no information.
+            # This prevents daily сальдо imports from creating zero-balance
+            # records that mask real debt from monthly imports.
+            if all(
+                c[k] == 0
+                for k in (
+                    "opening_debit", "opening_credit",
+                    "period_debit", "period_credit",
+                    "closing_debit", "closing_credit",
+                )
+            ):
+                skipped_zero += 1
+                continue
+
             # Try to match client to allowed_clients
             client_id = _try_match_client(c["client_name_1c"], conn)
             if client_id:
@@ -435,6 +451,7 @@ def apply_balance_import(file_bytes: bytes) -> dict:
         "inserted": inserted,
         "updated": updated,
         "matched_to_app": matched,
+        "skipped_zero": skipped_zero,
         "unmatched_count": len(unmatched_names),
         "unmatched_sample": unmatched_names[:20],
         "db_total_clients": total_clients,
