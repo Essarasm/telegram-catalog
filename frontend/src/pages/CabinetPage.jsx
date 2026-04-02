@@ -255,9 +255,9 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
             </div>
           )}
 
-          {/* ── Period footer ── */}
+          {/* ── Updated timestamp ── */}
           <div className="text-[10px] text-tg-hint text-center mt-2">
-            {formatPeriod(uzs.period_start || balance.period_start)} · {t.balance_updated}: {formatDate(balance.imported_at)}
+            {t.balance_updated}: {formatDate(balance.imported_at)}
           </div>
         </div>
       </div>

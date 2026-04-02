@@ -465,6 +465,12 @@ def get_client_balance(client_id: int) -> Optional[dict]:
 
     Returns balances per currency (UZS and/or USD), using the most recent
     period for each currency.
+
+    Balance = period_debit − period_credit (cumulative shipped − paid).
+    This matches the Акт сверки from 1C, which is the source of truth
+    for client debt. We use the middle columns (period activity) rather
+    than the closing columns because the opening/closing balances in the
+    оборотка are unreliable due to historical 1C configuration.
     """
     conn = get_db()
 
@@ -497,7 +503,8 @@ def get_client_balance(client_id: int) -> Optional[dict]:
 
     for row in rows:
         cur = row["currency"]
-        closing_balance = (row["closing_debit"] or 0) - (row["closing_credit"] or 0)
+        # Balance = cumulative shipped − cumulative paid (matches Акт сверки)
+        balance = (row["period_debit"] or 0) - (row["period_credit"] or 0)
         client_name_1c = row["client_name_1c"]
         imported_at = row["imported_at"]
 
@@ -505,9 +512,7 @@ def get_client_balance(client_id: int) -> Optional[dict]:
             "currency": cur,
             "period_start": row["period_start"],
             "period_end": row["period_end"],
-            "closing_debit": row["closing_debit"],
-            "closing_credit": row["closing_credit"],
-            "balance": closing_balance,
+            "balance": balance,
             "period_debit": row["period_debit"],
             "period_credit": row["period_credit"],
         }
@@ -518,8 +523,6 @@ def get_client_balance(client_id: int) -> Optional[dict]:
         "client_name_1c": client_name_1c,
         "period_start": uzs.get("period_start", ""),
         "period_end": uzs.get("period_end", ""),
-        "closing_debit": uzs.get("closing_debit", 0),
-        "closing_credit": uzs.get("closing_credit", 0),
         "balance": uzs.get("balance", 0),
         "period_debit": uzs.get("period_debit", 0),
         "period_credit": uzs.get("period_credit", 0),
