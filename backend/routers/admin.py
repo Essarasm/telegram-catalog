@@ -9,6 +9,7 @@ Endpoints:
   /api/admin/stock-status    — stock overview + demand signals
   /api/admin/search-insights — top searches, zero-results, trending
   /api/admin/platform-health — registration funnel, order volume, data quality
+  /api/admin/debug-query     — run read-only SQL for debugging
 """
 from fastapi import APIRouter, Query, HTTPException
 from backend.database import get_db
@@ -21,6 +22,27 @@ ADMIN_KEY = "rassvet2026"
 def _check_admin(admin_key: str):
     if admin_key != ADMIN_KEY:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@router.get("/debug-query")
+def debug_query(
+    q: str = Query(...),
+    admin_key: str = Query(...),
+):
+    """Run a read-only SQL query for debugging. SELECT only."""
+    _check_admin(admin_key)
+    q_stripped = q.strip().upper()
+    if not q_stripped.startswith("SELECT"):
+        raise HTTPException(status_code=400, detail="Only SELECT queries allowed")
+    conn = get_db()
+    try:
+        rows = conn.execute(q).fetchall()
+        result = [dict(r) for r in rows]
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=400, detail=str(e))
+    conn.close()
+    return {"ok": True, "rows": result, "count": len(result)}
 
 
 # ── Revenue Trend ────────────────────────────────────────────────
