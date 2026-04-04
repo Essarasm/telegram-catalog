@@ -271,6 +271,9 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                   <div className="text-sm font-medium leading-snug line-clamp-2 min-h-[2.5rem]">
                     {displayName}
                   </div>
+                  {product.weight > 0 && (
+                    <div className="text-[11px] text-tg-hint mt-0.5">{product.weight} kg</div>
+                  )}
                   <div className="flex items-center gap-2 mt-1.5">
                     {approved ? (
                       <div className="text-base font-bold text-tg-link">
