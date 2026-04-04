@@ -8,17 +8,28 @@ Handles patterns like:
   "Клей обойный /2,5кг/"          → 2.5
   "Краска ВД 10кг"                → 10.0
   "Лак ПФ 0,9л"                   → 0.9 (liters treated as kg-equivalent)
+
+Does NOT match model numbers like ПФ-181 or 8110.
 """
 import re
 
-# Matches weight/volume numbers followed by unit, with or without /slashes/
+# Two-char+ units are safe (кг, гр, мл, kg, gr, ml) — no ambiguity
+# Single-char units (г, л, l) need a word boundary after them
+# to avoid matching first letters of words like "Голуб", "ГИДРОИЗОЛЯЦИЯ"
+#
+# The number must be preceded by /, whitespace, or start-of-string
+# (not a hyphen or letter — avoids model numbers like ПФ-181)
 _WEIGHT_RE = re.compile(
-    r'(?:/\s*)?'                          # optional opening slash
-    r'(\d+[,.]?\d*)'                      # capture: the number (e.g. 0.75 or 2,5 or 10)
+    r'(?:^|(?<=[/\s(]))'                     # number preceded by / or whitespace or ( or start
+    r'(\d+[,.]?\d*)'                          # capture: the number
     r'\s*'
-    r'(кг|kg|гр|gr|г|мл|ml|л|l)'         # unit
+    r'(кг|kg|гр|gr|мл|ml'                    # multi-char units (safe)
+    r'|г(?=[.\s/)\],;!?\-]|$)'              # г only if followed by boundary
+    r'|л(?=[.\s/)\],;!?\-]|$)'              # л only if followed by boundary
+    r'|l(?=[.\s/)\],;!?\-]|$)'              # l only if followed by boundary
+    r')'
     r'\.?'
-    r'(?:\s*/)?',                          # optional closing slash
+    r'(?:\s*/)?',                              # optional closing slash
     re.IGNORECASE
 )
 
