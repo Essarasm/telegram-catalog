@@ -32,7 +32,7 @@ function formatUzs(amount) {
 }
 
 function formatUsd(v) {
-  return '$' + Math.abs(Math.round(v)).toLocaleString('en-US');
+  return '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function formatPeriod(start) {
