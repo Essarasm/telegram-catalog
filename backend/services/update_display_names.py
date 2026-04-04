@@ -151,7 +151,7 @@ def update_display_names():
         if result.rowcount > 0:
             updated_names += 1
 
-        # Update weight if Excel has a value
+        # Update weight if Excel has a value; fallback to parsing from DB name
         if weight is not None:
             try:
                 w = float(weight)
@@ -162,6 +162,15 @@ def update_display_names():
                 updated_weights += 1
             except (ValueError, TypeError):
                 pass
+        else:
+            # No weight in Excel — try parsing from original Cyrillic name
+            from backend.services.parse_weight import parse_weight_from_name
+            row_db = conn.execute("SELECT name, weight FROM products WHERE id = ?", (db_id,)).fetchone()
+            if row_db and (row_db["weight"] is None or row_db["weight"] == 0):
+                parsed_w = parse_weight_from_name(row_db["name"] or "")
+                if parsed_w is not None:
+                    conn.execute("UPDATE products SET weight = ? WHERE id = ?", (parsed_w, db_id))
+                    updated_weights += 1
 
         # Update unit if Excel has a value
         if unit is not None:

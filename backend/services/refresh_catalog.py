@@ -224,6 +224,13 @@ def _refresh_from_catalog_clean(file_bytes: bytes) -> dict:
         except (ValueError, TypeError):
             pass
 
+        # Fallback: parse weight from product name if Excel had none
+        if weight is None or weight == 0:
+            from backend.services.parse_weight import parse_weight_from_name
+            parsed_w = parse_weight_from_name(name)
+            if parsed_w is not None:
+                weight = parsed_w
+
         display_name = name
         if any('\u0400' <= c <= '\u04ff' for c in display_name):
             display_name = transliterate(cyrillic_title_case(display_name))

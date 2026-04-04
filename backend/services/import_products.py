@@ -322,13 +322,20 @@ def import_from_catalog_clean(xlsx_path: str):
         except (ValueError, TypeError):
             pass
 
-        # Parse weight
+        # Parse weight — from Excel column first, fallback to product name
         weight = None
         try:
             if weight_val is not None and weight_val != '':
                 weight = float(weight_val)
         except (ValueError, TypeError):
             pass
+
+        # Fallback: parse weight from product name if Excel had none
+        if weight is None or weight == 0:
+            from backend.services.parse_weight import parse_weight_from_name
+            parsed_w = parse_weight_from_name(name)
+            if parsed_w is not None:
+                weight = parsed_w
 
         # name = ORIGINAL Cyrillic from col L (for bilingual/search support)
         # Falls back to col C if col L is empty (backwards compatibility)

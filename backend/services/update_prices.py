@@ -131,7 +131,7 @@ def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
         except (ValueError, TypeError):
             uzs = 0
 
-        # Parse weight
+        # Parse weight — from Excel column first, fallback to product name
         try:
             weight_raw = str(row[COL_WEIGHT]).strip()
             weight = float(weight_raw) if weight_raw else None
@@ -139,6 +139,12 @@ def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
                 weight = None
         except (ValueError, TypeError):
             weight = None
+
+        if weight is None or weight == 0:
+            from backend.services.parse_weight import parse_weight_from_name
+            parsed_w = parse_weight_from_name(name)
+            if parsed_w is not None:
+                weight = parsed_w
 
         # Parse unit
         unit = 'sht'

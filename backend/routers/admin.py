@@ -97,6 +97,46 @@ def cleanup_zero_balances(admin_key: str = Query(...)):
     return {"ok": True, "deleted": count}
 
 
+# ── Fix weights from product names ───────────────────────────────
+
+@router.post("/fix-weights")
+def fix_weights_from_names(admin_key: str = Query(...)):
+    """One-time fix: parse weight from product name (original cyrillic)
+    when the DB weight is NULL or a round integer that contradicts a
+    decimal weight found in the name.
+
+    E.g. name="Грунтовка акриловая 0.75 кг", weight=1 → weight=0.75
+    """
+    _check_admin(admin_key)
+    from backend.services.parse_weight import parse_weight_from_name
+
+    conn = get_db()
+    rows = conn.execute("SELECT id, name, weight FROM products").fetchall()
+
+    updated = []
+    for row in rows:
+        pid, name, db_weight = row["id"], row["name"], row["weight"]
+        parsed = parse_weight_from_name(name or "")
+        if parsed is None:
+            continue
+
+        # Update if: no weight, or DB has a round integer but name has a decimal
+        should_update = False
+        if db_weight is None or db_weight == 0:
+            should_update = True
+        elif db_weight == int(db_weight) and parsed != db_weight:
+            # DB has round number (e.g. 1) but name says 0.75
+            should_update = True
+
+        if should_update:
+            conn.execute("UPDATE products SET weight = ? WHERE id = ?", (parsed, pid))
+            updated.append({"id": pid, "name": name, "old": db_weight, "new": parsed})
+
+    conn.commit()
+    conn.close()
+    return {"ok": True, "updated_count": len(updated), "updated": updated[:50]}
+
+
 # ── Revenue Trend ────────────────────────────────────────────────
 
 @router.get("/revenue")
