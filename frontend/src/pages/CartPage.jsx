@@ -110,17 +110,22 @@ function OrderPreview({ items, onConfirm, onBack, exporting }) {
 
 /* Cart item quantity stepper with long-press auto-repeat */
 function CartQtyControls({ item, cart }) {
-  const decBind = useLongPress(() => {
-    const qty = cart.items.find(i => i.id === item.id)?.quantity || 1;
-    if (qty <= 1) return false; // stop at 1 — require single tap to remove
-    cart.updateQuantity(item.id, qty - 1);
-  });
-  const incBind = useLongPress(() => cart.updateQuantity(item.id, (cart.items.find(i => i.id === item.id)?.quantity || 0) + 1));
+  const decBind = useLongPress(
+    () => {
+      const qty = cart.items.find(i => i.id === item.id)?.quantity || 1;
+      if (qty <= 1) return false; // stop at 1 — require single tap to remove
+      cart.updateQuantity(item.id, qty - 1);
+    },
+    { onTap: () => cart.updateQuantity(item.id, item.quantity - 1) }
+  );
+  const incBind = useLongPress(
+    () => cart.updateQuantity(item.id, (cart.items.find(i => i.id === item.id)?.quantity || 0) + 1),
+    { onTap: () => cart.updateQuantity(item.id, item.quantity + 1) }
+  );
 
   return (
     <div className="flex items-center gap-1.5">
       <button
-        onClick={() => cart.updateQuantity(item.id, item.quantity - 1)}
         {...decBind}
         className="w-9 h-9 rounded-full bg-tg-button text-tg-button-text flex items-center justify-center font-bold text-lg select-none"
       >
@@ -130,7 +135,6 @@ function CartQtyControls({ item, cart }) {
         {item.quantity}
       </span>
       <button
-        onClick={() => cart.updateQuantity(item.id, item.quantity + 1)}
         {...incBind}
         className="w-9 h-9 rounded-full bg-tg-button text-tg-button-text flex items-center justify-center font-bold text-lg select-none"
       >

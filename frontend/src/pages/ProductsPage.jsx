@@ -105,17 +105,22 @@ function ProductsEmptyState({ searchQuery, onSuggestionClick }) {
 
 /* Quantity stepper with long-press auto-repeat */
 function QtyControls({ product, cart, inCart }) {
-  const decBind = useLongPress(() => {
-    const qty = cart.items.find(i => i.id === product.id)?.quantity || 1;
-    if (qty <= 1) return false; // stop at 1 — require single tap to remove
-    cart.updateQuantity(product.id, qty - 1);
-  });
-  const incBind = useLongPress(() => cart.updateQuantity(product.id, (cart.items.find(i => i.id === product.id)?.quantity || 0) + 1));
+  const decBind = useLongPress(
+    () => {
+      const qty = cart.items.find(i => i.id === product.id)?.quantity || 1;
+      if (qty <= 1) return false; // stop at 1 — require single tap to remove
+      cart.updateQuantity(product.id, qty - 1);
+    },
+    { onTap: () => cart.updateQuantity(product.id, inCart.quantity - 1) }
+  );
+  const incBind = useLongPress(
+    () => cart.updateQuantity(product.id, (cart.items.find(i => i.id === product.id)?.quantity || 0) + 1),
+    { onTap: () => cart.updateQuantity(product.id, inCart.quantity + 1) }
+  );
 
   return (
     <div className="flex items-center justify-between bg-tg-button rounded-lg px-2 py-2">
       <button
-        onClick={(e) => { e.stopPropagation(); cart.updateQuantity(product.id, inCart.quantity - 1); }}
         {...decBind}
         className="text-tg-button-text font-bold text-lg w-10 h-9 flex items-center justify-center select-none"
       >
@@ -125,7 +130,6 @@ function QtyControls({ product, cart, inCart }) {
         {inCart.quantity}
       </span>
       <button
-        onClick={(e) => { e.stopPropagation(); cart.updateQuantity(product.id, inCart.quantity + 1); }}
         {...incBind}
         className="text-tg-button-text font-bold text-lg w-10 h-9 flex items-center justify-center select-none"
       >
