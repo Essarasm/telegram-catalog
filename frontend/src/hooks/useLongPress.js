@@ -7,13 +7,19 @@ import { useRef, useCallback } from 'react';
  * Hold down → after 400ms starts repeating, accelerating over time.
  * Includes haptic feedback on each tick (Telegram WebApp).
  *
+ * The callback can return `false` to signal "stop repeating" —
+ * used by the − button to stop at quantity 1 (require a deliberate
+ * single tap to remove the item entirely).
+ *
  * Usage:
- *   const bind = useLongPress(() => updateQty(id, qty + 1));
- *   <button {...bind}>+</button>
+ *   const bind = useLongPress(() => {
+ *     if (qty <= 1) return false; // stop repeating
+ *     updateQty(id, qty - 1);
+ *   });
+ *   <button {...bind}>−</button>
  */
 export function useLongPress(callback, { initialDelay = 400, minInterval = 60 } = {}) {
   const timerRef = useRef(null);
-  const intervalRef = useRef(null);
   const callbackRef = useRef(callback);
   callbackRef.current = callback;
 
@@ -23,28 +29,26 @@ export function useLongPress(callback, { initialDelay = 400, minInterval = 60 } 
 
   const stop = useCallback(() => {
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
   }, []);
 
   const start = useCallback((e) => {
-    // Prevent text selection and context menu on long press
     e.preventDefault();
     stop();
 
-    // First tick: the normal tap fires the callback
-    // (onClick handles the first increment, so we just start the repeat timer)
     let tickCount = 0;
 
     timerRef.current = setTimeout(() => {
-      // Start repeating
       const tick = () => {
-        callbackRef.current();
+        const result = callbackRef.current();
+        // If callback returns false, stop repeating
+        if (result === false) {
+          stop();
+          return;
+        }
         haptic();
         tickCount++;
 
-        // Accelerate: slow → medium → fast
         const nextDelay = tickCount < 5 ? 200 : tickCount < 15 ? 100 : minInterval;
-
         timerRef.current = setTimeout(tick, nextDelay);
       };
       tick();
@@ -55,6 +59,6 @@ export function useLongPress(callback, { initialDelay = 400, minInterval = 60 } 
     onPointerDown: start,
     onPointerUp: stop,
     onPointerLeave: stop,
-    onContextMenu: (e) => e.preventDefault(), // prevent long-press context menu on mobile
+    onContextMenu: (e) => e.preventDefault(),
   };
 }

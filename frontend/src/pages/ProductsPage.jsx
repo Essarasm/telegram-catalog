@@ -105,7 +105,11 @@ function ProductsEmptyState({ searchQuery, onSuggestionClick }) {
 
 /* Quantity stepper with long-press auto-repeat */
 function QtyControls({ product, cart, inCart }) {
-  const decBind = useLongPress(() => cart.updateQuantity(product.id, (cart.items.find(i => i.id === product.id)?.quantity || 1) - 1));
+  const decBind = useLongPress(() => {
+    const qty = cart.items.find(i => i.id === product.id)?.quantity || 1;
+    if (qty <= 1) return false; // stop at 1 — require single tap to remove
+    cart.updateQuantity(product.id, qty - 1);
+  });
   const incBind = useLongPress(() => cart.updateQuantity(product.id, (cart.items.find(i => i.id === product.id)?.quantity || 0) + 1));
 
   return (
