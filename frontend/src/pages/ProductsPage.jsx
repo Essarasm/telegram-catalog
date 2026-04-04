@@ -122,16 +122,16 @@ function QtyControls({ product, cart, inCart }) {
     <div className="flex items-center justify-between bg-tg-button rounded-lg px-2 py-2">
       <button
         {...decBind}
-        className="text-tg-button-text font-bold text-lg w-10 h-9 flex items-center justify-center select-none"
+        className="text-tg-button-text font-bold text-lg w-10 h-9 flex items-center justify-center select-none no-callout"
       >
         −
       </button>
-      <span className="text-tg-button-text text-base font-bold px-2 py-1 min-w-[36px] text-center select-none">
+      <span className="text-tg-button-text text-base font-bold px-2 py-1 min-w-[36px] text-center select-none no-callout">
         {inCart.quantity}
       </span>
       <button
         {...incBind}
-        className="text-tg-button-text font-bold text-lg w-10 h-9 flex items-center justify-center select-none"
+        className="text-tg-button-text font-bold text-lg w-10 h-9 flex items-center justify-center select-none no-callout"
       >
         +
       </button>
