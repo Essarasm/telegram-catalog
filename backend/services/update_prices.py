@@ -3,9 +3,12 @@
 Enhanced matching logic:
 1. Exact match on original Cyrillic name (p.name)
 2. Normalized match (stripped whitespace, lowercase)
-3. Reports unmatched products from both sides (Excel not in DB, DB not in Excel)
+3. Auto-adds NEW products from Excel (not in DB) with name standardization
+4. Marks products NOT in Excel as out-of-stock (visible with badge)
+5. Restores in-stock status for matched products
 
 1C is the single source of truth — all prices from 1C are accepted as-is.
+Справочник is the complete product list: if a product is not in it, it's out of stock.
 
 Supports both .xlsx and .xls (cp1251 encoding from 1C).
 """
@@ -13,9 +16,10 @@ import io
 import re
 import logging
 from typing import Dict, List, Tuple
+from datetime import datetime
 
 import pandas as pd
-from backend.database import get_db
+from backend.database import get_db, build_search_text
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +30,11 @@ COL_UNIT = 5        # Единица измерения
 COL_UZS = 6         # Цена (UZS)
 COL_USD = 15        # ЦенаВал (wholesale USD)
 COL_WEIGHT = 18     # Вес
+
+# Category name for auto-added products (admin assigns real category later)
+NEW_ARRIVALS_CATEGORY = "Yangi mahsulotlar"
+# Default producer for products where we can't determine the producer
+DEFAULT_PRODUCER = "Boshqa"
 
 
 def normalize_name(name: str) -> str:
@@ -82,7 +91,7 @@ def read_excel_with_encoding(file_bytes: bytes) -> list:
 
 
 def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
-    """Parse price Excel and return name→{usd, uzs, weight} mapping.
+    """Parse price Excel and return name→{usd, uzs, weight, unit} mapping.
 
     Handles both .xlsx and .xls (cp1251) formats from 1C.
     """
@@ -102,7 +111,7 @@ def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
             continue
 
         name = str(row[COL_NAME]).strip()
-        if not name:
+        if not name or len(name) < 3:
             continue
 
         # Parse USD price
@@ -131,20 +140,102 @@ def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
         except (ValueError, TypeError):
             weight = None
 
+        # Parse unit
+        unit = 'sht'
+        if len(row) > COL_UNIT:
+            unit_raw = str(row[COL_UNIT]).strip()
+            if unit_raw and unit_raw.lower() not in ('', 'none', 'nan'):
+                unit = unit_raw
+
         prices[name] = {
             'usd': usd,
             'uzs': uzs if uzs > 0 else 0,
             'weight': weight,
+            'unit': unit,
         }
 
     logger.info(f"Parsed {len(prices)} products with USD prices from Excel")
     return prices
 
 
+def _ensure_category(conn, category_name):
+    """Get or create a category by name. Returns category_id."""
+    row = conn.execute(
+        "SELECT id FROM categories WHERE name = ?", (category_name,)
+    ).fetchone()
+    if row:
+        return row["id"]
+    conn.execute(
+        "INSERT INTO categories (name, sort_order) VALUES (?, 999)",
+        (category_name,)
+    )
+    return conn.execute(
+        "SELECT id FROM categories WHERE name = ?", (category_name,)
+    ).fetchone()["id"]
+
+
+def _ensure_producer(conn, producer_name):
+    """Get or create a producer by name. Returns producer_id."""
+    row = conn.execute(
+        "SELECT id FROM producers WHERE name = ?", (producer_name,)
+    ).fetchone()
+    if row:
+        return row["id"]
+    conn.execute(
+        "INSERT INTO producers (name) VALUES (?)", (producer_name,)
+    )
+    return conn.execute(
+        "SELECT id FROM producers WHERE name = ?", (producer_name,)
+    ).fetchone()["id"]
+
+
+def _auto_add_product(conn, cyrillic_name, price_data, category_id, producer_id):
+    """Add a new product to the database with auto-generated display name.
+
+    Uses the same name standardization pipeline as the initial import.
+    """
+    from backend.services.import_products import generate_display_name
+
+    # Generate clean display name from Cyrillic
+    display_name = generate_display_name(cyrillic_name, "")
+
+    # Build search text for cross-language search
+    search_text = build_search_text(
+        cyrillic_name, display_name, DEFAULT_PRODUCER
+    )
+
+    now = datetime.utcnow().isoformat()
+
+    conn.execute(
+        """INSERT INTO products
+           (name, name_display, category_id, producer_id, unit,
+            price_usd, price_uzs, weight, is_active,
+            stock_quantity, stock_status, stock_updated_at, search_text)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'in_stock', ?, ?)""",
+        (
+            cyrillic_name,
+            display_name,
+            category_id,
+            producer_id,
+            price_data.get('unit', 'sht'),
+            price_data['usd'],
+            price_data['uzs'],
+            price_data.get('weight'),
+            now,
+            search_text,
+        )
+    )
+
+    return display_name
+
+
 def apply_price_updates(file_bytes: bytes) -> dict:
     """Apply price updates from Excel to the database.
 
     1C is the single source of truth — all prices are accepted as-is.
+    Справочник = complete inventory: items NOT in file are marked out-of-stock.
+    Items IN the file but NOT in DB are auto-added as new products.
+
     Returns detailed summary.
     """
     excel_prices = parse_price_excel(file_bytes)
@@ -153,7 +244,7 @@ def apply_price_updates(file_bytes: bytes) -> dict:
 
     conn = get_db()
     db_products = conn.execute(
-        "SELECT id, name, name_display, price_usd, price_uzs, weight FROM products WHERE is_active = 1"
+        "SELECT id, name, name_display, price_usd, price_uzs, weight, stock_status FROM products WHERE is_active = 1"
     ).fetchall()
 
     # Build normalized lookup for DB products
@@ -232,15 +323,75 @@ def apply_price_updates(file_bytes: bytes) -> dict:
                     change_record["new_weight"] = new_weight
                 updated.append(change_record)
 
+            # Restore in-stock status for matched products
+            old_status = product["stock_status"]
+            if old_status != 'in_stock':
+                now = datetime.utcnow().isoformat()
+                conn.execute(
+                    "UPDATE products SET stock_status = 'in_stock', stock_updated_at = ? WHERE id = ?",
+                    (now, product["id"])
+                )
+
     conn.commit()
 
-    # Find unmatched items
+    # ── Auto-add new products (in Excel but not in DB) ──────────────
+    new_products = []
     unmatched_excel = []
     for name in excel_prices:
         if name not in matched_excel_names:
-            unmatched_excel.append(name[:60])
+            unmatched_excel.append(name)
 
-    unmatched_db_count = len(db_products) - len(matched_db_ids)
+    if unmatched_excel:
+        # Ensure "Yangi mahsulotlar" category and default producer exist
+        new_cat_id = _ensure_category(conn, NEW_ARRIVALS_CATEGORY)
+        new_prod_id = _ensure_producer(conn, DEFAULT_PRODUCER)
+
+        for cyrillic_name in unmatched_excel:
+            try:
+                display_name = _auto_add_product(
+                    conn, cyrillic_name, excel_prices[cyrillic_name],
+                    new_cat_id, new_prod_id
+                )
+                new_products.append({
+                    "cyrillic": cyrillic_name[:60],
+                    "display": display_name[:40],
+                })
+            except Exception as e:
+                logger.error(f"Failed to auto-add product '{cyrillic_name}': {e}")
+
+        # Update category/producer counts
+        conn.execute("""
+            UPDATE categories SET product_count = (
+                SELECT COUNT(*) FROM products
+                WHERE products.category_id = categories.id AND is_active = 1
+            )
+        """)
+        conn.execute("""
+            UPDATE producers SET product_count = (
+                SELECT COUNT(*) FROM products
+                WHERE products.producer_id = producers.id AND is_active = 1
+            )
+        """)
+        conn.commit()
+        logger.info(f"Auto-added {len(new_products)} new products to '{NEW_ARRIVALS_CATEGORY}'")
+
+    # ── Mark out-of-stock (in DB but not in Excel) ──────────────────
+    now = datetime.utcnow().isoformat()
+    out_of_stock_ids = []
+    for p in db_products:
+        if p["id"] not in matched_db_ids:
+            out_of_stock_ids.append(p["id"])
+
+    if out_of_stock_ids:
+        for pid in out_of_stock_ids:
+            conn.execute(
+                """UPDATE products
+                   SET stock_status = 'out_of_stock', stock_quantity = 0, stock_updated_at = ?
+                   WHERE id = ?""",
+                (now, pid)
+            )
+        conn.commit()
+        logger.info(f"Marked {len(out_of_stock_ids)} products as out-of-stock")
 
     conn.close()
 
@@ -252,7 +403,18 @@ def apply_price_updates(file_bytes: bytes) -> dict:
         "updated": len(updated),
         "changes": updated,
         "match_methods": match_methods,
-        "unmatched_excel": unmatched_excel[:30],
-        "unmatched_excel_total": len(unmatched_excel),
-        "unmatched_db_count": unmatched_db_count,
+        # New products auto-added
+        "new_products": new_products[:30],
+        "new_products_total": len(new_products),
+        # Out-of-stock tracking
+        "out_of_stock_count": len(out_of_stock_ids),
+        # Restored in-stock (matched products that were previously out-of-stock)
+        "restored_in_stock": sum(
+            1 for p in db_products
+            if p["id"] in matched_db_ids and p["stock_status"] != 'in_stock'
+        ),
+        # Legacy fields (kept for backwards compat, but now empty since we auto-add)
+        "unmatched_excel": [],
+        "unmatched_excel_total": 0,
+        "unmatched_db_count": len(out_of_stock_ids),
     }

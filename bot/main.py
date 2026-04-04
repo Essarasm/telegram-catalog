@@ -406,28 +406,37 @@ async def cmd_prices(message: types.Message):
             if normalized > 0:
                 lines.append(f"🔍 Moslik: aniq={exact}, normalizatsiya={normalized}")
 
+        # New products auto-added
+        new_total = result.get('new_products_total', 0)
+        if new_total > 0:
+            lines.append(f"\n🆕 <b>Yangi mahsulotlar qo'shildi: {new_total} ta</b>")
+            lines.append(f"📁 Kategoriya: \"Yangi mahsulotlar\"")
+            for np in result.get('new_products', [])[:10]:
+                cyr = html_escape(np['cyrillic'])
+                disp = html_escape(np['display'])
+                lines.append(f"  • {cyr} → <i>{disp}</i>")
+            if new_total > 10:
+                lines.append(f"  ... va yana {new_total - 10} ta")
+
+        # Stock status changes
+        out_count = result.get('out_of_stock_count', 0)
+        restored = result.get('restored_in_stock', 0)
+        if out_count > 0 or restored > 0:
+            lines.append(f"\n📦 <b>Ombor holati:</b>")
+            if restored > 0:
+                lines.append(f"  ✅ Qayta mavjud: {restored} ta")
+            if out_count > 0:
+                lines.append(f"  🔴 Tugagan (Excel'da yo'q): {out_count} ta")
+
         if result['changes']:
-            lines.append("\n<b>O'zgarishlar:</b>")
-            for c in result['changes'][:20]:
+            lines.append("\n<b>Narx o'zgarishlar:</b>")
+            for c in result['changes'][:15]:
                 old = c['old_usd']
                 new = c['new_usd']
                 arrow = "📈" if new > old else "📉"
-                lines.append(f"{arrow} {c['name']}: ${old:.2f} → ${new:.2f}")
-            if len(result['changes']) > 20:
-                lines.append(f"... va yana {len(result['changes']) - 20} ta")
-
-        # Show unmatched summary
-        unmatched_total = result.get('unmatched_excel_total', 0)
-        if unmatched_total > 0:
-            lines.append(f"\n⚠️ <b>Mos kelmagan ({unmatched_total} ta Excel'dan):</b>")
-            for name in result.get('unmatched_excel', [])[:10]:
-                lines.append(f"  • {name}")
-            if unmatched_total > 10:
-                lines.append(f"  ... va yana {unmatched_total - 10} ta")
-
-        unmatched_db = result.get('unmatched_db_count', 0)
-        if unmatched_db > 0:
-            lines.append(f"\nℹ️ Bazada {unmatched_db} ta mahsulot Excel'da topilmadi")
+                lines.append(f"{arrow} {html_escape(c['name'])}: ${old:.2f} → ${new:.2f}")
+            if len(result['changes']) > 15:
+                lines.append(f"... va yana {len(result['changes']) - 15} ta")
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
 
