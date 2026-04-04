@@ -120,12 +120,13 @@ def fix_weights_from_names(admin_key: str = Query(...)):
         if parsed is None:
             continue
 
-        # Update if: no weight, or DB has a round integer but name has a decimal
+        # Update if: no weight, or DB weight differs from what the name says
         should_update = False
         if db_weight is None or db_weight == 0:
             should_update = True
-        elif db_weight == int(db_weight) and parsed != db_weight:
-            # DB has round number (e.g. 1) but name says 0.75
+        elif round(db_weight, 4) != round(parsed, 4):
+            # DB weight doesn't match name — could be wrong Excel data
+            # or a bad parse from a previous run
             should_update = True
 
         if should_update:
