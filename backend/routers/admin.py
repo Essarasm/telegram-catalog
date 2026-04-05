@@ -138,6 +138,107 @@ def fix_weights_from_names(admin_key: str = Query(...)):
     return {"ok": True, "updated_count": len(updated), "updated": updated[:50]}
 
 
+# ── Image rotation fix ───────────────────────────────────────────
+
+@router.post("/fix-image-rotation")
+def fix_image_rotation(admin_key: str = Query(...)):
+    """Re-process all product images: apply EXIF orientation transpose.
+
+    This fixes photos taken on phones that appear rotated because the
+    original process_image didn't apply EXIF orientation metadata.
+    Images are re-saved in place with correct orientation.
+    """
+    _check_admin(admin_key)
+    import os
+    from PIL import Image, ImageOps
+
+    images_dir = os.getenv("IMAGES_DIR", "./images")
+    QUALITY = 85
+
+    fixed = []
+    skipped = 0
+    errors = []
+
+    for fname in os.listdir(images_dir):
+        if not fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+            continue
+        fpath = os.path.join(images_dir, fname)
+        try:
+            img = Image.open(fpath)
+            exif = img.getexif()
+            orientation = exif.get(0x0112)  # EXIF Orientation tag
+            if orientation and orientation != 1:
+                # Has non-default orientation — needs fixing
+                img = ImageOps.exif_transpose(img)
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                img.save(fpath, 'JPEG', quality=QUALITY, optimize=True)
+                fixed.append({"file": fname, "orientation": orientation})
+            else:
+                skipped += 1
+            img.close()
+        except Exception as e:
+            errors.append({"file": fname, "error": str(e)})
+
+    return {
+        "ok": True,
+        "fixed_count": len(fixed),
+        "skipped": skipped,
+        "errors": errors[:20],
+        "fixed": fixed[:50],
+    }
+
+
+@router.post("/rotate-image")
+def rotate_image_endpoint(
+    product_id: int = Query(...),
+    degrees: int = Query(default=270, description="Rotation degrees counter-clockwise. 270 = 90° clockwise fix"),
+    admin_key: str = Query(...),
+):
+    """Manually rotate a product image by given degrees counter-clockwise.
+
+    Common use: degrees=270 to fix a photo rotated 90° clockwise.
+    """
+    _check_admin(admin_key)
+    import os
+    from backend.services.image_manager import rotate_image
+
+    images_dir = os.getenv("IMAGES_DIR", "./images")
+    fpath = os.path.join(images_dir, f"{product_id}.jpg")
+
+    if not os.path.exists(fpath):
+        raise HTTPException(status_code=404, detail=f"No image for product {product_id}")
+
+    rotate_image(fpath, degrees)
+    return {"ok": True, "product_id": product_id, "rotated_degrees": degrees}
+
+
+@router.post("/rotate-images-batch")
+def rotate_images_batch(
+    product_ids: str = Query(..., description="Comma-separated product IDs"),
+    degrees: int = Query(default=270),
+    admin_key: str = Query(...),
+):
+    """Rotate multiple product images at once."""
+    _check_admin(admin_key)
+    import os
+    from backend.services.image_manager import rotate_image
+
+    images_dir = os.getenv("IMAGES_DIR", "./images")
+    ids = [int(x.strip()) for x in product_ids.split(",") if x.strip().isdigit()]
+
+    results = []
+    for pid in ids:
+        fpath = os.path.join(images_dir, f"{pid}.jpg")
+        if os.path.exists(fpath):
+            rotate_image(fpath, degrees)
+            results.append({"id": pid, "status": "rotated"})
+        else:
+            results.append({"id": pid, "status": "no_image"})
+
+    return {"ok": True, "results": results}
+
+
 # ── Revenue Trend ────────────────────────────────────────────────
 
 @router.get("/revenue")

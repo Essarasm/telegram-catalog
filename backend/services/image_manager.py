@@ -11,7 +11,7 @@ import os
 import sys
 import re
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageOps
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from backend.database import get_db
@@ -22,12 +22,23 @@ QUALITY = 85
 
 
 def process_image(src_path: str, dest_path: str):
-    """Resize and compress an image."""
+    """Resize, apply EXIF orientation, and compress an image."""
     img = Image.open(src_path)
+    # Apply EXIF orientation so phone photos display correctly
+    img = ImageOps.exif_transpose(img)
     img.thumbnail(MAX_SIZE, Image.LANCZOS)
     if img.mode in ('RGBA', 'P'):
         img = img.convert('RGB')
     img.save(dest_path, 'JPEG', quality=QUALITY, optimize=True)
+
+
+def rotate_image(image_path: str, degrees: int = 90):
+    """Rotate an existing image counter-clockwise by given degrees and re-save."""
+    img = Image.open(image_path)
+    img = img.rotate(degrees, expand=True)
+    if img.mode in ('RGBA', 'P'):
+        img = img.convert('RGB')
+    img.save(image_path, 'JPEG', quality=QUALITY, optimize=True)
 
 
 def import_images(source_dir: str):
