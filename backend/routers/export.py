@@ -90,7 +90,10 @@ def _build_order_items(req: ExportRequest):
 
 
 def _save_order_to_db(req: ExportRequest, order_items, client_label):
-    """Persist the order to the orders + order_items tables."""
+    """Persist the order to the orders + order_items tables.
+
+    Also logs demand signals for any out-of-stock products in the order.
+    """
     conn = get_db()
     try:
         usd_total = sum(it["price"] * it["quantity"] for it in order_items if it.get("currency", "USD") == "USD")
@@ -108,13 +111,35 @@ def _save_order_to_db(req: ExportRequest, order_items, client_label):
         )
         order_id = cursor.lastrowid
 
+        # Look up stock status for all products in this order (one query)
+        product_ids = [it["product_id"] for it in order_items if it.get("product_id")]
+        stock_map = {}
+        if product_ids:
+            placeholders = ",".join("?" * len(product_ids))
+            rows = conn.execute(
+                f"SELECT id, stock_status FROM products WHERE id IN ({placeholders})",
+                product_ids,
+            ).fetchall()
+            stock_map = {r["id"]: r["stock_status"] for r in rows}
+
         for it in order_items:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO order_items (order_id, product_id, product_name, producer_name, quantity, unit, price, currency)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (order_id, it.get("product_id"), it["name"], it.get("producer", ""),
                  it["quantity"], it.get("unit", ""), it["price"], it.get("currency", "USD")),
             )
+            order_item_id = cursor.lastrowid
+
+            # Log demand signal if product is out of stock
+            pid = it.get("product_id")
+            if pid and stock_map.get(pid) == "out_of_stock":
+                conn.execute(
+                    """INSERT INTO demand_signals
+                       (order_id, order_item_id, product_id, telegram_id, quantity, stock_status_at_order)
+                       VALUES (?, ?, ?, ?, ?, 'out_of_stock')""",
+                    (order_id, order_item_id, pid, req.telegram_id or 0, it["quantity"]),
+                )
 
         conn.commit()
         return order_id

@@ -516,6 +516,91 @@ def client_history(
     return {"ok": True, "client_name": client_name, "history": history}
 
 
+# ── Demand Signals (out-of-stock orders) ─────────────────────────
+
+@router.get("/demand-signals")
+def demand_signals(
+    admin_key: str = Query(...),
+    days: int = Query(30, ge=1, le=365),
+    threshold: int = Query(5, ge=1, le=100),
+):
+    """Top out-of-stock products ordered by clients.
+
+    Returns products that have been ordered while marked out-of-stock,
+    ranked by total demand (order count). Items crossing the threshold
+    are flagged as noteworthy signals.
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+
+    # Top out-of-stock products by demand
+    top_demand = conn.execute("""
+        SELECT ds.product_id,
+               p.name_display,
+               p.name as name_cyrillic,
+               pr.name as producer_name,
+               c.name as category_name,
+               p.stock_status as current_stock_status,
+               COUNT(DISTINCT ds.order_id) as order_count,
+               SUM(ds.quantity) as total_quantity,
+               COUNT(DISTINCT ds.telegram_id) as unique_clients,
+               MIN(ds.created_at) as first_signal,
+               MAX(ds.created_at) as last_signal
+        FROM demand_signals ds
+        JOIN products p ON p.id = ds.product_id
+        JOIN producers pr ON pr.id = p.producer_id
+        JOIN categories c ON c.id = p.category_id
+        WHERE ds.created_at >= datetime('now', ?)
+        GROUP BY ds.product_id
+        ORDER BY order_count DESC
+        LIMIT 50
+    """, (f"-{days} days",)).fetchall()
+
+    # Summary stats
+    total_signals = conn.execute(
+        "SELECT COUNT(*) FROM demand_signals WHERE created_at >= datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    unique_products = conn.execute(
+        "SELECT COUNT(DISTINCT product_id) FROM demand_signals WHERE created_at >= datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    conn.close()
+
+    items = []
+    noteworthy_count = 0
+    for r in top_demand:
+        noteworthy = r["order_count"] >= threshold
+        if noteworthy:
+            noteworthy_count += 1
+        items.append({
+            "product_id": r["product_id"],
+            "name": r["name_display"] or r["name_cyrillic"],
+            "name_cyrillic": r["name_cyrillic"],
+            "producer": r["producer_name"],
+            "category": r["category_name"],
+            "current_stock": r["current_stock_status"] or "unknown",
+            "order_count": r["order_count"],
+            "total_quantity": r["total_quantity"],
+            "unique_clients": r["unique_clients"],
+            "first_signal": r["first_signal"],
+            "last_signal": r["last_signal"],
+            "noteworthy": noteworthy,
+        })
+
+    return {
+        "ok": True,
+        "days": days,
+        "threshold": threshold,
+        "total_signals": total_signals,
+        "unique_products": unique_products,
+        "noteworthy_count": noteworthy_count,
+        "items": items,
+    }
+
+
 # ── Stock Status ─────────────────────────────────────────────────
 
 @router.get("/stock-status")

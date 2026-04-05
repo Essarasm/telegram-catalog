@@ -211,6 +211,22 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_client_debts_client_id ON client_debts(client_id);
         CREATE INDEX IF NOT EXISTS idx_client_debts_report_date ON client_debts(report_date);
+
+        -- Demand signals: track orders on out-of-stock products
+        CREATE TABLE IF NOT EXISTS demand_signals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            order_item_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            telegram_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            stock_status_at_order TEXT NOT NULL DEFAULT 'out_of_stock',
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_demand_signals_product ON demand_signals(product_id);
+        CREATE INDEX IF NOT EXISTS idx_demand_signals_created ON demand_signals(created_at);
     """)
     conn.commit()
 

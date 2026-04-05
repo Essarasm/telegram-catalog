@@ -1129,6 +1129,113 @@ async def cmd_testclient(message: types.Message):
     await message.reply("\n".join(lines), parse_mode="HTML")
 
 
+@dp.message(Command("demand"))
+async def cmd_demand(message: types.Message):
+    """Show top out-of-stock products that clients are still ordering (demand signals)."""
+    if not is_admin(message):
+        return
+
+    # Parse optional days argument: /demand 60
+    parts = message.text.split()
+    days = 30
+    if len(parts) > 1 and parts[1].isdigit():
+        days = min(int(parts[1]), 365)
+
+    THRESHOLD = 5  # orders to be considered noteworthy
+
+    conn = get_db()
+
+    # Check if demand_signals table exists
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='demand_signals'"
+    ).fetchall()]
+    if not tables:
+        conn.close()
+        await message.reply(
+            "ℹ️ Demand signals tizimi hali ishga tushmagan.\n"
+            "Keyingi /prices yuklashdan so'ng ma'lumotlar yig'ila boshlaydi.",
+        )
+        return
+
+    # Summary
+    total_signals = conn.execute(
+        "SELECT COUNT(*) FROM demand_signals WHERE created_at >= datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    if total_signals == 0:
+        conn.close()
+        await message.reply(
+            f"📊 Oxirgi {days} kun ichida tugagan mahsulotga buyurtma yo'q.\n\n"
+            "Bu yaxshi — barcha buyurtmalar mavjud mahsulotlarga.",
+        )
+        return
+
+    unique_products = conn.execute(
+        "SELECT COUNT(DISTINCT product_id) FROM demand_signals WHERE created_at >= datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    # Top demand signals
+    top = conn.execute("""
+        SELECT ds.product_id,
+               COALESCE(p.name_display, p.name) as name,
+               pr.name as producer,
+               p.stock_status as current_stock,
+               COUNT(DISTINCT ds.order_id) as order_count,
+               SUM(ds.quantity) as total_qty,
+               COUNT(DISTINCT ds.telegram_id) as unique_clients
+        FROM demand_signals ds
+        JOIN products p ON p.id = ds.product_id
+        JOIN producers pr ON pr.id = p.producer_id
+        WHERE ds.created_at >= datetime('now', ?)
+        GROUP BY ds.product_id
+        ORDER BY order_count DESC
+        LIMIT 20
+    """, (f"-{days} days",)).fetchall()
+
+    conn.close()
+
+    noteworthy = [r for r in top if r["order_count"] >= THRESHOLD]
+
+    lines = [
+        f"📊 <b>Talab signallari ({days} kun)</b>\n",
+        f"🔔 Jami signallar: <b>{total_signals}</b>",
+        f"📦 Mahsulotlar soni: <b>{unique_products}</b>",
+    ]
+
+    if noteworthy:
+        lines.append(f"🔥 Muhim ({THRESHOLD}+ buyurtma): <b>{len(noteworthy)}</b>\n")
+        lines.append(f"<b>⚠️ Diqqat — ko'p so'ralgan tugagan mahsulotlar:</b>")
+        for i, r in enumerate(noteworthy, 1):
+            stock_icon = "🔴" if r["current_stock"] == "out_of_stock" else "🟢"
+            lines.append(
+                f"  {i}. {stock_icon} <b>{html_escape(r['name'])}</b>"
+                f"\n     {html_escape(r['producer'])} | "
+                f"{r['order_count']} buyurtma, {r['total_qty']} dona, "
+                f"{r['unique_clients']} mijoz"
+            )
+    else:
+        lines.append(f"\nℹ️ Hali {THRESHOLD}+ buyurtmali mahsulot yo'q.")
+
+    # Show rest of top items (below threshold)
+    below = [r for r in top if r["order_count"] < THRESHOLD]
+    if below:
+        lines.append(f"\n<b>Boshqa signallar:</b>")
+        for r in below[:10]:
+            stock_icon = "🔴" if r["current_stock"] == "out_of_stock" else "🟢"
+            lines.append(
+                f"  {stock_icon} {html_escape(r['name'])} — "
+                f"{r['order_count']} buyurtma ({r['unique_clients']} mijoz)"
+            )
+        if len(below) > 10:
+            lines.append(f"  ... va yana {len(below) - 10} ta")
+
+    lines.append(f"\n💡 /demand {days * 2} — ko'proq kunlik ma'lumot")
+
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     """Show available admin commands."""
@@ -1150,6 +1257,8 @@ async def cmd_help(message: types.Message):
         "Дебиторка yuklash (1C дебиторская задолженность)\n\n"
         "<b>/balances</b> (reply to XLS file)\n"
         "Оборотка yuklash (1C оборотно-сальдовая)\n\n"
+        "<b>/demand</b> <code>[kunlar]</code>\n"
+        "Tugagan mahsulotlarga talab signallari (default: 30 kun)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
