@@ -6,6 +6,7 @@ const WHOLESALE_QTYS = [6, 12, 15, 25, 36, 50];
 
 const REPORT_TYPES = [
   { key: 'wrong_photo', label: t.report_wrong_photo, icon: '📷' },
+  { key: 'rotated_photo', label: t.report_rotated_photo, icon: '🔄' },
   { key: 'wrong_price', label: t.report_wrong_price, icon: '💰' },
   { key: 'wrong_name', label: t.report_wrong_name, icon: '📝' },
   { key: 'wrong_category', label: t.report_wrong_category, icon: '📂' },
