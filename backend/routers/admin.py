@@ -41,6 +41,9 @@ _ENTITY_FILTER_CTE = """
 _CLIENTS_ONLY = "entity_rates.entity_type = 'client'"
 _SUPPLIERS_ONLY = "entity_rates.entity_type IN ('supplier', 'inactive')"
 
+# Filter out cumulative records (pre-2025) and end-of-month partials (day != 01)
+_PERIOD_FILTER = "cb.period_start >= '2025-01-01' AND strftime('%d', cb.period_start) = '01'"
+
 
 
 @router.get("/debug-query")
@@ -324,6 +327,7 @@ def revenue_trend(
         FROM client_balances cb
         JOIN entity_rates ON entity_rates.client_name_1c = cb.client_name_1c
         WHERE (cb.period_debit > 0 OR cb.period_credit > 0)
+              AND {_PERIOD_FILTER}
               {filter_clause}
         GROUP BY cb.period_start, cb.currency
         ORDER BY cb.period_start ASC
@@ -384,7 +388,7 @@ def collection_rate(
                SUM(cb.period_credit) as total_credit
         FROM client_balances cb
         JOIN entity_rates ON entity_rates.client_name_1c = cb.client_name_1c
-        WHERE 1=1 {filter_clause}
+        WHERE {_PERIOD_FILTER} {filter_clause}
         GROUP BY cb.period_start, cb.currency
         ORDER BY cb.period_start ASC
     """).fetchall()

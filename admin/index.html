@@ -587,6 +587,37 @@
             color: #e4e4e7;
         }
 
+        .section-title.collapsible {
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: color 0.2s;
+        }
+
+        .section-title.collapsible:hover {
+            color: #6366f1;
+        }
+
+        .toggle-arrow {
+            font-size: 14px;
+            transition: transform 0.2s;
+        }
+
+        .toggle-arrow.collapsed {
+            transform: rotate(-90deg);
+        }
+
+        .collapsible-content {
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+
+        .collapsible-content.collapsed {
+            display: none;
+        }
+
         .summary-table {
             background: #0f1117;
             border-radius: 8px;
@@ -865,103 +896,114 @@
                         </div>
                     </div>
 
-                    <div id="inventoryDetail">
-                        <div class="chart-container">
-                            <div class="chart-title">Stock Distribution</div>
-                            <div class="chart-wrapper-250">
-                                <canvas id="stockDistributionChart"></canvas>
+                    <div class="chart-container">
+                        <div class="chart-title">Stock Distribution</div>
+                        <div class="chart-wrapper-250">
+                            <canvas id="stockDistributionChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div id="inventoryDetailPanel" class="hidden">
+                        <div class="table-container">
+                            <div class="table-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                <span id="inventoryDetailTitle">All Products</span>
+                                <button onclick="closeInventoryDetail()" style="background: none; border: none; color: #8b8fa3; font-size: 20px; cursor: pointer; padding: 0 4px; line-height: 1;" title="Close">&times;</button>
+                            </div>
+                            <div class="table-wrapper">
+                                <table id="inventoryDetailTable">
+                                    <thead>
+                                        <tr id="inventoryTableHead">
+                                        </tr>
+                                    </thead>
+                                    <tbody id="inventoryTableBody">
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </div>
 
-                    <div class="table-container">
-                        <div class="table-title" id="inventoryDetailTitle">All Products</div>
-                        <div class="table-wrapper">
-                            <table id="inventoryDetailTable">
-                                <thead>
-                                    <tr id="inventoryTableHead">
-                                    </tr>
-                                </thead>
-                                <tbody id="inventoryTableBody">
-                                </tbody>
-                            </table>
+                    <div class="section-title collapsible" onclick="toggleSection('topOrderedSection')">Top App Orders <span class="toggle-arrow" id="topOrderedSection-arrow">▾</span></div>
+                    <div id="topOrderedSection" class="collapsible-content">
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Product</th>
+                                            <th>Producer</th>
+                                            <th>Total Qty</th>
+                                            <th>Order Count</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="topOrderedAppBody">
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="section-title">Top App Orders</div>
-                    <div class="table-container">
-                        <div class="table-wrapper">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th class="table-number">#</th>
-                                        <th>Product</th>
-                                        <th>Producer</th>
-                                        <th>Total Qty</th>
-                                        <th>Order Count</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="topOrderedAppBody">
-                                </tbody>
-                            </table>
+                    <div class="section-title collapsible" onclick="toggleSection('productRequestsSection')">Product Requests (Can't Find) <span class="toggle-arrow" id="productRequestsSection-arrow">▾</span></div>
+                    <div id="productRequestsSection" class="collapsible-content">
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Request Text</th>
+                                            <th>Count</th>
+                                            <th>Last Requested</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="productRequestsBody">
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="section-title">Product Requests (Can't Find)</div>
-                    <div class="table-container">
-                        <div class="table-wrapper">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th class="table-number">#</th>
-                                        <th>Request Text</th>
-                                        <th>Count</th>
-                                        <th>Last Requested</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="productRequestsBody">
-                                </tbody>
-                            </table>
+                    <div class="section-title collapsible" onclick="toggleSection('suppliersSection')">Suppliers (1C vs App) <span class="toggle-arrow" id="suppliersSection-arrow">▾</span></div>
+                    <div id="suppliersSection" class="collapsible-content">
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Supplier (1C)</th>
+                                            <th>Total Debit</th>
+                                            <th>Total Credit</th>
+                                            <th>App Producer</th>
+                                            <th>Product Count</th>
+                                            <th>In Stock</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="suppliersBody">
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="section-title">Suppliers (1C vs App)</div>
-                    <div class="table-container">
-                        <div class="table-wrapper">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th class="table-number">#</th>
-                                        <th>Supplier (1C)</th>
-                                        <th>Total Debit</th>
-                                        <th>Total Credit</th>
-                                        <th>App Producer</th>
-                                        <th>Product Count</th>
-                                        <th>In Stock</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="suppliersBody">
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <div class="section-title">Search Demand (Top Clicked)</div>
-                    <div class="table-container">
-                        <div class="table-wrapper">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th class="table-number">#</th>
-                                        <th>Product</th>
-                                        <th>Producer</th>
-                                        <th>Stock Qty</th>
-                                        <th>Click Count</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="topClickedBody">
-                                </tbody>
-                            </table>
+                    <div class="section-title collapsible" onclick="toggleSection('topClickedSection')">Search Demand (Top Clicked) <span class="toggle-arrow" id="topClickedSection-arrow">▾</span></div>
+                    <div id="topClickedSection" class="collapsible-content">
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Product</th>
+                                            <th>Producer</th>
+                                            <th>Stock Qty</th>
+                                            <th>Click Count</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="topClickedBody">
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1150,15 +1192,17 @@
         // Check URL params
         window.addEventListener('load', () => {
             const params = new URLSearchParams(window.location.search);
-            if (params.has('key')) {
-                document.getElementById('authKey').value = params.get('key');
+            const keyParam = params.get('admin_key') || params.get('key');
+            if (keyParam) {
+                document.getElementById('authKey').value = keyParam;
                 authenticate();
             }
         });
 
         // ==================== API ====================
         async function apiCall(endpoint) {
-            const url = `/api/admin/${endpoint}?admin_key=${encodeURIComponent(ADMIN_KEY)}`;
+            const sep = endpoint.includes('?') ? '&' : '?';
+            const url = `/api/admin/${endpoint}${sep}admin_key=${encodeURIComponent(ADMIN_KEY)}`;
             const res = await fetch(url);
             if (!res.ok) throw new Error(`API error: ${res.status}`);
             return res.json();
@@ -1215,7 +1259,7 @@
         async function loadOverviewData() {
             const revenue = await apiCall('revenue');
             const collections = await apiCall('collections');
-            const receivables = await apiCall('receivables');
+            const receivables = await apiCall(`receivables?currency=${CURRENCY}`);
 
             const revData = revenue.data[CURRENCY];
             const collData = collections.data[CURRENCY];
@@ -1243,7 +1287,7 @@
             drawRevenueChart(labels, shipmentValues, revData);
             drawCollectionChart(labels, collRateValues);
             drawShipmentsVsCollectionsChart(labels, shipmentValues, collectionValues);
-            drawAgingChart(receivables.data.aging);
+            drawAgingChart(receivables.aging || {});
         }
 
         function drawRevenueChart(labels, values, revData) {
@@ -1408,7 +1452,7 @@
         // ==================== CLIENT PORTFOLIO ====================
         async function loadClientsData() {
             const clients = await apiCall(`top-clients?currency=${CURRENCY}&limit=50`);
-            const receivables = await apiCall('receivables');
+            const receivables = await apiCall(`receivables?currency=${CURRENCY}`);
 
             // KPIs
             const totalReceivable = receivables.total_receivable || 0;
@@ -1441,18 +1485,18 @@
             const tbody = document.getElementById('clientsTableBody');
             tbody.innerHTML = clients.clients.map((c, i) => {
                 const segColor = {
-                    'Growing': 'badge-growing',
-                    'Declining': 'badge-declining',
-                    'Stable': 'badge-stable',
-                    'Dormant': 'badge-dormant',
-                    'New': 'badge-new'
+                    'growing': 'badge-growing',
+                    'declining': 'badge-declining',
+                    'stable': 'badge-stable',
+                    'dormant': 'badge-dormant',
+                    'new': 'badge-new'
                 }[c.segment] || 'badge-stable';
 
                 return `
                     <tr class="clickable" onclick="showClientHistory('${c.name.replace(/'/g, "\\'")}')">
                         <td class="table-number">${i + 1}</td>
                         <td class="table-name">${c.name}</td>
-                        <td><span class="badge badge-small ${segColor}">${c.segment || 'Unknown'}</span></td>
+                        <td><span class="badge badge-small ${segColor}">${c.segment ? c.segment.charAt(0).toUpperCase() + c.segment.slice(1) : 'Unknown'}</span></td>
                         <td>${fmt(c.total_shipped)} ${getCurrencyLabel()}</td>
                         <td>${fmt(c.total_paid)} ${getCurrencyLabel()}</td>
                         <td>${c.pay_pct ? c.pay_pct.toFixed(1) : 0}%</td>
@@ -1566,15 +1610,21 @@
             document.querySelectorAll('[data-inventory-filter]').forEach(card => {
                 card.addEventListener('click', function() {
                     const filter = this.dataset.inventoryFilter;
+
+                    // Toggle: if clicking same filter, close the panel
+                    if (inventoryFilterMode === filter && !document.getElementById('inventoryDetailPanel').classList.contains('hidden')) {
+                        closeInventoryDetail();
+                        return;
+                    }
+
                     inventoryFilterMode = filter;
                     updateInventoryDetail();
+                    document.getElementById('inventoryDetailPanel').classList.remove('hidden');
 
                     document.querySelectorAll('[data-inventory-filter]').forEach(c => c.classList.remove('selected'));
                     this.classList.add('selected');
                 });
             });
-
-            updateInventoryDetail();
 
             // Populate other sections
             populateTopOrderedApp();
@@ -1629,6 +1679,24 @@
                     }
                 }
             });
+        }
+
+        function toggleSection(sectionId) {
+            const section = document.getElementById(sectionId);
+            const arrow = document.getElementById(sectionId + '-arrow');
+            if (section.classList.contains('collapsed')) {
+                section.classList.remove('collapsed');
+                if (arrow) arrow.classList.remove('collapsed');
+            } else {
+                section.classList.add('collapsed');
+                if (arrow) arrow.classList.add('collapsed');
+            }
+        }
+
+        function closeInventoryDetail() {
+            document.getElementById('inventoryDetailPanel').classList.add('hidden');
+            document.querySelectorAll('[data-inventory-filter]').forEach(c => c.classList.remove('selected'));
+            inventoryFilterMode = null;
         }
 
         function updateInventoryDetail() {
