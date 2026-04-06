@@ -1268,7 +1268,9 @@ async def cmd_help(message: types.Message):
         "<b>/wrongphotos</b>\n"
         "Noto'g'ri rasm xabarlari (mahsulot bo'yicha)\n\n"
         "<b>/searches</b> <code>[kunlar]</code>\n"
-        "Qidiruv statistikasi (default: 7 kun)",
+        "Qidiruv statistikasi (default: 7 kun)\n\n"
+        "<b>/datacoverage</b> <code>[valyuta]</code>\n"
+        "Yuklangan ma'lumotlar qamrovi (oylik tekshiruv)",
         parse_mode="HTML",
     )
 
@@ -1618,6 +1620,149 @@ async def handle_debtors_document(message: types.Message):
     if not is_admin(message):
         return
     await cmd_debtors(message)
+
+
+# ───────────────────────────────────────────
+# /datacoverage — check uploaded data coverage
+# ───────────────────────────────────────────
+
+@dp.message(Command("datacoverage"))
+async def cmd_datacoverage(message: types.Message):
+    """Show which monthly periods have been uploaded to client_balances.
+
+    Highlights missing months, coverage gaps, and per-month stats.
+    Usage: /datacoverage [currency]   (default: both UZS and USD)
+    """
+    if not is_admin(message):
+        return
+
+    parts = message.text.split()
+    currency_filter = parts[1].upper() if len(parts) > 1 else None
+
+    conn = get_db()
+    try:
+        # Get all distinct periods with stats, per currency
+        rows = conn.execute(
+            """SELECT currency,
+                      period_start,
+                      COUNT(DISTINCT client_name_1c) as clients,
+                      SUM(period_debit) as shipments,
+                      SUM(period_credit) as collections
+               FROM client_balances
+               WHERE period_start >= '2025-01-01'
+                 AND strftime('%d', period_start) = '01'
+               GROUP BY currency, period_start
+               ORDER BY currency, period_start"""
+        ).fetchall()
+
+        if not rows:
+            await message.reply("❌ Ma'lumotlar bazasida hech qanday davr topilmadi.")
+            conn.close()
+            return
+
+        # Group by currency
+        from collections import defaultdict
+        from datetime import date, timedelta
+        by_currency = defaultdict(list)
+        for r in rows:
+            by_currency[r["currency"]].append({
+                "period": r["period_start"],
+                "clients": r["clients"],
+                "shipments": r["shipments"] or 0,
+                "collections": r["collections"] or 0,
+            })
+
+        lines = ["📊 <b>Ma'lumotlar qamrovi (Data Coverage)</b>\n"]
+
+        today = date.today()
+        current_month = today.replace(day=1)
+
+        for curr in sorted(by_currency.keys()):
+            if currency_filter and curr != currency_filter:
+                continue
+
+            periods = by_currency[curr]
+            covered_months = {p["period"] for p in periods}
+
+            # Find range
+            first = min(covered_months)
+            last = max(covered_months)
+
+            lines.append(f"\n{'💴' if curr == 'UZS' else '💵'} <b>{curr}</b>")
+            lines.append(f"📅 Diapazon: {first[:7]} — {last[:7]}")
+            lines.append(f"👥 Mijozlar: {max(p['clients'] for p in periods)}")
+
+            # Generate expected months between first and last
+            from datetime import datetime
+            first_dt = datetime.strptime(first, "%Y-%m-%d").date()
+            last_dt = datetime.strptime(last, "%Y-%m-%d").date()
+
+            expected = []
+            d = first_dt
+            while d <= last_dt:
+                expected.append(d.isoformat())
+                # Next month
+                if d.month == 12:
+                    d = d.replace(year=d.year + 1, month=1)
+                else:
+                    d = d.replace(month=d.month + 1)
+
+            missing = [m for m in expected if m not in covered_months]
+
+            # Month-by-month breakdown
+            lines.append("")
+            month_names = {
+                1: "Yan", 2: "Fev", 3: "Mar", 4: "Apr", 5: "May", 6: "Iyn",
+                7: "Iyl", 8: "Avg", 9: "Sen", 10: "Okt", 11: "Noy", 12: "Dek"
+            }
+
+            for p in periods:
+                dt = datetime.strptime(p["period"], "%Y-%m-%d").date()
+                m_name = month_names.get(dt.month, "?")
+                is_partial = (dt.year == current_month.year and dt.month == current_month.month)
+                partial_tag = " ⚠️" if is_partial else ""
+
+                if curr == "UZS":
+                    ship_fmt = f"{round(p['shipments'] / 1e9, 1)}B"
+                    coll_fmt = f"{round(p['collections'] / 1e9, 1)}B"
+                else:
+                    ship_fmt = f"${round(p['shipments'] / 1e3, 1)}K"
+                    coll_fmt = f"${round(p['collections'] / 1e3, 1)}K"
+
+                lines.append(
+                    f"  {'✅' if not is_partial else '🔶'} {m_name} {dt.year} — "
+                    f"{p['clients']} mijoz | ↑{ship_fmt} ↓{coll_fmt}{partial_tag}"
+                )
+
+            # Missing months
+            if missing:
+                lines.append(f"\n  ❌ <b>Yuklanmagan oylar ({len(missing)}):</b>")
+                for m in missing:
+                    dt = datetime.strptime(m, "%Y-%m-%d").date()
+                    m_name = month_names.get(dt.month, "?")
+                    lines.append(f"    • {m_name} {dt.year} ({m[:7]})")
+            else:
+                lines.append(f"\n  ✅ Barcha oylar yuklangan!")
+
+            # Check if current month is covered
+            current_iso = current_month.isoformat()
+            if current_iso not in covered_months and current_iso >= first:
+                lines.append(f"  ℹ️ Joriy oy ({month_names.get(current_month.month)} {current_month.year}) hali yuklanmagan")
+
+        # Summary
+        total_periods = len(rows)
+        total_clients = conn.execute(
+            "SELECT COUNT(DISTINCT client_name_1c) FROM client_balances WHERE period_start >= '2025-01-01'"
+        ).fetchone()[0]
+        lines.append(f"\n📈 <b>Jami:</b> {total_periods} davr, {total_clients} unikal mijoz")
+
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Data coverage error: {e}")
+        await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+    finally:
+        conn.close()
 
 
 # ───────────────────────────────────────────
