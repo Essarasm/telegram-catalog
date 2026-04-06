@@ -335,23 +335,29 @@ def revenue_trend(
 
     conn.close()
 
+    # Detect current calendar month to flag as partial
+    from datetime import date
+    today = date.today()
+    current_month_start = today.replace(day=1).isoformat()
+
     result = {"UZS": [], "USD": []}
     for r in rows:
         cur = r["currency"]
         if cur not in result:
             result[cur] = []
+        is_partial = r["period_start"] == current_month_start
         result[cur].append({
             "period": r["period_start"],
             "shipments": round(r["total_shipments"], 2),
             "collections": round(r["total_collections"], 2),
             "active_clients": r["active_clients"],
+            "partial": is_partial,
         })
 
     # Add YoY comparison for each period
     for cur in result:
         periods = result[cur]
         for p in periods:
-            # Find same month previous year
             try:
                 year = int(p["period"][:4])
                 month_day = p["period"][4:]
@@ -359,12 +365,21 @@ def revenue_trend(
                 prev = next((x for x in periods if x["period"] == prev_period), None)
                 if prev and prev["shipments"] > 0:
                     p["yoy_growth"] = round((p["shipments"] - prev["shipments"]) / prev["shipments"] * 100, 1)
+                    p["yoy_prev_shipments"] = prev["shipments"]
                 else:
                     p["yoy_growth"] = None
+                    p["yoy_prev_shipments"] = None
             except Exception:
                 p["yoy_growth"] = None
+                p["yoy_prev_shipments"] = None
 
-    return {"ok": True, "data": result}
+    # Compute last_full_month (the most recent non-partial month)
+    last_full = {}
+    for cur in result:
+        full_months = [p for p in result[cur] if not p.get("partial")]
+        last_full[cur] = full_months[-1]["period"] if full_months else None
+
+    return {"ok": True, "data": result, "last_full_month": last_full}
 
 
 # ── Collection Rate (clean) ──────────────────────────────────────

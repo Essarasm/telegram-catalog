@@ -821,20 +821,32 @@
             <div class="content-area">
                 <!-- Business Overview Tab -->
                 <div id="overview-tab" class="tab-content">
+                    <!-- KPI Cards with time-range selector -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                        <span style="font-size: 12px; color: #8b8fa3; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Key Metrics</span>
+                        <div class="currency-toggle" id="kpiRangeToggle">
+                            <button class="currency-btn active" data-range="last_full" onclick="setKpiRange('last_full')">Last Full Month</button>
+                            <button class="currency-btn" data-range="qoq" onclick="setKpiRange('qoq')">QoQ</button>
+                            <button class="currency-btn" data-range="yoy" onclick="setKpiRange('yoy')">YoY</button>
+                            <button class="currency-btn" data-range="all" onclick="setKpiRange('all')">All Time</button>
+                        </div>
+                    </div>
+
                     <div class="kpi-grid">
                         <div class="kpi-card">
-                            <div class="kpi-label">Total Shipments (All Time)</div>
+                            <div class="kpi-label" id="kpi-shipments-label">Revenue (Last Full Month)</div>
                             <div class="kpi-value" id="kpi-total-shipments">-</div>
                             <div class="kpi-change" id="kpi-total-shipments-change"></div>
                         </div>
                         <div class="kpi-card">
-                            <div class="kpi-label">Latest Month Revenue</div>
+                            <div class="kpi-label" id="kpi-collections-label">Collections</div>
                             <div class="kpi-value" id="kpi-latest-revenue">-</div>
                             <div class="kpi-change" id="kpi-latest-revenue-change"></div>
                         </div>
                         <div class="kpi-card">
-                            <div class="kpi-label">MoM Growth %</div>
+                            <div class="kpi-label">Growth vs Comparison</div>
                             <div class="kpi-value" id="kpi-mom-growth">-</div>
+                            <div class="kpi-change" id="kpi-growth-detail"></div>
                         </div>
                         <div class="kpi-card">
                             <div class="kpi-label">Collection Rate %</div>
@@ -842,31 +854,33 @@
                         </div>
                     </div>
 
-                    <div class="chart-row">
-                        <div class="row-item">
-                            <div class="chart-container">
-                                <div class="chart-title">Revenue Trend</div>
-                                <div class="chart-wrapper">
-                                    <canvas id="revenueChart"></canvas>
-                                </div>
+                    <!-- Partial month warning -->
+                    <div id="partialMonthBanner" class="hidden" style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: #f59e0b; display: flex; align-items: center; gap: 8px;">
+                        <span>⚠</span>
+                        <span id="partialMonthText">Current month data is partial — charts show only fully closed months.</span>
+                    </div>
+
+                    <!-- Revenue Trend (closed months only) + YoY overlay -->
+                    <div class="chart-container">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                            <div class="chart-title" style="margin-bottom: 0;">Monthly Revenue (Closed Months Only)</div>
+                            <div class="currency-toggle" id="revenueViewToggle" style="font-size: 11px;">
+                                <button class="currency-btn active" data-revview="trend" onclick="setRevenueView('trend')">Trend</button>
+                                <button class="currency-btn" data-revview="yoy" onclick="setRevenueView('yoy')">YoY Compare</button>
+                                <button class="currency-btn" data-revview="bars" onclick="setRevenueView('bars')">Ship vs Coll</button>
                             </div>
                         </div>
-                        <div class="row-item">
-                            <div class="chart-container">
-                                <div class="chart-title">Collection Rate Trend</div>
-                                <div class="chart-wrapper">
-                                    <canvas id="collectionChart"></canvas>
-                                </div>
-                            </div>
+                        <div class="chart-wrapper" style="height: 350px;">
+                            <canvas id="revenueChart"></canvas>
                         </div>
                     </div>
 
                     <div class="chart-row">
                         <div class="row-item">
                             <div class="chart-container">
-                                <div class="chart-title">Shipments vs Collections</div>
+                                <div class="chart-title">Collection Rate Trend</div>
                                 <div class="chart-wrapper">
-                                    <canvas id="shipmentsVsCollectionsChart"></canvas>
+                                    <canvas id="collectionChart"></canvas>
                                 </div>
                             </div>
                         </div>
@@ -1325,162 +1339,276 @@
         }
 
         // ==================== BUSINESS OVERVIEW ====================
-        async function loadOverviewData() {
-            const revenue = await apiCall('revenue');
-            const collections = await apiCall('collections');
-            const receivables = await apiCall(`receivables?currency=${CURRENCY}`);
+        let cachedRevenue = null;
+        let cachedCollections = null;
+        let cachedReceivables = null;
+        let kpiRange = 'last_full';
+        let revenueView = 'trend';
 
-            const revData = revenue.data[CURRENCY];
-            const collData = collections.data[CURRENCY];
-
-            if (!revData || !revData.length) return;
-
-            // KPIs
-            const totalShipments = revData.reduce((a, b) => a + (b.shipments || 0), 0);
-            const latestRev = revData[revData.length - 1].shipments || 0;
-            const prevRev = revData.length > 1 ? revData[revData.length - 2].shipments || 0 : latestRev;
-            const momGrowth = prevRev ? ((latestRev - prevRev) / prevRev * 100).toFixed(1) : 0;
-            const latestCollRate = collData[collData.length - 1]?.collection_rate || 0;
-
-            document.getElementById('kpi-total-shipments').textContent = fmt(totalShipments);
-            document.getElementById('kpi-latest-revenue').textContent = fmt(latestRev) + ' ' + getCurrencyLabel();
-            document.getElementById('kpi-mom-growth').textContent = momGrowth + '%';
-            document.getElementById('kpi-collection-rate').textContent = latestCollRate.toFixed(1) + '%';
-
-            // Charts
-            const labels = revData.map(p => periodLabel(p.period));
-            const shipmentValues = revData.map(p => p.shipments || 0);
-            const collectionValues = revData.map(p => p.collections || 0);
-            const collRateValues = collData.map(p => p.collection_rate || 0);
-
-            drawRevenueChart(labels, shipmentValues, revData);
-            drawCollectionChart(labels, collRateValues);
-            drawShipmentsVsCollectionsChart(labels, shipmentValues, collectionValues);
-            drawAgingChart(receivables.aging || {});
+        function setKpiRange(range) {
+            kpiRange = range;
+            document.querySelectorAll('#kpiRangeToggle .currency-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`[data-range="${range}"]`).classList.add('active');
+            if (cachedRevenue) updateKpis();
         }
 
-        function drawRevenueChart(labels, values, revData) {
+        function setRevenueView(view) {
+            revenueView = view;
+            document.querySelectorAll('#revenueViewToggle .currency-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`[data-revview="${view}"]`).classList.add('active');
+            if (cachedRevenue) drawRevenueChart();
+        }
+
+        async function loadOverviewData() {
+            cachedRevenue = await apiCall('revenue');
+            cachedCollections = await apiCall('collections');
+            cachedReceivables = await apiCall(`receivables?currency=${CURRENCY}`);
+
+            const revData = cachedRevenue.data[CURRENCY];
+            const collData = cachedCollections.data[CURRENCY];
+            if (!revData || !revData.length) return;
+
+            // Show partial month banner
+            const hasPartial = revData.some(p => p.partial);
+            const partialBanner = document.getElementById('partialMonthBanner');
+            if (hasPartial) {
+                const partialMonth = revData.find(p => p.partial);
+                document.getElementById('partialMonthText').textContent =
+                    `${periodLabel(partialMonth.period)} is partial (${partialMonth.active_clients} clients, ${fmt(partialMonth.shipments)} ${getCurrencyLabel()}) — charts show only fully closed months by default.`;
+                partialBanner.classList.remove('hidden');
+                partialBanner.style.display = 'flex';
+            } else {
+                partialBanner.classList.add('hidden');
+                partialBanner.style.display = 'none';
+            }
+
+            updateKpis();
+            drawRevenueChart();
+            drawCollectionChart(collData);
+            drawAgingChart(cachedReceivables.aging || {});
+        }
+
+        function getFullMonths() {
+            const revData = cachedRevenue.data[CURRENCY] || [];
+            return revData.filter(p => !p.partial);
+        }
+
+        function updateKpis() {
+            const revData = cachedRevenue.data[CURRENCY] || [];
+            const collData = cachedCollections.data[CURRENCY] || [];
+            const full = getFullMonths();
+            const fullColl = collData.filter(p => {
+                return full.some(f => f.period === p.period);
+            });
+
+            let shipLabel, shipVal, collVal, growthVal, growthDetail, collRateVal;
+
+            if (kpiRange === 'last_full') {
+                const lastFull = full[full.length - 1];
+                const prevFull = full.length > 1 ? full[full.length - 2] : null;
+                const lastColl = fullColl[fullColl.length - 1];
+
+                shipLabel = `Revenue — ${periodLabel(lastFull?.period)}`;
+                shipVal = lastFull?.shipments || 0;
+                collVal = lastFull?.collections || 0;
+                growthVal = prevFull && prevFull.shipments > 0
+                    ? ((lastFull.shipments - prevFull.shipments) / prevFull.shipments * 100).toFixed(1) + '%'
+                    : 'N/A';
+                growthDetail = prevFull ? `vs ${periodLabel(prevFull.period)}: ${fmt(prevFull.shipments)}` : '';
+                collRateVal = lastColl?.collection_rate?.toFixed(1) || '0';
+            } else if (kpiRange === 'yoy') {
+                const lastFull = full[full.length - 1];
+                shipLabel = `Revenue — ${periodLabel(lastFull?.period)}`;
+                shipVal = lastFull?.shipments || 0;
+                collVal = lastFull?.collections || 0;
+                const yoyGrowth = lastFull?.yoy_growth;
+                const yoyPrev = lastFull?.yoy_prev_shipments;
+                growthVal = yoyGrowth !== null && yoyGrowth !== undefined ? yoyGrowth.toFixed(1) + '%' : 'N/A';
+                const prevYear = lastFull ? parseInt(lastFull.period.slice(0, 4)) - 1 : '';
+                growthDetail = yoyPrev ? `vs ${periodLabel(prevYear + lastFull.period.slice(4))}: ${fmt(yoyPrev)}` : 'No prior year data';
+                const lastColl = fullColl[fullColl.length - 1];
+                collRateVal = lastColl?.collection_rate?.toFixed(1) || '0';
+            } else if (kpiRange === 'qoq') {
+                // Last 3 full months vs previous 3
+                const q1 = full.slice(-3);
+                const q0 = full.slice(-6, -3);
+                const q1Ship = q1.reduce((a, b) => a + (b.shipments || 0), 0);
+                const q0Ship = q0.reduce((a, b) => a + (b.shipments || 0), 0);
+                const q1Coll = q1.reduce((a, b) => a + (b.collections || 0), 0);
+
+                shipLabel = `Revenue — Last Quarter (${q1.map(p => periodLabel(p.period)).join(', ')})`;
+                shipVal = q1Ship;
+                collVal = q1Coll;
+                growthVal = q0Ship > 0 ? ((q1Ship - q0Ship) / q0Ship * 100).toFixed(1) + '%' : 'N/A';
+                growthDetail = q0.length ? `vs ${q0.map(p => periodLabel(p.period)).join(', ')}: ${fmt(q0Ship)}` : '';
+                const avgColl = fullColl.slice(-3);
+                collRateVal = avgColl.length ? (avgColl.reduce((a, b) => a + (b.collection_rate || 0), 0) / avgColl.length).toFixed(1) : '0';
+            } else {
+                // All time
+                shipLabel = 'Total Shipments (All Time)';
+                shipVal = full.reduce((a, b) => a + (b.shipments || 0), 0);
+                collVal = full.reduce((a, b) => a + (b.collections || 0), 0);
+                growthVal = '-';
+                growthDetail = `${full.length} months`;
+                collRateVal = shipVal > 0 ? (collVal / shipVal * 100).toFixed(1) : '0';
+            }
+
+            document.getElementById('kpi-shipments-label').textContent = shipLabel;
+            document.getElementById('kpi-total-shipments').textContent = fmt(shipVal) + ' ' + getCurrencyLabel();
+            document.getElementById('kpi-collections-label').textContent = kpiRange === 'all' ? 'Total Collections' : 'Collections';
+            document.getElementById('kpi-latest-revenue').textContent = fmt(collVal) + ' ' + getCurrencyLabel();
+            document.getElementById('kpi-mom-growth').textContent = growthVal;
+            document.getElementById('kpi-growth-detail').textContent = growthDetail;
+
+            const growthNum = parseFloat(growthVal);
+            const growthEl = document.getElementById('kpi-mom-growth');
+            growthEl.style.color = isNaN(growthNum) ? '#e4e4e7' : growthNum >= 0 ? '#22c55e' : '#ef4444';
+
+            document.getElementById('kpi-collection-rate').textContent = collRateVal + '%';
+        }
+
+        function drawRevenueChart() {
+            const full = getFullMonths();
             const ctx = document.getElementById('revenueChart').getContext('2d');
             if (charts.revenue) charts.revenue.destroy();
 
-            charts.revenue = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels,
-                    datasets: [{
-                        label: 'Revenue (' + getCurrencyLabel() + ')',
-                        data: values,
-                        borderColor: '#6366f1',
-                        backgroundColor: 'rgba(99, 102, 241, 0.05)',
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.3,
-                        pointBackgroundColor: '#6366f1',
-                        pointBorderColor: '#1a1d27',
-                        pointBorderWidth: 2,
-                        pointRadius: 4,
-                        pointHoverRadius: 6
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false }
+            if (revenueView === 'trend') {
+                // Simple line trend — closed months only
+                charts.revenue = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: full.map(p => periodLabel(p.period)),
+                        datasets: [{
+                            label: 'Revenue (' + getCurrencyLabel() + ')',
+                            data: full.map(p => p.shipments || 0),
+                            borderColor: '#6366f1',
+                            backgroundColor: 'rgba(99, 102, 241, 0.05)',
+                            borderWidth: 2, fill: true, tension: 0.3,
+                            pointBackgroundColor: '#6366f1',
+                            pointBorderColor: '#1a1d27',
+                            pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6
+                        }]
                     },
-                    scales: {
-                        y: {
-                            grid: { color: '#2a2d3a' },
-                            ticks: { color: '#8b8fa3', callback: v => fmt(v) }
-                        },
-                        x: {
-                            grid: { display: false },
-                            ticks: { color: '#8b8fa3' }
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => fmt(v) } },
+                            x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
                         }
                     }
-                }
-            });
+                });
+
+            } else if (revenueView === 'yoy') {
+                // YoY comparison: dual bars — this year month vs same month last year
+                const thisYear = full.filter(p => p.period >= '2026-01-01');
+                const monthLabels = thisYear.map(p => {
+                    const m = new Date(p.period + 'T00:00:00Z').toLocaleString('en', { month: 'short' });
+                    return m;
+                });
+                const thisYearVals = thisYear.map(p => p.shipments || 0);
+                const prevYearVals = thisYear.map(p => p.yoy_prev_shipments || 0);
+
+                charts.revenue = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: monthLabels,
+                        datasets: [
+                            {
+                                label: '2025', data: prevYearVals,
+                                backgroundColor: 'rgba(139, 143, 163, 0.4)', borderRadius: 4
+                            },
+                            {
+                                label: '2026', data: thisYearVals,
+                                backgroundColor: '#6366f1', borderRadius: 4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: {
+                            legend: { labels: { color: '#8b8fa3' } },
+                            tooltip: {
+                                callbacks: {
+                                    afterBody: (items) => {
+                                        if (items.length >= 2) {
+                                            const prev = items[0].raw || 0;
+                                            const curr = items[1].raw || 0;
+                                            if (prev > 0) return `Change: ${((curr - prev) / prev * 100).toFixed(1)}%`;
+                                        }
+                                        return '';
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => fmt(v) } },
+                            x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
+                        }
+                    }
+                });
+
+            } else if (revenueView === 'bars') {
+                // Shipments vs Collections bars
+                charts.revenue = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: full.map(p => periodLabel(p.period)),
+                        datasets: [
+                            {
+                                label: 'Shipments (' + getCurrencyLabel() + ')',
+                                data: full.map(p => p.shipments || 0),
+                                backgroundColor: '#6366f1', borderRadius: 4
+                            },
+                            {
+                                label: 'Collections (' + getCurrencyLabel() + ')',
+                                data: full.map(p => p.collections || 0),
+                                backgroundColor: '#22c55e', borderRadius: 4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { labels: { color: '#8b8fa3' } } },
+                        scales: {
+                            y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => fmt(v) } },
+                            x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
+                        }
+                    }
+                });
+            }
         }
 
-        function drawCollectionChart(labels, values) {
+        function drawCollectionChart(collData) {
+            // Filter to closed months only
+            const full = getFullMonths();
+            const fullPeriods = new Set(full.map(p => p.period));
+            const filtered = collData.filter(p => fullPeriods.has(p.period));
+
             const ctx = document.getElementById('collectionChart').getContext('2d');
             if (charts.collection) charts.collection.destroy();
 
             charts.collection = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels,
+                    labels: filtered.map(p => periodLabel(p.period)),
                     datasets: [{
                         label: 'Collection Rate %',
-                        data: values,
+                        data: filtered.map(p => p.collection_rate || 0),
                         borderColor: '#22c55e',
                         backgroundColor: 'rgba(34, 197, 94, 0.05)',
-                        borderWidth: 2,
-                        fill: true,
-                        tension: 0.3,
+                        borderWidth: 2, fill: true, tension: 0.3,
                         pointBackgroundColor: '#22c55e',
                         pointBorderColor: '#1a1d27',
-                        pointBorderWidth: 2,
-                        pointRadius: 4,
-                        pointHoverRadius: 6
+                        pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6
                     }]
                 },
                 options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
+                    responsive: true, maintainAspectRatio: false,
                     plugins: { legend: { display: false } },
                     scales: {
-                        y: {
-                            min: 0,
-                            max: 100,
-                            grid: { color: '#2a2d3a' },
-                            ticks: { color: '#8b8fa3' }
-                        },
-                        x: {
-                            grid: { display: false },
-                            ticks: { color: '#8b8fa3' }
-                        }
-                    }
-                }
-            });
-        }
-
-        function drawShipmentsVsCollectionsChart(labels, shipments, collections) {
-            const ctx = document.getElementById('shipmentsVsCollectionsChart').getContext('2d');
-            if (charts.shipmentsVsCollections) charts.shipmentsVsCollections.destroy();
-
-            charts.shipmentsVsCollections = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels,
-                    datasets: [
-                        {
-                            label: 'Shipments (' + getCurrencyLabel() + ')',
-                            data: shipments,
-                            backgroundColor: '#6366f1',
-                            borderRadius: 4
-                        },
-                        {
-                            label: 'Collections (' + getCurrencyLabel() + ')',
-                            data: collections,
-                            backgroundColor: '#22c55e',
-                            borderRadius: 4
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { labels: { color: '#8b8fa3' } } },
-                    scales: {
-                        y: {
-                            grid: { color: '#2a2d3a' },
-                            ticks: { color: '#8b8fa3', callback: v => fmt(v) }
-                        },
-                        x: {
-                            grid: { display: false },
-                            ticks: { color: '#8b8fa3' }
-                        }
+                        y: { min: 0, max: 200, grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3' } },
+                        x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
                     }
                 }
             });
@@ -1506,13 +1634,9 @@
                     }]
                 },
                 options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
+                    responsive: true, maintainAspectRatio: false,
                     plugins: {
-                        legend: {
-                            position: 'bottom',
-                            labels: { color: '#8b8fa3', padding: 20 }
-                        }
+                        legend: { position: 'bottom', labels: { color: '#8b8fa3', padding: 20 } }
                     }
                 }
             });
