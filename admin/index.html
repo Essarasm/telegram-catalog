@@ -1,625 +1,1927 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Rassvet Dashboard</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<style>
-:root {
-  --bg: #0f1117;
-  --card: #1a1d27;
-  --border: #2a2d3a;
-  --text: #e4e4e7;
-  --muted: #8b8fa3;
-  --accent: #6366f1;
-  --green: #22c55e;
-  --red: #ef4444;
-  --orange: #f59e0b;
-  --blue: #3b82f6;
-}
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rassvet Admin Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
 
-/* Nav */
-.nav { display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--card); position: sticky; top: 0; z-index: 100; }
-.nav-btn { padding: 14px 24px; background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; font-weight: 500; border-bottom: 2px solid transparent; transition: all .2s; }
-.nav-btn:hover { color: var(--text); background: rgba(99,102,241,.08); }
-.nav-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
-.nav-right { margin-left: auto; display: flex; align-items: center; padding-right: 16px; gap: 10px; }
-.nav-right select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background-color: #0f1117;
+            color: #e4e4e7;
+            line-height: 1.5;
+        }
 
-/* Layout */
-.container { max-width: 1400px; margin: 0 auto; padding: 24px; }
-.page { display: none; }
-.page.active { display: block; }
-.grid { display: grid; gap: 20px; }
-.grid-2 { grid-template-columns: 1fr 1fr; }
-.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
-.grid-4 { grid-template-columns: repeat(4, 1fr); }
+        /* Auth Screen */
+        .auth-screen {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            background: linear-gradient(135deg, #0f1117 0%, #1a1d27 100%);
+        }
 
-/* Cards */
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
-.card h3 { font-size: 14px; color: var(--muted); font-weight: 500; margin-bottom: 12px; text-transform: uppercase; letter-spacing: .5px; }
-.stat-value { font-size: 32px; font-weight: 700; line-height: 1.1; }
-.stat-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
+        .auth-box {
+            background: #1a1d27;
+            border: 1px solid #2a2d3a;
+            border-radius: 12px;
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
 
-/* KPI colors */
-.green { color: var(--green); }
-.red { color: var(--red); }
-.orange { color: var(--orange); }
-.blue { color: var(--blue); }
+        .auth-title {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-align: center;
+        }
 
-/* Tables */
-.table-wrap { overflow-x: auto; max-height: 500px; overflow-y: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; padding: 10px 12px; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--card); }
-td { padding: 10px 12px; border-bottom: 1px solid var(--border); }
-tr:hover td { background: rgba(99,102,241,.05); }
-tr { cursor: pointer; }
+        .auth-subtitle {
+            color: #8b8fa3;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
 
-/* Chart containers */
-.chart-box { position: relative; height: 300px; }
+        .auth-input {
+            width: 100%;
+            padding: 12px 16px;
+            background: #0f1117;
+            border: 1px solid #2a2d3a;
+            border-radius: 8px;
+            color: #e4e4e7;
+            font-size: 16px;
+            margin-bottom: 20px;
+            transition: border-color 0.2s;
+        }
 
-/* Loading */
-.loading { display: flex; align-items: center; justify-content: center; height: 200px; color: var(--muted); }
-.spinner { width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin-right: 10px; }
-@keyframes spin { to { transform: rotate(360deg); } }
+        .auth-input:focus {
+            outline: none;
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
 
-/* Modal */
-.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 200; align-items: center; justify-content: center; }
-.modal-overlay.show { display: flex; }
-.modal { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 24px; width: 90%; max-width: 900px; max-height: 85vh; overflow-y: auto; }
-.modal h2 { font-size: 18px; margin-bottom: 16px; }
-.modal-close { float: right; background: none; border: none; color: var(--muted); font-size: 24px; cursor: pointer; }
+        .auth-button {
+            width: 100%;
+            padding: 12px 16px;
+            background: #6366f1;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
 
-/* Bar */
-.bar-bg { background: var(--border); border-radius: 4px; height: 8px; flex: 1; }
-.bar-fill { height: 100%; border-radius: 4px; transition: width .5s; }
-.bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; font-size: 13px; }
-.bar-label { width: 80px; color: var(--muted); text-align: right; }
-.bar-value { width: 60px; font-weight: 600; }
+        .auth-button:hover {
+            background: #4f46e5;
+        }
 
-/* Auth screen */
-.auth { display: flex; align-items: center; justify-content: center; height: 100vh; }
-.auth-box { background: var(--card); padding: 40px; border-radius: 16px; border: 1px solid var(--border); text-align: center; }
-.auth-box h1 { margin-bottom: 20px; font-size: 24px; }
-.auth-box input { padding: 12px 16px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 8px; font-size: 16px; width: 260px; }
-.auth-box button { margin-top: 12px; padding: 12px 32px; background: var(--accent); color: white; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; }
-.auth-box button:hover { opacity: .9; }
+        .auth-error {
+            color: #ef4444;
+            font-size: 14px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
 
-@media (max-width: 900px) {
-  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
-  .nav-btn { padding: 10px 14px; font-size: 12px; }
-}
-</style>
+        /* Dashboard */
+        .dashboard {
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Navigation */
+        .nav {
+            width: 250px;
+            background: #1a1d27;
+            border-right: 1px solid #2a2d3a;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .nav-header {
+            padding: 20px;
+            border-bottom: 1px solid #2a2d3a;
+            font-weight: 700;
+            font-size: 18px;
+        }
+
+        .nav-tabs {
+            flex: 1;
+            padding: 0;
+            overflow-y: auto;
+        }
+
+        .nav-tab {
+            padding: 16px 20px;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+            transition: all 0.2s;
+            color: #8b8fa3;
+            font-size: 14px;
+        }
+
+        .nav-tab:hover {
+            background: rgba(99, 102, 241, 0.1);
+            color: #e4e4e7;
+        }
+
+        .nav-tab.active {
+            border-left-color: #6366f1;
+            background: rgba(99, 102, 241, 0.1);
+            color: #6366f1;
+        }
+
+        .nav-footer {
+            padding: 20px;
+            border-top: 1px solid #2a2d3a;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .currency-toggle {
+            display: flex;
+            background: #0f1117;
+            border: 1px solid #2a2d3a;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        .currency-btn {
+            flex: 1;
+            padding: 8px 12px;
+            background: transparent;
+            border: none;
+            color: #8b8fa3;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .currency-btn.active {
+            background: #6366f1;
+            color: white;
+        }
+
+        .logout-btn {
+            flex: 0 0 auto;
+            padding: 8px 12px;
+            background: #ef4444;
+            border: none;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        .logout-btn:hover {
+            background: #dc2626;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .content-header {
+            padding: 20px 30px;
+            border-bottom: 1px solid #2a2d3a;
+            background: #1a1d27;
+        }
+
+        .content-header h1 {
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .content-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 30px;
+        }
+
+        /* KPI Cards */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .kpi-card {
+            background: #1a1d27;
+            border: 1px solid #2a2d3a;
+            border-radius: 10px;
+            padding: 20px;
+            transition: all 0.2s;
+        }
+
+        .kpi-card.clickable {
+            cursor: pointer;
+        }
+
+        .kpi-card.clickable:hover {
+            border-color: #6366f1;
+            background: rgba(99, 102, 241, 0.05);
+        }
+
+        .kpi-card.selected {
+            border-color: #6366f1;
+            background: rgba(99, 102, 241, 0.1);
+        }
+
+        .kpi-label {
+            font-size: 12px;
+            color: #8b8fa3;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .kpi-value {
+            font-size: 32px;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 8px;
+        }
+
+        .kpi-change {
+            font-size: 12px;
+            color: #22c55e;
+        }
+
+        .kpi-change.negative {
+            color: #ef4444;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-right: 8px;
+        }
+
+        .badge-growing {
+            background: rgba(34, 197, 94, 0.15);
+            color: #22c55e;
+        }
+
+        .badge-declining {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+
+        .badge-stable {
+            background: rgba(107, 114, 128, 0.15);
+            color: #d1d5db;
+        }
+
+        .badge-dormant {
+            background: rgba(107, 114, 128, 0.15);
+            color: #9ca3af;
+        }
+
+        .badge-new {
+            background: rgba(59, 130, 246, 0.15);
+            color: #3b82f6;
+        }
+
+        .badge-small {
+            padding: 3px 8px;
+            font-size: 11px;
+            display: inline-flex;
+            align-items: center;
+        }
+
+        /* Segment Summary */
+        .segment-summary {
+            margin-bottom: 30px;
+        }
+
+        .segment-summary h3 {
+            font-size: 12px;
+            color: #8b8fa3;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .segment-badges {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        /* Charts */
+        .chart-container {
+            background: #1a1d27;
+            border: 1px solid #2a2d3a;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-title {
+            font-size: 14px;
+            font-weight: 700;
+            margin-bottom: 20px;
+            color: #e4e4e7;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            height: 300px;
+            margin-bottom: 10px;
+        }
+
+        .chart-wrapper-400 {
+            height: 400px;
+        }
+
+        .chart-wrapper-250 {
+            height: 250px;
+        }
+
+        .chart-row {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        /* Tables */
+        .table-container {
+            background: #1a1d27;
+            border: 1px solid #2a2d3a;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .table-title {
+            font-size: 14px;
+            font-weight: 700;
+            padding: 20px;
+            color: #e4e4e7;
+            border-bottom: 1px solid #2a2d3a;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        thead {
+            background: #0f1117;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        th {
+            padding: 12px 16px;
+            text-align: left;
+            color: #8b8fa3;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 11px;
+            border-bottom: 1px solid #2a2d3a;
+        }
+
+        td {
+            padding: 12px 16px;
+            border-bottom: 1px solid #2a2d3a;
+        }
+
+        tbody tr:hover {
+            background: rgba(99, 102, 241, 0.05);
+        }
+
+        tbody tr.clickable {
+            cursor: pointer;
+        }
+
+        .table-number {
+            color: #8b8fa3;
+            width: 40px;
+        }
+
+        .table-name {
+            font-weight: 600;
+        }
+
+        .table-producer {
+            color: #8b8fa3;
+            font-size: 12px;
+        }
+
+        .table-category {
+            color: #8b8fa3;
+            font-size: 12px;
+        }
+
+        .table-currency {
+            color: #8b8fa3;
+            font-size: 11px;
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #1a1d27;
+            border: 1px solid #2a2d3a;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 800px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #2a2d3a;
+            padding-bottom: 15px;
+        }
+
+        .modal-title {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: #8b8fa3;
+            font-size: 24px;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .modal-close:hover {
+            color: #e4e4e7;
+        }
+
+        /* Health Bars */
+        .health-bar {
+            margin-bottom: 20px;
+        }
+
+        .health-bar-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .health-bar-label-name {
+            font-weight: 600;
+        }
+
+        .health-bar-label-value {
+            color: #8b8fa3;
+        }
+
+        .health-bar-fill {
+            background: #0f1117;
+            border-radius: 6px;
+            height: 24px;
+            overflow: hidden;
+        }
+
+        .health-bar-inner {
+            height: 100%;
+            background: #22c55e;
+            border-radius: 6px;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 8px;
+            font-size: 11px;
+            font-weight: 600;
+            color: white;
+        }
+
+        /* Utility */
+        .row {
+            display: flex;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .row-item {
+            flex: 1;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .text-center {
+            text-align: center;
+        }
+
+        .mt-20 {
+            margin-top: 20px;
+        }
+
+        .mb-20 {
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-size: 16px;
+            font-weight: 700;
+            margin: 30px 0 20px 0;
+            color: #e4e4e7;
+        }
+
+        .summary-table {
+            background: #0f1117;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+
+        .summary-table-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 8px 0;
+            border-bottom: 1px solid #2a2d3a;
+        }
+
+        .summary-table-row:last-child {
+            border-bottom: none;
+        }
+
+        .summary-table-label {
+            color: #8b8fa3;
+        }
+
+        .summary-table-value {
+            font-weight: 600;
+            text-align: right;
+        }
+
+        /* Scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #1a1d27;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #2a2d3a;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #3a3d4a;
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .chart-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard {
+                flex-direction: column;
+            }
+
+            .nav {
+                width: 100%;
+                height: auto;
+                max-height: 60px;
+                overflow-x: auto;
+                flex-direction: row;
+                border-right: none;
+                border-bottom: 1px solid #2a2d3a;
+            }
+
+            .nav-header {
+                padding: 0 20px;
+                border: none;
+                display: flex;
+                align-items: center;
+                white-space: nowrap;
+                min-width: 150px;
+                border-right: 1px solid #2a2d3a;
+            }
+
+            .nav-tabs {
+                display: flex;
+                overflow-x: auto;
+                flex: 1;
+            }
+
+            .nav-tab {
+                padding: 16px 20px;
+                border-left: none;
+                border-bottom: 3px solid transparent;
+                white-space: nowrap;
+            }
+
+            .nav-tab.active {
+                border-left: none;
+                border-bottom-color: #6366f1;
+            }
+
+            .kpi-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
 </head>
 <body>
-
-<!-- Auth Screen -->
-<div id="auth" class="auth">
-  <div class="auth-box">
-    <h1>Rassvet Dashboard</h1>
-    <p style="color:var(--muted);margin-bottom:20px">Internal analytics</p>
-    <input type="password" id="keyInput" placeholder="Admin key" onkeydown="if(event.key==='Enter')doAuth()">
-    <br>
-    <button onclick="doAuth()">Enter</button>
-  </div>
-</div>
-
-<!-- Dashboard -->
-<div id="dashboard" style="display:none">
-  <nav class="nav">
-    <button class="nav-btn active" onclick="showPage('overview',this)">Business Overview</button>
-    <button class="nav-btn" onclick="showPage('clients',this)">Client Portfolio</button>
-    <button class="nav-btn" onclick="showPage('inventory',this)">Inventory</button>
-    <button class="nav-btn" onclick="showPage('platform',this)">Platform Health</button>
-    <div class="nav-right">
-      <select id="currencySelect" onchange="onCurrencyChange()">
-        <option value="UZS">UZS</option>
-        <option value="USD">USD</option>
-      </select>
-    </div>
-  </nav>
-
-  <div class="container">
-    <!-- Page 1: Business Overview -->
-    <div id="page-overview" class="page active">
-      <div class="grid grid-4" id="overview-kpis"></div>
-      <div class="grid grid-2" style="margin-top:20px">
-        <div class="card"><h3>Revenue Trend (Monthly Shipments)</h3><div class="chart-box"><canvas id="revenueChart"></canvas></div></div>
-        <div class="card"><h3>Collection Rate %</h3><div class="chart-box"><canvas id="collectionChart"></canvas></div></div>
-      </div>
-      <div class="grid grid-2" style="margin-top:20px">
-        <div class="card"><h3>Shipments vs Collections</h3><div class="chart-box"><canvas id="shipVsCollChart"></canvas></div></div>
-        <div class="card"><h3>Receivable Aging</h3><div class="chart-box"><canvas id="agingChart"></canvas></div></div>
-      </div>
+    <!-- Auth Screen -->
+    <div id="authScreen" class="auth-screen">
+        <div class="auth-box">
+            <div class="auth-title">Rassvet</div>
+            <div class="auth-subtitle">Admin Dashboard</div>
+            <div id="authError" class="auth-error"></div>
+            <input
+                id="authKey"
+                type="password"
+                class="auth-input"
+                placeholder="Enter admin key"
+                autocomplete="off"
+            >
+            <button class="auth-button" onclick="authenticate()">Sign In</button>
+        </div>
     </div>
 
-    <!-- Page 2: Client Portfolio -->
-    <div id="page-clients" class="page">
-      <div class="grid grid-3" id="client-kpis"></div>
-      <div class="card" style="margin-top:20px">
-        <h3>Top Clients by Revenue</h3>
-        <div class="table-wrap" id="clientTable"></div>
-      </div>
+    <!-- Dashboard -->
+    <div id="dashboard" class="dashboard hidden">
+        <!-- Navigation -->
+        <div class="nav">
+            <div class="nav-header">Rassvet</div>
+            <div class="nav-tabs">
+                <div class="nav-tab active" data-tab="overview" onclick="switchTab('overview')">Business Overview</div>
+                <div class="nav-tab" data-tab="clients" onclick="switchTab('clients')">Client Portfolio</div>
+                <div class="nav-tab" data-tab="inventory" onclick="switchTab('inventory')">Inventory</div>
+                <div class="nav-tab" data-tab="health" onclick="switchTab('health')">Platform Health</div>
+            </div>
+            <div class="nav-footer">
+                <div class="currency-toggle">
+                    <button class="currency-btn active" data-currency="UZS" onclick="setCurrency('UZS')">UZS</button>
+                    <button class="currency-btn" data-currency="USD" onclick="setCurrency('USD')">USD</button>
+                </div>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="content-header">
+                <h1 id="pageTitle">Business Overview</h1>
+            </div>
+            <div class="content-area">
+                <!-- Business Overview Tab -->
+                <div id="overview-tab" class="tab-content">
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Total Shipments (All Time)</div>
+                            <div class="kpi-value" id="kpi-total-shipments">-</div>
+                            <div class="kpi-change" id="kpi-total-shipments-change"></div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Latest Month Revenue</div>
+                            <div class="kpi-value" id="kpi-latest-revenue">-</div>
+                            <div class="kpi-change" id="kpi-latest-revenue-change"></div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">MoM Growth %</div>
+                            <div class="kpi-value" id="kpi-mom-growth">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Collection Rate %</div>
+                            <div class="kpi-value" id="kpi-collection-rate">-</div>
+                        </div>
+                    </div>
+
+                    <div class="chart-row">
+                        <div class="row-item">
+                            <div class="chart-container">
+                                <div class="chart-title">Revenue Trend</div>
+                                <div class="chart-wrapper">
+                                    <canvas id="revenueChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row-item">
+                            <div class="chart-container">
+                                <div class="chart-title">Collection Rate Trend</div>
+                                <div class="chart-wrapper">
+                                    <canvas id="collectionChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="chart-row">
+                        <div class="row-item">
+                            <div class="chart-container">
+                                <div class="chart-title">Shipments vs Collections</div>
+                                <div class="chart-wrapper">
+                                    <canvas id="shipmentsVsCollectionsChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row-item">
+                            <div class="chart-container">
+                                <div class="chart-title">Receivable Aging</div>
+                                <div class="chart-wrapper-250">
+                                    <canvas id="agingChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Client Portfolio Tab -->
+                <div id="clients-tab" class="tab-content hidden">
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Total Receivable</div>
+                            <div class="kpi-value" id="kpi-total-receivable">-</div>
+                            <div class="kpi-change" id="kpi-total-receivable-currency"></div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Top Clients Shipped</div>
+                            <div class="kpi-value" id="kpi-top-clients-shipped">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Net Balance</div>
+                            <div class="kpi-value" id="kpi-net-balance">-</div>
+                            <div class="kpi-change" id="kpi-net-balance-currency"></div>
+                        </div>
+                    </div>
+
+                    <div class="segment-summary">
+                        <h3>Client Segments</h3>
+                        <div class="segment-badges" id="segmentBadges"></div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-title">Top Clients</div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Client</th>
+                                        <th>Segment</th>
+                                        <th>Total Shipped <span class="table-currency" id="clients-table-currency">(UZS)</span></th>
+                                        <th>Total Paid <span class="table-currency">(UZS)</span></th>
+                                        <th>Pay %</th>
+                                        <th>Balance <span class="table-currency">(UZS)</span></th>
+                                        <th>Months</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="clientsTableBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Inventory Tab -->
+                <div id="inventory-tab" class="tab-content hidden">
+                    <div class="kpi-grid" id="inventoryKpiGrid">
+                        <div class="kpi-card clickable" data-inventory-filter="all">
+                            <div class="kpi-label">Total Products</div>
+                            <div class="kpi-value" id="kpi-total-products">-</div>
+                        </div>
+                        <div class="kpi-card clickable" data-inventory-filter="in_stock">
+                            <div class="kpi-label">In Stock</div>
+                            <div class="kpi-value" id="kpi-in-stock">-</div>
+                        </div>
+                        <div class="kpi-card clickable" data-inventory-filter="low_stock">
+                            <div class="kpi-label">Low Stock</div>
+                            <div class="kpi-value" id="kpi-low-stock">-</div>
+                        </div>
+                        <div class="kpi-card clickable" data-inventory-filter="out_no_data">
+                            <div class="kpi-label">Out/No Data</div>
+                            <div class="kpi-value" id="kpi-out-no-data">-</div>
+                        </div>
+                    </div>
+
+                    <div id="inventoryDetail">
+                        <div class="chart-container">
+                            <div class="chart-title">Stock Distribution</div>
+                            <div class="chart-wrapper-250">
+                                <canvas id="stockDistributionChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-title" id="inventoryDetailTitle">All Products</div>
+                        <div class="table-wrapper">
+                            <table id="inventoryDetailTable">
+                                <thead>
+                                    <tr id="inventoryTableHead">
+                                    </tr>
+                                </thead>
+                                <tbody id="inventoryTableBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="section-title">Top App Orders</div>
+                    <div class="table-container">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Product</th>
+                                        <th>Producer</th>
+                                        <th>Total Qty</th>
+                                        <th>Order Count</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="topOrderedAppBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="section-title">Product Requests (Can't Find)</div>
+                    <div class="table-container">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Request Text</th>
+                                        <th>Count</th>
+                                        <th>Last Requested</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="productRequestsBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="section-title">Suppliers (1C vs App)</div>
+                    <div class="table-container">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Supplier (1C)</th>
+                                        <th>Total Debit</th>
+                                        <th>Total Credit</th>
+                                        <th>App Producer</th>
+                                        <th>Product Count</th>
+                                        <th>In Stock</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="suppliersBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="section-title">Search Demand (Top Clicked)</div>
+                    <div class="table-container">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Product</th>
+                                        <th>Producer</th>
+                                        <th>Stock Qty</th>
+                                        <th>Click Count</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="topClickedBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Platform Health Tab -->
+                <div id="health-tab" class="tab-content hidden">
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Total Registrations</div>
+                            <div class="kpi-value" id="kpi-total-registrations">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Approved Accounts</div>
+                            <div class="kpi-value" id="kpi-approved-accounts">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Active with Orders</div>
+                            <div class="kpi-value" id="kpi-ordered">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Recent Activity (7d)</div>
+                            <div class="kpi-value" id="kpi-recent-activity">-</div>
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <div class="chart-title">Registration Funnel</div>
+                        <div class="chart-wrapper">
+                            <canvas id="funnelChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <div class="chart-title">Order Trend</div>
+                        <div class="chart-wrapper-400">
+                            <canvas id="orderTrendChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <div class="chart-title">Data Quality</div>
+                        <div style="padding: 10px 0;">
+                            <div class="health-bar">
+                                <div class="health-bar-label">
+                                    <span class="health-bar-label-name">Products with Photos</span>
+                                    <span class="health-bar-label-value" id="photo-pct">-</span>
+                                </div>
+                                <div class="health-bar-fill">
+                                    <div class="health-bar-inner" id="photo-bar" style="width: 0%">0%</div>
+                                </div>
+                            </div>
+                            <div class="health-bar">
+                                <div class="health-bar-label">
+                                    <span class="health-bar-label-name">Products with Stock Data</span>
+                                    <span class="health-bar-label-value" id="stock-pct">-</span>
+                                </div>
+                                <div class="health-bar-fill">
+                                    <div class="health-bar-inner" id="stock-bar" style="width: 0%; background: #3b82f6;">0%</div>
+                                </div>
+                            </div>
+                            <div class="health-bar">
+                                <div class="health-bar-label">
+                                    <span class="health-bar-label-name">Products with Price (USD)</span>
+                                    <span class="health-bar-label-value" id="price-usd-pct">-</span>
+                                </div>
+                                <div class="health-bar-fill">
+                                    <div class="health-bar-inner" id="price-usd-bar" style="width: 0%; background: #f59e0b;">0%</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section-title">Search Insights (30 days)</div>
+                    <div class="table-container">
+                        <div class="table-title">Top Searches</div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Query</th>
+                                        <th>Count</th>
+                                        <th>Avg Results</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="topSearchesBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-title">Zero-Result Searches</div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Query</th>
+                                        <th>Count</th>
+                                        <th>Unique Users</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="zeroResultsBody">
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
-    <!-- Page 3: Inventory -->
-    <div id="page-inventory" class="page">
-      <div class="grid grid-4" id="stock-kpis"></div>
-      <div class="grid grid-2" style="margin-top:20px">
-        <div class="card"><h3>Stock Distribution</h3><div class="chart-box"><canvas id="stockChart"></canvas></div></div>
-        <div class="card"><h3>Top Ordered Products (App)</h3><div class="table-wrap" id="orderedTable"></div></div>
-      </div>
-      <div class="grid grid-2" style="margin-top:20px">
-        <div class="card"><h3>Most Clicked Products (Search)</h3><div class="table-wrap" id="clickedTable"></div></div>
-        <div class="card"><h3>Categories</h3><div class="table-wrap" id="categoryTable"></div></div>
-      </div>
+    <!-- Client Detail Modal -->
+    <div id="clientModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title" id="clientModalTitle">Client History</div>
+                <button class="modal-close" onclick="closeClientModal()">×</button>
+            </div>
+            <div class="chart-wrapper-400">
+                <canvas id="clientHistoryChart"></canvas>
+            </div>
+        </div>
     </div>
 
-    <!-- Page 4: Platform Health -->
-    <div id="page-platform" class="page">
-      <div class="grid grid-4" id="platform-kpis"></div>
-      <div class="grid grid-2" style="margin-top:20px">
-        <div class="card"><h3>Registration Funnel</h3><div class="chart-box"><canvas id="funnelChart"></canvas></div></div>
-        <div class="card"><h3>Order Volume Trend</h3><div class="chart-box"><canvas id="orderTrendChart"></canvas></div></div>
-      </div>
-      <div class="grid grid-2" style="margin-top:20px">
-        <div class="card"><h3>Data Quality</h3><div id="dataQuality"></div></div>
-        <div class="card"><h3>Search Insights (30d)</h3><div id="searchInsights"></div></div>
-      </div>
-      <div class="card" style="margin-top:20px">
-        <h3>Top Searches (30d)</h3>
-        <div class="table-wrap" id="searchTable"></div>
-      </div>
-      <div class="card" style="margin-top:20px">
-        <h3>Zero-Result Searches (Unmet Demand)</h3>
-        <div class="table-wrap" id="zeroResultTable"></div>
-      </div>
-    </div>
-  </div>
-</div>
+    <script>
+        // ==================== GLOBALS ====================
+        let CURRENCY = 'UZS';
+        let ADMIN_KEY = '';
+        let charts = {};
 
-<!-- Client Detail Modal -->
-<div class="modal-overlay" id="clientModal">
-  <div class="modal">
-    <button class="modal-close" onclick="closeModal()">&times;</button>
-    <h2 id="modalTitle">Client History</h2>
-    <div class="grid grid-2" id="modalKpis" style="margin-bottom:16px"></div>
-    <div class="chart-box" style="height:350px"><canvas id="modalChart"></canvas></div>
-  </div>
-</div>
-
-<script>
-// ── State ─────────────────────────────────────────────────────
-let ADMIN_KEY = '';
-let CURRENCY = 'UZS';
-const API = '/api/admin';
-const charts = {};
-
-// ── Auth ──────────────────────────────────────────────────────
-function doAuth() {
-  ADMIN_KEY = document.getElementById('keyInput').value.trim();
-  if (!ADMIN_KEY) return;
-  // Quick validation
-  fetch(`${API}/platform-health?admin_key=${ADMIN_KEY}`)
-    .then(r => { if (!r.ok) throw new Error('bad key'); return r.json(); })
-    .then(() => {
-      document.getElementById('auth').style.display = 'none';
-      document.getElementById('dashboard').style.display = 'block';
-      loadAll();
-    })
-    .catch(() => { alert('Invalid admin key'); });
-}
-
-// Check URL param
-(function() {
-  const p = new URLSearchParams(location.search);
-  if (p.get('key')) {
-    document.getElementById('keyInput').value = p.get('key');
-    doAuth();
-  }
-})();
-
-// ── Navigation ────────────────────────────────────────────────
-function showPage(id, btn) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('page-' + id).classList.add('active');
-  if (btn) btn.classList.add('active');
-  // Resize charts for this page
-  setTimeout(() => Object.values(charts).forEach(c => c.resize && c.resize()), 100);
-}
-
-function onCurrencyChange() {
-  CURRENCY = document.getElementById('currencySelect').value;
-  loadOverview();
-  loadClients();
-}
-
-// ── Data Loading ──────────────────────────────────────────────
-async function api(path) {
-  const sep = path.includes('?') ? '&' : '?';
-  const r = await fetch(`${API}${path}${sep}admin_key=${ADMIN_KEY}`);
-  if (!r.ok) throw new Error(`API error: ${r.status}`);
-  return r.json();
-}
-
-function loadAll() {
-  loadOverview();
-  loadClients();
-  loadInventory();
-  loadPlatform();
-}
-
-// ── Helpers ───────────────────────────────────────────────────
-function fmt(n, cur) {
-  if (n === null || n === undefined) return '—';
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-  return n.toLocaleString('en', { maximumFractionDigits: 0 });
-}
-
-function fmtFull(n) {
-  if (n === null || n === undefined) return '—';
-  return n.toLocaleString('en', { maximumFractionDigits: 0 });
-}
-
-function periodLabel(p) {
-  if (!p) return '';
-  const [y, m] = p.split('-');
-  const months = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return months[parseInt(m)] + ' ' + y.slice(2);
-}
-
-function makeChart(id, config) {
-  if (charts[id]) charts[id].destroy();
-  const ctx = document.getElementById(id);
-  if (!ctx) return null;
-  Chart.defaults.color = '#8b8fa3';
-  Chart.defaults.borderColor = '#2a2d3a';
-  charts[id] = new Chart(ctx, config);
-  return charts[id];
-}
-
-function kpiCard(title, value, sub, color) {
-  return `<div class="card"><h3>${title}</h3><div class="stat-value ${color||''}">${value}</div><div class="stat-sub">${sub||''}</div></div>`;
-}
-
-// ── Page 1: Business Overview ─────────────────────────────────
-async function loadOverview() {
-  try {
-    const [rev, col, recv] = await Promise.all([
-      api('/revenue'),
-      api('/collections'),
-      api(`/receivables?currency=${CURRENCY}`),
-    ]);
-
-    const revData = rev.data[CURRENCY] || [];
-    const colData = col.data[CURRENCY] || [];
-
-    // KPIs
-    const latest = revData[revData.length - 1] || {};
-    const prev = revData[revData.length - 2] || {};
-    const totalRev = revData.reduce((s, d) => s + d.shipments, 0);
-    const totalCol = revData.reduce((s, d) => s + d.collections, 0);
-    const growth = prev.shipments ? ((latest.shipments - prev.shipments) / prev.shipments * 100).toFixed(1) : '—';
-    const latestRate = colData.length ? colData[colData.length - 1].collection_rate : 0;
-
-    document.getElementById('overview-kpis').innerHTML =
-      kpiCard('Total Shipments (All Time)', fmt(totalRev), CURRENCY, 'blue') +
-      kpiCard('Latest Month', fmt(latest.shipments), periodLabel(latest.period) + ' | ' + latest.active_clients + ' clients', '') +
-      kpiCard('MoM Growth', (growth !== '—' ? (growth > 0 ? '+' : '') + growth + '%' : '—'), 'vs previous month', growth > 0 ? 'green' : growth < 0 ? 'red' : '') +
-      kpiCard('Collection Rate', latestRate + '%', 'Latest month', latestRate >= 80 ? 'green' : latestRate >= 50 ? 'orange' : 'red');
-
-    // Revenue line chart
-    makeChart('revenueChart', {
-      type: 'line',
-      data: {
-        labels: revData.map(d => periodLabel(d.period)),
-        datasets: [{
-          label: 'Shipments',
-          data: revData.map(d => d.shipments),
-          borderColor: '#6366f1',
-          backgroundColor: 'rgba(99,102,241,.1)',
-          fill: true, tension: .3,
-        }]
-      },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-        scales: { y: { ticks: { callback: v => fmt(v) } } } }
-    });
-
-    // Collection rate chart
-    makeChart('collectionChart', {
-      type: 'line',
-      data: {
-        labels: colData.map(d => periodLabel(d.period)),
-        datasets: [{
-          label: 'Collection Rate %',
-          data: colData.map(d => d.collection_rate),
-          borderColor: '#22c55e',
-          backgroundColor: 'rgba(34,197,94,.1)',
-          fill: true, tension: .3,
-        }]
-      },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
-        scales: { y: { min: 0, max: 150, ticks: { callback: v => v + '%' } } } }
-    });
-
-    // Shipments vs Collections
-    makeChart('shipVsCollChart', {
-      type: 'bar',
-      data: {
-        labels: revData.map(d => periodLabel(d.period)),
-        datasets: [
-          { label: 'Shipped', data: revData.map(d => d.shipments), backgroundColor: 'rgba(99,102,241,.7)' },
-          { label: 'Collected', data: revData.map(d => d.collections), backgroundColor: 'rgba(34,197,94,.7)' },
-        ]
-      },
-      options: { responsive: true, maintainAspectRatio: false,
-        scales: { y: { ticks: { callback: v => fmt(v) } } } }
-    });
-
-    // Aging donut
-    const ag = recv.aging || {};
-    makeChart('agingChart', {
-      type: 'doughnut',
-      data: {
-        labels: ['Current (0-30d)', '30-60 days', '60-90 days', '90+ days'],
-        datasets: [{
-          data: [ag.current || 0, ag['30_60'] || 0, ag['60_90'] || 0, ag['90_plus'] || 0],
-          backgroundColor: ['#22c55e', '#f59e0b', '#ef4444', '#7c3aed'],
-        }]
-      },
-      options: { responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { position: 'bottom' },
-          tooltip: { callbacks: { label: ctx => ctx.label + ': ' + fmtFull(ctx.raw) + ' ' + CURRENCY } } } }
-    });
-
-  } catch (e) { console.error('Overview load error:', e); }
-}
-
-// ── Page 2: Client Portfolio ──────────────────────────────────
-async function loadClients() {
-  try {
-    const [tc, recv] = await Promise.all([
-      api(`/top-clients?currency=${CURRENCY}&limit=50`),
-      api(`/receivables?currency=${CURRENCY}`),
-    ]);
-
-    const clients = tc.clients || [];
-    const totalShipped = clients.reduce((s, c) => s + c.total_shipped, 0);
-    const totalBalance = clients.reduce((s, c) => s + c.balance, 0);
-
-    document.getElementById('client-kpis').innerHTML =
-      kpiCard('Total Receivable', fmtFull(Math.round(recv.total_receivable)), CURRENCY + ' | ' + recv.total_clients_with_debt + ' clients', 'red') +
-      kpiCard('Top 50 Shipped', fmt(totalShipped), CURRENCY + ' all time', 'blue') +
-      kpiCard('Top 50 Net Balance', fmt(totalBalance), 'Positive = owed to us', totalBalance > 0 ? 'orange' : 'green');
-
-    // Table
-    let html = '<table><thead><tr><th>#</th><th>Client</th><th>Total Shipped</th><th>Total Paid</th><th>Balance</th><th>Months</th></tr></thead><tbody>';
-    clients.forEach((c, i) => {
-      const balColor = c.balance > 0 ? 'red' : c.balance < 0 ? 'green' : '';
-      html += `<tr onclick="showClientDetail('${c.name.replace(/'/g, "\\'")}')">
-        <td>${i + 1}</td>
-        <td>${c.name}</td>
-        <td>${fmtFull(Math.round(c.total_shipped))}</td>
-        <td>${fmtFull(Math.round(c.total_paid))}</td>
-        <td class="${balColor}">${fmtFull(Math.round(c.balance))}</td>
-        <td>${c.months_active}</td>
-      </tr>`;
-    });
-    html += '</tbody></table>';
-    document.getElementById('clientTable').innerHTML = html;
-
-  } catch (e) { console.error('Clients load error:', e); }
-}
-
-// ── Client Detail Modal ───────────────────────────────────────
-async function showClientDetail(name) {
-  document.getElementById('modalTitle').textContent = name;
-  document.getElementById('clientModal').classList.add('show');
-  document.getElementById('modalKpis').innerHTML = '<div class="loading"><div class="spinner"></div>Loading...</div>';
-
-  try {
-    const data = await api(`/client/${encodeURIComponent(name)}/history`);
-    const hist = data.history[CURRENCY] || [];
-
-    if (!hist.length) {
-      document.getElementById('modalKpis').innerHTML = '<p style="color:var(--muted)">No data for this currency</p>';
-      return;
-    }
-
-    const totalShip = hist.reduce((s, h) => s + h.period_debit, 0);
-    const totalPay = hist.reduce((s, h) => s + h.period_credit, 0);
-    const latestBal = hist[hist.length - 1].balance;
-
-    document.getElementById('modalKpis').innerHTML =
-      kpiCard('Total Shipped', fmt(totalShip), CURRENCY) +
-      kpiCard('Total Paid', fmt(totalPay), CURRENCY) +
-      kpiCard('Current Balance', fmt(latestBal), latestBal > 0 ? 'Owes us' : 'Overpaid', latestBal > 0 ? 'red' : 'green') +
-      kpiCard('Months', hist.length + '', 'of data');
-
-    makeChart('modalChart', {
-      type: 'bar',
-      data: {
-        labels: hist.map(h => periodLabel(h.period)),
-        datasets: [
-          { label: 'Shipped', data: hist.map(h => h.period_debit), backgroundColor: 'rgba(99,102,241,.7)' },
-          { label: 'Paid', data: hist.map(h => h.period_credit), backgroundColor: 'rgba(34,197,94,.7)' },
-          { type: 'line', label: 'Balance', data: hist.map(h => h.balance), borderColor: '#ef4444', backgroundColor: 'transparent', yAxisID: 'y1', tension: .3 },
-        ]
-      },
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        scales: {
-          y: { position: 'left', ticks: { callback: v => fmt(v) } },
-          y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { callback: v => fmt(v) } },
+        // ==================== HELPERS ====================
+        function fmt(n) {
+            if (!n) return '0';
+            if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+            return Math.round(n).toString();
         }
-      }
-    });
 
-  } catch (e) { console.error('Client detail error:', e); }
-}
+        function fmtFull(n) {
+            if (!n) return '0';
+            return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        }
 
-function closeModal() { document.getElementById('clientModal').classList.remove('show'); }
-document.getElementById('clientModal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+        function periodLabel(p) {
+            if (!p) return '-';
+            const date = new Date(p + 'T00:00:00Z');
+            const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            return months[date.getUTCMonth()] + ' ' + date.getUTCFullYear().toString().slice(2);
+        }
 
-// ── Page 3: Inventory ─────────────────────────────────────────
-async function loadInventory() {
-  try {
-    const data = await api('/stock-status');
-    const s = data.stock_summary;
+        function getCurrencyLabel() {
+            return CURRENCY === 'UZS' ? 'UZS' : 'USD';
+        }
 
-    document.getElementById('stock-kpis').innerHTML =
-      kpiCard('Total Products', s.total, 'Active in catalog') +
-      kpiCard('In Stock', s.in_stock, '> 10 units', 'green') +
-      kpiCard('Low Stock', s.low_stock, '1-10 units', 'orange') +
-      kpiCard('Out / No Data', (s.out_of_stock + s.no_data), s.out_of_stock + ' out + ' + s.no_data + ' unknown', 'red');
+        // ==================== AUTH ====================
+        function authenticate() {
+            const key = document.getElementById('authKey').value.trim();
+            if (!key) {
+                showAuthError('Please enter an admin key');
+                return;
+            }
+            ADMIN_KEY = key;
+            document.getElementById('authScreen').classList.add('hidden');
+            document.getElementById('dashboard').classList.remove('hidden');
+            loadAllData();
+        }
 
-    // Stock distribution pie
-    makeChart('stockChart', {
-      type: 'doughnut',
-      data: {
-        labels: ['In Stock (>10)', 'Low (1-10)', 'Out of Stock', 'No Data'],
-        datasets: [{
-          data: [s.in_stock, s.low_stock, s.out_of_stock, s.no_data],
-          backgroundColor: ['#22c55e', '#f59e0b', '#ef4444', '#6b7280'],
-        }]
-      },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
-    });
+        function showAuthError(msg) {
+            document.getElementById('authError').textContent = msg;
+            setTimeout(() => {
+                document.getElementById('authError').textContent = '';
+            }, 5000);
+        }
 
-    // Top ordered table
-    let html = '<table><thead><tr><th>#</th><th>Product</th><th>Producer</th><th>Qty Ordered</th><th>Orders</th></tr></thead><tbody>';
-    (data.top_ordered || []).forEach((p, i) => {
-      html += `<tr><td>${i+1}</td><td>${p.product_name}</td><td>${p.producer_name||''}</td><td>${p.total_qty}</td><td>${p.order_count}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    document.getElementById('orderedTable').innerHTML = html;
+        function logout() {
+            ADMIN_KEY = '';
+            document.getElementById('dashboard').classList.add('hidden');
+            document.getElementById('authScreen').classList.remove('hidden');
+            document.getElementById('authKey').value = '';
+            document.getElementById('authError').textContent = '';
+        }
 
-    // Top clicked table
-    html = '<table><thead><tr><th>#</th><th>Product</th><th>Producer</th><th>Stock</th><th>Clicks (30d)</th></tr></thead><tbody>';
-    (data.top_clicked || []).forEach((p, i) => {
-      const stockLabel = p.stock_quantity === null ? '?' : p.stock_quantity;
-      const stockClass = p.stock_quantity === null ? '' : p.stock_quantity <= 0 ? 'red' : p.stock_quantity <= 10 ? 'orange' : 'green';
-      html += `<tr><td>${i+1}</td><td>${p.name||''}</td><td>${p.producer||''}</td><td class="${stockClass}">${stockLabel}</td><td>${p.click_count}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    document.getElementById('clickedTable').innerHTML = html;
+        // Check URL params
+        window.addEventListener('load', () => {
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('key')) {
+                document.getElementById('authKey').value = params.get('key');
+                authenticate();
+            }
+        });
 
-    // Category table
-    html = '<table><thead><tr><th>Category</th><th>Products</th><th>In Stock</th><th>With Photo</th></tr></thead><tbody>';
-    (data.categories || []).slice(0, 30).forEach(c => {
-      html += `<tr><td>${c.category}</td><td>${c.product_count}</td><td>${c.in_stock_count}</td><td>${c.with_photo}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    document.getElementById('categoryTable').innerHTML = html;
+        // ==================== API ====================
+        async function apiCall(endpoint) {
+            const url = `/api/admin/${endpoint}?admin_key=${encodeURIComponent(ADMIN_KEY)}`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`API error: ${res.status}`);
+            return res.json();
+        }
 
-  } catch (e) { console.error('Inventory load error:', e); }
-}
+        // ==================== TAB SWITCHING ====================
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(tabName + '-tab').classList.remove('hidden');
 
-// ── Page 4: Platform Health ───────────────────────────────────
-async function loadPlatform() {
-  try {
-    const [health, search] = await Promise.all([
-      api('/platform-health'),
-      api('/search-insights?days=30'),
-    ]);
+            document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
+            document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
 
-    const f = health.registration_funnel;
-    const ra = health.recent_activity;
+            const titles = {
+                overview: 'Business Overview',
+                clients: 'Client Portfolio',
+                inventory: 'Inventory',
+                health: 'Platform Health'
+            };
+            document.getElementById('pageTitle').textContent = titles[tabName];
 
-    document.getElementById('platform-kpis').innerHTML =
-      kpiCard('Registered Users', f.registered, f.approved + ' approved', 'blue') +
-      kpiCard('Users Ordered', f.ordered, f.repeat + ' repeat buyers', 'green') +
-      kpiCard('Orders (7d)', ra.orders_7d, 'Last week') +
-      kpiCard('Searches (7d)', ra.searches_7d, 'Last week');
+            // Trigger chart resize
+            setTimeout(() => {
+                Object.values(charts).forEach(c => {
+                    if (c && c.resize) c.resize();
+                });
+            }, 100);
+        }
 
-    // Funnel chart
-    makeChart('funnelChart', {
-      type: 'bar',
-      data: {
-        labels: ['Whitelist', 'Registered', 'Approved', 'Ordered', 'Repeat'],
-        datasets: [{
-          data: [f.whitelist, f.registered, f.approved, f.ordered, f.repeat],
-          backgroundColor: ['#6b7280', '#3b82f6', '#6366f1', '#22c55e', '#10b981'],
-        }]
-      },
-      options: { responsive: true, maintainAspectRatio: false, indexAxis: 'y',
-        plugins: { legend: { display: false } },
-        scales: { x: { beginAtZero: true } } }
-    });
+        // ==================== CURRENCY ====================
+        function setCurrency(curr) {
+            CURRENCY = curr;
+            document.querySelectorAll('.currency-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelector(`[data-currency="${curr}"]`).classList.add('active');
+            loadAllData();
+        }
 
-    // Order trend
-    const ot = health.order_trend || [];
-    makeChart('orderTrendChart', {
-      type: 'bar',
-      data: {
-        labels: ot.map(o => o.month),
-        datasets: [
-          { label: 'Orders', data: ot.map(o => o.order_count), backgroundColor: 'rgba(99,102,241,.7)' },
-          { type: 'line', label: 'Unique Buyers', data: ot.map(o => o.unique_buyers), borderColor: '#22c55e', backgroundColor: 'transparent', yAxisID: 'y1', tension: .3 },
-        ]
-      },
-      options: { responsive: true, maintainAspectRatio: false,
-        scales: {
-          y: { position: 'left', beginAtZero: true },
-          y1: { position: 'right', grid: { drawOnChartArea: false }, beginAtZero: true },
-        } }
-    });
+        // ==================== DATA LOADING ====================
+        async function loadAllData() {
+            try {
+                await Promise.all([
+                    loadOverviewData(),
+                    loadClientsData(),
+                    loadInventoryData(),
+                    loadHealthData()
+                ]);
+            } catch (err) {
+                console.error('Data load error:', err);
+                showAuthError('Failed to load data. Check your key.');
+            }
+        }
 
-    // Data quality bars
-    const dq = health.data_quality;
-    document.getElementById('dataQuality').innerHTML = `
-      ${qualBar('Photos', dq.with_photos, dq.total_products, '#6366f1')}
-      ${qualBar('Stock Data', dq.with_stock_data, dq.total_products, '#22c55e')}
-      ${qualBar('Price (USD)', dq.with_price_usd, dq.total_products, '#3b82f6')}
-      ${qualBar('Price (UZS)', dq.with_price_uzs, dq.total_products, '#f59e0b')}
-      ${qualBar('Client 1C IDs', health.client_data.with_1c_id, health.client_data.total_whitelist, '#ef4444')}
-      ${qualBar('Client Telegram', health.client_data.with_telegram, health.client_data.total_whitelist, '#10b981')}
-    `;
+        // ==================== BUSINESS OVERVIEW ====================
+        async function loadOverviewData() {
+            const revenue = await apiCall('revenue');
+            const collections = await apiCall('collections');
+            const receivables = await apiCall('receivables');
 
-    // Search insights summary
-    const si = search.overview;
-    document.getElementById('searchInsights').innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-        <div><div style="font-size:24px;font-weight:700">${si.total_searches}</div><div style="color:var(--muted);font-size:12px">Total Searches (30d)</div></div>
-        <div><div style="font-size:24px;font-weight:700">${si.unique_users}</div><div style="color:var(--muted);font-size:12px">Unique Users</div></div>
-        <div><div style="font-size:24px;font-weight:700;color:var(--red)">${si.zero_result_count}</div><div style="color:var(--muted);font-size:12px">Zero Results (${si.zero_result_pct}%)</div></div>
-      </div>
-    `;
+            const revData = revenue.data[CURRENCY];
+            const collData = collections.data[CURRENCY];
 
-    // Search tables
-    let html = '<table><thead><tr><th>#</th><th>Query</th><th>Count</th><th>Avg Results</th></tr></thead><tbody>';
-    (search.top_queries || []).forEach((q, i) => {
-      const cls = q.avg_results == 0 ? 'red' : '';
-      html += `<tr><td>${i+1}</td><td>${q.query}</td><td>${q.count}</td><td class="${cls}">${q.avg_results}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    document.getElementById('searchTable').innerHTML = html;
+            if (!revData || !revData.length) return;
 
-    html = '<table><thead><tr><th>#</th><th>Query</th><th>Searches</th><th>Users</th></tr></thead><tbody>';
-    (search.zero_results || []).forEach((q, i) => {
-      html += `<tr><td>${i+1}</td><td style="color:var(--red)">${q.query}</td><td>${q.count}</td><td>${q.unique_users}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    document.getElementById('zeroResultTable').innerHTML = html;
+            // KPIs
+            const totalShipments = revData.reduce((a, b) => a + (b.shipments || 0), 0);
+            const latestRev = revData[revData.length - 1].shipments || 0;
+            const prevRev = revData.length > 1 ? revData[revData.length - 2].shipments || 0 : latestRev;
+            const momGrowth = prevRev ? ((latestRev - prevRev) / prevRev * 100).toFixed(1) : 0;
+            const latestCollRate = collData[collData.length - 1]?.collection_rate || 0;
 
-  } catch (e) { console.error('Platform load error:', e); }
-}
+            document.getElementById('kpi-total-shipments').textContent = fmt(totalShipments);
+            document.getElementById('kpi-latest-revenue').textContent = fmt(latestRev) + ' ' + getCurrencyLabel();
+            document.getElementById('kpi-mom-growth').textContent = momGrowth + '%';
+            document.getElementById('kpi-collection-rate').textContent = latestCollRate.toFixed(1) + '%';
 
-function qualBar(label, val, total, color) {
-  const pct = total ? Math.round(val / total * 100) : 0;
-  return `<div class="bar-row">
-    <div class="bar-label">${label}</div>
-    <div class="bar-bg"><div class="bar-fill" style="width:${pct}%;background:${color}"></div></div>
-    <div class="bar-value">${pct}%</div>
-    <span style="color:var(--muted);font-size:12px">${val}/${total}</span>
-  </div>`;
-}
-</script>
+            // Charts
+            const labels = revData.map(p => periodLabel(p.period));
+            const shipmentValues = revData.map(p => p.shipments || 0);
+            const collectionValues = revData.map(p => p.collections || 0);
+            const collRateValues = collData.map(p => p.collection_rate || 0);
+
+            drawRevenueChart(labels, shipmentValues, revData);
+            drawCollectionChart(labels, collRateValues);
+            drawShipmentsVsCollectionsChart(labels, shipmentValues, collectionValues);
+            drawAgingChart(receivables.data.aging);
+        }
+
+        function drawRevenueChart(labels, values, revData) {
+            const ctx = document.getElementById('revenueChart').getContext('2d');
+            if (charts.revenue) charts.revenue.destroy();
+
+            charts.revenue = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Revenue (' + getCurrencyLabel() + ')',
+                        data: values,
+                        borderColor: '#6366f1',
+                        backgroundColor: 'rgba(99, 102, 241, 0.05)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointBackgroundColor: '#6366f1',
+                        pointBorderColor: '#1a1d27',
+                        pointBorderWidth: 2,
+                        pointRadius: 4,
+                        pointHoverRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false }
+                    },
+                    scales: {
+                        y: {
+                            grid: { color: '#2a2d3a' },
+                            ticks: { color: '#8b8fa3', callback: v => fmt(v) }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#8b8fa3' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function drawCollectionChart(labels, values) {
+            const ctx = document.getElementById('collectionChart').getContext('2d');
+            if (charts.collection) charts.collection.destroy();
+
+            charts.collection = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Collection Rate %',
+                        data: values,
+                        borderColor: '#22c55e',
+                        backgroundColor: 'rgba(34, 197, 94, 0.05)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.3,
+                        pointBackgroundColor: '#22c55e',
+                        pointBorderColor: '#1a1d27',
+                        pointBorderWidth: 2,
+                        pointRadius: 4,
+                        pointHoverRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: {
+                            min: 0,
+                            max: 100,
+                            grid: { color: '#2a2d3a' },
+                            ticks: { color: '#8b8fa3' }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#8b8fa3' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function drawShipmentsVsCollectionsChart(labels, shipments, collections) {
+            const ctx = document.getElementById('shipmentsVsCollectionsChart').getContext('2d');
+            if (charts.shipmentsVsCollections) charts.shipmentsVsCollections.destroy();
+
+            charts.shipmentsVsCollections = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Shipments (' + getCurrencyLabel() + ')',
+                            data: shipments,
+                            backgroundColor: '#6366f1',
+                            borderRadius: 4
+                        },
+                        {
+                            label: 'Collections (' + getCurrencyLabel() + ')',
+                            data: collections,
+                            backgroundColor: '#22c55e',
+                            borderRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#8b8fa3' } } },
+                    scales: {
+                        y: {
+                            grid: { color: '#2a2d3a' },
+                            ticks: { color: '#8b8fa3', callback: v => fmt(v) }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#8b8fa3' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function drawAgingChart(aging) {
+            const ctx = document.getElementById('agingChart').getContext('2d');
+            if (charts.aging) charts.aging.destroy();
+
+            const agingLabels = ['Current', '30-60 Days', '60-90 Days', '90+ Days'];
+            const agingValues = [aging.current || 0, aging['30_60'] || 0, aging['60_90'] || 0, aging['90_plus'] || 0];
+            const colors = ['#22c55e', '#f59e0b', '#ef7f1e', '#ef4444'];
+
+            charts.aging = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: agingLabels,
+                    datasets: [{
+                        data: agingValues,
+                        backgroundColor: colors,
+                        borderColor: '#1a1d27',
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: { color: '#8b8fa3', padding: 20 }
+                        }
+                    }
+                }
+            });
+        }
+
+        // ==================== CLIENT PORTFOLIO ====================
+        async function loadClientsData() {
+            const clients = await apiCall(`top-clients?currency=${CURRENCY}&limit=50`);
+            const receivables = await apiCall('receivables');
+
+            // KPIs
+            const totalReceivable = receivables.total_receivable || 0;
+            const totalClients = clients.clients.length;
+            const topShipped = clients.clients.length > 0 ? clients.clients[0].total_shipped || 0 : 0;
+            const netBalance = clients.clients.reduce((a, c) => a + (c.balance || 0), 0);
+
+            document.getElementById('kpi-total-receivable').textContent = fmt(totalReceivable);
+            document.getElementById('kpi-total-receivable-currency').textContent = getCurrencyLabel();
+            document.getElementById('kpi-top-clients-shipped').textContent = fmt(topShipped);
+            document.getElementById('kpi-net-balance').textContent = fmt(netBalance);
+            document.getElementById('kpi-net-balance-currency').textContent = getCurrencyLabel();
+
+            // Segments
+            const segments = { growing: 0, declining: 0, stable: 0, dormant: 0, new: 0 };
+            clients.clients.forEach(c => {
+                if (c.segment) segments[c.segment.toLowerCase()] = (segments[c.segment.toLowerCase()] || 0) + 1;
+            });
+
+            const segmentBadgesHtml = Object.entries(segments)
+                .filter(([_, count]) => count > 0)
+                .map(([seg, count]) => {
+                    const colors = { growing: 'badge-growing', declining: 'badge-declining', stable: 'badge-stable', dormant: 'badge-dormant', new: 'badge-new' };
+                    return `<span class="badge badge-small ${colors[seg]}">${seg.charAt(0).toUpperCase() + seg.slice(1)}: ${count}</span>`;
+                })
+                .join('');
+            document.getElementById('segmentBadges').innerHTML = segmentBadgesHtml;
+
+            // Table
+            const tbody = document.getElementById('clientsTableBody');
+            tbody.innerHTML = clients.clients.map((c, i) => {
+                const segColor = {
+                    'Growing': 'badge-growing',
+                    'Declining': 'badge-declining',
+                    'Stable': 'badge-stable',
+                    'Dormant': 'badge-dormant',
+                    'New': 'badge-new'
+                }[c.segment] || 'badge-stable';
+
+                return `
+                    <tr class="clickable" onclick="showClientHistory('${c.name.replace(/'/g, "\\'")}')">
+                        <td class="table-number">${i + 1}</td>
+                        <td class="table-name">${c.name}</td>
+                        <td><span class="badge badge-small ${segColor}">${c.segment || 'Unknown'}</span></td>
+                        <td>${fmt(c.total_shipped)} ${getCurrencyLabel()}</td>
+                        <td>${fmt(c.total_paid)} ${getCurrencyLabel()}</td>
+                        <td>${c.pay_pct ? c.pay_pct.toFixed(1) : 0}%</td>
+                        <td>${fmt(c.balance)} ${getCurrencyLabel()}</td>
+                        <td>${c.months_active || 0}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            document.getElementById('clients-table-currency').textContent = `(${getCurrencyLabel()})`;
+        }
+
+        async function showClientHistory(clientName) {
+            const data = await apiCall(`client/${encodeURIComponent(clientName)}/history`);
+            const histData = data.history[CURRENCY];
+
+            if (!histData || !histData.length) return;
+
+            const labels = histData.map(p => periodLabel(p.period));
+            const debits = histData.map(p => p.period_debit || 0);
+            const credits = histData.map(p => p.period_credit || 0);
+            const balances = histData.map(p => p.balance || 0);
+
+            const ctx = document.getElementById('clientHistoryChart');
+            if (charts.clientHistory) charts.clientHistory.destroy();
+
+            charts.clientHistory = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Shipped',
+                            data: debits,
+                            backgroundColor: '#6366f1',
+                            borderRadius: 4,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Paid',
+                            data: credits,
+                            backgroundColor: '#22c55e',
+                            borderRadius: 4,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Balance',
+                            data: balances,
+                            borderColor: '#f59e0b',
+                            backgroundColor: 'rgba(245, 158, 11, 0.05)',
+                            type: 'line',
+                            borderWidth: 2,
+                            fill: false,
+                            tension: 0.3,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: { legend: { labels: { color: '#8b8fa3' } } },
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            position: 'left',
+                            grid: { color: '#2a2d3a' },
+                            ticks: { color: '#8b8fa3', callback: v => fmt(v) }
+                        },
+                        y1: {
+                            type: 'linear',
+                            position: 'right',
+                            grid: { display: false },
+                            ticks: { color: '#f59e0b', callback: v => fmt(v) }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#8b8fa3' }
+                        }
+                    }
+                }
+            });
+
+            document.getElementById('clientModalTitle').textContent = `Client History: ${clientName}`;
+            document.getElementById('clientModal').classList.add('show');
+        }
+
+        function closeClientModal() {
+            document.getElementById('clientModal').classList.remove('show');
+        }
+
+        // ==================== INVENTORY ====================
+        let inventoryData = {};
+        let inventoryFilterMode = 'all';
+
+        async function loadInventoryData() {
+            const stock = await apiCall('stock-status');
+            inventoryData = stock;
+
+            const summary = stock.stock_summary;
+            document.getElementById('kpi-total-products').textContent = fmt(summary.total || 0);
+            document.getElementById('kpi-in-stock').textContent = fmt(summary.in_stock || 0);
+            document.getElementById('kpi-low-stock').textContent = fmt(summary.low_stock || 0);
+            document.getElementById('kpi-out-no-data').textContent = fmt((summary.out_of_stock || 0) + (summary.no_data || 0));
+
+            // Stock distribution chart
+            drawStockDistributionChart(summary);
+
+            // Setup KPI click handlers
+            document.querySelectorAll('[data-inventory-filter]').forEach(card => {
+                card.addEventListener('click', function() {
+                    const filter = this.dataset.inventoryFilter;
+                    inventoryFilterMode = filter;
+                    updateInventoryDetail();
+
+                    document.querySelectorAll('[data-inventory-filter]').forEach(c => c.classList.remove('selected'));
+                    this.classList.add('selected');
+                });
+            });
+
+            updateInventoryDetail();
+
+            // Populate other sections
+            populateTopOrderedApp();
+            populateProductRequests();
+            populateSuppliers();
+            populateTopClicked();
+        }
+
+        function drawStockDistributionChart(summary) {
+            const ctx = document.getElementById('stockDistributionChart').getContext('2d');
+            if (charts.stockDistribution) charts.stockDistribution.destroy();
+
+            const items = [
+                { label: 'In Stock', value: summary.in_stock || 0, color: '#22c55e' },
+                { label: 'Low Stock', value: summary.low_stock || 0, color: '#f59e0b' },
+                { label: 'Out of Stock', value: summary.out_of_stock || 0, color: '#ef4444' },
+                { label: 'No Data', value: summary.no_data || 0, color: '#8b8fa3' },
+                { label: 'With Photos', value: summary.with_photos || 0, color: '#3b82f6' }
+            ];
+
+            const total = summary.total || 1;
+            const labels = items.map(i => i.label);
+            const values = items.map(i => i.value);
+            const colors = items.map(i => i.color);
+            const percentages = items.map(i => ((i.value / total) * 100).toFixed(1));
+
+            const displayLabels = labels.map((l, i) => `${l}: ${values[i]} (${percentages[i]}%)`);
+
+            charts.stockDistribution = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: displayLabels,
+                    datasets: [{
+                        data: values,
+                        backgroundColor: colors,
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            grid: { color: '#2a2d3a' },
+                            ticks: { color: '#8b8fa3' }
+                        },
+                        y: {
+                            ticks: { color: '#8b8fa3' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateInventoryDetail() {
+            let items = [];
+            let title = 'All Products';
+
+            if (inventoryFilterMode === 'all') {
+                items = (inventoryData.low_stock_items || []).concat(inventoryData.out_of_stock_items || []).concat(inventoryData.no_data_items || []);
+                title = 'All Products';
+            } else if (inventoryFilterMode === 'in_stock') {
+                items = [];
+                title = 'In Stock Products';
+            } else if (inventoryFilterMode === 'low_stock') {
+                items = inventoryData.low_stock_items || [];
+                title = 'Low Stock Products';
+            } else if (inventoryFilterMode === 'out_no_data') {
+                items = (inventoryData.out_of_stock_items || []).concat(inventoryData.no_data_items || []);
+                title = 'Out of Stock & No Data Products';
+            }
+
+            document.getElementById('inventoryDetailTitle').textContent = title;
+
+            const thead = document.getElementById('inventoryTableHead');
+            const tbody = document.getElementById('inventoryTableBody');
+
+            if (items.length === 0) {
+                thead.innerHTML = '<tr><th colspan="6" style="text-align: center; color: #8b8fa3; padding: 20px;">No items to display</th></tr>';
+                tbody.innerHTML = '';
+                return;
+            }
+
+            thead.innerHTML = `
+                <tr>
+                    <th class="table-number">#</th>
+                    <th>Name (1C)</th>
+                    <th>Producer</th>
+                    <th>Category</th>
+                    <th>Qty</th>
+                    <th>Price (${getCurrencyLabel()})</th>
+                </tr>
+            `;
+
+            tbody.innerHTML = items.map((item, i) => `
+                <tr>
+                    <td class="table-number">${i + 1}</td>
+                    <td class="table-name">${item.name_1c || item.display_name || '-'}</td>
+                    <td class="table-producer">${item.producer || '-'}</td>
+                    <td class="table-category">${item.category || '-'}</td>
+                    <td>${item.stock_quantity !== undefined ? item.stock_quantity : '-'}</td>
+                    <td>-</td>
+                </tr>
+            `).join('');
+        }
+
+        function populateTopOrderedApp() {
+            const items = inventoryData.top_ordered_app || [];
+            const tbody = document.getElementById('topOrderedAppBody');
+            tbody.innerHTML = items.slice(0, 20).map((item, i) => `
+                <tr>
+                    <td class="table-number">${i + 1}</td>
+                    <td class="table-name">${item.product_name || '-'}</td>
+                    <td class="table-producer">${item.producer_name || '-'}</td>
+                    <td>${item.total_qty || 0}</td>
+                    <td>${item.order_count || 0}</td>
+                </tr>
+            `).join('');
+        }
+
+        function populateProductRequests() {
+            const items = inventoryData.product_requests || [];
+            const tbody = document.getElementById('productRequestsBody');
+            tbody.innerHTML = items.slice(0, 20).map((item, i) => `
+                <tr>
+                    <td class="table-number">${i + 1}</td>
+                    <td>${item.request_text || '-'}</td>
+                    <td>${item.request_count || 0}</td>
+                    <td>${item.last_requested || '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        function populateSuppliers() {
+            const suppliers1c = inventoryData.suppliers_1c || [];
+            const appProducers = inventoryData.app_producers || [];
+            const tbody = document.getElementById('suppliersBody');
+
+            const maxLen = Math.max(suppliers1c.length, appProducers.length);
+            let html = '';
+            for (let i = 0; i < maxLen; i++) {
+                const s = suppliers1c[i] || {};
+                const p = appProducers[i] || {};
+
+                html += `
+                    <tr>
+                        <td class="table-number">${i + 1}</td>
+                        <td class="table-name">${s.name || '-'}</td>
+                        <td>${fmt(s.total_debit || 0)}</td>
+                        <td>${fmt(s.total_credit || 0)}</td>
+                        <td class="table-name">${p.name || '-'}</td>
+                        <td>${p.product_count || 0}</td>
+                        <td>${p.in_stock || 0}</td>
+                    </tr>
+                `;
+            }
+            tbody.innerHTML = html;
+        }
+
+        function populateTopClicked() {
+            const items = inventoryData.top_clicked || [];
+            const tbody = document.getElementById('topClickedBody');
+            tbody.innerHTML = items.slice(0, 20).map((item, i) => `
+                <tr>
+                    <td class="table-number">${i + 1}</td>
+                    <td class="table-name">${item.display_name || item.name_1c || '-'}</td>
+                    <td class="table-producer">${item.producer || '-'}</td>
+                    <td>${item.stock_quantity || 0}</td>
+                    <td>${item.click_count || 0}</td>
+                </tr>
+            `).join('');
+        }
+
+        // ==================== PLATFORM HEALTH ====================
+        async function loadHealthData() {
+            const health = await apiCall('platform-health');
+            const searches = await apiCall('search-insights?days=30');
+
+            const funnel = health.registration_funnel;
+            const dataQuality = health.data_quality;
+            const recentActivity = health.recent_activity;
+
+            // KPIs
+            document.getElementById('kpi-total-registrations').textContent = fmt(funnel.whitelist || 0);
+            document.getElementById('kpi-approved-accounts').textContent = fmt(funnel.approved || 0);
+            document.getElementById('kpi-ordered').textContent = fmt(funnel.ordered || 0);
+            document.getElementById('kpi-recent-activity').textContent = fmt((recentActivity.orders_7d || 0) + (recentActivity.searches_7d || 0) + (recentActivity.registrations_7d || 0));
+
+            // Data quality bars
+            const photoPct = dataQuality.photo_pct || 0;
+            const stockPct = dataQuality.stock_pct || 0;
+
+            document.getElementById('photo-pct').textContent = photoPct.toFixed(1) + '%';
+            document.getElementById('photo-bar').style.width = photoPct + '%';
+            document.getElementById('photo-bar').textContent = photoPct.toFixed(0) + '%';
+
+            document.getElementById('stock-pct').textContent = stockPct.toFixed(1) + '%';
+            document.getElementById('stock-bar').style.width = stockPct + '%';
+            document.getElementById('stock-bar').textContent = stockPct.toFixed(0) + '%';
+
+            document.getElementById('price-usd-pct').textContent = '0%';
+            document.getElementById('price-usd-bar').style.width = '0%';
+            document.getElementById('price-usd-bar').textContent = '0%';
+
+            // Charts
+            drawFunnelChart(funnel);
+            drawOrderTrendChart(health.order_trend || []);
+
+            // Search tables
+            const topQueries = searches.top_queries || [];
+            const zeroResultQueries = searches.zero_results || [];
+
+            const topSearchesBody = document.getElementById('topSearchesBody');
+            topSearchesBody.innerHTML = topQueries.slice(0, 20).map((item, i) => `
+                <tr>
+                    <td class="table-number">${i + 1}</td>
+                    <td>${item.query || '-'}</td>
+                    <td>${item.count || 0}</td>
+                    <td>${item.avg_results || 0}</td>
+                </tr>
+            `).join('');
+
+            const zeroResultsBody = document.getElementById('zeroResultsBody');
+            zeroResultsBody.innerHTML = zeroResultQueries.slice(0, 20).map((item, i) => `
+                <tr>
+                    <td class="table-number">${i + 1}</td>
+                    <td>${item.query || '-'}</td>
+                    <td>${item.count || 0}</td>
+                    <td>${item.unique_users || 0}</td>
+                </tr>
+            `).join('');
+        }
+
+        function drawFunnelChart(funnel) {
+            const ctx = document.getElementById('funnelChart').getContext('2d');
+            if (charts.funnel) charts.funnel.destroy();
+
+            const stages = ['Whitelist', 'Registered', 'Approved', 'Ordered', 'Repeat'];
+            const values = [
+                funnel.whitelist || 0,
+                funnel.registered || 0,
+                funnel.approved || 0,
+                funnel.ordered || 0,
+                funnel.repeat || 0
+            ];
+
+            charts.funnel = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: stages,
+                    datasets: [{
+                        label: 'Count',
+                        data: values,
+                        backgroundColor: '#6366f1',
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: {
+                            grid: { color: '#2a2d3a' },
+                            ticks: { color: '#8b8fa3', callback: v => fmt(v) }
+                        },
+                        y: {
+                            ticks: { color: '#8b8fa3' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function drawOrderTrendChart(trend) {
+            const ctx = document.getElementById('orderTrendChart').getContext('2d');
+            if (charts.orderTrend) charts.orderTrend.destroy();
+
+            if (!trend || !trend.length) {
+                ctx.canvas.style.display = 'none';
+                return;
+            }
+
+            const labels = trend.map(t => periodLabel(t.month));
+            const orders = trend.map(t => t.order_count || 0);
+            const usdValues = trend.map(t => t.total_usd || 0);
+
+            charts.orderTrend = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Orders',
+                            data: orders,
+                            backgroundColor: '#6366f1',
+                            borderRadius: 4,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'USD Volume',
+                            data: usdValues,
+                            backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                            borderRadius: 4,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: { legend: { labels: { color: '#8b8fa3' } } },
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            position: 'left',
+                            grid: { color: '#2a2d3a' },
+                            ticks: { color: '#8b8fa3', callback: v => fmt(v) }
+                        },
+                        y1: {
+                            type: 'linear',
+                            position: 'right',
+                            grid: { display: false },
+                            ticks: { color: '#3b82f6', callback: v => fmt(v) }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#8b8fa3' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Auth field enter key
+        document.addEventListener('DOMContentLoaded', () => {
+            const authKey = document.getElementById('authKey');
+            if (authKey) {
+                authKey.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') authenticate();
+                });
+            }
+        });
+    </script>
 </body>
 </html>
