@@ -104,11 +104,20 @@
         /* Navigation */
         .nav {
             width: 250px;
+            min-width: 250px;
             background: #1a1d27;
             border-right: 1px solid #2a2d3a;
             display: flex;
             flex-direction: column;
             overflow-y: auto;
+            transition: width 0.25s ease, min-width 0.25s ease;
+        }
+
+        .nav.collapsed {
+            width: 0;
+            min-width: 0;
+            overflow: hidden;
+            border-right: none;
         }
 
         .nav-header {
@@ -116,6 +125,46 @@
             border-bottom: 1px solid #2a2d3a;
             font-weight: 700;
             font-size: 18px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            white-space: nowrap;
+        }
+
+        .nav-collapse-btn {
+            background: none;
+            border: none;
+            color: #8b8fa3;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+            transition: all 0.2s;
+            line-height: 1;
+        }
+
+        .nav-collapse-btn:hover {
+            background: rgba(99, 102, 241, 0.1);
+            color: #e4e4e7;
+        }
+
+        .sidebar-open-btn {
+            background: none;
+            border: none;
+            color: #8b8fa3;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 8px 12px;
+            transition: all 0.2s;
+            display: none;
+        }
+
+        .sidebar-open-btn.visible {
+            display: inline-flex;
+        }
+
+        .sidebar-open-btn:hover {
+            color: #6366f1;
         }
 
         .nav-tabs {
@@ -743,8 +792,11 @@
     <!-- Dashboard -->
     <div id="dashboard" class="dashboard hidden">
         <!-- Navigation -->
-        <div class="nav">
-            <div class="nav-header">Rassvet</div>
+        <div class="nav" id="sidebarNav">
+            <div class="nav-header">
+                <span>Rassvet</span>
+                <button class="nav-collapse-btn" onclick="toggleSidebar()" title="Close sidebar">&#x2715;</button>
+            </div>
             <div class="nav-tabs">
                 <div class="nav-tab active" data-tab="overview" onclick="switchTab('overview')">Business Overview</div>
                 <div class="nav-tab" data-tab="clients" onclick="switchTab('clients')">Client Portfolio</div>
@@ -762,7 +814,8 @@
 
         <!-- Main Content -->
         <div class="main-content">
-            <div class="content-header">
+            <div class="content-header" style="display: flex; align-items: center; gap: 12px;">
+                <button class="sidebar-open-btn" id="sidebarOpenBtn" onclick="toggleSidebar()" title="Open sidebar">&#9776;</button>
                 <h1 id="pageTitle">Business Overview</h1>
             </div>
             <div class="content-area">
@@ -1206,6 +1259,22 @@
             const res = await fetch(url);
             if (!res.ok) throw new Error(`API error: ${res.status}`);
             return res.json();
+        }
+
+        // ==================== SIDEBAR TOGGLE ====================
+        function toggleSidebar() {
+            const nav = document.getElementById('sidebarNav');
+            const openBtn = document.getElementById('sidebarOpenBtn');
+            nav.classList.toggle('collapsed');
+            if (nav.classList.contains('collapsed')) {
+                openBtn.classList.add('visible');
+            } else {
+                openBtn.classList.remove('visible');
+            }
+            // Resize charts after transition
+            setTimeout(() => {
+                Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
+            }, 300);
         }
 
         // ==================== TAB SWITCHING ====================
