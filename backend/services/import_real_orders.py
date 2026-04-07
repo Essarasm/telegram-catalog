@@ -794,14 +794,6 @@ def find_nearby_real_orders(telegram_id: int, wishlist_created_at: str, days: in
 # the listing and the relink pass so they don't clutter the report or cause
 # spurious false matches.
 
-SYSTEM_NON_CLIENT_NAMES = frozenset(
-    s.strip().lower() for s in [
-        "ИСПРАВЛЕНИЕ",
-        "ИСПРАВЛЕНИЕ СКЛАД 2",
-    ]
-)
-
-
 def _py_normalize_client_name(name: Optional[str]) -> str:
     """Python-side normalization for cyrillic-aware client-name comparison.
 
@@ -815,6 +807,30 @@ def _py_normalize_client_name(name: Optional[str]) -> str:
     # Collapse internal whitespace runs
     s = re.sub(r"\s+", " ", s)
     return s
+
+
+# 1C placeholder / aggregate docs that should NOT be treated as real clients.
+# These are booked on non-client buckets (cash registers, generic category
+# holders, legal-entity aggregate) or are adjustment markers. Names are stored
+# py-normalized so `_is_system_non_client` can do a single set lookup.
+#
+# The first two are 1C correction/adjustment markers. The rest (added
+# 2026-04-07 after user confirmed) are walk-in cash/aggregate buckets —
+# together they were 77% of the post-relink unmatched residue.
+SYSTEM_NON_CLIENT_NAMES = frozenset(
+    _py_normalize_client_name(s) for s in [
+        "ИСПРАВЛЕНИЕ",
+        "ИСПРАВЛЕНИЕ СКЛАД 2",
+        "Наличка №1",
+        "Наличка №2",
+        "Наличка №3",
+        "Наличка СКЛАД",
+        "Наличка - Магазин",
+        "Организации (переч.)",
+        "СТРОЙКА",
+        "СТЕКЛОПЛАСТИК",
+    ]
+)
 
 
 def _is_system_non_client(name: Optional[str]) -> bool:
