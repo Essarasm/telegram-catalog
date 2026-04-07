@@ -84,6 +84,42 @@ export function useCart() {
     }).catch(() => {});
   }, []);
 
+  /**
+   * Restore a previously-removed item with its original quantity.
+   * Used by the cart's "Undo" toast after a × delete.
+   * If the same product was re-added in the meantime, keeps the larger quantity.
+   */
+  const restoreItem = useCallback((item) => {
+    setItems(prev => {
+      const existing = prev.find(i => i.id === item.id);
+      if (existing) {
+        const merged = Math.max(existing.quantity, item.quantity);
+        // Sync server with the merged quantity
+        fetch(`${API}/set`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: userId.current,
+            product_id: item.id,
+            quantity: merged,
+          }),
+        }).catch(() => {});
+        return prev.map(i => (i.id === item.id ? { ...i, quantity: merged } : i));
+      }
+      // Item was fully removed — add the snapshot back as-is
+      fetch(`${API}/set`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: userId.current,
+          product_id: item.id,
+          quantity: item.quantity,
+        }),
+      }).catch(() => {});
+      return [...prev, { ...item }];
+    });
+  }, []);
+
   const updateQuantity = useCallback((productId, quantity) => {
     if (quantity <= 0) {
       setItems(prev => prev.filter(i => i.id !== productId));
@@ -130,5 +166,5 @@ export function useCart() {
     return acc;
   }, {});
 
-  return { items, loading, addItem, removeItem, updateQuantity, clearCart, reloadCart, totalCount, totals };
+  return { items, loading, addItem, removeItem, restoreItem, updateQuantity, clearCart, reloadCart, totalCount, totals };
 }

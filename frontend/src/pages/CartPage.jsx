@@ -144,10 +144,49 @@ function CartQtyControls({ item, cart }) {
   );
 }
 
+const UNDO_WINDOW_MS = 4000;
+
 export default function CartPage({ cart }) {
   const [exporting, setExporting] = useState(false);
   const [exported, setExported] = useState(false);
   const [previewFormat, setPreviewFormat] = useState(null); // 'pdf' | 'xlsx' | null
+
+  // Snapshot of the most recently removed item, kept for ~4s so the user can undo.
+  const [removedItem, setRemovedItem] = useState(null);
+  const undoTimerRef = useRef(null);
+
+  // Clear any pending undo timer on unmount
+  useEffect(() => () => {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+  }, []);
+
+  const handleRemoveItem = (item) => {
+    // Snapshot the item before removing so undo can restore it with full quantity
+    const snapshot = { ...item };
+    cart.removeItem(item.id);
+    setRemovedItem(snapshot);
+
+    // Reset/refresh the undo timer
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    undoTimerRef.current = setTimeout(() => {
+      setRemovedItem(null);
+      undoTimerRef.current = null;
+    }, UNDO_WINDOW_MS);
+
+    // Light haptic feedback if available
+    window.Telegram?.WebApp?.HapticFeedback?.impactOccurred?.('light');
+  };
+
+  const handleUndoRemove = () => {
+    if (!removedItem) return;
+    cart.restoreItem(removedItem);
+    setRemovedItem(null);
+    if (undoTimerRef.current) {
+      clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = null;
+    }
+    window.Telegram?.WebApp?.HapticFeedback?.impactOccurred?.('light');
+  };
 
   const handleExport = async (format) => {
     setExporting(true);
@@ -247,7 +286,7 @@ export default function CartPage({ cart }) {
       <div className="space-y-2 mb-6">
         {cart.items.map(item => (
           <div key={item.id} className="bg-tg-secondary rounded-xl p-3">
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium leading-tight truncate">{item.name_display || item.name}</div>
                 <div className="text-xs text-tg-hint mt-0.5">
@@ -259,9 +298,19 @@ export default function CartPage({ cart }) {
               <CartQtyControls item={item} cart={cart} />
 
               {/* Line total */}
-              <div className="text-sm font-semibold text-right min-w-[60px]">
+              <div className="text-sm font-semibold text-right min-w-[56px]">
                 {formatCartPrice(item.price * item.quantity, item.currency)}
               </div>
+
+              {/* Remove this item — × button */}
+              <button
+                onClick={() => handleRemoveItem(item)}
+                aria-label={t.remove_item}
+                title={t.remove_item}
+                className="flex-shrink-0 w-7 h-7 -mr-1 rounded-full text-tg-hint active:text-red-500 active:bg-red-500/15 flex items-center justify-center text-xl leading-none no-callout"
+              >
+                ×
+              </button>
             </div>
           </div>
         ))}
@@ -321,6 +370,25 @@ export default function CartPage({ cart }) {
             className="w-full bg-green-600 text-white rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
           >
             📊 Hisobot yuborish (Excel)
+          </button>
+        </div>
+      )}
+
+      {/* Undo toast — fixed at bottom, ~4s window after × delete */}
+      {removedItem && (
+        <div
+          className="fixed left-1/2 -translate-x-1/2 z-[200] flex items-center gap-3 px-4 py-3 rounded-full shadow-2xl bg-black/85 text-white text-sm max-w-[92%]"
+          style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)' }}
+          role="status"
+        >
+          <span className="truncate">
+            {t.item_removed}: <span className="font-medium">{removedItem.name_display || removedItem.name}</span>
+          </span>
+          <button
+            onClick={handleUndoRemove}
+            className="flex-shrink-0 font-semibold uppercase text-xs tracking-wide px-3 py-1.5 rounded-full bg-white/15 active:bg-white/25"
+          >
+            {t.undo}
           </button>
         </div>
       )}
