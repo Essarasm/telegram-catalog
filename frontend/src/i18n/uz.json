@@ -111,5 +111,26 @@
     "Plyonka": "🗞️"
   },
   "did_you_mean": "Balki siz qidirdingiz:",
-  "fuzzy_results": "O'xshash natijalar"
+  "fuzzy_results": "O'xshash natijalar",
+  "real_orders_title": "Haqiqiy buyurtmalar",
+  "real_orders_subtitle": "1C dan jo'natilgan tovarlar",
+  "wishlist_orders_title": "Wish-list buyurtmalar",
+  "wishlist_orders_subtitle": "Siz ilova orqali yuborgan",
+  "no_real_orders": "Haqiqiy buyurtmalar hali yo'q",
+  "no_real_orders_desc": "Jo'natilgan tovarlar bu yerda ko'rinadi",
+  "real_order_doc": "Hujjat",
+  "real_order_date": "Sana",
+  "real_order_sale_agent": "Sotuvchi",
+  "real_order_items_count": "ta tovar",
+  "real_order_total": "Jami summa",
+  "real_order_view_items": "Tovarlarni ko'rish",
+  "real_order_hide_items": "Yashirish",
+  "compare_button": "Solishtirish",
+  "compare_title": "Wish-list vs Haqiqiy",
+  "compare_no_match": "Mos yaqin buyurtma topilmadi",
+  "compare_no_match_desc": "Ushbu sana atrofida (±5 kun) qarama-qarshi buyurtma yo'q",
+  "compare_wishlist_side": "Sizning wish-list",
+  "compare_real_side": "Haqiqiy jo'natma",
+  "compare_match_found": "topildi",
+  "compare_days_around": "kun ichida"
 }

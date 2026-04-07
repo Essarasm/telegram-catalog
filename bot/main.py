@@ -1259,6 +1259,8 @@ async def cmd_help(message: types.Message):
         "Оборотка yuklash (1C оборотно-сальдовая)\n\n"
         "<b>/demand</b> <code>[kunlar]</code>\n"
         "Tugagan mahsulotlarga talab signallari (default: 30 kun)\n\n"
+        "<b>/realorders</b> (reply to XLS/XLSX file)\n"
+        "Реализация yuklash (1C \"Реализация товаров\" — haqiqiy buyurtmalar)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
@@ -1763,6 +1765,119 @@ async def cmd_datacoverage(message: types.Message):
         await message.reply(f"❌ Xatolik: {str(e)[:200]}")
     finally:
         conn.close()
+
+
+# ───────────────────────────────────────────
+# /realorders — import 1C "Реализация товаров"
+# ───────────────────────────────────────────
+
+@dp.message(Command("realorders"))
+async def cmd_realorders(message: types.Message):
+    """Import real (shipped) orders from 1C 'Реализация товаров' export.
+
+    Reply to an XLS/XLSX file with /realorders, or send a file with
+    /realorders as the caption. Idempotent on doc_number_1c — re-uploading
+    the same period replaces existing documents.
+    """
+    if not is_admin(message):
+        return
+
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "1C'dan «Реализация товаров» XLS/XLSX faylni\n"
+            "/realorders caption bilan yuboring.\n\n"
+            "Yoki faylga javob sifatida /realorders yozing.\n\n"
+            "💡 Bir oy uchun bitta fayl. Aynan o'sha oyni\n"
+            "qayta yuklasangiz — yangilanadi (dublikat bo'lmaydi).",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.lower().endswith(('.xls', '.xlsx')):
+        await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply("⏳ Реализация yuklanmoqda...")
+
+    try:
+        import httpx
+
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        api_url = f"{_BASE_URL}/api/finance/import-real-orders"
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        st = result.get("stats", {})
+        date_min = st.get("date_min") or "?"
+        date_max = st.get("date_max") or "?"
+        date_range = date_min if date_min == date_max else f"{date_min} — {date_max}"
+
+        lines = [
+            f"✅ <b>Реализация yuklandi!</b>\n",
+            f"📅 Davr: {date_range} ({st.get('date_count', 0)} kun)",
+            f"📄 Hujjatlar: {st.get('doc_count', 0)} (yangi: {result.get('inserted_docs', 0)}, yangilangan: {result.get('updated_docs', 0)})",
+            f"📦 Qatorlar: {result.get('inserted_items', 0)}",
+            f"👥 Mijozlar: {st.get('client_count', 0)} (bog'langan: {result.get('matched_clients', 0)})",
+            f"🛒 Mahsulotlar: {st.get('product_count', 0)} (mos: {result.get('matched_products', 0)})",
+        ]
+
+        total_local = st.get("total_local") or 0
+        total_currency = st.get("total_currency") or 0
+        if total_local:
+            lines.append(f"\n💴 Jami (mahalliy): {round(total_local):,}".replace(",", " "))
+        if total_currency:
+            lines.append(f"💵 Jami (valyuta): {total_currency:,.2f}".replace(",", " "))
+
+        unmatched_c = result.get("unmatched_clients_count", 0)
+        unmatched_p = result.get("unmatched_products_count", 0)
+
+        if unmatched_c:
+            lines.append(f"\n⚠️ Mijozlar bog'lanmagan ({unmatched_c}):")
+            for name in result.get("unmatched_clients_sample", [])[:8]:
+                lines.append(f"  • {html_escape(name)}")
+
+        if unmatched_p:
+            lines.append(f"\n⚠️ Mahsulotlar mos kelmadi ({unmatched_p}):")
+            for name in result.get("unmatched_products_sample", [])[:8]:
+                lines.append(f"  • {html_escape(name[:60])}")
+
+        lines.append(f"\n💾 DBda jami: {result.get('db_total_docs', 0)} hujjat / {result.get('db_total_items', 0)} qator")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Realorders import error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@dp.message(F.document & F.caption.startswith("/realorders"))
+async def handle_realorders_document(message: types.Message):
+    """Handle XLS/XLSX file sent with /realorders as caption."""
+    if not is_admin(message):
+        return
+    await cmd_realorders(message)
 
 
 # ───────────────────────────────────────────

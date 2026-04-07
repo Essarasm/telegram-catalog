@@ -72,6 +72,12 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [toast, setToast] = useState(null);
   const [balance, setBalance] = useState(null);
   const [balanceLoading, setBalanceLoading] = useState(true);
+  const [realOrders, setRealOrders] = useState([]);
+  const [realLoading, setRealLoading] = useState(true);
+  const [expandedRealId, setExpandedRealId] = useState(null);
+  const [expandedRealItems, setExpandedRealItems] = useState([]);
+  const [loadingRealDetail, setLoadingRealDetail] = useState(false);
+  const [compareModal, setCompareModal] = useState(null); // { kind, sourceLabel, orders, loading }
 
   const userId = getTelegramUserId();
 
@@ -99,7 +105,57 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         setBalanceLoading(false);
       })
       .catch(() => setBalanceLoading(false));
+
+    fetch(`${API}/real-orders?telegram_id=${userId}&limit=20`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) setRealOrders(data.orders || []);
+        setRealLoading(false);
+      })
+      .catch(() => setRealLoading(false));
   }, [userId]);
+
+  // Toggle expand real order detail
+  const toggleExpandReal = async (realId) => {
+    if (expandedRealId === realId) {
+      setExpandedRealId(null);
+      setExpandedRealItems([]);
+      return;
+    }
+    setExpandedRealId(realId);
+    setLoadingRealDetail(true);
+    try {
+      const res = await fetch(`${API}/real-orders/${realId}?telegram_id=${userId}`);
+      const data = await res.json();
+      setExpandedRealItems(data.items || []);
+    } catch {
+      setExpandedRealItems([]);
+    }
+    setLoadingRealDetail(false);
+  };
+
+  // Open compare modal — find counterpart of a real order or wishlist order
+  const openCompare = async ({ realOrderId, wishlistOrderId, sourceLabel }) => {
+    setCompareModal({ kind: realOrderId ? 'real' : 'wishlist', sourceLabel, orders: [], loading: true });
+    try {
+      const param = realOrderId
+        ? `real_order_id=${realOrderId}`
+        : `wishlist_order_id=${wishlistOrderId}`;
+      const res = await fetch(`${API}/compare?telegram_id=${userId}&${param}&days=5`);
+      const data = await res.json();
+      // Returned `kind` describes the result set: when looking up from a real
+      // order we get wish-list orders back, and vice versa.
+      const resultKind = realOrderId ? 'wishlist' : 'real';
+      setCompareModal({
+        kind: resultKind,
+        sourceLabel,
+        orders: data.orders || [],
+        loading: false,
+      });
+    } catch {
+      setCompareModal((prev) => prev && { ...prev, orders: [], loading: false });
+    }
+  };
 
   // Toggle expand order detail
   const toggleExpand = async (orderId) => {
@@ -321,7 +377,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const lastOrder = orders.length > 0 ? orders[0] : null;
   const isExpanded = lastOrder && expandedId === lastOrder.id;
 
-  if (!lastOrder && !balance) {
+  if (!lastOrder && !balance && realOrders.length === 0) {
     return (
       <div className="text-center py-16">
         <div className="text-5xl mb-4">🏛️</div>
@@ -331,13 +387,121 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     );
   }
 
+  // Format a 1C doc date (YYYY-MM-DD) to short locale
+  const formatDocDate = (s) => {
+    if (!s) return '';
+    try {
+      const d = new Date(s);
+      return d.toLocaleDateString('uz-UZ', { day: 'numeric', month: 'short', year: 'numeric' });
+    } catch {
+      return s;
+    }
+  };
+
   return (
     <div>
       <BalanceCard />
 
+      {/* ── Real orders (1C shipments) ── */}
+      {realOrders.length > 0 && (
+        <div className="mb-4">
+          <div className="text-sm text-tg-hint mb-2">
+            🚚 {t.real_orders_title}
+            <span className="text-[10px] ml-1 opacity-60">· {t.real_orders_subtitle}</span>
+          </div>
+          <div className="space-y-2">
+            {realOrders.slice(0, 5).map((ro) => {
+              const isOpen = expandedRealId === ro.id;
+              return (
+                <div key={ro.id} className="bg-tg-secondary rounded-xl overflow-hidden">
+                  <button
+                    onClick={() => toggleExpandReal(ro.id)}
+                    className="w-full text-left p-3 active:bg-tg-hint/10 transition-colors"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold truncate">
+                            {t.real_order_doc} {ro.doc_number_1c}
+                          </span>
+                        </div>
+                        <div className="text-xs text-tg-hint mt-1">
+                          {formatDocDate(ro.doc_date)} · {ro.item_count} {t.real_order_items_count}
+                        </div>
+                        {ro.sale_agent && (
+                          <div className="text-[10px] text-tg-hint mt-0.5 truncate">
+                            {t.real_order_sale_agent}: {ro.sale_agent}
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-right ml-2">
+                        <div className="text-sm font-bold whitespace-nowrap">
+                          {ro.currency === 'USD'
+                            ? formatUsd(ro.total_sum_currency || ro.total_sum)
+                            : `${formatUzs(ro.total_sum)} ${t.balance_currency}`}
+                        </div>
+                        <div className="text-xs text-tg-hint mt-0.5">
+                          {isOpen ? '▲' : '▼'}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+
+                  {isOpen && (
+                    <div className="border-t border-tg-hint/20 px-3 pb-3">
+                      {loadingRealDetail ? (
+                        <div className="text-center py-4 text-tg-hint text-sm">{t.loading}</div>
+                      ) : (
+                        <>
+                          <div className="mt-2 space-y-1.5">
+                            {expandedRealItems.map((item, idx) => (
+                              <div key={idx} className="flex items-center gap-2 py-1">
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-xs font-medium truncate">
+                                    {item.name_display || item.product_name_1c}
+                                  </div>
+                                </div>
+                                <div className="text-xs text-tg-hint whitespace-nowrap">
+                                  {item.quantity}
+                                </div>
+                                <div className="text-xs font-semibold whitespace-nowrap min-w-[60px] text-right">
+                                  {ro.currency === 'USD'
+                                    ? formatUsd(item.total_currency || item.total_local)
+                                    : formatUzs(item.total_local)}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openCompare({
+                                realOrderId: ro.id,
+                                sourceLabel: `${t.real_order_doc} ${ro.doc_number_1c}`,
+                              });
+                            }}
+                            className="w-full mt-3 bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
+                          >
+                            🔀 {t.compare_button}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {lastOrder && (
         <>
-          <div className="text-sm text-tg-hint mb-2">{t.order_history}</div>
+          <div className="text-sm text-tg-hint mb-2">
+            📝 {t.wishlist_orders_title}
+            <span className="text-[10px] ml-1 opacity-60">· {t.wishlist_orders_subtitle}</span>
+          </div>
 
           <div className="bg-tg-secondary rounded-xl overflow-hidden">
             {/* Order summary row */}
@@ -399,16 +563,30 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                       ))}
                     </div>
 
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleReorderTap(lastOrder.id);
-                      }}
-                      disabled={reordering}
-                      className="w-full mt-3 bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
-                    >
-                      {reordering ? t.loading : `🔄 ${t.reorder}`}
-                    </button>
+                    <div className="grid grid-cols-2 gap-2 mt-3">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReorderTap(lastOrder.id);
+                        }}
+                        disabled={reordering}
+                        className="bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
+                      >
+                        {reordering ? t.loading : `🔄 ${t.reorder}`}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openCompare({
+                            wishlistOrderId: lastOrder.id,
+                            sourceLabel: `#${lastOrder.id}`,
+                          });
+                        }}
+                        className="bg-tg-secondary border border-tg-button text-tg-button rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
+                      >
+                        🔀 {t.compare_button}
+                      </button>
+                    </div>
                   </>
                 )}
               </div>
@@ -452,6 +630,88 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                 {t.reorder_cancel}
               </button>
             </div>
+          </div>
+        </>
+      )}
+
+      {/* Compare modal */}
+      {compareModal && (
+        <>
+          <div
+            className="fixed inset-0 bg-black/50 z-[100]"
+            onClick={() => setCompareModal(null)}
+          />
+          <div className="fixed bottom-0 left-0 right-0 z-[101] bg-tg-bg rounded-t-2xl p-5 pb-8 shadow-2xl max-h-[80vh] overflow-y-auto">
+            <div className="w-10 h-1 bg-tg-hint/30 rounded-full mx-auto mb-4" />
+            <div className="text-center mb-4">
+              <div className="text-base font-semibold">🔀 {t.compare_title}</div>
+              <div className="text-xs text-tg-hint mt-1">
+                {compareModal.sourceLabel}
+              </div>
+            </div>
+
+            {compareModal.loading ? (
+              <div className="text-center py-8 text-tg-hint text-sm">{t.loading}</div>
+            ) : compareModal.orders.length === 0 ? (
+              <div className="text-center py-8">
+                <div className="text-3xl mb-2">🤷</div>
+                <div className="text-sm font-medium">{t.compare_no_match}</div>
+                <div className="text-xs text-tg-hint mt-1">{t.compare_no_match_desc}</div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="text-xs text-tg-hint mb-1">
+                  {compareModal.kind === 'real'
+                    ? t.compare_real_side
+                    : t.compare_wishlist_side}
+                  {' · '}
+                  {compareModal.orders.length} {t.compare_match_found}
+                </div>
+                {compareModal.orders.map((o) => (
+                  <div key={o.id} className="bg-tg-secondary rounded-xl p-3">
+                    {compareModal.kind === 'real' ? (
+                      <>
+                        <div className="text-sm font-semibold">
+                          {t.real_order_doc} {o.doc_number_1c}
+                        </div>
+                        <div className="text-xs text-tg-hint mt-1">
+                          {formatDocDate(o.doc_date)} · {o.item_count} {t.real_order_items_count}
+                        </div>
+                        <div className="text-sm font-bold mt-1">
+                          {o.currency === 'USD'
+                            ? formatUsd(o.total_sum_currency || o.total_sum)
+                            : `${formatUzs(o.total_sum)} ${t.balance_currency}`}
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="text-sm font-semibold">#{o.id}</div>
+                        <div className="text-xs text-tg-hint mt-1">
+                          {formatDate(o.created_at)} · {o.item_count} {t.items_count}
+                        </div>
+                        {o.total_uzs > 0 && (
+                          <div className="text-sm font-bold mt-1">
+                            {formatCartPrice(o.total_uzs, 'UZS')}
+                          </div>
+                        )}
+                        {o.total_usd > 0 && (
+                          <div className="text-sm font-bold">
+                            {formatCartPrice(o.total_usd, 'USD')}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={() => setCompareModal(null)}
+              className="w-full mt-4 text-tg-hint text-sm py-2"
+            >
+              {t.close}
+            </button>
           </div>
         </>
       )}

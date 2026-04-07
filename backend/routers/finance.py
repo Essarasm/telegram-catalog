@@ -13,6 +13,9 @@ from backend.services.import_debts import (
     apply_debtors_import,
     get_client_debt,
 )
+from backend.services.import_real_orders import (
+    apply_real_orders_import,
+)
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
 
@@ -85,6 +88,28 @@ async def import_debts(
         return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
 
     result = apply_debtors_import(file_bytes)
+    return result
+
+
+@router.post("/import-real-orders")
+async def import_real_orders(
+    file: UploadFile = File(...),
+    admin_key: str = Form(""),
+):
+    """Import real orders from 1C 'Реализация товаров' export.
+
+    Used by the /realorders bot command. Idempotent on doc_number_1c —
+    re-uploading the same period replaces existing documents instead of
+    duplicating them.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+
+    result = apply_real_orders_import(file_bytes, filename_hint=file.filename or "")
     return result
 
 

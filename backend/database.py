@@ -227,6 +227,60 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_demand_signals_product ON demand_signals(product_id);
         CREATE INDEX IF NOT EXISTS idx_demand_signals_created ON demand_signals(created_at);
+
+        -- Real orders from 1C "Реализация товаров" (actual shipments / invoices)
+        -- Separate from `orders` (wish-list orders submitted via the app).
+        CREATE TABLE IF NOT EXISTS real_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_number_1c TEXT NOT NULL UNIQUE,
+            doc_date TEXT NOT NULL,
+            doc_time TEXT,
+            client_name_1c TEXT NOT NULL,
+            client_id INTEGER,
+            contract TEXT,
+            storage_location TEXT,
+            payment_account TEXT,
+            sale_agent TEXT,
+            responsible_person TEXT,
+            comment TEXT,
+            currency TEXT DEFAULT 'UZS',
+            exchange_rate REAL DEFAULT 1,
+            total_sum REAL DEFAULT 0,
+            total_sum_currency REAL DEFAULT 0,
+            total_weight REAL DEFAULT 0,
+            item_count INTEGER DEFAULT 0,
+            imported_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_real_orders_client_id ON real_orders(client_id);
+        CREATE INDEX IF NOT EXISTS idx_real_orders_client_name ON real_orders(client_name_1c);
+        CREATE INDEX IF NOT EXISTS idx_real_orders_doc_date ON real_orders(doc_date);
+        CREATE INDEX IF NOT EXISTS idx_real_orders_doc_number ON real_orders(doc_number_1c);
+
+        CREATE TABLE IF NOT EXISTS real_order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            real_order_id INTEGER NOT NULL,
+            line_no INTEGER,
+            product_name_1c TEXT NOT NULL,
+            product_id INTEGER,
+            quantity REAL DEFAULT 0,
+            price REAL DEFAULT 0,
+            sum_local REAL DEFAULT 0,
+            vat REAL DEFAULT 0,
+            total_local REAL DEFAULT 0,
+            price_currency REAL DEFAULT 0,
+            sum_currency REAL DEFAULT 0,
+            total_currency REAL DEFAULT 0,
+            cost REAL DEFAULT 0,
+            total_cost REAL DEFAULT 0,
+            stock_remainder REAL DEFAULT 0,
+            storage_location TEXT,
+            weight_per_unit REAL DEFAULT 0,
+            total_weight REAL DEFAULT 0,
+            FOREIGN KEY (real_order_id) REFERENCES real_orders(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_real_order_items_order ON real_order_items(real_order_id);
+        CREATE INDEX IF NOT EXISTS idx_real_order_items_product ON real_order_items(product_id);
+        CREATE INDEX IF NOT EXISTS idx_real_order_items_name ON real_order_items(product_name_1c);
     """)
     conn.commit()
 
