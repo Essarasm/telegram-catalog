@@ -1,10 +1,16 @@
 import { useState } from 'react';
 import { cloudSave } from '../utils/cloudStorage';
 
+// Feature flag: registration location step.
+// Temporarily disabled while presenting in-store to clients (Apr 2026).
+// To re-enable: set VITE_ENABLE_LOCATION_STEP=true at build time.
+const LOCATION_STEP_ENABLED = import.meta.env.VITE_ENABLE_LOCATION_STEP === 'true';
+
 /**
  * Registration gate:
  * 1. Phone is required (one button tap via Telegram requestContact)
  * 2. Location is optional — user can share or tap "Keyinroq" to skip
+ *    (gated by LOCATION_STEP_ENABLED feature flag)
  */
 export default function RegisterPage({ onRegistered }) {
   const [loading, setLoading] = useState(false);
@@ -91,9 +97,37 @@ export default function RegisterPage({ onRegistered }) {
       };
 
       setUserData(data);
+
+      // Feature flag: if location step is disabled, register immediately
+      // without prompting the user for their location.
+      if (!LOCATION_STEP_ENABLED) {
+        finishRegistrationWithoutLocation(data);
+        return;
+      }
+
       setPhoneCollected(true);
       setLoading(false);
     });
+  };
+
+  // Shared finalize path used when the location step is disabled.
+  const finishRegistrationWithoutLocation = async (data) => {
+    setStatusText("Ma'lumotlar saqlanmoqda...");
+    try {
+      const result = await saveToServer(data);
+      const regData = {
+        phone: data.phone,
+        firstName: data.first_name || '',
+        lastName: data.last_name || '',
+        username: data.username || '',
+      };
+      await cloudSave('reg_data', regData);
+      onRegistered(result?.approved ?? false, regData);
+    } catch {
+      setError("Xatolik yuz berdi. Qayta urinib ko'ring.");
+      setLoading(false);
+      setStatusText(null);
+    }
   };
 
   // Step 2a: share location
