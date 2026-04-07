@@ -996,7 +996,30 @@ def relink_real_orders() -> dict:
     db_matched_docs = conn.execute(
         "SELECT COUNT(*) FROM real_orders WHERE client_id IS NOT NULL"
     ).fetchone()[0]
+
+    # "Real client" denominator: exclude docs booked on placeholder / cash /
+    # aggregate buckets (SYSTEM_NON_CLIENT_NAMES). This is the denominator ops
+    # actually cares about — unmatched placeholder docs are not a data quality
+    # problem, just how 1C records walk-in cash and bulk transfers. Computed
+    # in Python because SQLite LOWER() is ASCII-only and can't match cyrillic
+    # placeholder names like "Наличка №3".
+    all_rows = conn.execute(
+        "SELECT client_id, client_name_1c FROM real_orders"
+    ).fetchall()
+    db_system_docs = sum(1 for r in all_rows if _is_system_non_client(r["client_name_1c"]))
     conn.close()
+
+    db_real_client_docs = db_total_docs - db_system_docs
+    # Matched docs that are NOT system names (a matched system doc would be
+    # weird but not impossible if someone aliased it in allowed_clients).
+    db_real_client_matched = sum(
+        1 for r in all_rows
+        if r["client_id"] is not None and not _is_system_non_client(r["client_name_1c"])
+    )
+    real_match_pct = (
+        (db_real_client_matched / db_real_client_docs * 100.0)
+        if db_real_client_docs else 0.0
+    )
 
     relinked_total = relinked_by_id_1c + relinked_by_name
     return {
@@ -1010,4 +1033,10 @@ def relink_real_orders() -> dict:
         "db_total_docs": db_total_docs,
         "db_matched_docs": db_matched_docs,
         "db_unmatched_docs": db_total_docs - db_matched_docs,
+        # "Real client" view — the one that matters for data quality reporting
+        "db_system_docs": db_system_docs,
+        "db_real_client_docs": db_real_client_docs,
+        "db_real_client_matched": db_real_client_matched,
+        "db_real_client_unmatched": db_real_client_docs - db_real_client_matched,
+        "db_real_client_match_pct": round(real_match_pct, 1),
     }

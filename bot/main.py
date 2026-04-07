@@ -2024,6 +2024,16 @@ async def cmd_relinkrealorders(message: types.Message):
         unmatched_after = result.get("db_unmatched_docs", 0)
         match_pct = (matched / total_docs * 100) if total_docs else 0
 
+        # "Real client" view — excludes 1C placeholder / walk-in cash / aggregate
+        # buckets (Наличка, Организации (переч.), ИСПРАВЛЕНИЕ, etc.) from the
+        # denominator. This is the number ops cares about — unmatched placeholder
+        # docs are not a data quality problem.
+        sys_docs = result.get("db_system_docs", 0)
+        real_total = result.get("db_real_client_docs", 0)
+        real_matched = result.get("db_real_client_matched", 0)
+        real_unmatched = result.get("db_real_client_unmatched", 0)
+        real_pct = result.get("db_real_client_match_pct", 0)
+
         lines = [
             "✅ <b>Qayta bog'lash tugadi</b>\n",
             f"🔍 Skanerlangan: {result.get('scanned', 0)}",
@@ -2033,7 +2043,13 @@ async def cmd_relinkrealorders(message: types.Message):
             f"❌ Hali ham bog'lanmagan: {result.get('still_unmatched', 0)}",
             f"⚪ Tizim hujjatlari o'tkazildi: {result.get('skipped_system', 0)}",
             "",
-            f"💾 Jami: {total_docs} hujjat",
+            "<b>📊 Haqiqiy mijozlar (placeholder'larsiz):</b>",
+            f"💾 Jami: {real_total} hujjat",
+            f"✅ Bog'langan: {real_matched} ({real_pct:.1f}%)",
+            f"❌ Bog'lanmagan: {real_unmatched}",
+            "",
+            "<b>📋 Barcha hujjatlar (xom hisob):</b>",
+            f"💾 Jami: {total_docs} (shundan {sys_docs} — placeholder)",
             f"✅ Bog'langan: {matched} ({match_pct:.1f}%)",
             f"❌ Bog'lanmagan: {unmatched_after}",
         ]
