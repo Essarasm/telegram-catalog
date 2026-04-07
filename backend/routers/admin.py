@@ -563,6 +563,7 @@ def receivables(
     total_receivable = 0
     aging = {"current": 0, "30_60": 0, "60_90": 0, "90_plus": 0}
     client_count = {"current": 0, "30_60": 0, "60_90": 0, "90_plus": 0}
+    aging_clients = {"current": [], "30_60": [], "60_90": [], "90_plus": []}
 
     for r in rows:
         balance = r["balance"]
@@ -584,19 +585,28 @@ def receivables(
                 break
 
         if months_unpaid <= 1:
-            aging["current"] += balance
-            client_count["current"] += 1
+            bucket = "current"
         elif months_unpaid <= 2:
-            aging["30_60"] += balance
-            client_count["30_60"] += 1
+            bucket = "30_60"
         elif months_unpaid <= 3:
-            aging["60_90"] += balance
-            client_count["60_90"] += 1
+            bucket = "60_90"
         else:
-            aging["90_plus"] += balance
-            client_count["90_plus"] += 1
+            bucket = "90_plus"
+
+        aging[bucket] += balance
+        client_count[bucket] += 1
+        aging_clients[bucket].append({
+            "name": client_name,
+            "balance": round(balance, 2),
+            "months_unpaid": months_unpaid,
+        })
 
     conn.close()
+
+    # Sort each bucket by balance descending and keep top 10
+    for bucket in aging_clients:
+        aging_clients[bucket].sort(key=lambda x: x["balance"], reverse=True)
+        aging_clients[bucket] = aging_clients[bucket][:10]
 
     return {
         "ok": True,
@@ -606,6 +616,13 @@ def receivables(
         "total_clients_with_debt": len(rows),
         "aging": {k: round(v, 2) for k, v in aging.items()},
         "aging_client_count": client_count,
+        "aging_top_clients": aging_clients,
+        "methodology": (
+            "Aging buckets are based on consecutive months without any payment "
+            "(period_credit = 0). 'Current' = paid within last month. '30-60' = "
+            "1-2 months without payments. '60-90' = 2-3 months. '90+' = 3+ months. "
+            "Calculated from monthly 1C 'оборотно-сальдовая' data, not invoice dates."
+        ),
     }
 
 
@@ -746,9 +763,20 @@ def demand_signals(
 
 @router.get("/stock-status")
 def stock_status(admin_key: str = Query(...)):
-    """Enhanced stock overview with full item lists for each category."""
+    """Enhanced stock overview with full item lists for each category.
+
+    Returns stock_updated_at per item and a `stale_items` list:
+    items not present in the most recent stock upload (likely 0 in 1C
+    but excluded from "Прайс лист" export, leaving stale values in DB).
+    """
     _check_admin(admin_key)
     conn = get_db()
+
+    # Most recent stock upload timestamp — items NOT updated at this exact
+    # time are considered stale (missing from latest upload).
+    latest_upload = conn.execute(
+        "SELECT MAX(stock_updated_at) FROM products WHERE stock_updated_at IS NOT NULL"
+    ).fetchone()[0]
 
     total_products = conn.execute(
         "SELECT COUNT(*) FROM products WHERE is_active = 1"
@@ -774,11 +802,27 @@ def stock_status(admin_key: str = Query(...)):
         "SELECT COUNT(*) FROM products WHERE is_active = 1 AND image_path IS NOT NULL AND image_path != ''"
     ).fetchone()[0]
 
+    # Stale items: have stock data but were NOT in the latest upload.
+    # Most likely 0 in 1C (excluded from "Прайс лист" export which only
+    # lists in-stock items), so DB still shows old positive value.
+    stale_count = 0
+    if latest_upload:
+        # Anything updated >5 minutes before latest upload is from a
+        # previous upload session = not in current 1C export
+        stale_count = conn.execute(
+            """SELECT COUNT(*) FROM products
+               WHERE is_active = 1
+                 AND stock_quantity > 0
+                 AND stock_updated_at IS NOT NULL
+                 AND datetime(stock_updated_at) < datetime(?, '-5 minutes')""",
+            (latest_upload,)
+        ).fetchone()[0]
+
     # Full list of low stock items (for uncle's review — Cyrillic names)
     low_stock_items = conn.execute("""
         SELECT p.id, p.name as name_1c, COALESCE(p.name_display, p.name) as display_name,
                pr.name as producer, c.name as category,
-               p.stock_quantity, p.price_uzs, p.price_usd
+               p.stock_quantity, p.price_uzs, p.price_usd, p.stock_updated_at
         FROM products p
         JOIN producers pr ON pr.id = p.producer_id
         JOIN categories c ON c.id = p.category_id
@@ -790,7 +834,7 @@ def stock_status(admin_key: str = Query(...)):
     out_of_stock_items = conn.execute("""
         SELECT p.id, p.name as name_1c, COALESCE(p.name_display, p.name) as display_name,
                pr.name as producer, c.name as category,
-               p.stock_quantity, p.price_uzs, p.price_usd
+               p.stock_quantity, p.price_uzs, p.price_usd, p.stock_updated_at
         FROM products p
         JOIN producers pr ON pr.id = p.producer_id
         JOIN categories c ON c.id = p.category_id
@@ -802,13 +846,32 @@ def stock_status(admin_key: str = Query(...)):
     no_data_items = conn.execute("""
         SELECT p.id, p.name as name_1c, COALESCE(p.name_display, p.name) as display_name,
                pr.name as producer, c.name as category,
-               p.price_uzs, p.price_usd
+               p.price_uzs, p.price_usd, p.stock_updated_at
         FROM products p
         JOIN producers pr ON pr.id = p.producer_id
         JOIN categories c ON c.id = p.category_id
         WHERE p.is_active = 1 AND p.stock_quantity IS NULL
         ORDER BY pr.name, p.name
     """).fetchall()
+
+    # Stale items: stock > 0 but not updated in the latest upload.
+    # These probably have 0 in 1C but were excluded from the export.
+    stale_items = []
+    if latest_upload:
+        stale_items = conn.execute(
+            """SELECT p.id, p.name as name_1c, COALESCE(p.name_display, p.name) as display_name,
+                      pr.name as producer, c.name as category,
+                      p.stock_quantity, p.price_uzs, p.price_usd, p.stock_updated_at
+               FROM products p
+               JOIN producers pr ON pr.id = p.producer_id
+               JOIN categories c ON c.id = p.category_id
+               WHERE p.is_active = 1
+                 AND p.stock_quantity > 0
+                 AND p.stock_updated_at IS NOT NULL
+                 AND datetime(p.stock_updated_at) < datetime(?, '-5 minutes')
+               ORDER BY p.stock_quantity ASC, p.name""",
+            (latest_upload,)
+        ).fetchall()
 
     # Top ordered products (from app orders)
     top_ordered_app = conn.execute("""
@@ -888,6 +951,7 @@ def stock_status(admin_key: str = Query(...)):
 
     return {
         "ok": True,
+        "latest_upload": latest_upload,
         "stock_summary": {
             "total": total_products,
             "in_stock": in_stock,
@@ -895,10 +959,12 @@ def stock_status(admin_key: str = Query(...)):
             "out_of_stock": out_of_stock,
             "no_data": no_data,
             "with_photos": with_photos,
+            "stale": stale_count,
         },
         "low_stock_items": [dict(r) for r in low_stock_items],
         "out_of_stock_items": [dict(r) for r in out_of_stock_items],
         "no_data_items": [dict(r) for r in no_data_items],
+        "stale_items": [dict(r) for r in stale_items],
         "top_ordered_app": [dict(r) for r in top_ordered_app],
         "top_clicked": [dict(r) for r in top_clicked],
         "categories": [dict(r) for r in categories],

@@ -886,9 +886,19 @@
                         </div>
                         <div class="row-item">
                             <div class="chart-container">
-                                <div class="chart-title">Receivable Aging</div>
+                                <div class="chart-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span>Receivable Aging <span id="agingInfoIcon" title="" style="cursor: help; color: #8b8fa3; font-size: 13px;">ⓘ</span></span>
+                                    <button id="agingDetailToggle" onclick="toggleAgingDetail()" style="background: none; border: 1px solid #2a2d3a; color: #8b8fa3; font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer;">Details ▾</button>
+                                </div>
                                 <div class="chart-wrapper-250">
                                     <canvas id="agingChart"></canvas>
+                                </div>
+                                <div id="agingMeta" style="font-size: 11px; color: #8b8fa3; padding: 4px 0; text-align: center;">—</div>
+                                <div id="agingDetailPanel" style="display: none; margin-top: 8px;">
+                                    <div style="font-size: 11px; color: #8b8fa3; padding: 6px 8px; background: rgba(168, 85, 247, 0.06); border-radius: 4px; margin-bottom: 8px;">
+                                        <strong>Methodology:</strong> Buckets are based on consecutive months without any payment (period_credit = 0) in 1C 'оборотно-сальдовая' data. <strong>Current</strong> = paid within last month. <strong>30-60</strong> = 1-2 months silent. <strong>60-90</strong> = 2-3 months. <strong>90+</strong> = 3+ months. Not based on individual invoice dates.
+                                    </div>
+                                    <div id="agingTopClients"></div>
                                 </div>
                             </div>
                         </div>
@@ -960,6 +970,11 @@
                         <div class="kpi-card clickable" data-inventory-filter="out_no_data">
                             <div class="kpi-label">Out/No Data</div>
                             <div class="kpi-value" id="kpi-out-no-data">-</div>
+                        </div>
+                        <div class="kpi-card clickable" data-inventory-filter="stale" title="Items not present in the latest stock upload — likely 0 in 1C but excluded from the price list export">
+                            <div class="kpi-label">Stale ⚠️</div>
+                            <div class="kpi-value" id="kpi-stale">-</div>
+                            <div class="kpi-sub" id="kpi-stale-sub" style="font-size: 11px; color: #8b8fa3;">Last upload: -</div>
                         </div>
                     </div>
 
@@ -1385,7 +1400,7 @@
             updateKpis();
             drawRevenueChart();
             drawCollectionChart(collData);
-            drawAgingChart(cachedReceivables.aging || {});
+            drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
         }
 
         function getFullMonths() {
@@ -1614,13 +1629,20 @@
             });
         }
 
-        function drawAgingChart(aging) {
+        function drawAgingChart(aging, receivables) {
             const ctx = document.getElementById('agingChart').getContext('2d');
             if (charts.aging) charts.aging.destroy();
 
-            const agingLabels = ['Current', '30-60 Days', '60-90 Days', '90+ Days'];
+            const counts = (receivables && receivables.aging_client_count) || {};
+            const agingLabels = [
+                `Current (${counts.current || 0})`,
+                `30-60d (${counts['30_60'] || 0})`,
+                `60-90d (${counts['60_90'] || 0})`,
+                `90+d (${counts['90_plus'] || 0})`,
+            ];
             const agingValues = [aging.current || 0, aging['30_60'] || 0, aging['60_90'] || 0, aging['90_plus'] || 0];
             const colors = ['#22c55e', '#f59e0b', '#ef7f1e', '#ef4444'];
+            const total = agingValues.reduce((a, b) => a + b, 0);
 
             charts.aging = new Chart(ctx, {
                 type: 'doughnut',
@@ -1636,10 +1658,70 @@
                 options: {
                     responsive: true, maintainAspectRatio: false,
                     plugins: {
-                        legend: { position: 'bottom', labels: { color: '#8b8fa3', padding: 20 } }
+                        legend: { position: 'bottom', labels: { color: '#8b8fa3', padding: 12, font: { size: 11 } } },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => {
+                                    const val = ctx.parsed;
+                                    const pct = total > 0 ? ((val / total) * 100).toFixed(1) : 0;
+                                    return `${ctx.label}: ${fmt(val)} (${pct}%)`;
+                                }
+                            }
+                        }
                     }
                 }
             });
+
+            // Update meta + tooltip + detail panel
+            if (receivables) {
+                const meta = document.getElementById('agingMeta');
+                if (meta) {
+                    const period = receivables.latest_period || '—';
+                    const numClients = receivables.total_clients_with_debt || 0;
+                    meta.innerHTML = `${numClients} clients with outstanding debt &nbsp;·&nbsp; as of ${period}`;
+                }
+                const infoIcon = document.getElementById('agingInfoIcon');
+                if (infoIcon && receivables.methodology) {
+                    infoIcon.title = receivables.methodology;
+                }
+                renderAgingTopClients(receivables);
+            }
+        }
+
+        function renderAgingTopClients(receivables) {
+            const container = document.getElementById('agingTopClients');
+            if (!container) return;
+            const topByBucket = receivables.aging_top_clients || {};
+            const buckets = [
+                { key: 'current', label: 'Current (paid recently)', color: '#22c55e' },
+                { key: '30_60', label: '30-60 days silent', color: '#f59e0b' },
+                { key: '60_90', label: '60-90 days silent', color: '#ef7f1e' },
+                { key: '90_plus', label: '90+ days silent', color: '#ef4444' },
+            ];
+            let html = '';
+            buckets.forEach(b => {
+                const list = topByBucket[b.key] || [];
+                if (list.length === 0) return;
+                html += `<div style="margin-bottom: 8px;">
+                    <div style="font-size: 11px; color: ${b.color}; font-weight: 600; padding: 4px 0;">● ${b.label}</div>`;
+                list.slice(0, 5).forEach(c => {
+                    html += `<div style="font-size: 11px; color: #cbd5e0; padding: 2px 8px; display: flex; justify-content: space-between;">
+                        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%;">${c.name}</span>
+                        <span style="color: ${b.color}; font-weight: 600;">${fmt(c.balance)}</span>
+                    </div>`;
+                });
+                html += '</div>';
+            });
+            container.innerHTML = html || '<div style="font-size: 11px; color: #8b8fa3; padding: 6px;">No client data available.</div>';
+        }
+
+        function toggleAgingDetail() {
+            const panel = document.getElementById('agingDetailPanel');
+            const btn = document.getElementById('agingDetailToggle');
+            if (!panel) return;
+            const isHidden = panel.style.display === 'none' || !panel.style.display;
+            panel.style.display = isHidden ? 'block' : 'none';
+            if (btn) btn.textContent = isHidden ? 'Details ▴' : 'Details ▾';
         }
 
         // ==================== CLIENT PORTFOLIO ====================
@@ -1796,6 +1878,14 @@
             document.getElementById('kpi-low-stock').textContent = fmt(summary.low_stock || 0);
             document.getElementById('kpi-out-no-data').textContent = fmt((summary.out_of_stock || 0) + (summary.no_data || 0));
 
+            const staleEl = document.getElementById('kpi-stale');
+            const staleSubEl = document.getElementById('kpi-stale-sub');
+            if (staleEl) staleEl.textContent = fmt(summary.stale || 0);
+            if (staleSubEl) {
+                const lastUpload = stock.latest_upload || null;
+                staleSubEl.textContent = lastUpload ? `Upload: ${String(lastUpload).split(' ')[0]}` : 'No uploads yet';
+            }
+
             // Stock distribution chart
             drawStockDistributionChart(summary);
 
@@ -1908,6 +1998,9 @@
             } else if (inventoryFilterMode === 'out_no_data') {
                 items = (inventoryData.out_of_stock_items || []).concat(inventoryData.no_data_items || []);
                 title = 'Out of Stock & No Data Products';
+            } else if (inventoryFilterMode === 'stale') {
+                items = inventoryData.stale_items || [];
+                title = 'Stale Stock — Missing from Latest Upload';
             }
 
             document.getElementById('inventoryDetailTitle').textContent = title;
@@ -1916,32 +2009,73 @@
             const tbody = document.getElementById('inventoryTableBody');
 
             if (items.length === 0) {
-                thead.innerHTML = '<tr><th colspan="6" style="text-align: center; color: #8b8fa3; padding: 20px;">No items to display</th></tr>';
+                thead.innerHTML = '<tr><th colspan="9" style="text-align: center; color: #8b8fa3; padding: 20px;">No items to display</th></tr>';
                 tbody.innerHTML = '';
                 return;
             }
 
+            // Stale = item not present in the most recent stock upload
+            const latestUpload = inventoryData.latest_upload || null;
+            const isStale = (item) => {
+                if (!latestUpload || !item.stock_updated_at) return false;
+                const itemTime = new Date(item.stock_updated_at).getTime();
+                const latestTime = new Date(latestUpload).getTime();
+                return (latestTime - itemTime) > 5 * 60 * 1000;
+            };
+
+            // Color/status indicator based on quantity AND staleness
+            const stockIndicator = (item) => {
+                if (isStale(item)) return { emoji: '⚠️', color: '#a855f7', label: 'Stale (likely 0 in 1C)' };
+                const q = item.stock_quantity;
+                if (q === null || q === undefined) return { emoji: '⚪', color: '#6b7280', label: 'No data' };
+                if (q === 0) return { emoji: '🔴', color: '#ef4444', label: 'Out of stock' };
+                if (q <= 10) return { emoji: '🟡', color: '#f59e0b', label: 'Low stock' };
+                return { emoji: '🟢', color: '#22c55e', label: 'In stock' };
+            };
+
+            const fmtPrice = (v) => {
+                if (v === null || v === undefined || v === 0) return '-';
+                return Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
+            };
+
+            const fmtDate = (s) => {
+                if (!s) return '—';
+                return String(s).split(' ')[0];
+            };
+
             thead.innerHTML = `
                 <tr>
+                    <th style="width: 36px;"></th>
                     <th class="table-number">#</th>
                     <th>Name (1C)</th>
                     <th>Producer</th>
                     <th>Category</th>
-                    <th>Qty</th>
-                    <th>Price (${getCurrencyLabel()})</th>
+                    <th style="text-align: right;">Qty</th>
+                    <th style="text-align: right;">Price UZS</th>
+                    <th style="text-align: right;">Price USD</th>
+                    <th>Updated</th>
                 </tr>
             `;
 
-            tbody.innerHTML = items.map((item, i) => `
-                <tr>
+            tbody.innerHTML = items.map((item, i) => {
+                const ind = stockIndicator(item);
+                const stale = isStale(item);
+                const rowStyle = stale ? 'style="background: rgba(168, 85, 247, 0.08);"' : '';
+                const staleTag = stale ? ' <span style="color: #a855f7; font-size: 11px;">(stale)</span>' : '';
+                const qtyDisplay = (item.stock_quantity !== null && item.stock_quantity !== undefined) ? item.stock_quantity : '-';
+                return `
+                <tr ${rowStyle}>
+                    <td style="text-align: center; font-size: 16px;" title="${ind.label}">${ind.emoji}</td>
                     <td class="table-number">${i + 1}</td>
-                    <td class="table-name">${item.name_1c || item.display_name || '-'}</td>
+                    <td class="table-name">${item.name_1c || item.display_name || '-'}${staleTag}</td>
                     <td class="table-producer">${item.producer || '-'}</td>
                     <td class="table-category">${item.category || '-'}</td>
-                    <td>${item.stock_quantity !== undefined ? item.stock_quantity : '-'}</td>
-                    <td>-</td>
-                </tr>
-            `).join('');
+                    <td style="text-align: right; font-weight: 600; color: ${ind.color};">${qtyDisplay}</td>
+                    <td style="text-align: right;">${fmtPrice(item.price_uzs)}</td>
+                    <td style="text-align: right;">${fmtPrice(item.price_usd)}</td>
+                    <td style="font-size: 11px; color: #8b8fa3;">${fmtDate(item.stock_updated_at)}</td>
+                </tr>`;
+            }).join('');
         }
 
         function populateTopOrderedApp() {
