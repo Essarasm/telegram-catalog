@@ -1261,6 +1261,10 @@ async def cmd_help(message: types.Message):
         "Tugagan mahsulotlarga talab signallari (default: 30 kun)\n\n"
         "<b>/realorders</b> (reply to XLS/XLSX file)\n"
         "Реализация yuklash (1C \"Реализация товаров\" — haqiqiy buyurtmalar)\n\n"
+        "<b>/unmatchedclients</b>\n"
+        "Haqiqiy buyurtmalardagi bog'lanmagan mijozlar ro'yxati (ko'p hujjatdan kam tomonga)\n\n"
+        "<b>/relinkrealorders</b>\n"
+        "Bog'lanmagan haqiqiy buyurtmalarni qayta bog'lash (allowed_clients yangilagandan keyin)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
@@ -1894,6 +1898,148 @@ async def handle_realorders_document(message: types.Message):
     if not is_admin(message):
         return
     await cmd_realorders(message)
+
+
+@dp.message(Command("unmatchedclients"))
+async def cmd_unmatchedclients(message: types.Message):
+    """Show real_orders rows where client_id is NULL, grouped by 1C name.
+
+    Ranks by doc count so ops can prioritize the biggest offenders. System
+    correction docs (ИСПРАВЛЕНИЕ / ИСПРАВЛЕНИЕ СКЛАД 2) are filtered out.
+    Use this after /realorders to see who isn't linking and in what volume.
+    """
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Bog'lanmagan mijozlar tekshirilmoqda...")
+
+    try:
+        import httpx
+
+        api_url = f"{_BASE_URL}/api/finance/unmatched-real-clients"
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(
+                api_url,
+                params={"admin_key": "rassvet2026", "limit": 30},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(
+                f"❌ Xatolik: {result.get('error', 'Unknown')}"
+            )
+            return
+
+        total_docs = result.get("db_total_docs", 0)
+        matched = result.get("db_matched_docs", 0)
+        unmatched = result.get("db_unmatched_docs", 0)
+        match_pct = (matched / total_docs * 100) if total_docs else 0
+        skipped_sys = result.get("skipped_system_docs", 0)
+        after_skip_docs = result.get("total_unmatched_docs_after_skip", 0)
+        after_skip_local = result.get("total_unmatched_local_after_skip", 0)
+        items = result.get("items", [])
+
+        lines = [
+            "📊 <b>Bog'lanmagan haqiqiy buyurtmalar</b>\n",
+            f"💾 Jami hujjatlar: {total_docs}",
+            f"✅ Bog'langan: {matched} ({match_pct:.1f}%)",
+            f"❌ Bog'lanmagan: {unmatched}",
+        ]
+        if skipped_sys:
+            lines.append(f"⚪ Tizim hujjatlari (o'tkazildi): {skipped_sys}")
+        if after_skip_local:
+            lines.append(
+                f"💴 Haqiqiy bog'lanmagan summa: {after_skip_local:,}".replace(",", " ")
+            )
+        lines.append(f"\n👥 Noyob nomlar ({len(items)}) — eng ko'p hujjatdan:")
+
+        if not items:
+            lines.append("\n🎉 Hammasi bog'langan!")
+        else:
+            for i, it in enumerate(items[:20], 1):
+                name = it["client_name_1c"] or "(empty)"
+                if len(name) > 50:
+                    name = name[:47] + "..."
+                period = it["first_seen"] or "?"
+                if it["last_seen"] and it["last_seen"] != it["first_seen"]:
+                    period = f"{it['first_seen']}…{it['last_seen']}"
+                local = it.get("total_local", 0)
+                local_str = f"{local:,}".replace(",", " ") if local else "0"
+                lines.append(
+                    f"\n{i}. <b>{html_escape(name)}</b>\n"
+                    f"   📄 {it['doc_count']} hujjat · 💴 {local_str} · {period}"
+                )
+
+        lines.append(
+            "\n\n💡 <code>/relinkrealorders</code> — agar "
+            "<code>allowed_clients</code>da nom yoki client_id_1c qo'shgan bo'lsangiz, "
+            "bog'lanmagan hujjatlarni qayta bog'lash uchun ishga tushiring."
+        )
+
+        msg = "\n".join(lines)
+        if len(msg) > 3800:
+            msg = msg[:3800] + "\n...(truncated)"
+        await status_msg.edit_text(msg, parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Unmatchedclients error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@dp.message(Command("relinkrealorders"))
+async def cmd_relinkrealorders(message: types.Message):
+    """Re-run client matching on real_orders rows with client_id IS NULL.
+
+    Uses a Python-side cyrillic-aware name comparison (unlike SQLite LOWER
+    which is ASCII-only). Safe to run multiple times — already-matched rows
+    are never touched. Typically run AFTER updating allowed_clients with
+    missing names or client_id_1c values.
+    """
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Qayta bog'lash ishlayapti...")
+
+    try:
+        import httpx
+
+        api_url = f"{_BASE_URL}/api/finance/relink-real-orders"
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                api_url,
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(
+                f"❌ Xatolik: {result.get('error', 'Unknown')}"
+            )
+            return
+
+        total_docs = result.get("db_total_docs", 0)
+        matched = result.get("db_matched_docs", 0)
+        unmatched_after = result.get("db_unmatched_docs", 0)
+        match_pct = (matched / total_docs * 100) if total_docs else 0
+
+        lines = [
+            "✅ <b>Qayta bog'lash tugadi</b>\n",
+            f"🔍 Skanerlangan: {result.get('scanned', 0)}",
+            f"🔗 Bog'landi (jami): {result.get('relinked_total', 0)}",
+            f"  • client_id_1c orqali: {result.get('relinked_by_client_id_1c', 0)}",
+            f"  • Nom orqali: {result.get('relinked_by_name', 0)}",
+            f"❌ Hali ham bog'lanmagan: {result.get('still_unmatched', 0)}",
+            f"⚪ Tizim hujjatlari o'tkazildi: {result.get('skipped_system', 0)}",
+            "",
+            f"💾 Jami: {total_docs} hujjat",
+            f"✅ Bog'langan: {matched} ({match_pct:.1f}%)",
+            f"❌ Bog'lanmagan: {unmatched_after}",
+        ]
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Relinkrealorders error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
 # ───────────────────────────────────────────

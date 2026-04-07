@@ -774,3 +774,224 @@ def find_nearby_real_orders(telegram_id: int, wishlist_created_at: str, days: in
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Admin helpers for unmatched real-order clients ────────────────────────
+#
+# Added 2026-04-07 after verifying Jan/Feb/Mar 2026 ingestion showed ~27% of
+# real-order documents with client_id = NULL. Root cause: `_try_match_client`
+# (reused from import_balances.py) compares Python-lowercased cyrillic to
+# SQLite `LOWER(TRIM(name))` — but SQLite's built-in LOWER is ASCII-only, so
+# the name-fallback branch never succeeds for cyrillic. It only links clients
+# that already have `allowed_clients.client_id_1c` populated.
+#
+# These helpers give ops two tools without touching the existing matcher:
+#   1. `list_unmatched_real_clients()` — report the damage, ranked by doc count
+#   2. `relink_real_orders()` — do a Python-side cyrillic-aware re-match pass
+#      against allowed_clients and fill in any client_id it can resolve
+#
+# System names (1C correction docs, not real clients) are skipped in BOTH
+# the listing and the relink pass so they don't clutter the report or cause
+# spurious false matches.
+
+SYSTEM_NON_CLIENT_NAMES = frozenset(
+    s.strip().lower() for s in [
+        "ИСПРАВЛЕНИЕ",
+        "ИСПРАВЛЕНИЕ СКЛАД 2",
+    ]
+)
+
+
+def _py_normalize_client_name(name: Optional[str]) -> str:
+    """Python-side normalization for cyrillic-aware client-name comparison.
+
+    Unlike SQLite's LOWER() (ASCII-only), Python `str.lower()` folds cyrillic
+    case correctly. We also fold ё→е and collapse whitespace, matching the
+    spirit of `_norm()` used elsewhere in this file.
+    """
+    if name is None:
+        return ""
+    s = str(name).strip().lower().replace("ё", "е")
+    # Collapse internal whitespace runs
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _is_system_non_client(name: Optional[str]) -> bool:
+    """True if the name is a known 1C correction/adjustment marker, not a real client."""
+    if not name:
+        return False
+    return _py_normalize_client_name(name) in SYSTEM_NON_CLIENT_NAMES
+
+
+def list_unmatched_real_clients(limit: int = 200) -> dict:
+    """Report real_orders rows with client_id IS NULL, grouped by client_name_1c.
+
+    Returns per-name stats (doc_count, total_local, first_seen, last_seen) sorted
+    by doc_count DESC so operators can prioritize the biggest offenders. System
+    non-client markers (e.g. ИСПРАВЛЕНИЕ) are excluded from the report.
+    """
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT client_name_1c,
+                  COUNT(*) AS doc_count,
+                  SUM(COALESCE(total_sum, 0)) AS total_local,
+                  SUM(COALESCE(total_sum_currency, 0)) AS total_currency,
+                  MIN(doc_date) AS first_seen,
+                  MAX(doc_date) AS last_seen
+           FROM real_orders
+           WHERE client_id IS NULL
+           GROUP BY client_name_1c
+           ORDER BY doc_count DESC, total_local DESC"""
+    ).fetchall()
+
+    total_docs_unmatched = 0
+    total_local_unmatched = 0.0
+    skipped_system = 0
+    items: List[dict] = []
+
+    for r in rows:
+        name = r["client_name_1c"] or ""
+        if _is_system_non_client(name):
+            skipped_system += int(r["doc_count"] or 0)
+            continue
+        doc_count = int(r["doc_count"] or 0)
+        total_local = float(r["total_local"] or 0)
+        total_docs_unmatched += doc_count
+        total_local_unmatched += total_local
+        if len(items) < limit:
+            items.append({
+                "client_name_1c": name,
+                "doc_count": doc_count,
+                "total_local": round(total_local),
+                "total_currency": round(float(r["total_currency"] or 0), 2),
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+            })
+
+    # Overall DB totals for context
+    db_total_docs = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
+    db_matched_docs = conn.execute(
+        "SELECT COUNT(*) FROM real_orders WHERE client_id IS NOT NULL"
+    ).fetchone()[0]
+    conn.close()
+
+    return {
+        "ok": True,
+        "db_total_docs": db_total_docs,
+        "db_matched_docs": db_matched_docs,
+        "db_unmatched_docs": db_total_docs - db_matched_docs,
+        "unique_unmatched_names": len(items),  # after skip list
+        "total_unmatched_docs_after_skip": total_docs_unmatched,
+        "total_unmatched_local_after_skip": round(total_local_unmatched),
+        "skipped_system_docs": skipped_system,
+        "items": items,
+    }
+
+
+def relink_real_orders() -> dict:
+    """Re-run client matching for every real_orders row where client_id IS NULL.
+
+    Uses a cyrillic-aware Python-side normalization (unlike the SQLite LOWER
+    used in `_try_match_client`), which can resolve most name-only matches
+    that the original import missed. This does NOT touch the existing matcher
+    used by fresh imports — it's purely a remediation sweep.
+
+    Matching strategy per unmatched row, in order:
+      1. If `client_id_1c` in allowed_clients equals the raw 1C name (exact) → match
+      2. Python-normalized (lower, ё→е, whitespace-collapsed) equality against
+         allowed_clients.name
+      3. Else leave unmatched.
+
+    Returns a summary of the sweep. Safe to run multiple times; rows already
+    matched are never touched.
+    """
+    conn = get_db()
+    # Load every allowed_client once, then build two in-memory indexes:
+    #   id_1c_index: raw client_id_1c → allowed_clients.id
+    #   name_index:  py-normalized name → allowed_clients.id (first wins on collision)
+    allowed = conn.execute(
+        "SELECT id, name, client_id_1c FROM allowed_clients"
+    ).fetchall()
+
+    id_1c_index: Dict[str, int] = {}
+    name_index: Dict[str, int] = {}
+    for a in allowed:
+        if a["client_id_1c"]:
+            id_1c_index.setdefault(str(a["client_id_1c"]), a["id"])
+        if a["name"]:
+            norm = _py_normalize_client_name(a["name"])
+            if norm and norm not in name_index:
+                name_index[norm] = a["id"]
+
+    # Get all distinct unmatched (name, list of row ids) pairs
+    unmatched_rows = conn.execute(
+        """SELECT id, client_name_1c
+           FROM real_orders
+           WHERE client_id IS NULL"""
+    ).fetchall()
+
+    relinked_by_id_1c = 0
+    relinked_by_name = 0
+    still_unmatched = 0
+    skipped_system = 0
+    # Per-name decision cache (big speedup — many rows per name)
+    decision_cache: Dict[str, Optional[int]] = {}
+
+    for row in unmatched_rows:
+        raw_name = row["client_name_1c"] or ""
+        if _is_system_non_client(raw_name):
+            skipped_system += 1
+            continue
+
+        if raw_name in decision_cache:
+            resolved = decision_cache[raw_name]
+        else:
+            resolved = None
+            # Strategy 1: raw name matches some client_id_1c literally
+            if raw_name in id_1c_index:
+                resolved = id_1c_index[raw_name]
+                decision_cache[raw_name] = resolved
+            else:
+                norm = _py_normalize_client_name(raw_name)
+                if norm and norm in name_index:
+                    resolved = name_index[norm]
+                decision_cache[raw_name] = resolved
+
+        if resolved is None:
+            still_unmatched += 1
+            continue
+
+        conn.execute(
+            "UPDATE real_orders SET client_id = ? WHERE id = ?",
+            (resolved, row["id"]),
+        )
+        # Bookkeeping: we don't know which strategy won in this branch after
+        # the cache hit, so approximate by rechecking once. Cheap enough.
+        if raw_name in id_1c_index and id_1c_index[raw_name] == resolved:
+            relinked_by_id_1c += 1
+        else:
+            relinked_by_name += 1
+
+    conn.commit()
+
+    # Post-sweep totals
+    db_total_docs = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
+    db_matched_docs = conn.execute(
+        "SELECT COUNT(*) FROM real_orders WHERE client_id IS NOT NULL"
+    ).fetchone()[0]
+    conn.close()
+
+    relinked_total = relinked_by_id_1c + relinked_by_name
+    return {
+        "ok": True,
+        "scanned": len(unmatched_rows),
+        "relinked_total": relinked_total,
+        "relinked_by_client_id_1c": relinked_by_id_1c,
+        "relinked_by_name": relinked_by_name,
+        "still_unmatched": still_unmatched,
+        "skipped_system": skipped_system,
+        "db_total_docs": db_total_docs,
+        "db_matched_docs": db_matched_docs,
+        "db_unmatched_docs": db_total_docs - db_matched_docs,
+    }

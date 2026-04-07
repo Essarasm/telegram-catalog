@@ -15,6 +15,8 @@ from backend.services.import_debts import (
 )
 from backend.services.import_real_orders import (
     apply_real_orders_import,
+    list_unmatched_real_clients,
+    relink_real_orders,
 )
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
@@ -111,6 +113,41 @@ async def import_real_orders(
 
     result = apply_real_orders_import(file_bytes, filename_hint=file.filename or "")
     return result
+
+
+@router.get("/unmatched-real-clients")
+def unmatched_real_clients(
+    admin_key: str = Query(""),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """List real_orders rows where client_id IS NULL, grouped by client_name_1c.
+
+    Used by the /unmatchedclients bot command to report which 1C client names
+    are not linking to any allowed_clients row, ranked by doc count so ops can
+    prioritize the biggest offenders (they tend to be heavy repeat buyers with
+    unofficial-name brackets like "/ЯНГИ ЗАПЧ. БОЗОР/").
+
+    System-only 1C markers (ИСПРАВЛЕНИЕ, ИСПРАВЛЕНИЕ СКЛАД 2) are filtered out
+    — they are correction documents, not real clients.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return list_unmatched_real_clients(limit=limit)
+
+
+@router.post("/relink-real-orders")
+def relink_real_orders_endpoint(
+    admin_key: str = Form(""),
+):
+    """Re-run client matching for every real_orders row where client_id IS NULL.
+
+    Uses a Python-side cyrillic-aware normalization (the fresh-import matcher
+    uses SQLite LOWER() which is ASCII-only and misses cyrillic name matches).
+    Safe to run repeatedly — already-matched rows are never touched.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return relink_real_orders()
 
 
 @router.get("/balance")
