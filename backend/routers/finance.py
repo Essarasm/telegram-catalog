@@ -18,6 +18,7 @@ from backend.services.import_real_orders import (
     list_unmatched_real_clients,
     relink_real_orders,
 )
+from backend.services.import_client_master import apply_client_master_import
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
 
@@ -148,6 +149,31 @@ def relink_real_orders_endpoint(
     if admin_key != "rassvet2026":
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return relink_real_orders()
+
+
+@router.post("/import-client-master")
+async def import_client_master(
+    file: UploadFile = File(...),
+    admin_key: str = Form(""),
+):
+    """Import the curated Client Master spreadsheet into allowed_clients.
+
+    Used by the /clientmaster bot command. Reads `Contacts` (cyrillic 1C names
+    + multi-phone) and `Usto` (contractor sub-clients) sheets, expands each row
+    to one allowed_clients row per phone, and falls back to a phoneless row
+    keyed by cyrillic name when no phone is present (so the cyrillic-aware
+    relink_real_orders() pass can still find the entry).
+
+    Idempotent — re-running with the same xlsx updates existing rows in place
+    (non-empty source values do not overwrite existing populated DB fields with
+    blanks). Designed to be run repeatedly as ops re-export the spreadsheet.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    file_bytes = await file.read()
+    if not file_bytes:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+    return apply_client_master_import(file_bytes, filename_hint=file.filename or "")
 
 
 @router.get("/balance")

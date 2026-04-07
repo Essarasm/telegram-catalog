@@ -1265,6 +1265,8 @@ async def cmd_help(message: types.Message):
         "Haqiqiy buyurtmalardagi bog'lanmagan mijozlar ro'yxati (ko'p hujjatdan kam tomonga)\n\n"
         "<b>/relinkrealorders</b>\n"
         "Bog'lanmagan haqiqiy buyurtmalarni qayta bog'lash (allowed_clients yangilagandan keyin)\n\n"
+        "<b>/clientmaster</b> (reply to XLSX file)\n"
+        "Client Master jadvalini allowed_clients ga import qilish (1C cyrillic nomlari + telefonlar)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
@@ -2040,6 +2042,123 @@ async def cmd_relinkrealorders(message: types.Message):
     except Exception as e:
         logger.error(f"Relinkrealorders error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+# ───────────────────────────────────────────
+# /clientmaster — import curated Client Master xlsx into allowed_clients
+# ───────────────────────────────────────────
+
+@dp.message(Command("clientmaster"))
+async def cmd_clientmaster(message: types.Message):
+    """Import the curated Client Master spreadsheet into allowed_clients.
+
+    Reply to an XLSX file with /clientmaster, or send the file with
+    /clientmaster as the caption. Reads `Contacts` (cyrillic 1C names +
+    multi-phone) and `Usto` (contractor sub-clients). Idempotent — re-running
+    updates existing rows in place. After this lands, run /relinkrealorders
+    to sweep up real_orders that were unmatched due to missing cyrillic names.
+    """
+    if not is_admin(message):
+        return
+
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "Client Master XLSX faylni\n"
+            "/clientmaster caption bilan yuboring.\n\n"
+            "Yoki faylga javob sifatida /clientmaster yozing.\n\n"
+            "💡 Idempotent — bir xil faylni qayta yuklasangiz,\n"
+            "mavjud yozuvlar yangilanadi (dublikat bo'lmaydi).",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.lower().endswith((".xlsx", ".xls")):
+        await message.reply("❌ Faqat Excel (.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply("⏳ Client Master yuklanmoqda...")
+
+    try:
+        import httpx
+
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        api_url = f"{_BASE_URL}/api/finance/import-client-master"
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(
+                f"❌ Xatolik: {result.get('error', 'Unknown')}"
+            )
+            return
+
+        totals = result.get("totals", {})
+        sheets = result.get("sheets", [])
+
+        lines = [
+            "✅ <b>Client Master yuklandi!</b>\n",
+            f"➕ Yangi (telefon bilan): {totals.get('inserted', 0)}",
+            f"➕ Yangi (telefonsiz, nom bo'yicha): {totals.get('phoneless_inserted', 0)}",
+            f"♻️ Yangilangan: {totals.get('updated', 0)}",
+            f"⚪ O'tkazib yuborilgan (bo'sh): {totals.get('skipped_empty', 0)}",
+            "",
+        ]
+
+        for sh in sheets:
+            sheet_name = sh.get("sheet", "?")
+            if sh.get("skipped"):
+                lines.append(f"📋 <b>{sheet_name}</b>: {sh['skipped']}")
+                continue
+            lines.append(
+                f"📋 <b>{sheet_name}</b>: {sh.get('rows_seen', 0)} qator → "
+                f"+{sh.get('inserted_with_phone', 0)} (tel.) "
+                f"+{sh.get('phoneless_inserted', 0)} (nom) "
+                f"~{sh.get('updated', 0)}"
+            )
+
+        approved = result.get("users_retroactively_approved", 0)
+        if approved:
+            lines.append(f"\n👤 Telefon bo'yicha tasdiqlandi: {approved} foydalanuvchi")
+
+        lines.append(
+            f"\n💾 DBda jami: {result.get('db_total_allowed_clients', 0)} mijoz "
+            f"({result.get('db_distinct_client_names', 0)} noyob nom)"
+        )
+        lines.append(
+            "\n💡 <code>/relinkrealorders</code> — endi haqiqiy buyurtmalarni qayta bog'lang."
+        )
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Clientmaster import error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@dp.message(F.document & F.caption.startswith("/clientmaster"))
+async def handle_clientmaster_document(message: types.Message):
+    """Handle XLSX file sent with /clientmaster as caption."""
+    if not is_admin(message):
+        return
+    await cmd_clientmaster(message)
 
 
 # ───────────────────────────────────────────
