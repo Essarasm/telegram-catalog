@@ -53,6 +53,7 @@ export function useCart() {
             price: product.price,
             currency: product.currency,
             unit: product.unit,
+            weight: Number(product.weight) || 0,
             quantity: 1,
           }];
 
@@ -166,5 +167,18 @@ export function useCart() {
     return acc;
   }, {});
 
-  return { items, loading, addItem, removeItem, restoreItem, updateQuantity, clearCart, reloadCart, totalCount, totals };
+  // Total cart weight (kg). Items without a known weight are skipped from the
+  // sum but counted separately so the UI can warn the user that the figure
+  // is approximate.
+  const totalWeight = items.reduce((sum, i) => {
+    const w = Number(i.weight) || 0;
+    return w > 0 ? sum + w * i.quantity : sum;
+  }, 0);
+  const itemsMissingWeight = items.filter(i => !(Number(i.weight) > 0)).length;
+
+  return {
+    items, loading,
+    addItem, removeItem, restoreItem, updateQuantity, clearCart, reloadCart,
+    totalCount, totals, totalWeight, itemsMissingWeight,
+  };
 }

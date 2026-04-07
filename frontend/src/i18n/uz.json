@@ -32,6 +32,8 @@
   "remove_item": "Mahsulotni o'chirish",
   "item_removed": "Mahsulot o'chirildi",
   "undo": "Bekor qilish",
+  "total_weight": "Jami og'irlik",
+  "weight_missing_some": "{count} ta mahsulotda og'irlik ko'rsatilmagan",
   "clear_cart": "Savatni tozalash",
   "pieces": "dona",
   "report_issue": "Xatolik xabari",

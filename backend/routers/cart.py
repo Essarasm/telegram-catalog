@@ -24,7 +24,7 @@ def get_cart(user_id: int = Query(...)):
     rows = conn.execute(
         """SELECT c.product_id, c.quantity,
                   p.name, p.name_display, p.unit,
-                  p.price_usd, p.price_uzs, p.image_path
+                  p.price_usd, p.price_uzs, p.weight, p.image_path
            FROM cart_items c
            JOIN products p ON p.id = c.product_id
            WHERE c.user_id = ?
@@ -43,6 +43,7 @@ def get_cart(user_id: int = Query(...)):
             "unit": r["unit"] or "",
             "price": r["price_usd"] if has_usd else (r["price_uzs"] or 0),
             "currency": "USD" if has_usd else "UZS",
+            "weight": float(r["weight"] or 0),
             "quantity": r["quantity"],
         })
     return {"items": items}

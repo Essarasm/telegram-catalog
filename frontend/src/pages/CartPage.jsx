@@ -327,6 +327,22 @@ export default function CartPage({ cart }) {
             </span>
           </div>
         ))}
+
+        {/* Total weight — helps users decide on delivery (own car vs ours) */}
+        {cart.totalWeight > 0 && (
+          <div className="flex justify-between items-center py-1 mt-1 border-t border-tg-hint/15 pt-2">
+            <span className="text-base font-semibold">{t.total_weight}</span>
+            <span className="text-lg font-bold text-tg-text">
+              {cart.itemsMissingWeight > 0 ? '~' : ''}{cart.totalWeight.toFixed(1)} kg
+            </span>
+          </div>
+        )}
+        {cart.itemsMissingWeight > 0 && (
+          <div className="text-[11px] text-tg-hint italic mt-1">
+            {t.weight_missing_some.replace('{count}', cart.itemsMissingWeight)}
+          </div>
+        )}
+
         <div className="text-xs text-tg-hint mt-2">
           {cart.totalCount} {t.products_count}
         </div>
