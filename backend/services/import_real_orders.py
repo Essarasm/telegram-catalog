@@ -60,9 +60,13 @@ _HEADER_FIELDS = {
 }
 
 _ITEM_FIELDS = {
-    "line_no":          ["№ стр.", "№ стр", "стр."],
-    "product_name_1c":  ["товар", "номенклатура"],
-    "quantity":         ["количество", "кол-во"],
+    "line_no":          ["№ стр.", "№ стр", "стр.", "№"],
+    "product_name_1c":  [
+        "товар", "товары", "номенклатура",
+        "наименование", "наименование товара",
+        "наименование номенклатуры", "товар (услуга)",
+    ],
+    "quantity":         ["количество", "кол-во", "кол."],
     "price":            ["цена"],
     "sum_local":        ["сумма"],
     "vat":              ["ндс"],
@@ -284,6 +288,18 @@ def _build_column_map(sh: _Sheet, header_row: int, fields: Dict[str, List[str]])
     return col_map
 
 
+def _dump_first_rows(sh: _Sheet, n: int = 20) -> List[List[str]]:
+    """Return first N rows as stringified cell grids (for error diagnostics)."""
+    out = []
+    for r in range(min(n, sh.nrows)):
+        row = []
+        for c in range(min(sh.ncols, 20)):
+            v = sh.cell(r, c)
+            row.append("" if v is None else str(v).strip()[:40])
+        out.append(row)
+    return out
+
+
 def _is_header_row(sh: _Sheet, r: int) -> bool:
     """A document header row has a non-empty marker in column 0
     (typically 'V' or similar). Item rows are blank in column 0.
@@ -320,20 +336,48 @@ def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
     header_cols = _build_column_map(sh, header_row, _HEADER_FIELDS)
     item_cols = _build_column_map(sh, header_row, _ITEM_FIELDS)
 
+    # Some 1C exports put the item-level header on a SECOND row shortly
+    # after the document-level header. If we didn't find the product column
+    # on the primary header row, scan up to 10 rows below for one that
+    # contains the item columns.
+    item_header_row = header_row
+    if "product_name_1c" not in item_cols:
+        for rr in range(header_row + 1, min(header_row + 11, sh.nrows)):
+            trial = _build_column_map(sh, rr, _ITEM_FIELDS)
+            if "product_name_1c" in trial and "quantity" in trial:
+                item_cols = trial
+                item_header_row = rr
+                break
+
     # The two row types share the same column header row in 1C exports —
     # header columns occupy some columns, item columns occupy others.
     if "client_name_1c" not in header_cols:
-        return {"ok": False, "error": f"'Контрагент' column not found in header row {header_row}"}
+        return {
+            "ok": False,
+            "error": f"'Контрагент' column not found in header row {header_row}",
+            "diagnostics": _dump_first_rows(sh, 20),
+        }
     if "product_name_1c" not in item_cols:
-        return {"ok": False, "error": f"'Товар' column not found in header row {header_row}"}
+        return {
+            "ok": False,
+            "error": (
+                f"'Товар' / 'Номенклатура' column not found near header row {header_row}. "
+                f"Agar Реализация товаров (actual sales) faylini yubormoqchi edingiz, "
+                f"uning 1C'dagi to'g'ri variantini tanlab export qiling. "
+                f"Agar оборотка / дебиторка yuborgan bo'lsangiz — /balances yoki /debtors "
+                f"buyrug'idan foydalaning."
+            ),
+            "diagnostics": _dump_first_rows(sh, 20),
+        }
 
     documents: List[dict] = []
     current: Optional[dict] = None
 
-    # Walk data rows
+    # Walk data rows — start after whichever header row is lower
     product_col = item_cols.get("product_name_1c", -1)
     client_col = header_cols.get("client_name_1c", -1)
-    for r in range(header_row + 1, sh.nrows):
+    start_row = max(header_row, item_header_row) + 1
+    for r in range(start_row, sh.nrows):
         # Skip rows that are empty across the entire width
         if all(sh.cell(r, c) in (None, "") for c in range(sh.ncols)):
             continue

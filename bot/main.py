@@ -1826,7 +1826,23 @@ async def cmd_realorders(message: types.Message):
             result = resp.json()
 
         if not result.get("ok"):
-            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            err_lines = [f"❌ Xatolik: {result.get('error', 'Unknown')}"]
+            diag = result.get("diagnostics")
+            if diag:
+                err_lines.append("")
+                err_lines.append("<b>Birinchi qatorlar (diagnostika):</b>")
+                err_lines.append("<pre>")
+                for i, row in enumerate(diag[:20]):
+                    non_empty = [c for c in row if c]
+                    if not non_empty:
+                        continue
+                    line = f"r{i:02d}: " + " | ".join(non_empty[:8])
+                    err_lines.append(html_escape(line[:180]))
+                err_lines.append("</pre>")
+            msg = "\n".join(err_lines)
+            if len(msg) > 3800:
+                msg = msg[:3800] + "\n...(truncated)"
+            await status_msg.edit_text(msg, parse_mode="HTML")
             return
 
         st = result.get("stats", {})
