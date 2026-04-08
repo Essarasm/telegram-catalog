@@ -4,6 +4,7 @@ import re
 import json
 import asyncio
 import logging
+from html import escape as _h
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types, F
@@ -1932,9 +1933,9 @@ async def cmd_realordersstats(message: types.Message):
 
         lines.append(f"<b>Qamrov:</b>")
         lines.append(f"  📦 {total_orders:,} ta hujjat, {total_items:,} ta qator")
-        lines.append(f"  📅 {first_date} → {last_date}")
+        lines.append(f"  📅 {_h(str(first_date))} → {_h(str(last_date))}")
         for p in per_currency:
-            curr = p["currency"]
+            curr = _h(str(p["currency"] or "—"))
             n = p["orders"]
             sym = "💴" if curr == "UZS" else "💵"
             tot = p["total_curr"] or 0
@@ -1958,7 +1959,7 @@ async def cmd_realordersstats(message: types.Message):
         if agents:
             lines.append(f"\n<b>Top sales agentlar:</b>")
             for a in agents[:8]:
-                name = (a["sale_agent"] or "—")[:25]
+                name = _h((a["sale_agent"] or "—")[:25])
                 tot_uzs = a["uzs"] or 0
                 tot_usd = a["usd"] or 0
                 extras = []
@@ -1972,7 +1973,8 @@ async def cmd_realordersstats(message: types.Message):
         if monthly:
             lines.append(f"\n<b>Oylik taqsimot:</b>")
             for m in monthly[-12:]:  # last 12 months
-                lines.append(f"  {m['ym']} — {m['orders']:,} hujjat, {m['clients']} mijoz")
+                ym = _h(str(m['ym'] or '—'))
+                lines.append(f"  {ym} — {m['orders']:,} hujjat, {m['clients']} mijoz")
 
         if total_wish > 0:
             lines.append(f"\n<b>Wish-list → Real Order gap:</b>")
