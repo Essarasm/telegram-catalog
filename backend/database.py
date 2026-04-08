@@ -281,8 +281,98 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_real_order_items_order ON real_order_items(real_order_id);
         CREATE INDEX IF NOT EXISTS idx_real_order_items_product ON real_order_items(product_id);
         CREATE INDEX IF NOT EXISTS idx_real_order_items_name ON real_order_items(product_name_1c);
+
+        -- ─────────────────────────────────────────────────────────────
+        -- Session F renewal: Daily Upload Checklist system
+        -- ─────────────────────────────────────────────────────────────
+
+        -- Checklist schedule: one row per upload type (8 rows seeded).
+        CREATE TABLE IF NOT EXISTS daily_upload_schedule (
+            upload_type TEXT PRIMARY KEY,
+            display_name_ru TEXT NOT NULL,
+            display_name_uz TEXT NOT NULL,
+            command TEXT NOT NULL,
+            expected_count_per_day INTEGER DEFAULT 1,
+            required_weekdays TEXT DEFAULT '1,2,3,4,5,6',
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
+        );
+
+        -- Per-day tracking row for each upload type.
+        -- Status: 'pending' | 'done' | 'failed' | 'skipped'
+        -- (done-late is intentionally NOT included in v1; deferred.)
+        CREATE TABLE IF NOT EXISTS daily_uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            upload_date TEXT NOT NULL,
+            upload_type TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            actual_count INTEGER DEFAULT 0,
+            uploaded_at TEXT,
+            uploaded_by_user_id INTEGER,
+            uploaded_by_name TEXT,
+            row_count INTEGER DEFAULT 0,
+            file_names TEXT,
+            skip_reason TEXT,
+            notes TEXT,
+            updated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(upload_date, upload_type)
+        );
+        CREATE INDEX IF NOT EXISTS idx_daily_uploads_date ON daily_uploads(upload_date);
+        CREATE INDEX IF NOT EXISTS idx_daily_uploads_type ON daily_uploads(upload_type);
+        CREATE INDEX IF NOT EXISTS idx_daily_uploads_status ON daily_uploads(status);
+
+        -- Manually-entered daily FX rate for Касса + reporting normalization.
+        CREATE TABLE IF NOT EXISTS daily_fx_rates (
+            rate_date TEXT NOT NULL,
+            currency_pair TEXT NOT NULL DEFAULT 'USD_UZS',
+            rate REAL NOT NULL,
+            source TEXT DEFAULT 'manual',
+            uploaded_by_user_id INTEGER,
+            uploaded_by_name TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (rate_date, currency_pair)
+        );
+
+        -- Holidays (manual entry only, empty seed).
+        CREATE TABLE IF NOT EXISTS holidays (
+            holiday_date TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            added_by_user_id INTEGER,
+            added_at TEXT DEFAULT (datetime('now'))
+        );
+
+        -- Касса (cash) payments — 1C "Приходный кассовый ордер" journal.
+        -- Built in Session F renewal; Session G will layer credit scoring on top.
+        CREATE TABLE IF NOT EXISTS client_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_number_1c TEXT NOT NULL UNIQUE,
+            doc_date TEXT NOT NULL,
+            doc_time TEXT,
+            author TEXT,
+            received_from TEXT,            -- Принято от (physical deliverer)
+            basis TEXT,                    -- Основание
+            attachment TEXT,               -- Приложение
+            corr_account TEXT,             -- Корреспондирующий счет (40.10 / 40.11)
+            client_name_1c TEXT,           -- Субконто1 (actual client receivable)
+            client_id INTEGER,
+            subconto2 TEXT,
+            subconto3 TEXT,
+            currency TEXT DEFAULT 'UZS',   -- 'UZS' if acc=40.10, 'USD' if 40.11
+            amount_local REAL DEFAULT 0,   -- Сумма (UZS column regardless of currency)
+            amount_currency REAL DEFAULT 0,-- ВалСумма (USD amount for 40.11)
+            fx_rate REAL DEFAULT 0,        -- Курс at time of receipt
+            cashflow_category TEXT,        -- Движение денежных средств
+            imported_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_payments_doc_date ON client_payments(doc_date);
+        CREATE INDEX IF NOT EXISTS idx_client_payments_client_name ON client_payments(client_name_1c);
+        CREATE INDEX IF NOT EXISTS idx_client_payments_client_id ON client_payments(client_id);
+        CREATE INDEX IF NOT EXISTS idx_client_payments_currency ON client_payments(currency);
     """)
     conn.commit()
+
+    # Seed daily_upload_schedule with the 8 checklist items (idempotent).
+    _seed_daily_upload_schedule(conn)
 
     # Migrations: add columns if missing (safe for existing DBs)
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -429,6 +519,30 @@ def rebuild_all_search_text(conn=None):
     if own_conn:
         conn.close()
     return count
+
+
+def _seed_daily_upload_schedule(conn):
+    """Seed the 8 checklist items. Idempotent (INSERT OR IGNORE by PK)."""
+    rows = [
+        # (upload_type, ru, uz, command, expected, required_weekdays, sort_order)
+        ("balances_uzs", "Оборотка 40.10 (UZS)", "Aylanma 40.10 (UZS)", "/balances", 1, "1,2,3,4,5,6", 10),
+        ("balances_usd", "Оборотка 40.11 (USD)", "Aylanma 40.11 (USD)", "/balances", 1, "1,2,3,4,5,6", 20),
+        ("stock",        "Остаток",             "Qoldiq",             "/stock",    1, "1,2,3,4,5,6", 30),
+        ("prices",       "Цены",                "Narxlar",            "/prices",   1, "1,2,3,4,5,6", 40),
+        ("debtors",      "Дебиторы",            "Qarzdorlar",         "/debtors",  1, "1,2,3,4,5,6", 50),
+        ("realorders",   "Реализация",          "Realizatsiya",       "/realorders", 1, "1,2,3,4,5,6", 60),
+        ("cash",         "Касса",               "Kassa",              "/cash",     2, "1,2,3,4,5,6", 70),
+        ("fxrate",       "Курс валют",          "Valyuta kursi",      "/fxrate",   1, "1,2,3,4,5,6", 80),
+    ]
+    for r in rows:
+        conn.execute(
+            """INSERT OR IGNORE INTO daily_upload_schedule
+               (upload_type, display_name_ru, display_name_uz, command,
+                expected_count_per_day, required_weekdays, sort_order, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
+            r,
+        )
+    conn.commit()
 
 
 if __name__ == "__main__":

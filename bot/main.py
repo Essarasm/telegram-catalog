@@ -71,6 +71,45 @@ def is_admin(message: types.Message) -> bool:
     return False
 
 
+def _sender_display_name(message: types.Message) -> str:
+    """Best-effort cached display name for daily_uploads.uploaded_by_name."""
+    u = message.from_user
+    if not u:
+        return "unknown"
+    for attr in ("full_name", "username", "first_name"):
+        v = getattr(u, attr, None)
+        if v:
+            return str(v)
+    return str(u.id)
+
+
+def _track_daily_upload(
+    upload_type: str,
+    message: types.Message,
+    file_name: str | None = None,
+    row_count: int = 0,
+    notes: str | None = None,
+) -> None:
+    """Fire-and-forget: record a successful upload into daily_uploads.
+
+    Any exception is logged and swallowed — a tracking failure must never
+    break the main upload flow.
+    """
+    try:
+        from backend.services.daily_uploads import record_upload
+        user = message.from_user
+        record_upload(
+            upload_type,
+            user_id=user.id if user else None,
+            user_name=_sender_display_name(message),
+            file_name=file_name,
+            row_count=int(row_count or 0),
+            notes=notes,
+        )
+    except Exception as e:
+        logger.error(f"daily_uploads tracking failed for {upload_type}: {e}")
+
+
 # ───────────────────────────────────────────
 # Public commands
 # ───────────────────────────────────────────
@@ -391,6 +430,13 @@ async def cmd_prices(message: types.Message):
             await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
             return
 
+        _track_daily_upload(
+            "prices",
+            message,
+            file_name=doc.file_name,
+            row_count=int(result.get("excel_products") or 0),
+        )
+
         lines = [
             "✅ <b>Narxlar yangilandi!</b>\n",
             f"📊 Excel: {result['excel_products']} ta mahsulot",
@@ -503,6 +549,13 @@ async def cmd_stock(message: types.Message):
         if not result.get("ok"):
             await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
             return
+
+        _track_daily_upload(
+            "stock",
+            message,
+            file_name=doc.file_name,
+            row_count=int(result.get("excel_products") or 0),
+        )
 
         sc = result.get('status_counts', {})
         lines = [
@@ -820,6 +873,37 @@ async def cmd_balances(message: types.Message):
             if not result.get("ok"):
                 all_lines.append(f"❌ {html_escape(doc.file_name)}: {result.get('error', 'Unknown')}")
                 continue
+
+            # Daily checklist tracking — detect 40.10 (UZS) vs 40.11 (USD)
+            # from the "sections" list returned by the parser and track each
+            # currency as its own upload_type.
+            sections = result.get("sections") or []
+            tracked_any = False
+            for sec in sections:
+                cur = (sec.get("currency") or "").upper()
+                if cur == "UZS":
+                    _track_daily_upload(
+                        "balances_uzs", message,
+                        file_name=doc.file_name,
+                        row_count=int(sec.get("clients") or 0),
+                    )
+                    tracked_any = True
+                elif cur == "USD":
+                    _track_daily_upload(
+                        "balances_usd", message,
+                        file_name=doc.file_name,
+                        row_count=int(sec.get("clients") or 0),
+                    )
+                    tracked_any = True
+            if not tracked_any:
+                # Fallback: older/degenerate result shape without sections —
+                # default to UZS so we at least record something.
+                _track_daily_upload(
+                    "balances_uzs", message,
+                    file_name=doc.file_name,
+                    row_count=int(result.get("total_clients_in_file") or 0),
+                )
+
             label = doc.file_name if file_count > 1 else ""
             all_lines.append(_format_import_result(result, label))
             if i < file_count - 1:
@@ -1613,6 +1697,13 @@ async def cmd_debtors(message: types.Message):
             await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
             return
 
+        _track_daily_upload(
+            "debtors",
+            message,
+            file_name=doc.file_name,
+            row_count=int(result.get("total_clients") or 0),
+        )
+
         lines = [
             f"✅ <b>Дебиторка yuklandi!</b>\n",
             f"📅 Sana: {result.get('report_date', '?')}",
@@ -2230,6 +2321,13 @@ async def cmd_realorders(message: types.Message):
             await status_msg.edit_text(msg, parse_mode="HTML")
             return
 
+        _track_daily_upload(
+            "realorders",
+            message,
+            file_name=doc.file_name,
+            row_count=int(result.get("inserted_docs") or 0) + int(result.get("updated_docs") or 0),
+        )
+
         st = result.get("stats", {})
         date_min = st.get("date_min") or "?"
         date_max = st.get("date_max") or "?"
@@ -2279,6 +2377,390 @@ async def handle_realorders_document(message: types.Message):
     if not is_admin(message):
         return
     await cmd_realorders(message)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Session F renewal: Daily Upload Checklist — new commands
+# /cash, /fxrate, /today, /skipupload, /holiday, /backfilldailyuploads
+# ─────────────────────────────────────────────────────────────────
+
+
+@dp.message(Command("cash"))
+async def cmd_cash(message: types.Message):
+    """Import Касса (cash receipts) from 1C.
+
+    Two uploads per day are required (morning + evening). Re-uploading the
+    same file is safe — idempotent on doc_number_1c.
+    """
+    if not is_admin(message):
+        return
+
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "1C'dan Касса (Приходный кассовый ордер) XLS faylni\n"
+            "/cash caption bilan yuboring.\n\n"
+            "Yoki faylga javob sifatida /cash yozing.\n\n"
+            "💡 Har kuni 2 marta: ertalab va kechqurun.",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.lower().endswith(('.xls', '.xlsx')):
+        await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply("⏳ Касса yuklanmoqda...")
+
+    try:
+        import httpx
+
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        api_url = f"{_BASE_URL}/api/finance/import-cash"
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            err = result.get("error", "Unknown")
+            diag = result.get("diagnostics")
+            msg_lines = [f"❌ Xatolik: {err}"]
+            if diag:
+                msg_lines.append("<pre>")
+                for i, row in enumerate(diag[:15]):
+                    non_empty = [c for c in row if c]
+                    if non_empty:
+                        msg_lines.append(html_escape(f"r{i:02d}: " + " | ".join(non_empty[:8])[:180]))
+                msg_lines.append("</pre>")
+            await status_msg.edit_text("\n".join(msg_lines)[:3900], parse_mode="HTML")
+            return
+
+        _track_daily_upload(
+            "cash",
+            message,
+            file_name=doc.file_name,
+            row_count=int(result.get("inserted") or 0) + int(result.get("updated") or 0),
+        )
+
+        st = result.get("stats", {})
+        inserted = result.get("inserted", 0)
+        updated = result.get("updated", 0)
+        date_min = st.get("date_min") or "?"
+        date_max = st.get("date_max") or "?"
+        date_range = date_min if date_min == date_max else f"{date_min} — {date_max}"
+
+        lines = [
+            "✅ <b>Касса yuklandi!</b>\n",
+            f"📅 Davr: {date_range}",
+            f"📄 Jami qatorlar: {st.get('row_count', 0)}",
+            f"🆕 Yangi: {inserted} · 🔄 Yangilangan (dublikat): {updated}",
+            f"👥 Mijozlar: {st.get('client_count', 0)} (bog'langan: {result.get('matched_clients', 0)})",
+        ]
+        if st.get("total_uzs"):
+            lines.append(f"\n💴 UZS jami: {round(st['total_uzs']):,}".replace(",", " "))
+        if st.get("total_usd"):
+            lines.append(f"💵 USD jami: ${st['total_usd']:,.2f}")
+        lines.append(f"\n💾 DBda jami: {result.get('db_total', 0)} qator")
+
+        # Show today's checklist status for cash
+        from backend.services.daily_uploads import get_checklist
+        ck = get_checklist()
+        cash_item = next((i for i in ck["items"] if i["upload_type"] == "cash"), None)
+        if cash_item:
+            actual = cash_item.get("actual_count", 0)
+            expected = cash_item.get("expected_count_per_day", 2)
+            if actual < expected:
+                lines.append(f"\n📋 Bugungi касса: {actual}/{expected} (kechqurun fayl ham kerak)")
+            else:
+                lines.append(f"\n📋 Bugungi касса: ✅ {actual}/{expected} tugatildi")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Cash import error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@dp.message(F.document & F.caption.startswith("/cash"))
+async def handle_cash_document(message: types.Message):
+    """Handle XLS/XLSX file sent with /cash as caption."""
+    if not is_admin(message):
+        return
+    await cmd_cash(message)
+
+
+@dp.message(Command("fxrate"))
+async def cmd_fxrate(message: types.Message):
+    """Set today's USD/UZS rate. Usage: /fxrate 12650"""
+    if not is_admin(message):
+        return
+
+    parts = (message.text or "").split()
+    if len(parts) < 2:
+        # Show current rate
+        from backend.services.daily_uploads import get_latest_fx_rate
+        latest = get_latest_fx_rate()
+        if latest:
+            await message.reply(
+                f"📈 <b>Oxirgi USD/UZS kursi</b>\n\n"
+                f"Sana: {latest['rate_date']}\n"
+                f"Kurs: <b>{latest['rate']:,.2f}</b> UZS/USD\n"
+                f"Kiritgan: {html_escape(latest.get('uploaded_by_name') or '—')}\n\n"
+                f"💡 Yangilash: <code>/fxrate 12650</code>",
+                parse_mode="HTML",
+            )
+        else:
+            await message.reply(
+                "❌ Kurs hali kiritilmagan.\n\n"
+                "💡 Foydalanish: <code>/fxrate 12650</code>",
+                parse_mode="HTML",
+            )
+        return
+
+    try:
+        rate = float(parts[1].replace(",", ".").replace(" ", ""))
+    except ValueError:
+        await message.reply("❌ Kurs raqam bo'lishi kerak. Masalan: /fxrate 12650")
+        return
+
+    if rate < 5000 or rate > 20000:
+        await message.reply(
+            f"❌ Kurs {rate:g} haqiqiy emas.\n"
+            "USD/UZS kursi 5000 dan 20000 gacha bo'lishi kerak."
+        )
+        return
+
+    try:
+        from backend.services.daily_uploads import set_fx_rate, tashkent_today_str
+        user_name = _sender_display_name(message)
+        user_id = message.from_user.id if message.from_user else None
+        set_fx_rate(rate, user_id=user_id, user_name=user_name)
+
+        await message.reply(
+            f"✅ <b>FX rate saqlandi</b>\n\n"
+            f"📅 Sana: {tashkent_today_str()}\n"
+            f"💱 Kurs: <b>{rate:,.2f}</b> UZS/USD\n"
+            f"👤 Kiritgan: {html_escape(user_name)}",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"fxrate error: {e}")
+        await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+
+
+@dp.message(Command("today"))
+async def cmd_today(message: types.Message):
+    """Show today's daily upload checklist (8 items)."""
+    try:
+        from backend.services.daily_uploads import get_checklist, render_checklist_text
+        ck = get_checklist()
+        text = render_checklist_text(ck)
+        await message.reply(f"<pre>{html_escape(text)}</pre>", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/today error: {e}")
+        await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+
+
+@dp.message(Command("skipupload"))
+async def cmd_skipupload(message: types.Message):
+    """Mark a specific upload (or all for a date) as skipped.
+
+    Usage:
+        /skipupload <type> <date> <reason>
+        /skipupload all <date> <reason>
+
+    <type>: balances_uzs | balances_usd | stock | prices | debtors | realorders | cash | fxrate | all
+    <date>: YYYY-MM-DD or "today"
+    """
+    if not is_admin(message):
+        return
+
+    parts = (message.text or "").split(maxsplit=3)
+    if len(parts) < 4:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "<code>/skipupload &lt;type&gt; &lt;date&gt; &lt;reason&gt;</code>\n\n"
+            "Turlar: balances_uzs, balances_usd, stock, prices, debtors, realorders, cash, fxrate, all\n"
+            "Sana: YYYY-MM-DD yoki <b>today</b>\n\n"
+            "Masalan:\n"
+            "<code>/skipupload cash today 1C offline</code>\n"
+            "<code>/skipupload all 2026-04-05 power outage</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    upload_type = parts[1].lower()
+    date_arg = parts[2]
+    reason = parts[3]
+
+    from backend.services.daily_uploads import (
+        skip_upload, skip_all_uploads, tashkent_today_str, VALID_UPLOAD_TYPES,
+    )
+
+    if date_arg.lower() == "today":
+        target_date = tashkent_today_str()
+    else:
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_arg):
+            await message.reply("❌ Sana formati: YYYY-MM-DD yoki 'today'")
+            return
+        target_date = date_arg
+
+    try:
+        if upload_type == "all":
+            n = skip_all_uploads(target_date, reason)
+            await message.reply(
+                f"✅ {n} ta upload turi {target_date} uchun skip qilindi.\n"
+                f"Sabab: {html_escape(reason)}",
+                parse_mode="HTML",
+            )
+        elif upload_type in VALID_UPLOAD_TYPES:
+            skip_upload(upload_type, target_date, reason)
+            await message.reply(
+                f"✅ <b>{upload_type}</b> {target_date} uchun skip qilindi.\n"
+                f"Sabab: {html_escape(reason)}",
+                parse_mode="HTML",
+            )
+        else:
+            await message.reply(
+                f"❌ Noma'lum tur: {upload_type}\n"
+                f"Ruxsat etilganlar: {', '.join(sorted(VALID_UPLOAD_TYPES))} yoki 'all'"
+            )
+    except Exception as e:
+        logger.error(f"/skipupload error: {e}")
+        await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+
+
+@dp.message(Command("holiday"))
+async def cmd_holiday(message: types.Message):
+    """Manage holidays.
+
+    Usage:
+        /holiday add YYYY-MM-DD <name>
+        /holiday remove YYYY-MM-DD
+        /holiday list
+    """
+    if not is_admin(message):
+        return
+
+    parts = (message.text or "").split(maxsplit=3)
+    if len(parts) < 2:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "<code>/holiday add YYYY-MM-DD nomi</code>\n"
+            "<code>/holiday remove YYYY-MM-DD</code>\n"
+            "<code>/holiday list</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    action = parts[1].lower()
+    from backend.services.daily_uploads import add_holiday, remove_holiday, list_holidays
+
+    try:
+        if action == "list":
+            holidays = list_holidays(days_ahead=365)
+            if not holidays:
+                await message.reply("📅 Kelgusi 365 kun ichida bayramlar yo'q.")
+                return
+            lines = ["📅 <b>Bayramlar (365 kun):</b>\n"]
+            for h in holidays:
+                lines.append(f"• {h['holiday_date']} — {html_escape(h['name'])}")
+            await message.reply("\n".join(lines), parse_mode="HTML")
+
+        elif action == "add":
+            if len(parts) < 4:
+                await message.reply("❌ Foydalanish: /holiday add YYYY-MM-DD nomi")
+                return
+            date_arg = parts[2]
+            name = parts[3]
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_arg):
+                await message.reply("❌ Sana formati: YYYY-MM-DD")
+                return
+            user_id = message.from_user.id if message.from_user else None
+            result = add_holiday(date_arg, name, user_id=user_id)
+            await message.reply(
+                f"✅ Bayram qo'shildi: <b>{date_arg}</b> — {html_escape(name)}\n"
+                f"Retroaktiv skip qilindi: {result['rows_updated']} qator",
+                parse_mode="HTML",
+            )
+
+        elif action == "remove":
+            if len(parts) < 3:
+                await message.reply("❌ Foydalanish: /holiday remove YYYY-MM-DD")
+                return
+            date_arg = parts[2]
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_arg):
+                await message.reply("❌ Sana formati: YYYY-MM-DD")
+                return
+            result = remove_holiday(date_arg)
+            if not result.get("removed"):
+                await message.reply(f"❌ {date_arg} uchun bayram topilmadi.")
+            else:
+                await message.reply(
+                    f"✅ Bayram o'chirildi: <b>{date_arg}</b>\n"
+                    f"Skip bekor qilindi: {result['rows_updated']} qator",
+                    parse_mode="HTML",
+                )
+
+        else:
+            await message.reply(f"❌ Noma'lum amal: {action}\nKerak: add, remove, list")
+
+    except Exception as e:
+        logger.error(f"/holiday error: {e}")
+        await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+
+
+@dp.message(Command("backfilldailyuploads"))
+async def cmd_backfill_daily_uploads(message: types.Message):
+    """One-shot historical backfill of daily_uploads from 2026-04-01 onward."""
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Daily uploads backfill ishga tushdi...")
+    try:
+        from backend.services.daily_uploads_backfill import run_backfill
+        result = run_backfill()
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ {result.get('error', 'backfill failed')}")
+            return
+        lines = [
+            "✅ <b>Backfill tugadi!</b>\n",
+            f"📅 Davr: {result.get('start_date')} — {result.get('end_date')}",
+            f"📊 Jami kunlar: {result.get('total_days')}",
+            f"⏭ Yakshanba/bayram: {result.get('skipped_days_sun_holiday')}",
+            f"🆕 Qo'shilgan: {result.get('total_inserted')}",
+            f"♻️ Yangilangan: {result.get('total_updated')}",
+        ]
+        per_type_ins = result.get("inserted_by_type") or {}
+        per_type_upd = result.get("updated_by_type") or {}
+        all_types = sorted(set(per_type_ins) | set(per_type_upd))
+        if all_types:
+            lines.append("\n<b>Upload turi bo'yicha (yangi / yangilangan):</b>")
+            for t in all_types:
+                ins = per_type_ins.get(t, 0)
+                upd = per_type_upd.get(t, 0)
+                if ins or upd:
+                    lines.append(f"  • {t}: {ins} / {upd}")
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"backfilldailyuploads error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
 @dp.message(Command("unmatchedclients"))
@@ -2908,6 +3390,13 @@ async def main():
         logger.info(f"Menu button set to webapp: {WEBAPP_URL}")
     except Exception as e:
         logger.warning(f"Could not set menu button: {e}")
+
+    try:
+        from bot.reminders import start_reminder_tasks
+        start_reminder_tasks(bot, ADMIN_GROUP_CHAT_ID)
+    except Exception as e:
+        logger.error(f"Failed to start daily-upload reminder tasks: {e}")
+
     await dp.start_polling(bot)
 
 
