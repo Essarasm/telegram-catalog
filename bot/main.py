@@ -1289,7 +1289,9 @@ async def cmd_help(message: types.Message):
         "<b>/datacoverage</b> <code>[valyuta]</code>\n"
         "Yuklangan ma'lumotlar qamrovi (oylik tekshiruv)\n\n"
         "<b>/realordersstats</b>\n"
-        "Real orders sifat tahlili (match rates, agents, wish-list gap)",
+        "Real orders sifat tahlili (match rates, agents, wish-list gap)\n\n"
+        "<b>/wipewishlists</b> <code>[CONFIRM]</code>\n"
+        "Demo wish-list ma'lumotlarini tozalash (launch oldidan)",
         parse_mode="HTML",
     )
 
@@ -2024,6 +2026,128 @@ async def cmd_realordersstats(message: types.Message):
     except Exception as e:
         logger.error(f"realordersstats error: {e}", exc_info=True)
         await message.reply(f"❌ Xatolik: {str(e)[:300]}")
+    finally:
+        conn.close()
+
+
+# ───────────────────────────────────────────
+# /wipewishlists — destructive cleanup of demo wish-list data
+# ───────────────────────────────────────────
+
+@dp.message(Command("wipewishlists"))
+async def cmd_wipewishlists(message: types.Message):
+    """Wipe all wish-list data (orders, order_items, product_requests,
+    demand_signals, cart_items) before the real app launch.
+
+    Safety: without the CONFIRM keyword, only reports counts (dry-run).
+    With /wipewishlists CONFIRM, performs a transactional delete and
+    writes a logger entry.
+    """
+    if not is_admin(message):
+        return
+
+    # Parse the confirmation token
+    parts = (message.text or "").strip().split(maxsplit=1)
+    token = parts[1].strip().upper() if len(parts) > 1 else ""
+    is_confirmed = (token == "CONFIRM")
+
+    conn = get_db()
+    try:
+        # Collect pre-wipe counts
+        counts = {
+            "orders": conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0],
+            "order_items": conn.execute("SELECT COUNT(*) FROM order_items").fetchone()[0],
+            "product_requests": conn.execute("SELECT COUNT(*) FROM product_requests").fetchone()[0],
+            "demand_signals": conn.execute("SELECT COUNT(*) FROM demand_signals").fetchone()[0],
+            "cart_items": conn.execute("SELECT COUNT(*) FROM cart_items").fetchone()[0],
+        }
+        total = sum(counts.values())
+
+        if total == 0:
+            await message.reply(
+                "✅ <b>Wish-list jadvallari allaqachon bo'sh.</b>\n\n"
+                "Hech qanday o'chirish kerak emas.",
+                parse_mode="HTML",
+            )
+            return
+
+        if not is_confirmed:
+            # Dry run: show what WOULD be deleted
+            lines = [
+                "⚠️ <b>Wish-list ma'lumotlarini tozalash (DRY-RUN)</b>\n",
+                "Agar /wipewishlists CONFIRM buyrug'ini yuborsangiz, "
+                "quyidagi yozuvlar <b>butunlay o'chiriladi</b>:\n",
+                f"  🛒 orders: <b>{counts['orders']:,}</b>",
+                f"  📦 order_items: <b>{counts['order_items']:,}</b>",
+                f"  📝 product_requests: <b>{counts['product_requests']:,}</b>",
+                f"  📡 demand_signals: <b>{counts['demand_signals']:,}</b>",
+                f"  🧺 cart_items: <b>{counts['cart_items']:,}</b>",
+                "",
+                f"  <b>Jami:</b> {total:,} yozuv",
+                "",
+                "⚠️ Bu amal <b>qaytarib bo'lmaydi</b>.",
+                "Real ma'lumotlarga ta'sir qilmaydi (real_orders, "
+                "real_order_items, client_balances — tegilmaydi).",
+                "",
+                "Tasdiqlash uchun: <code>/wipewishlists CONFIRM</code>",
+            ]
+            await message.reply("\n".join(lines), parse_mode="HTML")
+            return
+
+        # CONFIRMED: perform the wipe in a single transaction
+        logger.warning(
+            f"wipewishlists CONFIRMED by user={message.from_user.id} "
+            f"deleting: {counts}"
+        )
+        try:
+            conn.execute("BEGIN")
+            conn.execute("DELETE FROM demand_signals")
+            conn.execute("DELETE FROM order_items")
+            conn.execute("DELETE FROM orders")
+            conn.execute("DELETE FROM product_requests")
+            conn.execute("DELETE FROM cart_items")
+            # Reset autoincrement counters so future IDs start fresh
+            conn.execute(
+                "DELETE FROM sqlite_sequence WHERE name IN "
+                "('orders','order_items','product_requests','demand_signals')"
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        # Verify post-wipe state
+        post = {
+            "orders": conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0],
+            "order_items": conn.execute("SELECT COUNT(*) FROM order_items").fetchone()[0],
+            "product_requests": conn.execute("SELECT COUNT(*) FROM product_requests").fetchone()[0],
+            "demand_signals": conn.execute("SELECT COUNT(*) FROM demand_signals").fetchone()[0],
+            "cart_items": conn.execute("SELECT COUNT(*) FROM cart_items").fetchone()[0],
+        }
+        post_total = sum(post.values())
+
+        lines = [
+            "✅ <b>Wish-list ma'lumotlari tozalandi</b>\n",
+            "O'chirildi:",
+            f"  🛒 orders: {counts['orders']:,}",
+            f"  📦 order_items: {counts['order_items']:,}",
+            f"  📝 product_requests: {counts['product_requests']:,}",
+            f"  📡 demand_signals: {counts['demand_signals']:,}",
+            f"  🧺 cart_items: {counts['cart_items']:,}",
+            "",
+            f"  <b>Jami:</b> {total:,} yozuv o'chirildi",
+            "",
+            f"Qolgan: {post_total} yozuv "
+            + ("✅" if post_total == 0 else "⚠️ (kutilmagan)"),
+            "",
+            "ℹ️ real_orders va client_balances jadvallariga "
+            "hech qanday ta'sir qilmadi.",
+        ]
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"wipewishlists error: {e}", exc_info=True)
+        await message.reply(f"❌ Xatolik: {_h(str(e)[:300])}")
     finally:
         conn.close()
 
