@@ -402,6 +402,105 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     <div>
       <BalanceCard />
 
+      {lastOrder && (
+        <>
+          <div className="text-sm text-tg-hint mb-2">
+            📝 {t.wishlist_orders_title}
+            <span className="text-[10px] ml-1 opacity-60">· {t.wishlist_orders_subtitle}</span>
+          </div>
+
+          <div className="bg-tg-secondary rounded-xl overflow-hidden">
+            {/* Order summary row */}
+            <button
+              onClick={() => toggleExpand(lastOrder.id)}
+              className="w-full text-left p-3 active:bg-tg-hint/10 transition-colors"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">
+                      #{lastOrder.id}
+                    </span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-tg-bg text-tg-hint">
+                      {STATUS_ICONS[lastOrder.status]} {STATUS_LABELS[lastOrder.status] || lastOrder.status}
+                    </span>
+                  </div>
+                  <div className="text-xs text-tg-hint mt-1">
+                    {formatDate(lastOrder.created_at)} · {lastOrder.item_count} {t.items_count}
+                  </div>
+                </div>
+                <div className="text-right ml-2">
+                  {lastOrder.total_usd > 0 && (
+                    <div className="text-sm font-bold">{formatCartPrice(lastOrder.total_usd, 'USD')}</div>
+                  )}
+                  {lastOrder.total_uzs > 0 && (
+                    <div className="text-sm font-bold">{formatCartPrice(lastOrder.total_uzs, 'UZS')}</div>
+                  )}
+                  <div className="text-xs text-tg-hint mt-0.5">
+                    {isExpanded ? '▲' : '▼'}
+                  </div>
+                </div>
+              </div>
+            </button>
+
+            {/* Expanded detail */}
+            {isExpanded && (
+              <div className="border-t border-tg-hint/20 px-3 pb-3">
+                {loadingDetail ? (
+                  <div className="text-center py-4 text-tg-hint text-sm">{t.loading}</div>
+                ) : (
+                  <>
+                    <div className="mt-2 space-y-1.5">
+                      {expandedItems.map((item, idx) => (
+                        <div key={idx} className="flex items-center gap-2 py-1">
+                          <div className="flex-1 min-w-0">
+                            <div className="text-xs font-medium truncate">{item.product_name}</div>
+                            {item.producer_name && (
+                              <div className="text-[10px] text-tg-hint">{item.producer_name}</div>
+                            )}
+                          </div>
+                          <div className="text-xs text-tg-hint whitespace-nowrap">
+                            {item.quantity} {item.unit}
+                          </div>
+                          <div className="text-xs font-semibold whitespace-nowrap min-w-[50px] text-right">
+                            {formatCartPrice(item.price * item.quantity, item.currency)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mt-3">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleReorderTap(lastOrder.id);
+                        }}
+                        disabled={reordering}
+                        className="bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
+                      >
+                        {reordering ? t.loading : `🔄 ${t.reorder}`}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openCompare({
+                            wishlistOrderId: lastOrder.id,
+                            sourceLabel: `#${lastOrder.id}`,
+                          });
+                        }}
+                        className="bg-tg-secondary border border-tg-button text-tg-button rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
+                      >
+                        🔀 {t.compare_button}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       {/* ── Real orders (1C shipments) ── */}
       {realOrders.length > 0 && (
         <div className="mb-4">
@@ -529,105 +628,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
             })}
           </div>
         </div>
-      )}
-
-      {lastOrder && (
-        <>
-          <div className="text-sm text-tg-hint mb-2">
-            📝 {t.wishlist_orders_title}
-            <span className="text-[10px] ml-1 opacity-60">· {t.wishlist_orders_subtitle}</span>
-          </div>
-
-          <div className="bg-tg-secondary rounded-xl overflow-hidden">
-            {/* Order summary row */}
-            <button
-              onClick={() => toggleExpand(lastOrder.id)}
-              className="w-full text-left p-3 active:bg-tg-hint/10 transition-colors"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold">
-                      #{lastOrder.id}
-                    </span>
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-tg-bg text-tg-hint">
-                      {STATUS_ICONS[lastOrder.status]} {STATUS_LABELS[lastOrder.status] || lastOrder.status}
-                    </span>
-                  </div>
-                  <div className="text-xs text-tg-hint mt-1">
-                    {formatDate(lastOrder.created_at)} · {lastOrder.item_count} {t.items_count}
-                  </div>
-                </div>
-                <div className="text-right ml-2">
-                  {lastOrder.total_usd > 0 && (
-                    <div className="text-sm font-bold">{formatCartPrice(lastOrder.total_usd, 'USD')}</div>
-                  )}
-                  {lastOrder.total_uzs > 0 && (
-                    <div className="text-sm font-bold">{formatCartPrice(lastOrder.total_uzs, 'UZS')}</div>
-                  )}
-                  <div className="text-xs text-tg-hint mt-0.5">
-                    {isExpanded ? '▲' : '▼'}
-                  </div>
-                </div>
-              </div>
-            </button>
-
-            {/* Expanded detail */}
-            {isExpanded && (
-              <div className="border-t border-tg-hint/20 px-3 pb-3">
-                {loadingDetail ? (
-                  <div className="text-center py-4 text-tg-hint text-sm">{t.loading}</div>
-                ) : (
-                  <>
-                    <div className="mt-2 space-y-1.5">
-                      {expandedItems.map((item, idx) => (
-                        <div key={idx} className="flex items-center gap-2 py-1">
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-medium truncate">{item.product_name}</div>
-                            {item.producer_name && (
-                              <div className="text-[10px] text-tg-hint">{item.producer_name}</div>
-                            )}
-                          </div>
-                          <div className="text-xs text-tg-hint whitespace-nowrap">
-                            {item.quantity} {item.unit}
-                          </div>
-                          <div className="text-xs font-semibold whitespace-nowrap min-w-[50px] text-right">
-                            {formatCartPrice(item.price * item.quantity, item.currency)}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2 mt-3">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleReorderTap(lastOrder.id);
-                        }}
-                        disabled={reordering}
-                        className="bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
-                      >
-                        {reordering ? t.loading : `🔄 ${t.reorder}`}
-                      </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openCompare({
-                            wishlistOrderId: lastOrder.id,
-                            sourceLabel: `#${lastOrder.id}`,
-                          });
-                        }}
-                        className="bg-tg-secondary border border-tg-button text-tg-button rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
-                      >
-                        🔀 {t.compare_button}
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </>
       )}
 
       {/* Reorder confirmation dialog */}
