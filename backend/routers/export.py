@@ -73,7 +73,12 @@ def _build_order_items(req: ExportRequest):
             else:
                 price, currency = 0, "USD"
 
-            product_name = row["name_display"] or row["name"]
+            # Order documents intentionally use the original 1C Cyrillic name
+            # (products.name) so the warehouse / sales team can match orders
+            # against raw 1C data while standardization is still in progress.
+            # The cleaned Latin name (products.name_display) stays in the app UI.
+            # See Session R — Product Catalog Cleanup.
+            product_name = row["name"] or row["name_display"]
             full_name = f"{row['producer_name']} — {product_name}" if row["producer_name"] else product_name
 
             order_items.append({
