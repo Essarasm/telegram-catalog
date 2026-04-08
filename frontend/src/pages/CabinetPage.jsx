@@ -435,18 +435,33 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                         )}
                       </div>
                       <div className="text-right ml-2">
-                        <div className="text-sm font-bold whitespace-nowrap">
-                          {/* Some 1C "Реализация" exports tag the doc currency
-                              as USD (the contract currency) but record all
-                              prices in UZS. Render whichever side actually
-                              has data — UZS first since that's the more
-                              common shape after the totals backfill. */}
-                          {(ro.total_sum || 0) > 0
-                            ? `${formatUzs(ro.total_sum)} ${t.balance_currency}`
-                            : (ro.total_sum_currency || 0) > 0
-                              ? formatUsd(ro.total_sum_currency)
-                              : '—'}
-                        </div>
+                        {/* Some 1C "Реализация" exports tag the doc currency
+                            as USD (the contract currency) but record all
+                            prices in UZS; other docs mix both sides across
+                            line items. Show whichever side(s) have data:
+                            both lines for mixed-currency docs, one line
+                            for single-currency docs, '—' if nothing. */}
+                        {(() => {
+                          const hasUzs = (ro.total_sum || 0) > 0;
+                          const hasUsd = (ro.total_sum_currency || 0) > 0;
+                          if (!hasUzs && !hasUsd) {
+                            return <div className="text-sm font-bold whitespace-nowrap">—</div>;
+                          }
+                          return (
+                            <>
+                              {hasUzs && (
+                                <div className="text-sm font-bold whitespace-nowrap">
+                                  {formatUzs(ro.total_sum)} {t.balance_currency}
+                                </div>
+                              )}
+                              {hasUsd && (
+                                <div className="text-sm font-bold whitespace-nowrap">
+                                  {formatUsd(ro.total_sum_currency)}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                         <div className="text-xs text-tg-hint mt-0.5">
                           {isOpen ? '▲' : '▼'}
                         </div>
@@ -697,15 +712,30 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                         <div className="text-xs text-tg-hint mt-1">
                           {formatDocDate(o.doc_date)} · {o.item_count} {t.real_order_items_count}
                         </div>
-                        <div className="text-sm font-bold mt-1">
-                          {/* Same currency-agnostic fallback as the main
-                              real-orders list — see comment above. */}
-                          {(o.total_sum || 0) > 0
-                            ? `${formatUzs(o.total_sum)} ${t.balance_currency}`
-                            : (o.total_sum_currency || 0) > 0
-                              ? formatUsd(o.total_sum_currency)
-                              : '—'}
-                        </div>
+                        {/* Mixed-currency docs may have both sides
+                            populated — show both lines, see comment
+                            on the main real-orders list header. */}
+                        {(() => {
+                          const hasUzs = (o.total_sum || 0) > 0;
+                          const hasUsd = (o.total_sum_currency || 0) > 0;
+                          if (!hasUzs && !hasUsd) {
+                            return <div className="text-sm font-bold mt-1">—</div>;
+                          }
+                          return (
+                            <>
+                              {hasUzs && (
+                                <div className="text-sm font-bold mt-1">
+                                  {formatUzs(o.total_sum)} {t.balance_currency}
+                                </div>
+                              )}
+                              {hasUsd && (
+                                <div className="text-sm font-bold mt-1">
+                                  {formatUsd(o.total_sum_currency)}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                       </>
                     ) : (
                       <>
