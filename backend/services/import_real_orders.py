@@ -446,6 +446,46 @@ def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
     if current is not None and (current["items"] or current.get("client_name_1c")):
         documents.append(current)
 
+    # ── Post-process: derive missing totals ─────────────────────────────
+    # Some 1C "Реализация" exports omit the "Всего" column entirely (no VAT,
+    # so total = sum), or omit the foreign-currency block entirely (when the
+    # doc is recorded in UZS even though the contract is denominated in USD).
+    # Without this fallback, total_local / total_currency / order header
+    # totals all stay 0 and the Cabinet renders blank prices.
+    #
+    # Item-level fallback chain (UZS):
+    #   total_local := total_local || (sum_local + vat) || sum_local || (price * quantity)
+    #   sum_local   := sum_local || (price * quantity)
+    # Item-level fallback chain (currency):
+    #   total_currency := total_currency || sum_currency || (price_currency * quantity)
+    #   sum_currency   := sum_currency || (price_currency * quantity)
+    # Doc-header fallback:
+    #   total_sum          := total_sum || SUM(items.total_local)
+    #   total_sum_currency := total_sum_currency || SUM(items.total_currency)
+    for d in documents:
+        for it in d["items"]:
+            if not it.get("sum_local"):
+                if it.get("price") and it.get("quantity"):
+                    it["sum_local"] = it["price"] * it["quantity"]
+            if not it.get("total_local"):
+                if it.get("sum_local"):
+                    it["total_local"] = it["sum_local"] + (it.get("vat") or 0)
+                elif it.get("price") and it.get("quantity"):
+                    it["total_local"] = it["price"] * it["quantity"]
+            if not it.get("sum_currency"):
+                if it.get("price_currency") and it.get("quantity"):
+                    it["sum_currency"] = it["price_currency"] * it["quantity"]
+            if not it.get("total_currency"):
+                if it.get("sum_currency"):
+                    it["total_currency"] = it["sum_currency"]
+                elif it.get("price_currency") and it.get("quantity"):
+                    it["total_currency"] = it["price_currency"] * it["quantity"]
+        # Doc-header totals
+        if not d.get("total_sum"):
+            d["total_sum"] = sum(i.get("total_local") or 0 for i in d["items"])
+        if not d.get("total_sum_currency"):
+            d["total_sum_currency"] = sum(i.get("total_currency") or 0 for i in d["items"])
+
     # Stats
     total_items = sum(len(d["items"]) for d in documents)
     total_sum_local = sum(sum(i["total_local"] for i in d["items"]) for d in documents)
@@ -1039,6 +1079,128 @@ def relink_real_orders() -> dict:
         "db_real_client_matched": db_real_client_matched,
         "db_real_client_unmatched": db_real_client_docs - db_real_client_matched,
         "db_real_client_match_pct": round(real_match_pct, 1),
+    }
+
+
+def backfill_real_order_totals() -> dict:
+    """One-shot backfill: derive missing total_local / sum_local / total_currency
+    / sum_currency on existing real_order_items rows, and missing total_sum /
+    total_sum_currency on existing real_orders rows.
+
+    Mirrors the import-time post-processing in `_parse_workbook` so existing
+    DB data heals without requiring re-upload of all 1C exports. Idempotent —
+    only touches rows where the target column is currently 0 / NULL.
+
+    Returns counts of rows touched per phase.
+    """
+    conn = get_db()
+    counts = {}
+
+    # ── Item-level backfills ─────────────────────────────────────────────
+    # Phase 1a: sum_local := price * quantity (where sum_local is 0 but price+qty present)
+    cur = conn.execute(
+        """UPDATE real_order_items
+           SET sum_local = price * quantity
+           WHERE COALESCE(sum_local, 0) = 0
+             AND COALESCE(price, 0) > 0
+             AND COALESCE(quantity, 0) > 0"""
+    )
+    counts["item_sum_local_from_price_qty"] = cur.rowcount
+
+    # Phase 1b: total_local := sum_local + vat (where total_local is 0)
+    cur = conn.execute(
+        """UPDATE real_order_items
+           SET total_local = COALESCE(sum_local, 0) + COALESCE(vat, 0)
+           WHERE COALESCE(total_local, 0) = 0
+             AND COALESCE(sum_local, 0) > 0"""
+    )
+    counts["item_total_local_from_sum"] = cur.rowcount
+
+    # Phase 1c: total_local := price * quantity (rescue path if sum_local missing too)
+    cur = conn.execute(
+        """UPDATE real_order_items
+           SET total_local = price * quantity
+           WHERE COALESCE(total_local, 0) = 0
+             AND COALESCE(price, 0) > 0
+             AND COALESCE(quantity, 0) > 0"""
+    )
+    counts["item_total_local_from_price_qty"] = cur.rowcount
+
+    # Phase 1d: sum_currency := price_currency * quantity
+    cur = conn.execute(
+        """UPDATE real_order_items
+           SET sum_currency = price_currency * quantity
+           WHERE COALESCE(sum_currency, 0) = 0
+             AND COALESCE(price_currency, 0) > 0
+             AND COALESCE(quantity, 0) > 0"""
+    )
+    counts["item_sum_currency_from_price_qty"] = cur.rowcount
+
+    # Phase 1e: total_currency := sum_currency
+    cur = conn.execute(
+        """UPDATE real_order_items
+           SET total_currency = sum_currency
+           WHERE COALESCE(total_currency, 0) = 0
+             AND COALESCE(sum_currency, 0) > 0"""
+    )
+    counts["item_total_currency_from_sum"] = cur.rowcount
+
+    # Phase 1f: total_currency := price_currency * quantity (rescue)
+    cur = conn.execute(
+        """UPDATE real_order_items
+           SET total_currency = price_currency * quantity
+           WHERE COALESCE(total_currency, 0) = 0
+             AND COALESCE(price_currency, 0) > 0
+             AND COALESCE(quantity, 0) > 0"""
+    )
+    counts["item_total_currency_from_price_qty"] = cur.rowcount
+
+    # ── Order-header backfills ───────────────────────────────────────────
+    # Phase 2a: total_sum := SUM(items.total_local)
+    cur = conn.execute(
+        """UPDATE real_orders
+           SET total_sum = (
+               SELECT COALESCE(SUM(total_local), 0)
+               FROM real_order_items
+               WHERE real_order_id = real_orders.id
+           )
+           WHERE COALESCE(total_sum, 0) = 0"""
+    )
+    counts["order_total_sum_from_items"] = cur.rowcount
+
+    # Phase 2b: total_sum_currency := SUM(items.total_currency)
+    cur = conn.execute(
+        """UPDATE real_orders
+           SET total_sum_currency = (
+               SELECT COALESCE(SUM(total_currency), 0)
+               FROM real_order_items
+               WHERE real_order_id = real_orders.id
+           )
+           WHERE COALESCE(total_sum_currency, 0) = 0"""
+    )
+    counts["order_total_sum_currency_from_items"] = cur.rowcount
+
+    conn.commit()
+
+    # Sanity totals after backfill
+    db_total_orders = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
+    db_orders_with_total = conn.execute(
+        "SELECT COUNT(*) FROM real_orders WHERE COALESCE(total_sum, 0) > 0"
+    ).fetchone()[0]
+    db_total_items = conn.execute("SELECT COUNT(*) FROM real_order_items").fetchone()[0]
+    db_items_with_total = conn.execute(
+        "SELECT COUNT(*) FROM real_order_items WHERE COALESCE(total_local, 0) > 0"
+    ).fetchone()[0]
+    conn.close()
+
+    return {
+        "ok": True,
+        "phases": counts,
+        "rows_touched_total": sum(counts.values()),
+        "db_total_orders": db_total_orders,
+        "db_orders_with_total": db_orders_with_total,
+        "db_total_items": db_total_items,
+        "db_items_with_total": db_items_with_total,
     }
 
 

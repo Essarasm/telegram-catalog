@@ -436,9 +436,16 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                       </div>
                       <div className="text-right ml-2">
                         <div className="text-sm font-bold whitespace-nowrap">
-                          {ro.currency === 'USD'
-                            ? formatUsd(ro.total_sum_currency || ro.total_sum)
-                            : `${formatUzs(ro.total_sum)} ${t.balance_currency}`}
+                          {/* Some 1C "Реализация" exports tag the doc currency
+                              as USD (the contract currency) but record all
+                              prices in UZS. Render whichever side actually
+                              has data — UZS first since that's the more
+                              common shape after the totals backfill. */}
+                          {(ro.total_sum || 0) > 0
+                            ? `${formatUzs(ro.total_sum)} ${t.balance_currency}`
+                            : (ro.total_sum_currency || 0) > 0
+                              ? formatUsd(ro.total_sum_currency)
+                              : '—'}
                         </div>
                         <div className="text-xs text-tg-hint mt-0.5">
                           {isOpen ? '▲' : '▼'}
@@ -465,9 +472,14 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                                   {item.quantity}
                                 </div>
                                 <div className="text-xs font-semibold whitespace-nowrap min-w-[60px] text-right">
-                                  {ro.currency === 'USD'
-                                    ? formatUsd(item.total_currency || item.total_local)
-                                    : formatUzs(item.total_local)}
+                                  {/* Same currency-agnostic fallback as the
+                                      header total — show whichever side has
+                                      data, prefer UZS. */}
+                                  {(item.total_local || 0) > 0
+                                    ? formatUzs(item.total_local)
+                                    : (item.total_currency || 0) > 0
+                                      ? formatUsd(item.total_currency)
+                                      : '—'}
                                 </div>
                               </div>
                             ))}
@@ -678,9 +690,13 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                           {formatDocDate(o.doc_date)} · {o.item_count} {t.real_order_items_count}
                         </div>
                         <div className="text-sm font-bold mt-1">
-                          {o.currency === 'USD'
-                            ? formatUsd(o.total_sum_currency || o.total_sum)
-                            : `${formatUzs(o.total_sum)} ${t.balance_currency}`}
+                          {/* Same currency-agnostic fallback as the main
+                              real-orders list — see comment above. */}
+                          {(o.total_sum || 0) > 0
+                            ? `${formatUzs(o.total_sum)} ${t.balance_currency}`
+                            : (o.total_sum_currency || 0) > 0
+                              ? formatUsd(o.total_sum_currency)
+                              : '—'}
                         </div>
                       </>
                     ) : (

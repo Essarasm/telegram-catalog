@@ -18,6 +18,7 @@ from backend.services.import_real_orders import (
     list_unmatched_real_clients,
     relink_real_orders,
     get_real_order_sample_for_client,
+    backfill_real_order_totals,
 )
 from backend.services.import_client_master import apply_client_master_import
 
@@ -167,6 +168,20 @@ def real_order_sample(
     if admin_key != "rassvet2026":
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return get_real_order_sample_for_client(client)
+
+
+@router.post("/backfill-real-order-totals")
+def backfill_real_order_totals_endpoint(
+    admin_key: str = Form(""),
+):
+    """One-shot backfill: derive missing total_local / sum_local / total_currency
+    on existing real_order_items rows, and missing total_sum / total_sum_currency
+    on existing real_orders rows. Mirrors import-time post-processing so already-
+    ingested 1C exports heal without requiring re-upload. Idempotent.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return backfill_real_order_totals()
 
 
 @router.post("/import-client-master")

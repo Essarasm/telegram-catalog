@@ -1269,6 +1269,8 @@ async def cmd_help(message: types.Message):
         "Client Master jadvalini allowed_clients ga import qilish (1C cyrillic nomlari + telefonlar)\n\n"
         "<b>/realordersample</b> <code>&lt;mijoz parchasi&gt;</code>\n"
         "Diagnostika: bitta haqiqiy buyurtmaning xom narx ustunlari (DB dump)\n\n"
+        "<b>/backfillrealordertotals</b>\n"
+        "Mavjud haqiqiy buyurtmalarda yo'qolgan jami narxlarni qayta hisoblash (1 marta ishlatiladi)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
@@ -2179,6 +2181,62 @@ async def cmd_realordersample(message: types.Message):
 
     except Exception as e:
         logger.error(f"Realordersample error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+# ───────────────────────────────────────────
+# /backfillrealordertotals — heal missing totals on existing real_orders
+# ───────────────────────────────────────────
+
+@dp.message(Command("backfillrealordertotals"))
+async def cmd_backfillrealordertotals(message: types.Message):
+    """One-shot backfill: derive missing total_local/sum_local/total_currency
+    on existing real_order_items rows, and missing total_sum/total_sum_currency
+    on existing real_orders rows. Mirrors import-time post-processing so docs
+    already in the DB heal without requiring re-upload of all months.
+    Idempotent — safe to run multiple times.
+    """
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Backfill ishlayapti...")
+
+    try:
+        import httpx
+
+        api_url = f"{_BASE_URL}/api/finance/backfill-real-order-totals"
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(api_url, data={"admin_key": "rassvet2026"})
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        phases = result.get("phases", {}) or {}
+        lines = [
+            "✅ <b>Backfill tugadi</b>",
+            "",
+            f"<b>Jami yangilangan qatorlar:</b> {result.get('rows_touched_total', 0)}",
+            "",
+            "<b>Bosqichlar:</b>",
+            f"  • item.sum_local ← price×qty: {phases.get('item_sum_local_from_price_qty', 0)}",
+            f"  • item.total_local ← sum+vat: {phases.get('item_total_local_from_sum', 0)}",
+            f"  • item.total_local ← price×qty: {phases.get('item_total_local_from_price_qty', 0)}",
+            f"  • item.sum_currency ← price_cur×qty: {phases.get('item_sum_currency_from_price_qty', 0)}",
+            f"  • item.total_currency ← sum_cur: {phases.get('item_total_currency_from_sum', 0)}",
+            f"  • item.total_currency ← price_cur×qty: {phases.get('item_total_currency_from_price_qty', 0)}",
+            f"  • order.total_sum ← Σitems: {phases.get('order_total_sum_from_items', 0)}",
+            f"  • order.total_sum_cur ← Σitems: {phases.get('order_total_sum_currency_from_items', 0)}",
+            "",
+            "<b>DB holati:</b>",
+            f"  • orders: {result.get('db_orders_with_total', 0)} / {result.get('db_total_orders', 0)} (jami narx > 0)",
+            f"  • items:  {result.get('db_items_with_total', 0)} / {result.get('db_total_items', 0)} (jami narx > 0)",
+        ]
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Backfillrealordertotals error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
