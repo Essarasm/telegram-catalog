@@ -1263,6 +1263,8 @@ async def cmd_help(message: types.Message):
         "Реализация yuklash (1C \"Реализация товаров\" — haqiqiy buyurtmalar)\n\n"
         "<b>/unmatchedclients</b>\n"
         "Haqiqiy buyurtmalardagi bog'lanmagan mijozlar ro'yxati (ko'p hujjatdan kam tomonga)\n\n"
+        "<b>/unmatchedproducts</b>\n"
+        "Haqiqiy buyurtmalardagi bog'lanmagan mahsulotlar ro'yxati (ko'p qatordan kam tomonga)\n\n"
         "<b>/relinkrealorders</b>\n"
         "Bog'lanmagan haqiqiy buyurtmalarni qayta bog'lash (allowed_clients yangilagandan keyin)\n\n"
         "<b>/clientmaster</b> (reply to XLSX file)\n"
@@ -1991,6 +1993,102 @@ async def cmd_unmatchedclients(message: types.Message):
 
     except Exception as e:
         logger.error(f"Unmatchedclients error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@dp.message(Command("unmatchedproducts"))
+async def cmd_unmatchedproducts(message: types.Message):
+    """Show real_order_items rows where product_id is NULL, grouped by 1C name.
+
+    Ranks by line-item count so Session A / catalog team can prioritize the
+    SKUs that hurt the most. Unlike /unmatchedclients there is no skip list —
+    every unmatched product is a genuine catalog gap.
+    """
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Bog'lanmagan mahsulotlar tekshirilmoqda...")
+
+    try:
+        import httpx
+
+        api_url = f"{_BASE_URL}/api/finance/unmatched-real-products"
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(
+                api_url,
+                params={"admin_key": "rassvet2026", "limit": 100},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(
+                f"❌ Xatolik: {result.get('error', 'Unknown')}"
+            )
+            return
+
+        total_items = result.get("db_total_items", 0)
+        matched = result.get("db_matched_items", 0)
+        unmatched = result.get("db_unmatched_items", 0)
+        match_pct = (matched / total_items * 100) if total_items else 0
+        full_unique = result.get("total_unique_unmatched_names_full", 0)
+        total_lines = result.get("total_unmatched_lines", 0)
+        total_local = result.get("total_unmatched_local", 0)
+        total_currency = result.get("total_unmatched_currency", 0)
+        items = result.get("items", [])
+
+        lines = [
+            "📦 <b>Bog'lanmagan mahsulotlar</b>\n",
+            f"💾 Jami qatorlar: {total_items:,}".replace(",", " "),
+            f"✅ Bog'langan: {matched:,} ({match_pct:.1f}%)".replace(",", " "),
+            f"❌ Bog'lanmagan: {unmatched:,}".replace(",", " "),
+            f"🔢 Noyob nomlar (jami): {full_unique}",
+        ]
+        if total_local:
+            lines.append(
+                f"💴 Jami UZS summa: {total_local:,}".replace(",", " ")
+            )
+        if total_currency:
+            lines.append(f"💵 Jami USD summa: {total_currency:,.2f}".replace(",", " "))
+
+        lines.append(f"\n📋 Top-20 (eng ko'p qatordan):")
+
+        if not items:
+            lines.append("\n🎉 Hammasi bog'langan!")
+        else:
+            for i, it in enumerate(items[:20], 1):
+                name = it["product_name_1c"] or "(empty)"
+                if len(name) > 55:
+                    name = name[:52] + "..."
+                period = it["first_seen"] or "?"
+                if it["last_seen"] and it["last_seen"] != it["first_seen"]:
+                    period = f"{it['first_seen']}…{it['last_seen']}"
+                qty = it.get("total_quantity", 0)
+                local = it.get("total_local", 0)
+                curr = it.get("total_currency", 0)
+                parts = [f"📄 {it['line_count']} qator", f"📦 {qty:g}"]
+                if local:
+                    parts.append(f"💴 {local:,}".replace(",", " "))
+                if curr:
+                    parts.append(f"💵 {curr:,.0f}".replace(",", " "))
+                parts.append(f"👥 {it['client_count']}")
+                lines.append(
+                    f"\n{i}. <b>{html_escape(name)}</b>\n"
+                    f"   {' · '.join(parts)}\n"
+                    f"   {period}"
+                )
+
+        lines.append(
+            "\n\n💡 Bu ro'yxat katalog bo'shliqlarini ko'rsatadi — "
+            "Session A / katalog jamoasi uchun."
+        )
+
+        msg = "\n".join(lines)
+        if len(msg) > 3800:
+            msg = msg[:3800] + "\n...(truncated)"
+        await status_msg.edit_text(msg, parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Unmatchedproducts error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 

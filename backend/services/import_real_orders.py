@@ -950,6 +950,82 @@ def list_unmatched_real_clients(limit: int = 200) -> dict:
     }
 
 
+def list_unmatched_real_products(limit: int = 100) -> dict:
+    """Report real_order_items rows with product_id IS NULL, grouped by product_name_1c.
+
+    Returns per-name stats (line_count, total_quantity, doc_count, client_count,
+    total_local, total_currency, first_seen, last_seen) sorted by line_count DESC
+    so ops/Session A can prioritize SKUs that hurt the most. Unlike the clients
+    report, there is no system skip-list for products — unmatched products are
+    always genuine catalog gaps.
+    """
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT ri.product_name_1c                           AS product_name_1c,
+                  COUNT(*)                                     AS line_count,
+                  SUM(COALESCE(ri.quantity, 0))                AS total_quantity,
+                  COUNT(DISTINCT ri.real_order_id)             AS doc_count,
+                  COUNT(DISTINCT ro.client_id)                 AS client_count,
+                  SUM(COALESCE(ri.total_local, 0))             AS total_local,
+                  SUM(COALESCE(ri.total_currency, 0))          AS total_currency,
+                  MIN(ro.doc_date)                             AS first_seen,
+                  MAX(ro.doc_date)                             AS last_seen
+           FROM real_order_items ri
+           JOIN real_orders ro ON ro.id = ri.real_order_id
+           WHERE ri.product_id IS NULL
+           GROUP BY ri.product_name_1c
+           ORDER BY line_count DESC, total_local DESC"""
+    ).fetchall()
+
+    total_lines_unmatched = 0
+    total_local_unmatched = 0.0
+    total_currency_unmatched = 0.0
+    items: List[dict] = []
+
+    for r in rows:
+        name = (r["product_name_1c"] or "").strip()
+        if not name:
+            continue
+        line_count = int(r["line_count"] or 0)
+        total_local = float(r["total_local"] or 0)
+        total_currency = float(r["total_currency"] or 0)
+        total_lines_unmatched += line_count
+        total_local_unmatched += total_local
+        total_currency_unmatched += total_currency
+        if len(items) < limit:
+            items.append({
+                "product_name_1c": name,
+                "line_count": line_count,
+                "total_quantity": round(float(r["total_quantity"] or 0), 3),
+                "doc_count": int(r["doc_count"] or 0),
+                "client_count": int(r["client_count"] or 0),
+                "total_local": round(total_local),
+                "total_currency": round(total_currency, 2),
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+            })
+
+    # Overall DB totals for context
+    db_total_items = conn.execute("SELECT COUNT(*) FROM real_order_items").fetchone()[0]
+    db_matched_items = conn.execute(
+        "SELECT COUNT(*) FROM real_order_items WHERE product_id IS NOT NULL"
+    ).fetchone()[0]
+    conn.close()
+
+    return {
+        "ok": True,
+        "db_total_items": db_total_items,
+        "db_matched_items": db_matched_items,
+        "db_unmatched_items": db_total_items - db_matched_items,
+        "unique_unmatched_names": len(items),  # capped by limit
+        "total_unique_unmatched_names_full": len(rows),  # full count before limit
+        "total_unmatched_lines": total_lines_unmatched,
+        "total_unmatched_local": round(total_local_unmatched),
+        "total_unmatched_currency": round(total_currency_unmatched, 2),
+        "items": items,
+    }
+
+
 def relink_real_orders() -> dict:
     """Re-run client matching for every real_orders row where client_id IS NULL.
 

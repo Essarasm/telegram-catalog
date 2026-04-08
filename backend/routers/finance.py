@@ -16,6 +16,7 @@ from backend.services.import_debts import (
 from backend.services.import_real_orders import (
     apply_real_orders_import,
     list_unmatched_real_clients,
+    list_unmatched_real_products,
     relink_real_orders,
     get_real_order_sample_for_client,
     backfill_real_order_totals,
@@ -136,6 +137,24 @@ def unmatched_real_clients(
     if admin_key != "rassvet2026":
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return list_unmatched_real_clients(limit=limit)
+
+
+@router.get("/unmatched-real-products")
+def unmatched_real_products(
+    admin_key: str = Query(""),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """List real_order_items rows where product_id IS NULL, grouped by product_name_1c.
+
+    Used by the /unmatchedproducts bot command to report which 1C product names
+    are not linking to any catalog products row, ranked by line-item count so
+    Session A / catalog team can prioritize the SKUs that hurt the most. Unlike
+    /unmatchedclients there is no system skip list — every unmatched product is
+    a genuine catalog gap.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return list_unmatched_real_products(limit=limit)
 
 
 @router.post("/relink-real-orders")
