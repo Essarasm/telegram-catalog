@@ -2143,23 +2143,33 @@ async def cmd_realordersample(message: types.Message):
             f"  • item_count: {sample.get('item_count') or 0}",
             "",
             f"<b>Qatorlar (item_count={result.get('items_count', 0)}):</b>",
-            f"  • narxi &gt; 0: {result.get('items_with_price', 0)}",
+            f"  • price &gt; 0: {result.get('items_with_price', 0)}",
             f"  • sum_local &gt; 0: {result.get('items_with_sum_local', 0)}",
             f"  • total_local &gt; 0: {result.get('items_with_total_local', 0)}",
+            f"  • vat &gt; 0: {result.get('items_with_vat', 0)}",
+            f"  • price_currency &gt; 0: {result.get('items_with_price_currency', 0)}",
+            f"  • sum_currency &gt; 0: {result.get('items_with_sum_currency', 0)}",
             f"  • total_currency &gt; 0: {result.get('items_with_total_currency', 0)}",
         ]
 
-        # Dump first ~6 items in a compact form so ops can eyeball them
+        # Dump first ~6 items in a compact form. Two-line layout per item:
+        # line 1 = UZS columns + vat, line 2 = currency columns. This gives us
+        # the full picture of which price columns the parser captured vs missed.
         if items:
             lines += ["", "<b>Birinchi 6 qator (xom DB qiymatlari):</b>"]
             for it in items[:6]:
                 name_short = (it.get("product_name_1c") or "")[:30]
+                lines.append(f"  · <b>{name_short}</b> qty={it.get('quantity') or 0}")
                 lines.append(
-                    f"  · {name_short} | qty={it.get('quantity') or 0} "
-                    f"price={it.get('price') or 0} "
+                    f"    UZS: price={it.get('price') or 0} "
                     f"sum={it.get('sum_local') or 0} "
                     f"total={it.get('total_local') or 0} "
-                    f"tot_cur={it.get('total_currency') or 0}"
+                    f"vat={it.get('vat') or 0}"
+                )
+                lines.append(
+                    f"    USD: price_cur={it.get('price_currency') or 0} "
+                    f"sum_cur={it.get('sum_currency') or 0} "
+                    f"total_cur={it.get('total_currency') or 0}"
                 )
 
         text_out = "\n".join(lines)

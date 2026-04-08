@@ -1129,11 +1129,14 @@ def get_real_order_sample_for_client(client_substring: str) -> dict:
 
     items_dump = [dict(i) for i in items]
 
-    # Sanity counts: how many items have any non-zero price/sum?
+    # Sanity counts: how many items have any non-zero value in each price column?
     items_with_price = sum(1 for i in items_dump if (i["price"] or 0) > 0)
     items_with_sum = sum(1 for i in items_dump if (i["sum_local"] or 0) > 0)
     items_with_total = sum(1 for i in items_dump if (i["total_local"] or 0) > 0)
-    items_with_currency = sum(1 for i in items_dump if (i["total_currency"] or 0) > 0)
+    items_with_vat = sum(1 for i in items_dump if (i["vat"] or 0) > 0)
+    items_with_price_currency = sum(1 for i in items_dump if (i["price_currency"] or 0) > 0)
+    items_with_sum_currency = sum(1 for i in items_dump if (i["sum_currency"] or 0) > 0)
+    items_with_total_currency = sum(1 for i in items_dump if (i["total_currency"] or 0) > 0)
 
     return {
         "ok": True,
@@ -1146,5 +1149,8 @@ def get_real_order_sample_for_client(client_substring: str) -> dict:
         "items_with_price": items_with_price,
         "items_with_sum_local": items_with_sum,
         "items_with_total_local": items_with_total,
-        "items_with_total_currency": items_with_currency,
+        "items_with_vat": items_with_vat,
+        "items_with_price_currency": items_with_price_currency,
+        "items_with_sum_currency": items_with_sum_currency,
+        "items_with_total_currency": items_with_total_currency,
     }
