@@ -854,9 +854,13 @@ def _py_normalize_client_name(name: Optional[str]) -> str:
 # holders, legal-entity aggregate) or are adjustment markers. Names are stored
 # py-normalized so `_is_system_non_client` can do a single set lookup.
 #
-# The first two are 1C correction/adjustment markers. The rest (added
-# 2026-04-07 after user confirmed) are walk-in cash/aggregate buckets —
-# together they were 77% of the post-relink unmatched residue.
+# The first two are 1C correction/adjustment markers. The middle block
+# (added 2026-04-07 after user confirmed) are walk-in cash/aggregate
+# buckets — together they were 77% of the post-relink unmatched residue
+# on the Q1 2026 dataset. "В О З В Р А Т ПОСТАВЩИКУ" was added 2026-04-07
+# after the full 2025 historical ingest — it is the 1C return-to-supplier
+# doc marker (letter-spaced in the export, analogous to ИСПРАВЛЕНИЕ) and
+# appeared in 10 of 12 months of 2025 unmatched residue.
 SYSTEM_NON_CLIENT_NAMES = frozenset(
     _py_normalize_client_name(s) for s in [
         "ИСПРАВЛЕНИЕ",
@@ -869,6 +873,7 @@ SYSTEM_NON_CLIENT_NAMES = frozenset(
         "Организации (переч.)",
         "СТРОЙКА",
         "СТЕКЛОПЛАСТИК",
+        "В О З В Р А Т ПОСТАВЩИКУ",
     ]
 )
 
