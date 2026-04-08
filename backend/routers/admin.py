@@ -119,6 +119,49 @@ def cleanup_zero_balances(admin_key: str = Query(...)):
     return {"ok": True, "deleted": count}
 
 
+# ── Backfill order_items.product_name to Cyrillic ────────────────
+
+@router.post("/backfill-order-item-names")
+def backfill_order_item_names(admin_key: str = Query(...)):
+    """Session A policy: rewrite `order_items.product_name` for old wish-list
+    orders so that the stored line-item name matches the Cyrillic 1C name
+    (products.name), not the cleaned Latin display name.
+
+    From commit 325b4cc onward, newly placed orders already save the Cyrillic
+    name. This endpoint heals orders placed before that commit: for every
+    `order_items` row with a linked `product_id`, we overwrite `product_name`
+    with `products.name`. Rows with NULL product_id (free-text items, if any)
+    are left untouched.
+
+    Idempotent — running it twice is a no-op because the second pass would
+    match `products.name` exactly.
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+    # Count rows that would actually change so the response is informative.
+    to_update = conn.execute(
+        """SELECT COUNT(*)
+           FROM order_items oi
+           JOIN products p ON p.id = oi.product_id
+           WHERE oi.product_id IS NOT NULL
+             AND (oi.product_name IS NULL OR oi.product_name <> p.name)"""
+    ).fetchone()[0]
+
+    conn.execute(
+        """UPDATE order_items
+           SET product_name = (
+               SELECT p.name FROM products p WHERE p.id = order_items.product_id
+           )
+           WHERE product_id IS NOT NULL
+             AND product_name <> (
+               SELECT p.name FROM products p WHERE p.id = order_items.product_id
+             )"""
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True, "rows_updated": to_update}
+
+
 # ── Fix weights from product names ───────────────────────────────
 
 @router.post("/fix-weights")

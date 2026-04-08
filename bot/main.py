@@ -1271,6 +1271,8 @@ async def cmd_help(message: types.Message):
         "Diagnostika: bitta haqiqiy buyurtmaning xom narx ustunlari (DB dump)\n\n"
         "<b>/backfillrealordertotals</b>\n"
         "Mavjud haqiqiy buyurtmalarda yo'qolgan jami narxlarni qayta hisoblash (1 marta ishlatiladi)\n\n"
+        "<b>/backfillordernames</b>\n"
+        "Eski wish-list buyurtmalaridagi nomlarni 1C Kirillcha variantiga o'tkazish (1 marta ishlatiladi)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
@@ -2181,6 +2183,48 @@ async def cmd_realordersample(message: types.Message):
 
     except Exception as e:
         logger.error(f"Realordersample error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+# ───────────────────────────────────────────
+# /backfillordernames — rewrite wish-list order_items.product_name to Cyrillic
+# ───────────────────────────────────────────
+
+@dp.message(Command("backfillordernames"))
+async def cmd_backfillordernames(message: types.Message):
+    """Session A policy: old wish-list orders (pre-commit 325b4cc) stored
+    the cleaned Latin display name in order_items.product_name. The new rule
+    is that order history should show the raw 1C Cyrillic name so sales can
+    reconcile against 1C. This backfills all rows with a linked product_id
+    to use products.name instead. Idempotent.
+    """
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Backfill ishlayapti...")
+
+    try:
+        import httpx
+
+        api_url = f"{_BASE_URL}/api/admin/backfill-order-item-names"
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(api_url, params={"admin_key": "rassvet2026"})
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        rows = result.get("rows_updated", 0)
+        await status_msg.edit_text(
+            "✅ <b>Order item nomlari yangilandi</b>\n\n"
+            f"Yangilangan qatorlar: <b>{rows}</b>\n\n"
+            "Endi eski wish-list buyurtmalari ham 1C Kirillcha nom bilan ko‘rinadi.",
+            parse_mode="HTML",
+        )
+
+    except Exception as e:
+        logger.error(f"Backfillordernames error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 

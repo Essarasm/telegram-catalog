@@ -465,7 +465,15 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                               <div key={idx} className="flex items-center gap-2 py-1">
                                 <div className="flex-1 min-w-0">
                                   <div className="text-xs font-medium truncate">
-                                    {item.name_display || item.product_name_1c}
+                                    {/* Session A policy: real-orders history is
+                                        1C data — render the raw Cyrillic name so
+                                        the sales team can reconcile against 1C.
+                                        The in-app catalog/cart UI still shows the
+                                        cleaned Latin name_display. Same rule also
+                                        applies to wish-list orders after placement
+                                        (see export.py commit 325b4cc + the
+                                        backfill-order-item-names admin endpoint). */}
+                                    {item.product_name_1c || item.name_display}
                                   </div>
                                 </div>
                                 <div className="text-xs text-tg-hint whitespace-nowrap">
