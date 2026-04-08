@@ -1040,3 +1040,111 @@ def relink_real_orders() -> dict:
         "db_real_client_unmatched": db_real_client_docs - db_real_client_matched,
         "db_real_client_match_pct": round(real_match_pct, 1),
     }
+
+
+def get_real_order_sample_for_client(client_substring: str) -> dict:
+    """Diagnostic: dump the most recent real order for any client whose name
+    matches the given substring (cyrillic-aware, case-insensitive). Returns
+    raw DB price columns so ops can spot whether a "no price" Cabinet display
+    is a parser bug (zeros in DB) or a render bug (data present, UI hiding it).
+
+    Searches both `allowed_clients.name` and `real_orders.client_name_1c`.
+    """
+    if not client_substring or not client_substring.strip():
+        return {"ok": False, "error": "client substring required"}
+
+    needle = _py_normalize_client_name(client_substring)
+    conn = get_db()
+
+    # 1) Try matching via allowed_clients first (typical case: linked client)
+    candidate_client_ids: List[int] = []
+    for row in conn.execute(
+        "SELECT id, name, phone_normalized FROM allowed_clients WHERE name IS NOT NULL"
+    ).fetchall():
+        if needle in _py_normalize_client_name(row["name"]):
+            candidate_client_ids.append(row["id"])
+
+    matched_client_rows: List[dict] = []
+    if candidate_client_ids:
+        placeholders = ",".join("?" * len(candidate_client_ids))
+        for ac in conn.execute(
+            f"SELECT id, name, phone_normalized FROM allowed_clients WHERE id IN ({placeholders})",
+            candidate_client_ids,
+        ).fetchall():
+            matched_client_rows.append(dict(ac))
+
+    # 2) Find candidate real_orders: matches by client_id OR by raw cyrillic name substring
+    real_orders_rows: List[dict] = []
+    if candidate_client_ids:
+        placeholders = ",".join("?" * len(candidate_client_ids))
+        for r in conn.execute(
+            f"""SELECT id, doc_number_1c, doc_date, client_name_1c, client_id,
+                       currency, exchange_rate, total_sum, total_sum_currency, item_count
+                FROM real_orders
+                WHERE client_id IN ({placeholders})
+                ORDER BY doc_date DESC, id DESC
+                LIMIT 5""",
+            candidate_client_ids,
+        ).fetchall():
+            real_orders_rows.append(dict(r))
+
+    # Always also try a name substring scan (fallback if not linked)
+    if not real_orders_rows:
+        for r in conn.execute(
+            """SELECT id, doc_number_1c, doc_date, client_name_1c, client_id,
+                      currency, exchange_rate, total_sum, total_sum_currency, item_count
+               FROM real_orders
+               ORDER BY doc_date DESC, id DESC
+               LIMIT 500"""
+        ).fetchall():
+            if needle in _py_normalize_client_name(r["client_name_1c"]):
+                real_orders_rows.append(dict(r))
+                if len(real_orders_rows) >= 5:
+                    break
+
+    if not real_orders_rows:
+        conn.close()
+        return {
+            "ok": True,
+            "needle": client_substring,
+            "matched_allowed_clients": matched_client_rows,
+            "real_orders": [],
+            "items_dump": [],
+            "note": "no real_orders found for this substring",
+        }
+
+    # 3) Dump line items for the MOST RECENT order — that's the diagnostic payload
+    sample = real_orders_rows[0]
+    items = conn.execute(
+        """SELECT line_no, product_name_1c, product_id,
+                  quantity, price, sum_local, vat, total_local,
+                  price_currency, sum_currency, total_currency
+           FROM real_order_items
+           WHERE real_order_id = ?
+           ORDER BY line_no, id
+           LIMIT 30""",
+        (sample["id"],),
+    ).fetchall()
+    conn.close()
+
+    items_dump = [dict(i) for i in items]
+
+    # Sanity counts: how many items have any non-zero price/sum?
+    items_with_price = sum(1 for i in items_dump if (i["price"] or 0) > 0)
+    items_with_sum = sum(1 for i in items_dump if (i["sum_local"] or 0) > 0)
+    items_with_total = sum(1 for i in items_dump if (i["total_local"] or 0) > 0)
+    items_with_currency = sum(1 for i in items_dump if (i["total_currency"] or 0) > 0)
+
+    return {
+        "ok": True,
+        "needle": client_substring,
+        "matched_allowed_clients": matched_client_rows,
+        "real_orders": real_orders_rows,
+        "sample_doc": sample,
+        "items_dump": items_dump,
+        "items_count": len(items_dump),
+        "items_with_price": items_with_price,
+        "items_with_sum_local": items_with_sum,
+        "items_with_total_local": items_with_total,
+        "items_with_total_currency": items_with_currency,
+    }

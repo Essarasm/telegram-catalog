@@ -1267,6 +1267,8 @@ async def cmd_help(message: types.Message):
         "Bog'lanmagan haqiqiy buyurtmalarni qayta bog'lash (allowed_clients yangilagandan keyin)\n\n"
         "<b>/clientmaster</b> (reply to XLSX file)\n"
         "Client Master jadvalini allowed_clients ga import qilish (1C cyrillic nomlari + telefonlar)\n\n"
+        "<b>/realordersample</b> <code>&lt;mijoz parchasi&gt;</code>\n"
+        "Diagnostika: bitta haqiqiy buyurtmaning xom narx ustunlari (DB dump)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
         "<b>/chatid</b>\n"
@@ -2057,6 +2059,116 @@ async def cmd_relinkrealorders(message: types.Message):
 
     except Exception as e:
         logger.error(f"Relinkrealorders error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+# ───────────────────────────────────────────
+# /realordersample — diagnostic dump of one real order's price columns
+# ───────────────────────────────────────────
+
+@dp.message(Command("realordersample"))
+async def cmd_realordersample(message: types.Message):
+    """Diagnostic: dump the most recent real_order for any client whose name
+    matches the argument substring, with raw DB price columns. Used to
+    decide whether a "no price in Cabinet" complaint is a parser bug
+    (zeros in DB) or a render bug (data present, UI hiding it).
+
+    Usage:  /realordersample Улугбек
+    """
+    if not is_admin(message):
+        return
+
+    # Extract the substring after the command
+    text = (message.text or "").strip()
+    parts = text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply(
+            "ℹ️ Foydalanish: <code>/realordersample &lt;mijoz nomidan parcha&gt;</code>\n"
+            "Masalan: <code>/realordersample Улугбек</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    needle = parts[1].strip()
+    status_msg = await message.reply("⏳ Diagnostika ishlayapti...")
+
+    try:
+        import httpx
+
+        api_url = f"{_BASE_URL}/api/finance/real-order-sample"
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(
+                api_url,
+                params={"admin_key": "rassvet2026", "client": needle},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        ac_rows = result.get("matched_allowed_clients") or []
+        ro_rows = result.get("real_orders") or []
+        items = result.get("items_dump") or []
+
+        if not ro_rows:
+            await status_msg.edit_text(
+                f"🔍 <b>{needle}</b> — bunga mos real_orders topilmadi.\n"
+                f"allowed_clients mosliklari: {len(ac_rows)}",
+                parse_mode="HTML",
+            )
+            return
+
+        sample = result.get("sample_doc") or ro_rows[0]
+        lines = [
+            f"🔍 <b>Diagnostika: {needle}</b>",
+            "",
+            f"<b>allowed_clients mosliklari:</b> {len(ac_rows)}",
+        ]
+        for ac in ac_rows[:3]:
+            lines.append(f"  • id={ac['id']} {ac.get('name','')[:40]} ph={ac.get('phone_normalized','') or '—'}")
+        if len(ac_rows) > 3:
+            lines.append(f"  • +{len(ac_rows) - 3} ko'p…")
+
+        lines += [
+            "",
+            f"<b>real_orders topildi:</b> {len(ro_rows)}",
+            f"<b>Tahlil hujjati:</b>",
+            f"  • doc № {sample['doc_number_1c']} · {sample['doc_date']}",
+            f"  • client_name_1c: {sample.get('client_name_1c','')}",
+            f"  • client_id: {sample.get('client_id') if sample.get('client_id') is not None else '— (bogʻlanmagan)'}",
+            f"  • currency: {sample.get('currency') or '—'} · rate: {sample.get('exchange_rate') or '—'}",
+            f"  • total_sum (UZS): {sample.get('total_sum') or 0}",
+            f"  • total_sum_currency: {sample.get('total_sum_currency') or 0}",
+            f"  • item_count: {sample.get('item_count') or 0}",
+            "",
+            f"<b>Qatorlar (item_count={result.get('items_count', 0)}):</b>",
+            f"  • narxi &gt; 0: {result.get('items_with_price', 0)}",
+            f"  • sum_local &gt; 0: {result.get('items_with_sum_local', 0)}",
+            f"  • total_local &gt; 0: {result.get('items_with_total_local', 0)}",
+            f"  • total_currency &gt; 0: {result.get('items_with_total_currency', 0)}",
+        ]
+
+        # Dump first ~6 items in a compact form so ops can eyeball them
+        if items:
+            lines += ["", "<b>Birinchi 6 qator (xom DB qiymatlari):</b>"]
+            for it in items[:6]:
+                name_short = (it.get("product_name_1c") or "")[:30]
+                lines.append(
+                    f"  · {name_short} | qty={it.get('quantity') or 0} "
+                    f"price={it.get('price') or 0} "
+                    f"sum={it.get('sum_local') or 0} "
+                    f"total={it.get('total_local') or 0} "
+                    f"tot_cur={it.get('total_currency') or 0}"
+                )
+
+        text_out = "\n".join(lines)
+        if len(text_out) > 4000:
+            text_out = text_out[:3990] + "\n…"
+        await status_msg.edit_text(text_out, parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Realordersample error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 

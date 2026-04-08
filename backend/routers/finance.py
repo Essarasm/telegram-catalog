@@ -17,6 +17,7 @@ from backend.services.import_real_orders import (
     apply_real_orders_import,
     list_unmatched_real_clients,
     relink_real_orders,
+    get_real_order_sample_for_client,
 )
 from backend.services.import_client_master import apply_client_master_import
 
@@ -149,6 +150,23 @@ def relink_real_orders_endpoint(
     if admin_key != "rassvet2026":
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return relink_real_orders()
+
+
+@router.get("/real-order-sample")
+def real_order_sample(
+    admin_key: str = Query(""),
+    client: str = Query("", min_length=1),
+):
+    """Diagnostic: dump the most recent real_order for any client whose name
+    matches `client` (substring, cyrillic-aware), with raw DB price columns.
+
+    Used by the /realordersample bot command to determine whether a "no price
+    in Cabinet" complaint is a parser bug (zeros in DB) or a render bug
+    (data present, UI hiding it).
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return get_real_order_sample_for_client(client)
 
 
 @router.post("/import-client-master")
