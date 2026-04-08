@@ -1286,7 +1286,9 @@ async def cmd_help(message: types.Message):
         "<b>/searches</b> <code>[kunlar]</code>\n"
         "Qidiruv statistikasi (default: 7 kun)\n\n"
         "<b>/datacoverage</b> <code>[valyuta]</code>\n"
-        "Yuklangan ma'lumotlar qamrovi (oylik tekshiruv)",
+        "Yuklangan ma'lumotlar qamrovi (oylik tekshiruv)\n\n"
+        "<b>/realordersstats</b>\n"
+        "Real orders sifat tahlili (match rates, agents, wish-list gap)",
         parse_mode="HTML",
     )
 
@@ -1777,6 +1779,249 @@ async def cmd_datacoverage(message: types.Message):
     except Exception as e:
         logger.error(f"Data coverage error: {e}")
         await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+    finally:
+        conn.close()
+
+
+# ───────────────────────────────────────────
+# /realordersstats — real_orders data quality diagnostic
+# ───────────────────────────────────────────
+
+@dp.message(Command("realordersstats"))
+async def cmd_realordersstats(message: types.Message):
+    """Data-quality diagnostic for real_orders.
+
+    Reports coverage, match rates, sale_agent fill rate, monthly breakdown,
+    and (most importantly) the distribution of wish-list → real-order time
+    gaps — so we can pick a data-driven N-days conversion window for the
+    upcoming dashboard Phase 3 views.
+    """
+    if not is_admin(message):
+        return
+
+    conn = get_db()
+    try:
+        # ── Section 1: Basic counts & coverage ────────────────────
+        total_orders = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
+        if total_orders == 0:
+            await message.reply(
+                "❌ <b>real_orders jadvali bo'sh.</b>\n\n"
+                "Avval /realorders buyrug'i bilan 1C 'Реализация товаров' "
+                "faylini yuklang.",
+                parse_mode="HTML",
+            )
+            return
+
+        total_items = conn.execute("SELECT COUNT(*) FROM real_order_items").fetchone()[0]
+
+        date_range = conn.execute(
+            "SELECT MIN(doc_date), MAX(doc_date) FROM real_orders"
+        ).fetchone()
+        first_date, last_date = date_range[0], date_range[1]
+
+        per_currency = conn.execute(
+            """SELECT currency,
+                      COUNT(*) as orders,
+                      SUM(total_sum) as total_local,
+                      SUM(total_sum_currency) as total_curr
+               FROM real_orders
+               GROUP BY currency"""
+        ).fetchall()
+
+        # ── Section 2: Match rates ────────────────────────────────
+        orders_with_client = conn.execute(
+            "SELECT COUNT(*) FROM real_orders WHERE client_id IS NOT NULL"
+        ).fetchone()[0]
+        orders_with_agent = conn.execute(
+            "SELECT COUNT(*) FROM real_orders WHERE sale_agent IS NOT NULL AND sale_agent != ''"
+        ).fetchone()[0]
+        items_with_product = conn.execute(
+            "SELECT COUNT(*) FROM real_order_items WHERE product_id IS NOT NULL"
+        ).fetchone()[0]
+
+        def pct(n, d):
+            return f"{100 * n / d:.1f}%" if d else "—"
+
+        # ── Section 3: Sales agent breakdown ──────────────────────
+        agents = conn.execute(
+            """SELECT sale_agent,
+                      COUNT(*) as orders,
+                      SUM(CASE WHEN currency = 'UZS' THEN total_sum_currency ELSE 0 END) as uzs,
+                      SUM(CASE WHEN currency = 'USD' THEN total_sum_currency ELSE 0 END) as usd
+               FROM real_orders
+               WHERE sale_agent IS NOT NULL AND sale_agent != ''
+               GROUP BY sale_agent
+               ORDER BY orders DESC
+               LIMIT 10"""
+        ).fetchall()
+
+        # ── Section 4: Monthly coverage ───────────────────────────
+        monthly = conn.execute(
+            """SELECT substr(doc_date, 1, 7) as ym,
+                      COUNT(*) as orders,
+                      COUNT(DISTINCT client_id) as clients
+               FROM real_orders
+               GROUP BY ym
+               ORDER BY ym"""
+        ).fetchall()
+
+        # ── Section 5: Wish-list → real-order gap distribution ────
+        # For each wish-list order (orders table), find the nearest subsequent
+        # real_order from the SAME client (via users.client_id bridge) and
+        # compute the day gap. Unmatched wish-lists are counted separately.
+        gap_rows = conn.execute(
+            """WITH wish AS (
+                   SELECT o.id as wish_id,
+                          u.client_id,
+                          date(o.created_at) as wish_date
+                   FROM orders o
+                   JOIN users u ON u.telegram_id = o.telegram_id
+                   WHERE u.client_id IS NOT NULL
+               )
+               SELECT w.wish_id,
+                      (SELECT MIN(julianday(ro.doc_date) - julianday(w.wish_date))
+                       FROM real_orders ro
+                       WHERE ro.client_id = w.client_id
+                         AND date(ro.doc_date) >= w.wish_date
+                         AND julianday(ro.doc_date) - julianday(w.wish_date) <= 90
+                      ) as gap_days
+               FROM wish w"""
+        ).fetchall()
+
+        buckets = {
+            "0-1": 0, "2-3": 0, "4-7": 0,
+            "8-14": 0, "15-30": 0, "31-60": 0,
+            "61-90": 0, "none": 0,
+        }
+        for r in gap_rows:
+            g = r["gap_days"]
+            if g is None:
+                buckets["none"] += 1
+            elif g <= 1:
+                buckets["0-1"] += 1
+            elif g <= 3:
+                buckets["2-3"] += 1
+            elif g <= 7:
+                buckets["4-7"] += 1
+            elif g <= 14:
+                buckets["8-14"] += 1
+            elif g <= 30:
+                buckets["15-30"] += 1
+            elif g <= 60:
+                buckets["31-60"] += 1
+            else:
+                buckets["61-90"] += 1
+
+        total_wish = len(gap_rows)
+
+        # Cumulative conversion at common cutoffs (for N-days discussion)
+        def cum_by(days):
+            hit = 0
+            for r in gap_rows:
+                g = r["gap_days"]
+                if g is not None and g <= days:
+                    hit += 1
+            return hit
+
+        cum7 = cum_by(7)
+        cum14 = cum_by(14)
+        cum30 = cum_by(30)
+
+        # ── Build reply ───────────────────────────────────────────
+        lines = ["📊 <b>Real Orders — Data Quality Diagnostic</b>\n"]
+
+        lines.append(f"<b>Qamrov:</b>")
+        lines.append(f"  📦 {total_orders:,} ta hujjat, {total_items:,} ta qator")
+        lines.append(f"  📅 {first_date} → {last_date}")
+        for p in per_currency:
+            curr = p["currency"]
+            n = p["orders"]
+            sym = "💴" if curr == "UZS" else "💵"
+            tot = p["total_curr"] or 0
+            if curr == "UZS":
+                fmt_tot = f"{round(tot / 1e9, 2)}B"
+            else:
+                fmt_tot = f"${round(tot / 1e3, 1)}K"
+            lines.append(f"  {sym} {curr}: {n:,} hujjat, {fmt_tot}")
+
+        lines.append(f"\n<b>Bog'lanish sifati:</b>")
+        lines.append(
+            f"  👥 Mijoz bog'langan: {orders_with_client:,}/{total_orders:,} ({pct(orders_with_client, total_orders)})"
+        )
+        lines.append(
+            f"  📦 Mahsulot bog'langan: {items_with_product:,}/{total_items:,} ({pct(items_with_product, total_items)})"
+        )
+        lines.append(
+            f"  🧑‍💼 Sales agent to'ldirilgan: {orders_with_agent:,}/{total_orders:,} ({pct(orders_with_agent, total_orders)})"
+        )
+
+        if agents:
+            lines.append(f"\n<b>Top sales agentlar:</b>")
+            for a in agents[:8]:
+                name = (a["sale_agent"] or "—")[:25]
+                tot_uzs = a["uzs"] or 0
+                tot_usd = a["usd"] or 0
+                extras = []
+                if tot_uzs:
+                    extras.append(f"{round(tot_uzs / 1e9, 1)}B UZS")
+                if tot_usd:
+                    extras.append(f"${round(tot_usd / 1e3, 1)}K")
+                extras_str = " · ".join(extras) if extras else "—"
+                lines.append(f"  • {name}: {a['orders']} hujjat · {extras_str}")
+
+        if monthly:
+            lines.append(f"\n<b>Oylik taqsimot:</b>")
+            for m in monthly[-12:]:  # last 12 months
+                lines.append(f"  {m['ym']} — {m['orders']:,} hujjat, {m['clients']} mijoz")
+
+        if total_wish > 0:
+            lines.append(f"\n<b>Wish-list → Real Order gap:</b>")
+            lines.append(f"  Jami wish-list (mijozga bog'langan): {total_wish:,}")
+            lines.append("")
+            lines.append(f"  <b>Bucket taqsimoti:</b>")
+            for label in ["0-1", "2-3", "4-7", "8-14", "15-30", "31-60", "61-90", "none"]:
+                count = buckets[label]
+                if total_wish > 0:
+                    bar_len = int(20 * count / total_wish)
+                    bar = "▓" * bar_len + "░" * (20 - bar_len)
+                else:
+                    bar = "░" * 20
+                label_padded = f"{label:>6} kun" if label != "none" else f"{'none':>6}    "
+                lines.append(f"  {label_padded} {bar} {count} ({pct(count, total_wish)})")
+
+            lines.append("")
+            lines.append(f"  <b>Kumulyativ konversiya (N-days window tahlili):</b>")
+            lines.append(f"  ≤ 7 kun:  {cum7:,} ({pct(cum7, total_wish)})")
+            lines.append(f"  ≤14 kun:  {cum14:,} ({pct(cum14, total_wish)})")
+            lines.append(f"  ≤30 kun:  {cum30:,} ({pct(cum30, total_wish)})")
+        else:
+            lines.append(f"\n⚠️ Wish-list ↔ real-order bog'lanishi topilmadi — users.client_id orqali bridging ishlamayapti.")
+
+        # Telegram has a 4096-char limit on messages. Split if needed.
+        text = "\n".join(lines)
+        if len(text) <= 4000:
+            await message.reply(text, parse_mode="HTML")
+        else:
+            # Split on section boundaries
+            chunks = []
+            current = []
+            current_len = 0
+            for line in lines:
+                if current_len + len(line) + 1 > 3800:
+                    chunks.append("\n".join(current))
+                    current = [line]
+                    current_len = len(line)
+                else:
+                    current.append(line)
+                    current_len += len(line) + 1
+            if current:
+                chunks.append("\n".join(current))
+            for i, chunk in enumerate(chunks):
+                await message.reply(chunk, parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"realordersstats error: {e}", exc_info=True)
+        await message.reply(f"❌ Xatolik: {str(e)[:300]}")
     finally:
         conn.close()
 
