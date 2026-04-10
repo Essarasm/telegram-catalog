@@ -2577,6 +2577,70 @@ async def cmd_today(message: types.Message):
         await message.reply(f"❌ Xatolik: {str(e)[:200]}")
 
 
+@dp.message(Command("missing"))
+async def cmd_missing(message: types.Message):
+    """Show backward-looking gaps: which files are missing from which days.
+
+    Usage:
+        /missing                         → 1st of current month through yesterday
+        /missing 2026-04-01              → from that date through yesterday
+        /missing 2026-04-01 2026-04-08   → specific range
+        /missing 01.04.26 08.04.26       → DD.MM.YY format (1C style)
+    """
+    if not is_admin(message):
+        return
+    try:
+        from backend.services.daily_uploads import (
+            get_missing_gaps,
+            render_missing_text,
+            _parse_user_date,
+        )
+
+        args = (message.text or "").split()[1:]  # strip "/missing"
+        start_date = None
+        end_date = None
+
+        if len(args) >= 1:
+            start_date = _parse_user_date(args[0])
+            if start_date is None:
+                await message.reply(
+                    "❌ Формат даты не распознан. Используйте YYYY-MM-DD "
+                    "или DD.MM.YY\n\n"
+                    "Примеры:\n"
+                    "<code>/missing 2026-04-01</code>\n"
+                    "<code>/missing 01.04.26 08.04.26</code>",
+                    parse_mode="HTML",
+                )
+                return
+        if len(args) >= 2:
+            end_date = _parse_user_date(args[1])
+            if end_date is None:
+                await message.reply(
+                    "❌ Вторая дата не распознана. Используйте YYYY-MM-DD "
+                    "или DD.MM.YY",
+                    parse_mode="HTML",
+                )
+                return
+
+        report = get_missing_gaps(start_date=start_date, end_date=end_date)
+
+        if not report.get("ok"):
+            await message.reply(
+                "Укажите диапазон в прошлом. Формат:\n"
+                "<code>/missing</code>\n"
+                "<code>/missing 2026-04-01</code>\n"
+                "<code>/missing 2026-04-01 2026-04-08</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        text = render_missing_text(report)
+        await message.reply(f"<pre>{html_escape(text)}</pre>", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/missing error: {e}")
+        await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+
+
 @dp.message(Command("skipupload"))
 async def cmd_skipupload(message: types.Message):
     """Mark a specific upload (or all for a date) as skipped.

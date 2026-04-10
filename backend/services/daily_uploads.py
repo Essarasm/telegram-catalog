@@ -514,3 +514,257 @@ def get_latest_fx_rate(currency_pair: str = "USD_UZS") -> Optional[dict]:
         return dict(row) if row else None
     finally:
         conn.close()
+
+
+# ── /missing — backward-looking gaps report ───────────────────────────
+
+_RU_WEEKDAYS_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+
+BACKFILL_START = date(2026, 4, 1)
+
+
+def _parse_user_date(raw: str) -> Optional[date]:
+    """Parse YYYY-MM-DD or DD.MM.YY (1C-style) into a date object."""
+    raw = raw.strip()
+    # Try ISO first
+    try:
+        return date.fromisoformat(raw)
+    except ValueError:
+        pass
+    # Try DD.MM.YY
+    try:
+        parts = raw.split(".")
+        if len(parts) == 3:
+            d, m, y = int(parts[0]), int(parts[1]), int(parts[2])
+            if y < 100:
+                y += 2000
+            return date(y, m, d)
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+def get_missing_gaps(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> dict:
+    """Return a structured report of missing/partial uploads in a date range.
+
+    Defaults: start_date = 1st of current month (Tashkent), end_date = yesterday.
+    Only looks backward (today and future are excluded).
+    Read-only: does NOT insert virtual rows into daily_uploads.
+    """
+    today = tashkent_today()
+    yesterday = today - timedelta(days=1)
+
+    if start_date is None:
+        start_date = today.replace(day=1)
+    if end_date is None:
+        end_date = yesterday
+
+    # Clamp end to yesterday (never report today or future)
+    if end_date >= today:
+        end_date = yesterday
+
+    if start_date > end_date:
+        return {"ok": False, "error": "empty_range"}
+
+    before_backfill = start_date < BACKFILL_START
+
+    conn = get_db()
+    try:
+        # Load schedule
+        sched_rows = conn.execute(
+            """SELECT * FROM daily_upload_schedule
+               WHERE is_active = 1 ORDER BY sort_order"""
+        ).fetchall()
+        sched_list = [dict(s) for s in sched_rows]
+
+        # Load all upload rows in range
+        upload_rows = {}
+        for r in conn.execute(
+            """SELECT * FROM daily_uploads
+               WHERE upload_date >= ? AND upload_date <= ?""",
+            (start_date.isoformat(), end_date.isoformat()),
+        ).fetchall():
+            key = (r["upload_date"], r["upload_type"])
+            upload_rows[key] = dict(r)
+
+        # Load holidays in range
+        holidays_in_range = {}
+        for r in conn.execute(
+            """SELECT holiday_date, name FROM holidays
+               WHERE holiday_date >= ? AND holiday_date <= ?""",
+            (start_date.isoformat(), end_date.isoformat()),
+        ).fetchall():
+            holidays_in_range[r["holiday_date"]] = r["name"]
+
+        # Build per-day gap data
+        days_data = []
+        total_gaps = 0
+        total_working_days = 0
+        d = start_date
+        while d <= end_date:
+            d_str = d.isoformat()
+            is_sunday = d.isoweekday() == 7
+            holiday_name = holidays_in_range.get(d_str)
+
+            if is_sunday or holiday_name:
+                days_data.append({
+                    "date": d,
+                    "date_str": d_str,
+                    "is_off": True,
+                    "off_reason": holiday_name or "Воскресенье",
+                    "gaps": [],
+                })
+                d += timedelta(days=1)
+                continue
+
+            total_working_days += 1
+            day_gaps = []
+
+            for sched in sched_list:
+                utype = sched["upload_type"]
+                expected = int(sched.get("expected_count_per_day", 1) or 1)
+                required_wdays = sched.get("required_weekdays", "1,2,3,4,5,6")
+
+                if not is_required_weekday(d, required_wdays):
+                    continue
+
+                upload = upload_rows.get((d_str, utype))
+
+                if upload:
+                    status = upload["status"]
+                    actual = int(upload.get("actual_count", 0) or 0)
+
+                    if status == "done" and actual >= expected:
+                        continue  # ✅ complete — hide
+                    if status == "skipped":
+                        continue  # ⏭ skipped — hide
+
+                    # Partial or pending/failed
+                    if status == "done" and actual < expected:
+                        # Partial (e.g. касса 1 of 2)
+                        day_gaps.append({
+                            "upload_type": utype,
+                            "display_name_ru": sched["display_name_ru"],
+                            "command": sched["command"],
+                            "kind": "partial",
+                            "actual": actual,
+                            "expected": expected,
+                        })
+                        total_gaps += 1
+                    else:
+                        # pending or failed — fully missing
+                        actual_count = int(upload.get("actual_count", 0) or 0)
+                        if actual_count > 0 and actual_count < expected:
+                            day_gaps.append({
+                                "upload_type": utype,
+                                "display_name_ru": sched["display_name_ru"],
+                                "command": sched["command"],
+                                "kind": "partial",
+                                "actual": actual_count,
+                                "expected": expected,
+                            })
+                        else:
+                            day_gaps.append({
+                                "upload_type": utype,
+                                "display_name_ru": sched["display_name_ru"],
+                                "command": sched["command"],
+                                "kind": "missing",
+                                "actual": 0,
+                                "expected": expected,
+                            })
+                        total_gaps += 1
+                else:
+                    # No row at all — virtual missing
+                    day_gaps.append({
+                        "upload_type": utype,
+                        "display_name_ru": sched["display_name_ru"],
+                        "command": sched["command"],
+                        "kind": "missing",
+                        "actual": 0,
+                        "expected": expected,
+                    })
+                    total_gaps += 1
+
+            if day_gaps:
+                days_data.append({
+                    "date": d,
+                    "date_str": d_str,
+                    "is_off": False,
+                    "off_reason": None,
+                    "gaps": day_gaps,
+                })
+
+            d += timedelta(days=1)
+
+        return {
+            "ok": True,
+            "start_date": start_date,
+            "end_date": end_date,
+            "before_backfill": before_backfill,
+            "days": days_data,
+            "total_gaps": total_gaps,
+            "total_working_days": total_working_days,
+        }
+    finally:
+        conn.close()
+
+
+def render_missing_text(report: dict) -> str:
+    """Format the missing-gaps report as a Telegram-friendly plain text message."""
+    if not report.get("ok"):
+        return "Укажите диапазон в прошлом. Формат: /missing или /missing 2026-04-01 2026-04-08"
+
+    sd = report["start_date"]
+    ed = report["end_date"]
+    header = (
+        f"📋 Пропущенные загрузки: "
+        f"{sd.strftime('%d.%m')} — {ed.strftime('%d.%m.%Y')}"
+    )
+
+    lines: List[str] = [header, ""]
+
+    if report.get("before_backfill"):
+        lines.append(
+            "⚠️ Данные до 01.04.2026 могут быть неполными"
+            " (до запуска системы отслеживания)"
+        )
+        lines.append("")
+
+    if report["total_gaps"] == 0 and not report["days"]:
+        return (
+            f"✅ Все данные загружены за период "
+            f"{sd.strftime('%d.%m')} — {ed.strftime('%d.%m.%Y')}"
+        )
+
+    for day in report["days"]:
+        d: date = day["date"]
+        dd_mm = d.strftime("%d.%m")
+        wd_short = _RU_WEEKDAYS_SHORT[d.weekday()]
+
+        if day["is_off"]:
+            lines.append(f"{dd_mm} ({wd_short}): Выходной ✓")
+            continue
+
+        gap_parts = []
+        for g in day["gaps"]:
+            name_lc = g["display_name_ru"].lower()
+            cmd = g["command"]
+            if g["kind"] == "partial":
+                gap_parts.append(
+                    f"⚠️ {name_lc} ({cmd}) — {g['actual']} из {g['expected']}"
+                )
+            else:
+                gap_parts.append(f"⏳ {name_lc} ({cmd})")
+
+        lines.append(f"{dd_mm} ({wd_short}): {' '.join(gap_parts)}")
+
+    lines.append("")
+    lines.append(
+        f"Итого: {report['total_gaps']} пропуска"
+        f" за {report['total_working_days']} рабочих дней"
+    )
+
+    return "\n".join(lines)
