@@ -368,6 +368,67 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_payments_client_name ON client_payments(client_name_1c);
         CREATE INDEX IF NOT EXISTS idx_client_payments_client_id ON client_payments(client_id);
         CREATE INDEX IF NOT EXISTS idx_client_payments_currency ON client_payments(currency);
+
+        -- ─────────────────────────────────────────────────────────────
+        -- Session F follow-up: Supply & Returns ingestion pipeline
+        -- ─────────────────────────────────────────────────────────────
+
+        -- Supply orders from 1C "Поступление товаров" (warehouse receipts + client returns)
+        CREATE TABLE IF NOT EXISTS supply_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_number TEXT NOT NULL,
+            doc_date TEXT NOT NULL,
+            doc_time TEXT,
+            author TEXT,
+            counterparty_name TEXT NOT NULL,
+            doc_type TEXT NOT NULL DEFAULT 'supply',
+            contract TEXT,
+            counterparty_account TEXT,
+            warehouse TEXT,
+            vat_rate TEXT,
+            receipt_type TEXT,
+            supplier_advance REAL DEFAULT 0,
+            supplier_advance_offset REAL DEFAULT 0,
+            invoice_ref TEXT,
+            responsible_person TEXT,
+            exchange_rate REAL DEFAULT 1,
+            currency TEXT DEFAULT 'UZS',
+            total_sum REAL DEFAULT 0,
+            total_sum_currency REAL DEFAULT 0,
+            item_count INTEGER DEFAULT 0,
+            source_file TEXT,
+            imported_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(doc_number, doc_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_supply_orders_doc_date ON supply_orders(doc_date);
+        CREATE INDEX IF NOT EXISTS idx_supply_orders_counterparty ON supply_orders(counterparty_name);
+        CREATE INDEX IF NOT EXISTS idx_supply_orders_doc_type ON supply_orders(doc_type);
+        CREATE INDEX IF NOT EXISTS idx_supply_orders_warehouse ON supply_orders(warehouse);
+
+        CREATE TABLE IF NOT EXISTS supply_order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            supply_order_id INTEGER NOT NULL,
+            line_no INTEGER,
+            product_name_raw TEXT NOT NULL,
+            matched_product_id INTEGER,
+            quantity REAL DEFAULT 0,
+            price REAL DEFAULT 0,
+            sum_local REAL DEFAULT 0,
+            vat REAL DEFAULT 0,
+            total_local REAL DEFAULT 0,
+            base_price REAL DEFAULT 0,
+            markup_pct REAL DEFAULT 0,
+            markup_sum REAL DEFAULT 0,
+            excise_pct REAL DEFAULT 0,
+            excise_sum REAL DEFAULT 0,
+            sum_currency REAL DEFAULT 0,
+            price_currency REAL DEFAULT 0,
+            unit TEXT,
+            FOREIGN KEY (supply_order_id) REFERENCES supply_orders(id) ON DELETE CASCADE,
+            UNIQUE(supply_order_id, line_no)
+        );
+        CREATE INDEX IF NOT EXISTS idx_supply_order_items_order ON supply_order_items(supply_order_id);
+        CREATE INDEX IF NOT EXISTS idx_supply_order_items_product ON supply_order_items(matched_product_id);
     """)
     conn.commit()
 
@@ -522,7 +583,7 @@ def rebuild_all_search_text(conn=None):
 
 
 def _seed_daily_upload_schedule(conn):
-    """Seed the 8 checklist items. Idempotent (INSERT OR IGNORE by PK)."""
+    """Seed the 9 checklist items. Idempotent (INSERT OR IGNORE by PK)."""
     rows = [
         # (upload_type, ru, uz, command, expected, required_weekdays, sort_order)
         ("balances_uzs", "Оборотка 40.10 (UZS)", "Aylanma 40.10 (UZS)", "/balances", 1, "1,2,3,4,5,6", 10),
@@ -533,6 +594,7 @@ def _seed_daily_upload_schedule(conn):
         ("realorders",   "Реализация",          "Realizatsiya",       "/realorders", 1, "1,2,3,4,5,6", 60),
         ("cash",         "Касса",               "Kassa",              "/cash",     2, "1,2,3,4,5,6", 70),
         ("fxrate",       "Курс валют",          "Valyuta kursi",      "/fxrate",   1, "1,2,3,4,5,6", 80),
+        ("supply",       "Поступление/Возврат", "Kirim/Qaytarish",    "/supply",   1, "1,2,3,4,5,6", 90),
     ]
     for r in rows:
         conn.execute(

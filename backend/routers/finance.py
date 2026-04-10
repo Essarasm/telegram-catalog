@@ -141,6 +141,28 @@ async def import_cash(
     return result
 
 
+@router.post("/import-supply")
+async def import_supply(
+    file: UploadFile = File(...),
+    admin_key: str = Form(""),
+):
+    """Import Поступление товаров (supply receipts + returns) from 1C.
+
+    Used by the /supply bot command. Idempotent on (doc_number, doc_date).
+    Classifies docs as supply / return / adjustment from Контрагент value.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+
+    from backend.services.import_supply import apply_supply_import
+    result = apply_supply_import(file_bytes, filename_hint=file.filename or "")
+    return result
+
+
 @router.get("/unmatched-real-clients")
 def unmatched_real_clients(
     admin_key: str = Query(""),

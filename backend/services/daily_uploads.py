@@ -25,7 +25,7 @@ TASHKENT = ZoneInfo("Asia/Tashkent")
 # Canonical upload_type values. Must match the seed rows in database.py.
 VALID_UPLOAD_TYPES = {
     "balances_uzs", "balances_usd", "stock", "prices",
-    "debtors", "realorders", "cash", "fxrate",
+    "debtors", "realorders", "cash", "fxrate", "supply",
 }
 
 
@@ -622,6 +622,7 @@ def get_missing_gaps(
 
             total_working_days += 1
             day_gaps = []
+            day_done = []
 
             for sched in sched_list:
                 utype = sched["upload_type"]
@@ -638,9 +639,25 @@ def get_missing_gaps(
                     actual = int(upload.get("actual_count", 0) or 0)
 
                     if status == "done" and actual >= expected:
-                        continue  # ✅ complete — hide
+                        day_done.append({
+                            "upload_type": utype,
+                            "display_name_ru": sched["display_name_ru"],
+                            "command": sched["command"],
+                            "kind": "done",
+                            "actual": actual,
+                            "expected": expected,
+                        })
+                        continue
                     if status == "skipped":
-                        continue  # ⏭ skipped — hide
+                        day_done.append({
+                            "upload_type": utype,
+                            "display_name_ru": sched["display_name_ru"],
+                            "command": sched["command"],
+                            "kind": "skipped",
+                            "actual": actual,
+                            "expected": expected,
+                        })
+                        continue
 
                     # Partial or pending/failed
                     if status == "done" and actual < expected:
@@ -695,6 +712,7 @@ def get_missing_gaps(
                     "is_off": False,
                     "off_reason": None,
                     "gaps": day_gaps,
+                    "done": day_done,
                 })
 
             d += timedelta(days=1)
@@ -748,6 +766,15 @@ def render_missing_text(report: dict) -> str:
             lines.append(f"{dd_mm} ({wd_short}): Выходной ✓")
             continue
 
+        # Show completed items first, then gaps
+        done_parts = []
+        for item in day.get("done", []):
+            name_lc = item["display_name_ru"].lower()
+            if item["kind"] == "skipped":
+                done_parts.append(f"⏭ {name_lc}")
+            else:
+                done_parts.append(f"✅ {name_lc}")
+
         gap_parts = []
         for g in day["gaps"]:
             name_lc = g["display_name_ru"].lower()
@@ -759,7 +786,8 @@ def render_missing_text(report: dict) -> str:
             else:
                 gap_parts.append(f"⏳ {name_lc} ({cmd})")
 
-        lines.append(f"{dd_mm} ({wd_short}): {' '.join(gap_parts)}")
+        all_parts = done_parts + gap_parts
+        lines.append(f"{dd_mm} ({wd_short}): {' '.join(all_parts)}")
 
     lines.append("")
     lines.append(

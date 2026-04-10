@@ -2827,6 +2827,215 @@ async def cmd_backfill_daily_uploads(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+@dp.message(Command("supply"))
+async def cmd_supply(message: types.Message):
+    """Import 1C Поступление товаров (supply receipts + returns) from XLS.
+
+    Classifies each document as supply / return / adjustment based on
+    the Контрагент field. Idempotent on (doc_number, doc_date).
+    """
+    if not is_admin(message):
+        return
+
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "📎 XLS faylni yuboring va /supply bilan javob bering.\n"
+            "Yoki faylni /supply caption bilan yuboring."
+        )
+        return
+
+    fname = doc.file_name or "supply.xls"
+    if not fname.lower().endswith((".xls", ".xlsx")):
+        await message.reply("❌ Faqat .xls yoki .xlsx fayllar qabul qilinadi")
+        return
+
+    status_msg = await message.reply(f"⏳ {fname} tahlil qilinmoqda...")
+    try:
+        import aiohttp
+        tg_file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{bot.token}/{tg_file.file_path}"
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(file_url) as resp:
+                file_bytes = await resp.read()
+
+        api_url = f"{API_BASE_URL}/api/finance/import-supply"
+        form = aiohttp.FormData()
+        form.add_field("file", file_bytes, filename=fname)
+        form.add_field("admin_key", "rassvet2026")
+
+        async with aiohttp.ClientSession() as sess:
+            async with sess.post(api_url, data=form) as resp:
+                result = await resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'unknown')}")
+            return
+
+        s = result.get("stats", {})
+        ins = result.get("inserted_docs", 0)
+        upd = result.get("updated_docs", 0)
+        total_items = result.get("total_items", 0)
+        matched = result.get("matched_products", 0)
+        unmatched_count = result.get("unmatched_products_count", 0)
+        match_rate = (matched / total_items * 100) if total_items else 0
+
+        supply_n = s.get("supply_count", 0)
+        return_n = s.get("return_count", 0)
+        adj_n = s.get("adjustment_count", 0)
+
+        doc_parts = []
+        if supply_n:
+            doc_parts.append(f"{supply_n} поступлений")
+        if return_n:
+            doc_parts.append(f"{return_n} возврат{'ов' if return_n > 1 else ''}")
+        if adj_n:
+            doc_parts.append(f"{adj_n} исправлени{'й' if adj_n > 1 else 'е'}")
+        doc_breakdown = " + ".join(doc_parts) if doc_parts else "0"
+
+        warehouses = s.get("warehouses", {})
+        wh_parts = [f"{k} ({v})" for k, v in sorted(warehouses.items(), key=lambda x: -x[1])]
+        wh_text = ", ".join(wh_parts) if wh_parts else "—"
+
+        cur_counts = s.get("currency_counts", {})
+        cur_parts = [f"{k} ({v} док.)" for k, v in sorted(cur_counts.items())]
+        cur_text = " / ".join(cur_parts) if cur_parts else "—"
+
+        lines = [
+            f"✅ <b>Загружено: {fname}</b>\n",
+            f"📄 Документов: {ins + upd} ({doc_breakdown})",
+        ]
+        if upd:
+            lines.append(f"   🆕 новых: {ins}, ♻️ обновлено: {upd}")
+        lines.extend([
+            f"📦 Товарных строк: {total_items}",
+            f"🔗 Товары сопоставлены: {matched}/{total_items} ({match_rate:.1f}%)",
+        ])
+        if unmatched_count:
+            lines.append(f"❓ Несопоставленные товары: {unmatched_count}")
+        lines.extend([
+            f"\n🏭 Поставщики: {s.get('unique_counterparties', 0)} уникальных",
+            f"🏢 Склады: {wh_text}",
+            f"💱 Валюта: {cur_text}",
+        ])
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+        # Track in daily uploads
+        _track_daily_upload(
+            "supply", message, file_name=fname,
+            row_count=ins + upd,
+            notes=f"supply={supply_n} return={return_n} adj={adj_n} items={total_items}",
+        )
+    except Exception as e:
+        logger.error(f"/supply error: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@dp.message(F.document & F.caption.startswith("/supply"))
+async def handle_supply_document(message: types.Message):
+    """Handle XLS uploads with /supply as caption."""
+    await cmd_supply(message)
+
+
+@dp.message(Command("bulksupply"))
+async def cmd_bulksupply(message: types.Message):
+    """One-shot bulk ingest of all historical supply files from the mounted folder.
+
+    Reads all .xls files from Inventory/Поступление - возврат/2025/ and 2026/.
+    """
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Omborga kirim/qaytarish fayllarni yuklash boshlandi...")
+    try:
+        import glob as globmod
+        from backend.services.import_supply import apply_supply_import
+
+        base_paths = [
+            "/sessions/exciting-nifty-tesla/mnt/Catalogue:Telegram app/Inventory/Поступление - возврат/2025",
+            "/sessions/exciting-nifty-tesla/mnt/Catalogue:Telegram app/Inventory/Поступление - возврат/2026",
+        ]
+
+        all_files = []
+        for bp in base_paths:
+            all_files.extend(sorted(globmod.glob(f"{bp}/*.xls")))
+            all_files.extend(sorted(globmod.glob(f"{bp}/*.xlsx")))
+
+        if not all_files:
+            await status_msg.edit_text("❌ Fayllar topilmadi.")
+            return
+
+        total_inserted = 0
+        total_updated = 0
+        total_items = 0
+        total_matched = 0
+        total_unmatched = 0
+        file_results = []
+        all_unmatched_names: set = set()
+        supply_total = 0
+        return_total = 0
+        adj_total = 0
+
+        for fpath in all_files:
+            fname = fpath.rsplit("/", 1)[-1]
+            with open(fpath, "rb") as f:
+                file_bytes = f.read()
+            r = apply_supply_import(file_bytes, filename_hint=fname)
+            if r.get("ok"):
+                ins = r.get("inserted_docs", 0)
+                upd = r.get("updated_docs", 0)
+                items = r.get("total_items", 0)
+                matched = r.get("matched_products", 0)
+                unm = r.get("unmatched_products_count", 0)
+                s = r.get("stats", {})
+                total_inserted += ins
+                total_updated += upd
+                total_items += items
+                total_matched += matched
+                total_unmatched += unm
+                supply_total += s.get("supply_count", 0)
+                return_total += s.get("return_count", 0)
+                adj_total += s.get("adjustment_count", 0)
+                all_unmatched_names.update(r.get("unmatched_products", []))
+                file_results.append(f"  ✅ {fname}: {ins}+{upd} док, {items} строк")
+            else:
+                file_results.append(f"  ❌ {fname}: {r.get('error', '?')}")
+
+        match_rate = (total_matched / total_items * 100) if total_items else 0
+
+        lines = [
+            f"✅ <b>Bulk supply ingest tugadi!</b>\n",
+            f"📁 Fayllar: {len(all_files)}",
+            f"📄 Jami dokumentlar: {total_inserted + total_updated}"
+            f" (поступлений: {supply_total}, возвратов: {return_total}"
+            f", исправлений: {adj_total})",
+            f"   🆕 yangi: {total_inserted}, ♻️ yangilangan: {total_updated}",
+            f"📦 Jami tovar qatorlari: {total_items}",
+            f"🔗 Sопоставлено: {total_matched}/{total_items} ({match_rate:.1f}%)",
+            f"❓ Несопоставленные: {len(all_unmatched_names)} уникальных",
+        ]
+
+        if len(file_results) <= 20:
+            lines.append("\n<b>Fayllar:</b>")
+            lines.extend(file_results)
+        else:
+            lines.append(f"\n<b>Fayllar:</b> {len(all_files)} ta (ro'yxat qisqartirildi)")
+
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3950] + "\n... (qisqartirildi)"
+        await status_msg.edit_text(text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/bulksupply error: {e}", exc_info=True)
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
 @dp.message(Command("unmatchedclients"))
 async def cmd_unmatchedclients(message: types.Message):
     """Show real_orders rows where client_id is NULL, grouped by 1C name.
