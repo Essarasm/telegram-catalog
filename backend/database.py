@@ -435,6 +435,25 @@ def init_db():
     # Seed daily_upload_schedule with the 8 checklist items (idempotent).
     _seed_daily_upload_schedule(conn)
 
+    # Migration: add delivery_type to orders
+    order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    if "delivery_type" not in order_cols:
+        conn.execute("ALTER TABLE orders ADD COLUMN delivery_type TEXT DEFAULT 'delivery'")
+
+    # Migration: create order_feedback table
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS order_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER,
+            user_id INTEGER,
+            feedback_text TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (order_id) REFERENCES orders(id),
+            FOREIGN KEY (user_id) REFERENCES users(telegram_id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_order_feedback_order ON order_feedback(order_id)")
+
     # Migrations: add columns if missing (safe for existing DBs)
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     for col, coltype in [("latitude", "REAL"), ("longitude", "REAL"),

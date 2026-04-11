@@ -421,7 +421,7 @@ export default function App() {
           />
         )}
         {page === 'cart' && (
-          <CartPage cart={cart} approved={approved} />
+          <CartPage cart={cart} approved={approved} onNavigate={(p) => navigateTo(p)} />
         )}
         {page === 'cabinet' && (
           <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')} />

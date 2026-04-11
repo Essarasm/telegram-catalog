@@ -41,6 +41,7 @@ class ExportRequest(BaseModel):
     format: str = "pdf"
     client_name: Optional[str] = ""
     telegram_id: Optional[int] = 0
+    delivery_type: Optional[str] = "delivery"  # 'delivery' or 'pickup'
 
 
 def _build_order_items(req: ExportRequest):
@@ -109,10 +110,13 @@ def _save_order_to_db(req: ExportRequest, order_items, client_label):
         if "(" in client_label and client_label.endswith(")"):
             client_phone = client_label[client_label.rfind("(") + 1:-1]
 
+        # Validate delivery_type
+        delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
+
         cursor = conn.execute(
-            """INSERT INTO orders (telegram_id, client_name, client_phone, total_usd, total_uzs, item_count, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'submitted')""",
-            (req.telegram_id or 0, client_label, client_phone, usd_total, uzs_total, len(order_items)),
+            """INSERT INTO orders (telegram_id, client_name, client_phone, total_usd, total_uzs, item_count, status, delivery_type)
+               VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?)""",
+            (req.telegram_id or 0, client_label, client_phone, usd_total, uzs_total, len(order_items), delivery_type),
         )
         order_id = cursor.lastrowid
 
@@ -183,7 +187,8 @@ def export_order(req: ExportRequest):
     import logging
     logger = logging.getLogger(__name__)
     try:
-        group_ok = send_order_to_group(order_items, excel_data, client_label)
+        delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
+        group_ok = send_order_to_group(order_items, excel_data, client_label, delivery_type=delivery_type)
         if not group_ok:
             logger.error("send_order_to_group returned False")
     except Exception as e:
@@ -201,6 +206,12 @@ def export_order(req: ExportRequest):
     if client_label:
         caption_lines.append(f"\U0001f464 Mijoz: <b>{client_label}</b>")
     caption_lines.append(f"\U0001f4e6 Mahsulotlar: {len(order_items)} ta nomi, {total_quantity} ta dona")
+    # Delivery type in user DM
+    dt = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
+    if dt == "pickup":
+        caption_lines.append("\U0001f4e6 Olib ketish")
+    else:
+        caption_lines.append("\U0001f69b Yetkazib berish")
     caption_lines.append("")
     if usd_total > 0:
         caption_lines.append(f"\U0001f4b5 Jami (USD): <b>${usd_total:,.2f}</b>")
@@ -227,6 +238,7 @@ def export_order(req: ExportRequest):
         return JSONResponse({
             "ok": True,
             "sent_to_telegram": True,
+            "order_id": order_id,
         })
 
     # Fallback: save to disk for download link (Android browser method)

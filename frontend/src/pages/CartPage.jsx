@@ -108,6 +108,125 @@ function OrderPreview({ items, onConfirm, onBack, exporting }) {
   );
 }
 
+/* ───────────────────────────────────────────
+   Delivery / Pickup Toggle
+   ─────────────────────────────────────────── */
+function DeliveryToggle({ value, onChange }) {
+  const options = [
+    { key: 'delivery', emoji: '🚛', label: 'Yetkazib berish' },
+    { key: 'pickup', emoji: '📦', label: 'Olib ketish' },
+  ];
+  return (
+    <div className="mb-4">
+      <div className="flex justify-center gap-2">
+        {options.map(opt => {
+          const active = value === opt.key;
+          return (
+            <button
+              key={opt.key}
+              onClick={() => onChange(opt.key)}
+              className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
+                active
+                  ? 'bg-tg-button text-tg-button-text shadow-sm'
+                  : 'bg-tg-secondary text-tg-hint'
+              }`}
+            >
+              {opt.emoji} {opt.label}
+            </button>
+          );
+        })}
+      </div>
+      {value === 'delivery' && (
+        <div className="text-center text-xs text-green-500 mt-1.5 font-medium">
+          Bepul yetkazib berish
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ───────────────────────────────────────────
+   Post-Order Feedback Screen
+   ─────────────────────────────────────────── */
+function PostOrderFeedback({ orderId, onGoToCatalog }) {
+  const [text, setText] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState(false);
+  const maxLen = 250;
+
+  const handleSubmit = async () => {
+    if (!text.trim() || submitting) return;
+    setSubmitting(true);
+    try {
+      const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+      const telegramId = tgUser?.id || 0;
+      await fetch(`${API_BASE}/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: orderId,
+          telegram_id: telegramId,
+          feedback_text: text.trim(),
+        }),
+      });
+      setSubmitted(true);
+      setTimeout(() => onGoToCatalog(), 1500);
+    } catch (err) {
+      console.error('Feedback submit failed:', err);
+    }
+    setSubmitting(false);
+  };
+
+  if (submitted) {
+    return (
+      <div className="text-center py-16">
+        <div className="text-5xl mb-4">🙏</div>
+        <div className="text-lg font-medium">Rahmat!</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="text-center py-8">
+      <div className="text-5xl mb-3">✅</div>
+      <div className="text-lg font-semibold mb-6">Buyurtmangiz qabul qilindi!</div>
+
+      <div className="text-left mx-auto max-w-sm">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value.slice(0, maxLen))}
+          placeholder="Fikr va takliflaringizni yozing..."
+          rows={3}
+          className="w-full rounded-xl p-3 text-sm resize-none border-0 outline-none"
+          style={{
+            backgroundColor: 'var(--tg-theme-secondary-bg-color)',
+            color: 'var(--tg-theme-text-color)',
+          }}
+        />
+        <div className="text-right text-xs text-tg-hint mt-1">
+          {text.length}/{maxLen}
+        </div>
+      </div>
+
+      <button
+        onClick={handleSubmit}
+        disabled={!text.trim() || submitting}
+        className="w-full max-w-sm mx-auto mt-3 bg-tg-button text-tg-button-text rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-40"
+      >
+        {submitting ? t.loading : 'Yuborish'}
+      </button>
+
+      <button
+        onClick={onGoToCatalog}
+        className="mt-3 text-sm py-2"
+        style={{ color: 'var(--tg-theme-link-color)' }}
+      >
+        Katalogga o'tish →
+      </button>
+    </div>
+  );
+}
+
 /* Cart item quantity stepper with long-press auto-repeat */
 function CartQtyControls({ item, cart }) {
   const decBind = useLongPress(
@@ -146,10 +265,15 @@ function CartQtyControls({ item, cart }) {
 
 const UNDO_WINDOW_MS = 4000;
 
-export default function CartPage({ cart }) {
+export default function CartPage({ cart, onNavigate }) {
   const [exporting, setExporting] = useState(false);
   const [exported, setExported] = useState(false);
   const [previewFormat, setPreviewFormat] = useState(null); // 'pdf' | 'xlsx' | null
+  const [deliveryType, setDeliveryType] = useState('delivery'); // 'delivery' | 'pickup'
+
+  // Post-order feedback state
+  const [justOrdered, setJustOrdered] = useState(false);
+  const [lastOrderId, setLastOrderId] = useState(null);
 
   // Snapshot of the most recently removed item, kept for ~4s so the user can undo.
   const [removedItem, setRemovedItem] = useState(null);
@@ -159,6 +283,13 @@ export default function CartPage({ cart }) {
   useEffect(() => () => {
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
   }, []);
+
+  const handleGoToCatalog = () => {
+    setJustOrdered(false);
+    setLastOrderId(null);
+    setExported(false);
+    if (onNavigate) onNavigate('catalog');
+  };
 
   const handleRemoveItem = (item) => {
     // Snapshot the item before removing so undo can restore it with full quantity
@@ -207,6 +338,7 @@ export default function CartPage({ cart }) {
           format,
           client_name: clientName,
           telegram_id: telegramId,
+          delivery_type: deliveryType,
         }),
       });
 
@@ -218,6 +350,8 @@ export default function CartPage({ cart }) {
           // File sent to user's Telegram DM — success!
           setExported('telegram');
           setPreviewFormat(null);
+          setJustOrdered(true);
+          setLastOrderId(json.order_id || null);
           cart.clearCart();
           setExporting(false);
           return;
@@ -245,6 +379,8 @@ export default function CartPage({ cart }) {
       }
       setExported('download');
       setPreviewFormat(null);
+      setJustOrdered(true);
+      setLastOrderId(null);
       cart.clearCart();
     } catch (err) {
       console.error('Export failed:', err);
@@ -256,6 +392,17 @@ export default function CartPage({ cart }) {
     return <div className="text-center py-16 text-tg-hint">{t.loading}</div>;
   }
 
+  // ─── Post-order feedback screen (only when user JUST placed an order) ───
+  if (cart.items.length === 0 && justOrdered) {
+    return (
+      <PostOrderFeedback
+        orderId={lastOrderId}
+        onGoToCatalog={handleGoToCatalog}
+      />
+    );
+  }
+
+  // ─── Normal empty cart ───
   if (cart.items.length === 0) {
     return (
       <div className="text-center py-16">
@@ -355,6 +502,9 @@ export default function CartPage({ cart }) {
       >
         {t.clear_cart}
       </button>
+
+      {/* Delivery / Pickup toggle */}
+      <DeliveryToggle value={deliveryType} onChange={setDeliveryType} />
 
       {/* Export buttons */}
       {exported ? (
