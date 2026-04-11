@@ -408,11 +408,11 @@ export default function App() {
 
       {/* Product detail as full-screen overlay — preserves scroll position underneath */}
       {page === 'product_detail' && selectedProduct && (
-        <div className="fixed inset-0 z-[90] bg-tg-bg overflow-y-auto">
+        <div className="fixed inset-0 z-[90] bg-tg-bg flex flex-col">
           {/* Safe area spacer */}
-          {topPad > 0 && <div style={{ height: topPad }} className="bg-tg-bg" />}
+          {topPad > 0 && <div style={{ height: topPad }} className="bg-tg-bg shrink-0" />}
           {/* Overlay header with breadcrumbs */}
-          <header className="sticky z-50 bg-tg-bg border-b border-tg-hint/20" style={{ top: topPad }}>
+          <header className="shrink-0 z-50 bg-tg-bg border-b border-tg-hint/20">
             <div className={`px-4 ${isFullscreen ? 'pr-16' : ''}`}>
               <div className="flex items-center justify-between h-11">
                 {/* Spacer for native BackButton */}
@@ -464,7 +464,7 @@ export default function App() {
               )}
             </div>
           </header>
-          <div className="px-3 py-3">
+          <div className="flex-1 min-h-0 px-3 py-2">
             <ProductDetailPage
               product={selectedProduct}
               producer={selectedProducer}

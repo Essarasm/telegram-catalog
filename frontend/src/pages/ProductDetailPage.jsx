@@ -188,11 +188,11 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
   };
 
   return (
-    <div className="space-y-4">
-      {/* Large product image — pinch / double-tap to zoom, flag button overlays top-right */}
+    <div className="h-full flex flex-col">
+      {/* ── Image area — fills remaining viewport space ── */}
       <div
         ref={imgWrapRef}
-        className="relative w-full aspect-[3/4] bg-tg-secondary rounded-2xl overflow-hidden flex items-center justify-center"
+        className="relative flex-1 min-h-0 bg-tg-secondary rounded-2xl overflow-hidden flex items-center justify-center"
       >
         {imgUrl ? (
           <img
@@ -216,7 +216,7 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
           <span className="text-6xl opacity-20">📷</span>
         )}
 
-        {/* Flag / report issue button — top-right corner (sibling overlay so it stays clickable) */}
+        {/* Flag / report issue button — top-right corner */}
         <button
           onClick={() => setShowReportSheet(true)}
           className="absolute top-2 right-2 z-10 w-10 h-10 rounded-full bg-amber-500/70 backdrop-blur-sm flex items-center justify-center active:bg-amber-600/80 transition-colors"
@@ -229,101 +229,102 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
         </button>
       </div>
 
-      {/* Producer badge */}
-      {producer?.name && (
-        <div className="inline-block bg-tg-button/10 text-tg-link text-xs font-semibold px-3 py-1 rounded-full">
-          {producer.name}
+      {/* ── Info panel — pinned at bottom, never scrolls ── */}
+      <div className="shrink-0 pt-2 pb-1 space-y-1.5">
+        {/* Producer + name row */}
+        <div className="flex items-start gap-2">
+          {producer?.name && (
+            <span className="shrink-0 bg-tg-button/10 text-tg-link text-xs font-semibold px-2.5 py-0.5 rounded-full mt-0.5">
+              {producer.name}
+            </span>
+          )}
+          <h2 className="text-base font-semibold leading-snug line-clamp-2 flex-1">
+            {displayName}
+          </h2>
         </div>
-      )}
 
-      {/* Full product name */}
-      <h2 className="text-lg font-semibold leading-snug">
-        {displayName}
-      </h2>
-
-      {/* Details row */}
-      <div className="flex flex-wrap items-center gap-3 text-sm text-tg-hint">
-        {product.unit && <span>{t.unit || 'Birlik'}: {product.unit}</span>}
-        {product.weight ? <span>{product.weight} kg</span> : null}
-        {product.stock_status === 'in_stock' && (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-500/15 text-green-600">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-            {t.stock_in_stock}
-          </span>
-        )}
-        {product.stock_status === 'low_stock' && (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-            {t.stock_low_stock}
-          </span>
-        )}
-        {product.stock_status === 'out_of_stock' && (
-          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-red-500/15 text-red-500">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-            {t.stock_out_of_stock}
-          </span>
-        )}
-      </div>
-
-      {/* Price or contact message */}
-      {approved ? (
-        <div className="text-2xl font-bold text-tg-link">
-          {priceStr}
-        </div>
-      ) : (
-        <div className="bg-tg-secondary rounded-xl p-4 text-center">
-          <div className="text-sm text-tg-hint">
-            Narxlarni ko'rish uchun ro'yxatdan o'ting
-          </div>
-          <a
-            href="https://t.me/axmatov0902"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-block mt-2 text-tg-link text-sm font-medium"
-          >
-            Telegram orqali bog'lanish →
-          </a>
-        </div>
-      )}
-
-      {/* Add to cart / quantity controls — only for approved */}
-      {approved && (
-        <div className="pt-2">
-          {inCart ? (
-            <div className="flex items-center justify-center gap-4 bg-tg-secondary rounded-xl py-3">
-              <button
-                onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
-                className="bg-tg-button text-tg-button-text font-bold text-xl w-10 h-10 rounded-full flex items-center justify-center"
-              >
-                −
-              </button>
-              <button
-                onClick={openQtyPicker}
-                className="text-xl font-semibold min-w-[40px] text-center px-3 py-1 rounded-lg bg-tg-button/15 active:bg-tg-button/30 transition-colors"
-              >
-                {inCart.quantity}
-              </button>
-              <button
-                onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
-                className="bg-tg-button text-tg-button-text font-bold text-xl w-10 h-10 rounded-full flex items-center justify-center"
-              >
-                +
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => cart.addItem({
-                ...product,
-                price: getPriceValue(),
-                currency: getCurrency(),
-              })}
-              className="w-full bg-tg-button text-tg-button-text font-semibold rounded-xl py-3 text-base active:scale-[0.98] transition-transform"
-            >
-              + {t.add_to_cart}
-            </button>
+        {/* Details row */}
+        <div className="flex flex-wrap items-center gap-2 text-xs text-tg-hint">
+          {product.unit && <span>{t.unit || 'Birlik'}: {product.unit}</span>}
+          {product.weight ? <span>{product.weight} kg</span> : null}
+          {product.stock_status === 'in_stock' && (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-500/15 text-green-600">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+              {t.stock_in_stock}
+            </span>
+          )}
+          {product.stock_status === 'low_stock' && (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              {t.stock_low_stock}
+            </span>
+          )}
+          {product.stock_status === 'out_of_stock' && (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-red-500/15 text-red-500">
+              <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+              {t.stock_out_of_stock}
+            </span>
           )}
         </div>
-      )}
+
+        {/* Price + add-to-cart in a single row */}
+        {approved ? (
+          <div className="flex items-center gap-3 pt-1">
+            <div className="text-xl font-bold text-tg-link shrink-0">
+              {priceStr}
+            </div>
+            <div className="flex-1">
+              {inCart ? (
+                <div className="flex items-center justify-center gap-3 bg-tg-secondary rounded-xl py-2">
+                  <button
+                    onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
+                    className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
+                  >
+                    −
+                  </button>
+                  <button
+                    onClick={openQtyPicker}
+                    className="text-lg font-semibold min-w-[36px] text-center px-2 py-0.5 rounded-lg bg-tg-button/15 active:bg-tg-button/30 transition-colors"
+                  >
+                    {inCart.quantity}
+                  </button>
+                  <button
+                    onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
+                    className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
+                  >
+                    +
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => cart.addItem({
+                    ...product,
+                    price: getPriceValue(),
+                    currency: getCurrency(),
+                  })}
+                  className="w-full bg-tg-button text-tg-button-text font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform"
+                >
+                  + {t.add_to_cart}
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="bg-tg-secondary rounded-xl p-3 text-center">
+            <div className="text-xs text-tg-hint">
+              Narxlarni ko'rish uchun ro'yxatdan o'ting
+            </div>
+            <a
+              href="https://t.me/axmatov0902"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block mt-1 text-tg-link text-xs font-medium"
+            >
+              Telegram orqali bog'lanish →
+            </a>
+          </div>
+        )}
+      </div>
 
       {/* Bottom-sheet quantity picker */}
       {showQtyPicker && (
