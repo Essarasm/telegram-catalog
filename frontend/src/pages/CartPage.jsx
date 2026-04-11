@@ -8,7 +8,7 @@ const API_BASE = '/api';
 /* ───────────────────────────────────────────
    Order Preview — HTML table mirroring the PDF
    ─────────────────────────────────────────── */
-function OrderPreview({ items, onConfirm, onBack, exporting }) {
+function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDeliveryChange }) {
   const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
   const clientName = tgUser
     ? `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim()
@@ -86,12 +86,15 @@ function OrderPreview({ items, onConfirm, onBack, exporting }) {
       {usdItems.length > 0 && renderTable(usdItems, 'USD')}
       {uzsItems.length > 0 && renderTable(uzsItems, 'UZS')}
 
+      {/* Delivery / Pickup toggle */}
+      <DeliveryToggle value={deliveryType} onChange={onDeliveryChange} />
+
       {/* Action buttons */}
-      <div className="space-y-2 mt-4">
+      <div className="space-y-2">
         <button
           onClick={onConfirm}
           disabled={exporting}
-          className="w-full bg-tg-button text-tg-button-text rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
+          className="w-full bg-green-600 text-white rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
         >
           {exporting ? t.loading : '✅ Tasdiqlash va yuborish'}
         </button>
@@ -422,6 +425,8 @@ export default function CartPage({ cart, onNavigate }) {
           exporting={exporting}
           onConfirm={() => handleExport(previewFormat)}
           onBack={() => setPreviewFormat(null)}
+          deliveryType={deliveryType}
+          onDeliveryChange={setDeliveryType}
         />
       </div>
     );
@@ -502,9 +507,6 @@ export default function CartPage({ cart, onNavigate }) {
       >
         {t.clear_cart}
       </button>
-
-      {/* Delivery / Pickup toggle */}
-      <DeliveryToggle value={deliveryType} onChange={setDeliveryType} />
 
       {/* Export buttons */}
       {exported ? (
