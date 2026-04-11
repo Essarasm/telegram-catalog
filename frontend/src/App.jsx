@@ -46,6 +46,7 @@ export default function App() {
   const [approved, setApproved] = useState(false);
   const cart = useCart();
   const goBackRef = useRef(null);
+  const scrollPositions = useRef({});  // page key → scrollY
 
   const checkApproval = useCallback(() => {
     const uid = getTelegramUserId();
@@ -114,6 +115,10 @@ export default function App() {
 
   const navigateTo = (p, data) => {
     try {
+      // Save current scroll position before leaving (skip for product_detail overlay)
+      if (p !== 'product_detail') {
+        scrollPositions.current[page] = window.scrollY;
+      }
       if (p === 'producers' && data) {
         setSelectedCategory(data);
         setSelectedProducer(null);
@@ -139,7 +144,11 @@ export default function App() {
   };
 
   const goBack = useCallback(() => {
+    // Save scroll before leaving (skip for product_detail overlay)
     setPage(prev => {
+      if (prev !== 'product_detail') {
+        scrollPositions.current[prev] = window.scrollY;
+      }
       if (prev === 'cabinet') return 'catalog';
       if (prev === 'cart') return selectedProducer ? 'products' : selectedCategory ? 'producers' : 'catalog';
       if (prev === 'product_detail') { setSelectedProduct(null); return 'products'; }
@@ -152,6 +161,19 @@ export default function App() {
 
   // Keep ref in sync
   goBackRef.current = goBack;
+
+  // Restore saved scroll position after page transition renders
+  useEffect(() => {
+    // product_detail is an overlay — don't touch scroll
+    if (page === 'product_detail') return;
+    const saved = scrollPositions.current[page];
+    if (saved != null) {
+      // Wait one frame for the new page to render, then restore
+      requestAnimationFrame(() => window.scrollTo(0, saved));
+    } else {
+      window.scrollTo(0, 0);
+    }
+  }, [page]);
 
   // Telegram native BackButton — show/hide based on page, handle clicks
   useEffect(() => {
