@@ -303,7 +303,7 @@ export default function App() {
               {getTitle()}
             </h1>
             {approved && (
-              <div className="flex items-center gap-3 shrink-0">
+              <div className="flex items-center gap-3 shrink-0 -mr-2">
                 <button
                   onClick={() => navigateTo('cabinet')}
                   className="text-xl p-2"
@@ -421,7 +421,7 @@ export default function App() {
                   {selectedProduct?.name || t.all_products}
                 </h1>
                 {approved && (
-                  <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex items-center gap-3 shrink-0 -mr-2">
                     <button
                       onClick={() => navigateTo('cabinet')}
                       className="text-xl p-2"
