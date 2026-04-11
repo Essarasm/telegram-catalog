@@ -303,17 +303,17 @@ export default function App() {
               {getTitle()}
             </h1>
             {approved && (
-              <div className="flex items-center gap-1 shrink-0">
+              <div className="flex items-center gap-3 shrink-0">
                 <button
                   onClick={() => navigateTo('cabinet')}
-                  className="text-xl p-1"
+                  className="text-xl p-2"
                   title={t.cabinet}
                 >
-                  🏛️
+                  👤
                 </button>
                 <button
                   onClick={() => navigateTo('cart')}
-                  className="relative text-xl p-1"
+                  className="relative text-xl p-2"
                 >
                   🛒
                   {cart.totalCount > 0 && (
@@ -421,16 +421,16 @@ export default function App() {
                   {selectedProduct?.name || t.all_products}
                 </h1>
                 {approved && (
-                  <div className="flex items-center gap-1 shrink-0">
+                  <div className="flex items-center gap-3 shrink-0">
                     <button
                       onClick={() => navigateTo('cabinet')}
-                      className="text-xl p-1"
+                      className="text-xl p-2"
                     >
-                      🏛️
+                      👤
                     </button>
                     <button
                       onClick={() => navigateTo('cart')}
-                      className="relative text-xl p-1"
+                      className="relative text-xl p-2"
                     >
                       🛒
                       {cart.totalCount > 0 && (
