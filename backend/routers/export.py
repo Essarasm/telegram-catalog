@@ -65,10 +65,12 @@ def _build_order_items(req: ExportRequest):
             (req.telegram_id,),
         ).fetchone()
         if not ac_row and user_row and user_row["phone"]:
-            phone = user_row["phone"]
+            import re
+            digits = re.sub(r"\D", "", user_row["phone"] or "")
+            phone_norm = digits[-9:] if len(digits) >= 9 else digits
             ac_row = conn.execute(
                 "SELECT name FROM allowed_clients WHERE phone_normalized = ? AND name != '' LIMIT 1",
-                (phone,),
+                (phone_norm,),
             ).fetchone()
         if ac_row and ac_row["name"]:
             client_name_1c = ac_row["name"]
