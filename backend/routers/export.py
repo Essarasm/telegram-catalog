@@ -48,6 +48,7 @@ def _build_order_items(req: ExportRequest):
     conn = get_db()
 
     client_label = req.client_name or ""
+    client_name_1c = ""
     if req.telegram_id:
         user_row = conn.execute(
             "SELECT phone, first_name, last_name FROM users WHERE telegram_id = ?",
@@ -56,6 +57,21 @@ def _build_order_items(req: ExportRequest):
         if user_row and user_row["phone"]:
             name_part = client_label or " ".join(filter(None, [user_row["first_name"], user_row["last_name"]]))
             client_label = f"{name_part} ({user_row['phone']})" if name_part else user_row["phone"]
+
+        # Look up original 1C client name from allowed_clients
+        # Try matched_telegram_id first, then fall back to phone match
+        ac_row = conn.execute(
+            "SELECT name FROM allowed_clients WHERE matched_telegram_id = ? AND name != '' LIMIT 1",
+            (req.telegram_id,),
+        ).fetchone()
+        if not ac_row and user_row and user_row["phone"]:
+            phone = user_row["phone"]
+            ac_row = conn.execute(
+                "SELECT name FROM allowed_clients WHERE phone_normalized = ? AND name != '' LIMIT 1",
+                (phone,),
+            ).fetchone()
+        if ac_row and ac_row["name"]:
+            client_name_1c = ac_row["name"]
 
     order_items = []
     for cart_item in req.items:
@@ -92,7 +108,7 @@ def _build_order_items(req: ExportRequest):
                 "quantity": cart_item.quantity,
             })
     conn.close()
-    return order_items, client_label
+    return order_items, client_label, client_name_1c
 
 
 def _save_order_to_db(req: ExportRequest, order_items, client_label):
@@ -162,7 +178,7 @@ def _save_order_to_db(req: ExportRequest, order_items, client_label):
 
 @router.post("")
 def export_order(req: ExportRequest):
-    order_items, client_label = _build_order_items(req)
+    order_items, client_label, client_name_1c = _build_order_items(req)
 
     if not order_items:
         return JSONResponse({"ok": False, "error": "No valid products in order"}, status_code=400)
@@ -188,7 +204,7 @@ def export_order(req: ExportRequest):
     logger = logging.getLogger(__name__)
     try:
         delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
-        group_ok = send_order_to_group(order_items, excel_data, client_label, delivery_type=delivery_type)
+        group_ok = send_order_to_group(order_items, excel_data, client_label, delivery_type=delivery_type, client_name_1c=client_name_1c)
         if not group_ok:
             logger.error("send_order_to_group returned False")
     except Exception as e:
