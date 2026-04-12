@@ -61,12 +61,19 @@ function formatDate(dateStr) {
   }
 }
 
+// Format "YYYY-MM" → "MM/YY" for chart x-axis labels
+function fmtMonthLabel(m) {
+  if (!m || m.length < 7) return m || '';
+  return m.slice(5, 7) + '/' + m.slice(2, 4);
+}
+
 // ── Mini SVG line chart (pure, no external lib) ──
-function SpendChart({ data, valueKey, color, label }) {
+function SpendChart({ data, valueKey, color, label, formatValue, summaryLine }) {
+  const [tappedIdx, setTappedIdx] = useState(null);
   if (!data || data.length === 0) return null;
   const values = data.map(d => d[valueKey] || 0);
   const maxVal = Math.max(...values, 1);
-  const W = 300, H = 120, PAD_TOP = 10, PAD_BOT = 22, PAD_LEFT = 4, PAD_RIGHT = 4;
+  const W = 300, H = 140, PAD_TOP = 28, PAD_BOT = 22, PAD_LEFT = 4, PAD_RIGHT = 4;
   const chartW = W - PAD_LEFT - PAD_RIGHT;
   const chartH = H - PAD_TOP - PAD_BOT;
   const step = data.length > 1 ? chartW / (data.length - 1) : 0;
@@ -80,10 +87,14 @@ function SpendChart({ data, valueKey, color, label }) {
   const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
   const areaPath = linePath + ` L${points[points.length - 1].x},${PAD_TOP + chartH} L${points[0].x},${PAD_TOP + chartH} Z`;
 
+  const handleDotTap = (i) => {
+    setTappedIdx(tappedIdx === i ? null : i);
+  };
+
   return (
     <div className="mt-2">
       {label && <div className="text-[10px] text-tg-hint mb-1">{label}</div>}
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: '120px' }}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: '140px' }}>
         <defs>
           <linearGradient id={`grad-${color}`} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={color} stopOpacity="0.3" />
@@ -99,14 +110,27 @@ function SpendChart({ data, valueKey, color, label }) {
         {data.length > 1 && <path d={areaPath} fill={`url(#grad-${color})`} />}
         {/* Line */}
         {data.length > 1 && <path d={linePath} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
-        {/* Dots + month labels */}
+        {/* Dots + month labels — tappable */}
         {points.map((p, i) => (
-          <g key={i}>
-            <circle cx={p.x} cy={p.y} r="3" fill={color} />
-            <text x={p.x} y={H - 4} textAnchor="middle" fontSize="8" fill="var(--tg-theme-hint-color, #999)">{(data[i].month || '').slice(5)}</text>
+          <g key={i} onClick={() => handleDotTap(i)} style={{ cursor: 'pointer' }}>
+            {/* Invisible larger tap target */}
+            <circle cx={p.x} cy={p.y} r="12" fill="transparent" />
+            <circle cx={p.x} cy={p.y} r={tappedIdx === i ? 5 : 3} fill={color} />
+            <text x={p.x} y={H - 4} textAnchor="middle" fontSize="8" fill="var(--tg-theme-hint-color, #999)">{fmtMonthLabel(data[i].month)}</text>
+            {/* Tooltip on tap */}
+            {tappedIdx === i && (
+              <>
+                <rect x={Math.max(2, Math.min(p.x - 40, W - 82))} y={Math.max(2, p.y - 22)} width="80" height="16" rx="4" fill="var(--tg-theme-bg-color, #fff)" stroke={color} strokeWidth="0.5" />
+                <text x={Math.max(42, Math.min(p.x, W - 42))} y={Math.max(13, p.y - 10)} textAnchor="middle" fontSize="9" fontWeight="600" fill={color}>
+                  {formatValue ? formatValue(p.v) : p.v.toLocaleString('ru-RU')}
+                </text>
+              </>
+            )}
           </g>
         ))}
       </svg>
+      {/* Per-chart summary line */}
+      {summaryLine && <div className="text-[10px] text-tg-hint text-center mt-0.5">{summaryLine}</div>}
     </div>
   );
 }
@@ -485,31 +509,31 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         </div>
 
         {/* Monthly Spend Trend Chart */}
-        {spendTrend && spendTrend.length > 0 && (
-          <div className="bg-tg-secondary rounded-xl p-3 mb-2">
-            <div className="text-xs font-semibold mb-1">{t.my_business_spend_trend}</div>
-            {hasUzsTrend && (
-              <SpendChart data={spendTrend} valueKey="total_uzs" color="#3B82F6" label={`UZS (${t.balance_currency})`} />
-            )}
-            {hasUsdTrend && (
-              <SpendChart data={spendTrend} valueKey="total_usd" color="#10B981" label="USD ($)" />
-            )}
-            {/* Summary line under chart */}
-            {spendTrend.length >= 2 && (() => {
-              const last = spendTrend[spendTrend.length - 1];
-              const prev = spendTrend[spendTrend.length - 2];
-              const diff = (last.total_uzs || 0) - (prev.total_uzs || 0);
-              const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→';
-              const arrowColor = diff > 0 ? 'text-green-500' : diff < 0 ? 'text-red-400' : 'text-tg-hint';
-              return (
-                <div className="text-[10px] text-tg-hint text-center mt-1">
-                  {last.month}: {formatUzs(last.total_uzs)} {t.balance_currency}
-                  <span className={`ml-1 ${arrowColor}`}>{arrow} {diff !== 0 ? formatUzs(Math.abs(diff)) : t.my_business_orders_same}</span>
-                </div>
-              );
-            })()}
-          </div>
-        )}
+        {spendTrend && spendTrend.length > 0 && (() => {
+          // Build per-chart summary lines
+          const makeSummary = (key, fmtFn, suffix) => {
+            if (spendTrend.length < 2) return null;
+            const last = spendTrend[spendTrend.length - 1];
+            const prev = spendTrend[spendTrend.length - 2];
+            const diff = (last[key] || 0) - (prev[key] || 0);
+            const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→';
+            return `${fmtMonthLabel(last.month)}: ${fmtFn(last[key] || 0)} ${suffix} ${arrow} ${diff !== 0 ? fmtFn(Math.abs(diff)) : t.my_business_orders_same}`;
+          };
+          const uzsSummary = hasUzsTrend ? makeSummary('total_uzs', formatUzs, t.balance_currency) : null;
+          const usdSummary = hasUsdTrend ? makeSummary('total_usd', (v) => formatUsd(v), '') : null;
+
+          return (
+            <div className="bg-tg-secondary rounded-xl p-3 mb-2">
+              <div className="text-xs font-semibold mb-1">{t.my_business_spend_trend}</div>
+              {hasUzsTrend && (
+                <SpendChart data={spendTrend} valueKey="total_uzs" color="#3B82F6" label={`UZS (${t.balance_currency})`} formatValue={(v) => formatUzs(v)} summaryLine={uzsSummary} />
+              )}
+              {hasUsdTrend && (
+                <SpendChart data={spendTrend} valueKey="total_usd" color="#10B981" label="USD ($)" formatValue={(v) => formatUsd(v)} summaryLine={usdSummary} />
+              )}
+            </div>
+          );
+        })()}
 
         {/* Top Products */}
         {topProducts && topProducts.length > 0 && (
@@ -579,11 +603,14 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                   </div>
                   <div>
                     <div className="text-sm font-bold">{formatUzs(activitySummary.lifetime.avg_order_uzs)}</div>
+                    {activitySummary.lifetime.avg_order_usd > 0 && (
+                      <div className="text-[10px] font-semibold text-tg-hint">{formatUsd(activitySummary.lifetime.avg_order_usd)}</div>
+                    )}
                     <div className="text-[9px] text-tg-hint">{t.my_business_avg_order}</div>
                   </div>
                   <div>
-                    <div className="text-sm font-bold">{activitySummary.lifetime.first_order ? activitySummary.lifetime.first_order.slice(0, 7) : '—'}</div>
-                    <div className="text-[9px] text-tg-hint">{t.my_business_first_order}</div>
+                    <div className="text-sm font-bold">{activitySummary.lifetime.first_order ? fmtMonthLabel(activitySummary.lifetime.first_order.slice(0, 7)) : '—'}</div>
+                    <div className="text-[9px] text-tg-hint">{t.my_business_history_start}</div>
                   </div>
                 </div>
               </div>
