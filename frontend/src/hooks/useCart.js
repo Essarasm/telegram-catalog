@@ -48,8 +48,8 @@ export function useCart() {
         ? prev.map(i => i.id === product.id ? { ...i, quantity: newQty } : i)
         : [...prev, {
             id: product.id,
-            name: product.name_display || product.name,
-            name_display: product.name_display || product.name,
+            name: product.name || product.name_display,
+            name_display: product.name || product.name_display,
             price: product.price,
             currency: product.currency,
             unit: product.unit,

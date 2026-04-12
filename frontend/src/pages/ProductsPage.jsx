@@ -238,7 +238,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
           const inCart = isInCart(product.id);
           const imgUrl = getImageUrl(product);
           const isLast = idx === products.length - 1;
-          const displayName = product.name_display || product.name;
+          const displayName = product.name || product.name_display;
           const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
 
           return (

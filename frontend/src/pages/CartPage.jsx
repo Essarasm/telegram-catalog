@@ -54,7 +54,7 @@ function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDel
                 return (
                   <tr key={item.id} style={{ backgroundColor: idx % 2 === 0 ? 'var(--tg-theme-bg-color)' : 'var(--tg-theme-secondary-bg-color)' }}>
                     <td className="px-1.5 py-1 text-center" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{idx + 1}</td>
-                    <td className="px-1.5 py-1 text-left leading-tight" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)', maxWidth: '120px' }}>{item.name_display || item.name}</td>
+                    <td className="px-1.5 py-1 text-left leading-tight" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)', maxWidth: '120px' }}>{item.name || item.name_display}</td>
                     <td className="px-1.5 py-1 text-center" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{item.unit || 'шт'}</td>
                     <td className="px-1.5 py-1 text-right" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{qty}</td>
                     <td className="px-1.5 py-1 text-right" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{fmt(price, currency)}</td>
@@ -444,7 +444,7 @@ export default function CartPage({ cart, onNavigate }) {
           <div key={item.id} className="bg-tg-secondary rounded-xl p-3">
             <div className="flex items-center gap-2">
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium leading-tight truncate">{item.name_display || item.name}</div>
+                <div className="text-sm font-medium leading-tight truncate">{item.name || item.name_display}</div>
                 <div className="text-xs text-tg-hint mt-0.5">
                   {formatCartPrice(item.price, item.currency)} × {item.quantity} {item.unit}
                 </div>

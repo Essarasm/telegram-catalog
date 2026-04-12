@@ -30,7 +30,7 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
   const [reportSent, setReportSent] = useState(false);
 
   const imgUrl = getImageUrl(product);
-  const displayName = product.name_display || product.name;
+  const displayName = product.name || product.name_display;
   const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
   const inCart = cart.items.find(i => i.id === product.id);
 
