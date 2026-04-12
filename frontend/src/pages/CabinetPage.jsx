@@ -61,6 +61,56 @@ function formatDate(dateStr) {
   }
 }
 
+// ── Mini SVG line chart (pure, no external lib) ──
+function SpendChart({ data, valueKey, color, label }) {
+  if (!data || data.length === 0) return null;
+  const values = data.map(d => d[valueKey] || 0);
+  const maxVal = Math.max(...values, 1);
+  const W = 300, H = 120, PAD_TOP = 10, PAD_BOT = 22, PAD_LEFT = 4, PAD_RIGHT = 4;
+  const chartW = W - PAD_LEFT - PAD_RIGHT;
+  const chartH = H - PAD_TOP - PAD_BOT;
+  const step = data.length > 1 ? chartW / (data.length - 1) : 0;
+
+  const points = values.map((v, i) => {
+    const x = PAD_LEFT + i * step;
+    const y = PAD_TOP + chartH - (v / maxVal) * chartH;
+    return { x, y, v };
+  });
+
+  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`).join(' ');
+  const areaPath = linePath + ` L${points[points.length - 1].x},${PAD_TOP + chartH} L${points[0].x},${PAD_TOP + chartH} Z`;
+
+  return (
+    <div className="mt-2">
+      {label && <div className="text-[10px] text-tg-hint mb-1">{label}</div>}
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: '120px' }}>
+        <defs>
+          <linearGradient id={`grad-${color}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+            <stop offset="100%" stopColor={color} stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        {/* Grid lines */}
+        {[0, 0.25, 0.5, 0.75, 1].map(frac => {
+          const y = PAD_TOP + chartH - frac * chartH;
+          return <line key={frac} x1={PAD_LEFT} y1={y} x2={W - PAD_RIGHT} y2={y} stroke="var(--tg-theme-hint-color, #999)" strokeOpacity="0.15" strokeWidth="0.5" />;
+        })}
+        {/* Area fill */}
+        {data.length > 1 && <path d={areaPath} fill={`url(#grad-${color})`} />}
+        {/* Line */}
+        {data.length > 1 && <path d={linePath} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
+        {/* Dots + month labels */}
+        {points.map((p, i) => (
+          <g key={i}>
+            <circle cx={p.x} cy={p.y} r="3" fill={color} />
+            <text x={p.x} y={H - 4} textAnchor="middle" fontSize="8" fill="var(--tg-theme-hint-color, #999)">{(data[i].month || '').slice(5)}</text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
 export default function CabinetPage({ cart, onNavigateToCart }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -79,6 +129,12 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [loadingRealDetail, setLoadingRealDetail] = useState(false);
   const [compareModal, setCompareModal] = useState(null); // { kind, sourceLabel, orders, loading }
 
+  // Rassvet Plus — business intelligence state
+  const [spendTrend, setSpendTrend] = useState(null);
+  const [topProducts, setTopProducts] = useState(null);
+  const [activitySummary, setActivitySummary] = useState(null);
+  const [bizLoading, setBizLoading] = useState(true);
+
   const userId = getTelegramUserId();
 
   // Load orders and balance
@@ -86,6 +142,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     if (!userId) {
       setLoading(false);
       setBalanceLoading(false);
+      setBizLoading(false);
       return;
     }
     fetch(`${API}/orders?telegram_id=${userId}`)
@@ -113,6 +170,20 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         setRealLoading(false);
       })
       .catch(() => setRealLoading(false));
+
+    // Rassvet Plus — fetch business intelligence data
+    Promise.all([
+      fetch(`${API}/spend-trend?telegram_id=${userId}&months=12`).then(r => r.json()),
+      fetch(`${API}/top-products?telegram_id=${userId}&limit=5`).then(r => r.json()),
+      fetch(`${API}/activity-summary?telegram_id=${userId}`).then(r => r.json()),
+    ])
+      .then(([trend, products, activity]) => {
+        if (trend.ok && trend.months?.length > 0) setSpendTrend(trend.months);
+        if (products.ok && products.products?.length > 0) setTopProducts(products.products);
+        if (activity.ok && activity.summary) setActivitySummary(activity.summary);
+        setBizLoading(false);
+      })
+      .catch(() => setBizLoading(false));
   }, [userId]);
 
   // Toggle expand real order detail
@@ -398,8 +469,134 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     }
   };
 
+  // ── My Business with Rassvet section ──
+  const hasBusinessData = spendTrend || topProducts || activitySummary;
+
+  const MyBusinessSection = () => {
+    if (bizLoading || !hasBusinessData) return null;
+
+    const hasUzsTrend = spendTrend?.some(m => m.total_uzs > 0);
+    const hasUsdTrend = spendTrend?.some(m => m.total_usd > 0);
+
+    return (
+      <div className="mb-4">
+        <div className="text-sm text-tg-hint mb-2">
+          📊 {t.my_business_title}
+        </div>
+
+        {/* Monthly Spend Trend Chart */}
+        {spendTrend && spendTrend.length > 0 && (
+          <div className="bg-tg-secondary rounded-xl p-3 mb-2">
+            <div className="text-xs font-semibold mb-1">{t.my_business_spend_trend}</div>
+            {hasUzsTrend && (
+              <SpendChart data={spendTrend} valueKey="total_uzs" color="#3B82F6" label={`UZS (${t.balance_currency})`} />
+            )}
+            {hasUsdTrend && (
+              <SpendChart data={spendTrend} valueKey="total_usd" color="#10B981" label="USD ($)" />
+            )}
+            {/* Summary line under chart */}
+            {spendTrend.length >= 2 && (() => {
+              const last = spendTrend[spendTrend.length - 1];
+              const prev = spendTrend[spendTrend.length - 2];
+              const diff = (last.total_uzs || 0) - (prev.total_uzs || 0);
+              const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→';
+              const arrowColor = diff > 0 ? 'text-green-500' : diff < 0 ? 'text-red-400' : 'text-tg-hint';
+              return (
+                <div className="text-[10px] text-tg-hint text-center mt-1">
+                  {last.month}: {formatUzs(last.total_uzs)} {t.balance_currency}
+                  <span className={`ml-1 ${arrowColor}`}>{arrow} {diff !== 0 ? formatUzs(Math.abs(diff)) : t.my_business_orders_same}</span>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* Top Products */}
+        {topProducts && topProducts.length > 0 && (
+          <div className="bg-tg-secondary rounded-xl p-3 mb-2">
+            <div className="text-xs font-semibold mb-2">{t.my_business_top_products}</div>
+            <div className="space-y-1.5">
+              {topProducts.map((p, i) => {
+                const maxUzs = topProducts[0].total_uzs || 1;
+                const barPct = Math.max(5, Math.round((p.total_uzs / maxUzs) * 100));
+                return (
+                  <div key={i}>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="truncate flex-1 mr-2">{p.name}</span>
+                      <span className="text-tg-hint whitespace-nowrap">
+                        {p.total_uzs > 0 ? formatUzs(p.total_uzs) : formatUsd(p.total_usd)}
+                      </span>
+                    </div>
+                    <div className="h-1 bg-tg-hint/10 rounded-full mt-0.5">
+                      <div className="h-1 bg-blue-400 rounded-full" style={{ width: `${barPct}%` }} />
+                    </div>
+                    <div className="text-[10px] text-tg-hint mt-0.5">
+                      {p.total_qty} {t.my_business_items} · {p.order_count} {t.my_business_orders}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Activity Summary */}
+        {activitySummary && (
+          <div className="bg-tg-secondary rounded-xl p-3 mb-2">
+            <div className="text-xs font-semibold mb-2">{t.my_business_activity}</div>
+            <div className="grid grid-cols-2 gap-2 text-center">
+              {/* This month */}
+              <div className="bg-tg-bg rounded-lg p-2">
+                <div className="text-[10px] text-tg-hint">{t.my_business_this_month}</div>
+                <div className="text-lg font-bold">{activitySummary.this_month.doc_count}</div>
+                <div className="text-[10px] text-tg-hint">{t.my_business_orders}</div>
+                {activitySummary.prev_month.doc_count > 0 && (() => {
+                  const curr = activitySummary.this_month.doc_count;
+                  const prev = activitySummary.prev_month.doc_count;
+                  const diff = curr - prev;
+                  if (diff === 0) return <div className="text-[10px] text-tg-hint">→ {t.my_business_orders_same}</div>;
+                  const arrow = diff > 0 ? '↑' : '↓';
+                  const color = diff > 0 ? 'text-green-500' : 'text-red-400';
+                  return <div className={`text-[10px] ${color}`}>{arrow} {Math.abs(diff)} {diff > 0 ? t.my_business_orders_up : t.my_business_orders_down}</div>;
+                })()}
+              </div>
+              {/* Previous month */}
+              <div className="bg-tg-bg rounded-lg p-2">
+                <div className="text-[10px] text-tg-hint">{t.my_business_prev_month}</div>
+                <div className="text-lg font-bold">{activitySummary.prev_month.doc_count}</div>
+                <div className="text-[10px] text-tg-hint">{t.my_business_orders}</div>
+              </div>
+            </div>
+
+            {/* Lifetime stats */}
+            {activitySummary.lifetime.total_orders > 0 && (
+              <div className="border-t border-tg-hint/15 mt-2 pt-2">
+                <div className="text-[10px] text-tg-hint mb-1">{t.my_business_lifetime}</div>
+                <div className="grid grid-cols-3 gap-1 text-center">
+                  <div>
+                    <div className="text-sm font-bold">{activitySummary.lifetime.total_orders}</div>
+                    <div className="text-[9px] text-tg-hint">{t.my_business_total_orders}</div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold">{formatUzs(activitySummary.lifetime.avg_order_uzs)}</div>
+                    <div className="text-[9px] text-tg-hint">{t.my_business_avg_order}</div>
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold">{activitySummary.lifetime.first_order ? activitySummary.lifetime.first_order.slice(0, 7) : '—'}</div>
+                    <div className="text-[9px] text-tg-hint">{t.my_business_first_order}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div>
+      <MyBusinessSection />
       <BalanceCard />
 
       {lastOrder && (

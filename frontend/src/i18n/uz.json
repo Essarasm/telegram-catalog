@@ -132,5 +132,21 @@
   "compare_wishlist_side": "Sizning wish-list",
   "compare_real_side": "Haqiqiy jo'natma",
   "compare_match_found": "topildi",
-  "compare_days_around": "kun ichida"
+  "compare_days_around": "kun ichida",
+  "my_business_title": "Rassvet bilan biznesingiz",
+  "my_business_spend_trend": "Oylik xaridlar",
+  "my_business_top_products": "Top mahsulotlar",
+  "my_business_activity": "Faollik",
+  "my_business_this_month": "Bu oy",
+  "my_business_prev_month": "O'tgan oy",
+  "my_business_orders": "buyurtma",
+  "my_business_lifetime": "Jami hamkorlik",
+  "my_business_total_orders": "Buyurtmalar",
+  "my_business_avg_order": "O'rtacha buyurtma",
+  "my_business_first_order": "Birinchi buyurtma",
+  "my_business_items": "ta tovar",
+  "my_business_no_data": "Hali ma'lumot yo'q",
+  "my_business_orders_up": "ko'paydi",
+  "my_business_orders_down": "kamaydi",
+  "my_business_orders_same": "o'zgarmadi"
 }

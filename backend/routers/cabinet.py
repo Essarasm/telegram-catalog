@@ -267,3 +267,195 @@ def compare_orders(
         {"ok": False, "error": "Pass either real_order_id or wishlist_order_id"},
         status_code=400,
     )
+
+
+# ───────────────────────────────────────────
+# Rassvet Plus — Client Business Intelligence
+# ───────────────────────────────────────────
+
+def _get_client_id_for_user(telegram_id: int):
+    """Resolve telegram_id → client_id. Returns None if not linked."""
+    conn = get_db()
+    user = conn.execute(
+        "SELECT client_id FROM users WHERE telegram_id = ?",
+        (telegram_id,),
+    ).fetchone()
+    conn.close()
+    if user and user["client_id"]:
+        return user["client_id"]
+    return None
+
+
+@router.get("/spend-trend")
+def spend_trend(telegram_id: int = Query(...), months: int = Query(12, ge=1, le=36)):
+    """Monthly spend aggregates for a client from real_orders + real_order_items.
+
+    Returns per-month totals (UZS and USD) for the last N months where the
+    client had at least one shipment.  Used by the "My Business" chart.
+    """
+    client_id = _get_client_id_for_user(telegram_id)
+    if not client_id:
+        return {"ok": True, "months": [], "linked": False}
+
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT strftime('%Y-%m', ro.doc_date) AS month,
+                  COUNT(DISTINCT ro.id)           AS doc_count,
+                  SUM(COALESCE(ri.total_local, 0))     AS total_uzs,
+                  SUM(COALESCE(ri.total_currency, 0))  AS total_usd,
+                  SUM(COALESCE(ri.quantity, 0))         AS total_qty,
+                  COUNT(*)                              AS line_count
+           FROM real_orders ro
+           JOIN real_order_items ri ON ri.real_order_id = ro.id
+           WHERE ro.client_id = ?
+           GROUP BY month
+           ORDER BY month DESC
+           LIMIT ?""",
+        (client_id, months),
+    ).fetchall()
+    conn.close()
+
+    data = []
+    for r in rows:
+        data.append({
+            "month": r["month"],
+            "doc_count": r["doc_count"],
+            "total_uzs": round(float(r["total_uzs"] or 0)),
+            "total_usd": round(float(r["total_usd"] or 0), 2),
+            "total_qty": round(float(r["total_qty"] or 0), 1),
+            "line_count": r["line_count"],
+        })
+
+    # Reverse so oldest month is first (chronological order for chart)
+    data.reverse()
+
+    return {"ok": True, "months": data, "linked": True}
+
+
+@router.get("/top-products")
+def top_products(telegram_id: int = Query(...), limit: int = Query(5, ge=1, le=20)):
+    """Client's top products by total spend (UZS), from real_order_items.
+
+    Returns product name, total quantity, total UZS, total USD, order count.
+    """
+    client_id = _get_client_id_for_user(telegram_id)
+    if not client_id:
+        return {"ok": True, "products": [], "linked": False}
+
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT ri.product_name_1c                       AS name,
+                  SUM(COALESCE(ri.quantity, 0))             AS total_qty,
+                  SUM(COALESCE(ri.total_local, 0))         AS total_uzs,
+                  SUM(COALESCE(ri.total_currency, 0))      AS total_usd,
+                  COUNT(DISTINCT ri.real_order_id)          AS order_count
+           FROM real_order_items ri
+           JOIN real_orders ro ON ro.id = ri.real_order_id
+           WHERE ro.client_id = ?
+           GROUP BY ri.product_name_1c
+           ORDER BY total_uzs DESC, total_qty DESC
+           LIMIT ?""",
+        (client_id, limit),
+    ).fetchall()
+    conn.close()
+
+    products = []
+    for r in rows:
+        products.append({
+            "name": (r["name"] or "").strip(),
+            "total_qty": round(float(r["total_qty"] or 0), 1),
+            "total_uzs": round(float(r["total_uzs"] or 0)),
+            "total_usd": round(float(r["total_usd"] or 0), 2),
+            "order_count": r["order_count"],
+        })
+
+    return {"ok": True, "products": products, "linked": True}
+
+
+@router.get("/activity-summary")
+def activity_summary(telegram_id: int = Query(...)):
+    """Order activity summary for a client — current month vs previous, lifetime stats.
+
+    Returns this_month / prev_month order counts + totals, lifetime aggregates,
+    and average order size.
+    """
+    client_id = _get_client_id_for_user(telegram_id)
+    if not client_id:
+        return {"ok": True, "summary": None, "linked": False}
+
+    conn = get_db()
+
+    # Current month + previous month stats
+    month_stats = conn.execute(
+        """SELECT strftime('%Y-%m', ro.doc_date) AS month,
+                  COUNT(DISTINCT ro.id)           AS doc_count,
+                  SUM(COALESCE(ri.total_local, 0))     AS total_uzs,
+                  SUM(COALESCE(ri.total_currency, 0))  AS total_usd,
+                  SUM(COALESCE(ri.quantity, 0))         AS total_qty,
+                  COUNT(*)                              AS line_count
+           FROM real_orders ro
+           JOIN real_order_items ri ON ri.real_order_id = ro.id
+           WHERE ro.client_id = ?
+           GROUP BY month
+           ORDER BY month DESC
+           LIMIT 2""",
+        (client_id,),
+    ).fetchall()
+
+    # Lifetime stats
+    lifetime = conn.execute(
+        """SELECT COUNT(DISTINCT ro.id)           AS total_orders,
+                  SUM(COALESCE(ri.total_local, 0))     AS total_uzs,
+                  SUM(COALESCE(ri.total_currency, 0))  AS total_usd,
+                  SUM(COALESCE(ri.quantity, 0))         AS total_qty,
+                  COUNT(*)                              AS total_lines,
+                  MIN(ro.doc_date)                      AS first_order,
+                  MAX(ro.doc_date)                      AS last_order
+           FROM real_orders ro
+           JOIN real_order_items ri ON ri.real_order_id = ro.id
+           WHERE ro.client_id = ?""",
+        (client_id,),
+    ).fetchone()
+    conn.close()
+
+    def _month_dict(row):
+        if not row:
+            return {"month": None, "doc_count": 0, "total_uzs": 0, "total_usd": 0,
+                    "total_qty": 0, "line_count": 0}
+        return {
+            "month": row["month"],
+            "doc_count": row["doc_count"],
+            "total_uzs": round(float(row["total_uzs"] or 0)),
+            "total_usd": round(float(row["total_usd"] or 0), 2),
+            "total_qty": round(float(row["total_qty"] or 0), 1),
+            "line_count": row["line_count"],
+        }
+
+    this_month = _month_dict(month_stats[0] if month_stats else None)
+    prev_month = _month_dict(month_stats[1] if len(month_stats) > 1 else None)
+
+    total_orders = lifetime["total_orders"] or 0
+    avg_uzs = round(float(lifetime["total_uzs"] or 0) / total_orders) if total_orders else 0
+    avg_usd = round(float(lifetime["total_usd"] or 0) / total_orders, 2) if total_orders else 0
+    avg_items = round(float(lifetime["total_qty"] or 0) / total_orders, 1) if total_orders else 0
+
+    return {
+        "ok": True,
+        "linked": True,
+        "summary": {
+            "this_month": this_month,
+            "prev_month": prev_month,
+            "lifetime": {
+                "total_orders": total_orders,
+                "total_uzs": round(float(lifetime["total_uzs"] or 0)),
+                "total_usd": round(float(lifetime["total_usd"] or 0), 2),
+                "total_qty": round(float(lifetime["total_qty"] or 0), 1),
+                "total_lines": lifetime["total_lines"] or 0,
+                "first_order": lifetime["first_order"],
+                "last_order": lifetime["last_order"],
+                "avg_order_uzs": avg_uzs,
+                "avg_order_usd": avg_usd,
+                "avg_order_items": avg_items,
+            },
+        },
+    }
