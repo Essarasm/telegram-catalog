@@ -1111,11 +1111,12 @@ async def cmd_testclient(message: types.Message):
             """SELECT ac.id, ac.name, ac.client_id_1c,
                       (SELECT COUNT(*) FROM client_balances WHERE client_id = ac.id) as bal_count
                FROM allowed_clients ac
-               WHERE LOWER(ac.client_id_1c) LIKE ? OR LOWER(ac.name) LIKE ?
+               WHERE (LOWER(ac.client_id_1c) LIKE ? OR LOWER(ac.name) LIKE ?
                   OR ac.id IN (
                       SELECT DISTINCT client_id FROM client_balances
                       WHERE LOWER(client_name_1c) LIKE ? AND client_id IS NOT NULL
-                  )
+                  ))
+                 AND COALESCE(ac.status, 'active') != 'merged'
                ORDER BY bal_count DESC
                LIMIT 15""",
             (search, search, search),
@@ -1150,20 +1151,45 @@ async def cmd_testclient(message: types.Message):
         lines = []
 
         if matches:
-            lines.append(f"🔍 <b>{len(matches)}</b> ta natija '{html_escape(arg)}' bo'yicha:\n")
-            lines.append("<b>📋 Ro'yxatdagi mijozlar:</b>")
+            # Group results by client_id_1c so multi-phone clients show as one entry
+            from collections import OrderedDict
+            _grouped = OrderedDict()
             for m in matches:
-                name_1c = html_escape(m['client_id_1c'] or '—')
-                name_app = html_escape(m['name'] or '—')
-                # Show both names if they differ, otherwise just one
-                if m['client_id_1c'] and m['name'] and m['client_id_1c'].strip() != m['name'].strip():
-                    display = f"{name_1c}\n      📱 {name_app}"
+                cid = (m['client_id_1c'] or '').strip()
+                key = cid if cid else f"__no1c_{m['id']}"
+                _grouped.setdefault(key, []).append(m)
+
+            unique_clients = len(_grouped)
+            lines.append(f"🔍 <b>{unique_clients}</b> ta mijoz '{html_escape(arg)}' bo'yicha:\n")
+            lines.append("<b>📋 Ro'yxatdagi mijozlar:</b>")
+
+            for key, group in _grouped.items():
+                # Sum up balance months across all sibling records
+                total_bal = sum(m['bal_count'] for m in group)
+                first = group[0]
+                name_1c = html_escape(first['client_id_1c'] or '—')
+
+                if len(group) == 1:
+                    # Single record — show as before
+                    m = first
+                    name_app = html_escape(m['name'] or '—')
+                    if m['client_id_1c'] and m['name'] and m['client_id_1c'].strip() != m['name'].strip():
+                        display = f"{name_1c}\n      📱 {name_app}"
+                    else:
+                        display = name_1c if m['client_id_1c'] else name_app
+                    lines.append(
+                        f"  <code>/testclient #{m['id']}</code> — {display}"
+                        f"  [{total_bal} oy]"
+                    )
                 else:
-                    display = name_1c if m['client_id_1c'] else name_app
-                lines.append(
-                    f"  <code>/testclient #{m['id']}</code> — {display}"
-                    f"  [{m['bal_count']} oy]"
-                )
+                    # Multi-phone client — show grouped with phone sub-entries
+                    lines.append(f"  📍 <b>{name_1c}</b>  [{total_bal} oy]  ({len(group)} tel.)")
+                    for m in group:
+                        name_app = html_escape(m['name'] or '—')
+                        bal_info = f" ({m['bal_count']} oy)" if m['bal_count'] > 0 else ""
+                        lines.append(
+                            f"      <code>/testclient #{m['id']}</code> — {name_app}{bal_info}"
+                        )
 
         if cb_only:
             lines.append("")
@@ -1362,6 +1388,8 @@ async def cmd_help(message: types.Message):
         "Eski wish-list buyurtmalaridagi nomlarni 1C Kirillcha variantiga o'tkazish (1 marta ishlatiladi)\n\n"
         "<b>/testclient</b> <code>[имя или #ID]</code>\n"
         "Test: link your account to a client's balance data\n\n"
+        "<b>/duplicateclients</b> <code>[qidiruv]</code>\n"
+        "Ko'p telefonli mijozlar auditi (bir 1C nom — bir nechta telefon)\n\n"
         "<b>/chatid</b>\n"
         "Chat va User ID ko'rish\n\n"
         "<b>/reports</b>\n"
@@ -3506,6 +3534,166 @@ async def cmd_backfillrealordertotals(message: types.Message):
     except Exception as e:
         logger.error(f"Backfillrealordertotals error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+# ───────────────────────────────────────────
+# /duplicateclients — audit multi-phone client groups
+# ───────────────────────────────────────────
+
+@dp.message(Command("duplicateclients"))
+async def cmd_duplicateclients(message: types.Message):
+    """Audit multi-phone client groups in allowed_clients.
+
+    One real-world client (shop) can have up to 5 phone registrations
+    (owner, relatives, workers). This command shows which client_id_1c
+    names have multiple records, and how financial data is distributed
+    across those records.
+
+    Usage:
+      /duplicateclients          — summary + top groups
+      /duplicateclients SEARCH   — search for a specific client
+    """
+    if not is_admin(message):
+        return
+
+    arg = message.text.split(maxsplit=1)[1].strip() if len(message.text.split()) > 1 else ""
+
+    status_msg = await message.reply("⏳ Ko'p telefonli mijozlarni tahlil qilmoqda...")
+
+    try:
+        conn = get_db()
+
+        if arg:
+            # Search mode — find a specific client's phone registrations
+            search = f"%{arg.lower()}%"
+            groups = conn.execute(
+                """SELECT client_id_1c, COUNT(*) as cnt
+                   FROM allowed_clients
+                   WHERE client_id_1c IS NOT NULL AND client_id_1c != ''
+                     AND COALESCE(status, 'active') != 'merged'
+                     AND LOWER(client_id_1c) LIKE ?
+                   GROUP BY client_id_1c
+                   HAVING COUNT(*) > 1
+                   ORDER BY cnt DESC
+                   LIMIT 10""",
+                (search,),
+            ).fetchall()
+
+            if not groups:
+                conn.close()
+                await status_msg.edit_text(
+                    f"'{html_escape(arg)}' bo'yicha ko'p telefonli guruh topilmadi.",
+                    parse_mode="HTML",
+                )
+                return
+
+            lines = [f"🔍 <b>'{html_escape(arg)}' bo'yicha ko'p telefonli guruhlar:</b>\n"]
+        else:
+            # Summary mode
+            groups = conn.execute(
+                """SELECT client_id_1c, COUNT(*) as cnt
+                   FROM allowed_clients
+                   WHERE client_id_1c IS NOT NULL AND client_id_1c != ''
+                     AND COALESCE(status, 'active') != 'merged'
+                   GROUP BY client_id_1c
+                   HAVING COUNT(*) > 1
+                   ORDER BY cnt DESC, client_id_1c"""
+            ).fetchall()
+
+            if not groups:
+                conn.close()
+                await status_msg.edit_text("✅ Barcha mijozlar yagona telefon bilan — dublikat yo'q.")
+                return
+
+            total_multi = len(groups)
+            total_phones = sum(g["cnt"] for g in groups)
+
+            lines = [
+                f"📊 <b>Ko'p telefonli mijozlar</b>\n",
+                f"Jami: <b>{total_multi}</b> mijoz, <b>{total_phones}</b> telefon yozuvi",
+                f"  📞×2: {sum(1 for g in groups if g['cnt'] == 2)} mijoz",
+                f"  📞×3: {sum(1 for g in groups if g['cnt'] == 3)} mijoz",
+                f"  📞×4+: {sum(1 for g in groups if g['cnt'] >= 4)} mijoz",
+            ]
+
+            # Check financial data distribution
+            data_on_one = 0  # All financial data on 1 ID only
+            data_spread = 0  # Data on multiple IDs
+            no_data = 0      # No financial data at all
+
+            for g in groups[:50]:  # Sample first 50 for speed
+                recs = conn.execute(
+                    """SELECT id FROM allowed_clients
+                       WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged'""",
+                    (g["client_id_1c"],),
+                ).fetchall()
+                ids_with_data = 0
+                for rec in recs:
+                    has = conn.execute(
+                        """SELECT (SELECT COUNT(*) FROM real_orders WHERE client_id = ?) +
+                                  (SELECT COUNT(*) FROM client_balances WHERE client_id = ?) +
+                                  (SELECT COUNT(*) FROM client_debts WHERE client_id = ?) as total""",
+                        (rec["id"], rec["id"], rec["id"]),
+                    ).fetchone()
+                    if has["total"] > 0:
+                        ids_with_data += 1
+
+                if ids_with_data == 0:
+                    no_data += 1
+                elif ids_with_data == 1:
+                    data_on_one += 1
+                else:
+                    data_spread += 1
+
+            lines.append(f"\n<b>Moliyaviy ma'lumot taqsimoti</b> (ilk 50):")
+            lines.append(f"  📊 1 ID da: {data_on_one}")
+            lines.append(f"  📊 bir necha ID da: {data_spread}")
+            lines.append(f"  ⚪ hech qayerda yo'q: {no_data}")
+            lines.append(f"\n✅ Sibling resolution yoqilgan — barcha telefonlar bir xil moliyaviy ma'lumotni ko'radi.")
+            lines.append(f"\n<b>Top guruhlar:</b>")
+            groups = groups[:15]  # Show top 15
+
+        # Show detailed group info
+        for g in groups:
+            cid_1c = g["client_id_1c"]
+            recs = conn.execute(
+                """SELECT ac.id, ac.phone_normalized, ac.name, ac.matched_telegram_id,
+                          (SELECT COUNT(*) FROM real_orders WHERE client_id = ac.id) as orders,
+                          (SELECT COUNT(*) FROM client_balances WHERE client_id = ac.id) as bal,
+                          (SELECT COUNT(*) FROM users WHERE client_id = ac.id) as usr
+                   FROM allowed_clients ac
+                   WHERE ac.client_id_1c = ? AND COALESCE(ac.status, 'active') != 'merged'
+                   ORDER BY ac.id""",
+                (cid_1c,),
+            ).fetchall()
+
+            lines.append(f"\n📍 <b>{html_escape(cid_1c)}</b> — {len(recs)} tel.:")
+            for rec in recs:
+                tg = "✅" if rec["matched_telegram_id"] else "—"
+                data_icons = []
+                if rec["orders"] > 0:
+                    data_icons.append(f"📦{rec['orders']}")
+                if rec["bal"] > 0:
+                    data_icons.append(f"💰{rec['bal']}")
+                if rec["usr"] > 0:
+                    data_icons.append(f"👤{rec['usr']}")
+                data_str = " ".join(data_icons) if data_icons else "bo'sh"
+                lines.append(
+                    f"  #{rec['id']} tel:{rec['phone_normalized']} "
+                    f"TG:{tg} {data_str}"
+                )
+
+        conn.close()
+
+        text = "\n".join(lines)
+        if len(text) > 4000:
+            text = text[:3990] + "\n..."
+
+        await status_msg.edit_text(text, parse_mode="HTML")
+
+    except Exception as e:
+        logger.exception("duplicateclients error")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:500]}")
 
 
 # ───────────────────────────────────────────

@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from typing import List
-from backend.database import get_db
+from backend.database import get_db, get_sibling_client_ids
 from backend.services.import_balances import (
     apply_balance_import,
     get_client_balance,
@@ -289,11 +289,12 @@ def client_balance(telegram_id: int = Query(...)):
         conn.close()
         return {"ok": True, "has_balance": False, "message": "No client record linked"}
 
-    client_id = user["client_id"]
+    # Resolve all sibling IDs (multi-phone clients share the same client_id_1c)
+    client_ids = get_sibling_client_ids(conn, user["client_id"])
     conn.close()
 
     # Try debtors snapshot first (most accurate)
-    debt_data = get_client_debt(client_id)
+    debt_data = get_client_debt(client_ids)
     if debt_data is not None:
         # Convert to balance-compatible format for the frontend
         return {
@@ -324,7 +325,7 @@ def client_balance(telegram_id: int = Query(...)):
         }
 
     # Fall back to оборотка data
-    balance_data = get_client_balance(client_id)
+    balance_data = get_client_balance(client_ids)
 
     if not balance_data:
         return {"ok": True, "has_balance": False, "message": "No financial data available yet"}
@@ -358,7 +359,10 @@ def client_balance_history(
         conn.close()
         return {"ok": True, "history": {}}
 
-    history = get_client_balance_history(user["client_id"], limit)
+    # Resolve all sibling IDs for multi-phone clients
+    client_ids = get_sibling_client_ids(conn, user["client_id"])
     conn.close()
+
+    history = get_client_balance_history(client_ids, limit)
 
     return {"ok": True, "history": history}

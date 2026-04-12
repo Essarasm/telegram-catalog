@@ -49,11 +49,15 @@ def import_clients():
             client_id_1c = row.get("client_id_1c", "").strip()
             company_name = row.get("company_name", "").strip()
 
-            # Check if this phone already exists
+            # Check if this phone already exists (skip merged records for updates)
             existing = conn.execute(
-                "SELECT id FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+                "SELECT id, COALESCE(status, 'active') as status FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
                 (phone,),
             ).fetchone()
+
+            if existing and existing[1] == 'merged':
+                # Skip merged records — don't override dedup decisions
+                continue
 
             if existing:
                 # Update existing record with new data (preserving non-empty fields)
@@ -101,7 +105,7 @@ def import_clients():
     for u in existing_users:
         phone_norm = normalize_phone(u[1])
         match = conn.execute(
-            "SELECT id FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+            "SELECT id FROM allowed_clients WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' LIMIT 1",
             (phone_norm,),
         ).fetchone()
         if match:

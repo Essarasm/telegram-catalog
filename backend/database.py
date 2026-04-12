@@ -15,6 +15,37 @@ def get_db():
     return conn
 
 
+def get_sibling_client_ids(conn, client_id):
+    """Return all allowed_clients.id values sharing the same client_id_1c.
+
+    One real-world client (shop) can have up to 5 phone registrations
+    (owner, relatives, workers). Each phone gets its own allowed_clients row,
+    but they all share the same client_id_1c (1C name). Financial data may be
+    linked to any one of these IDs.
+
+    This function resolves all sibling IDs so that regardless of which phone
+    a user registered with, they see the full financial picture.
+
+    Returns a list of IDs (always includes the input client_id).
+    If client_id_1c is NULL or the client doesn't exist, returns [client_id].
+    """
+    if not client_id:
+        return []
+    row = conn.execute(
+        "SELECT client_id_1c FROM allowed_clients WHERE id = ?", (client_id,)
+    ).fetchone()
+    if not row or not row["client_id_1c"]:
+        return [client_id]
+    siblings = conn.execute(
+        "SELECT id FROM allowed_clients WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged'",
+        (row["client_id_1c"],),
+    ).fetchall()
+    ids = [s["id"] for s in siblings]
+    if client_id not in ids:
+        ids.append(client_id)
+    return ids
+
+
 def init_db():
     conn = get_db()
     conn.executescript("""

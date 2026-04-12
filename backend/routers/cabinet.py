@@ -1,7 +1,7 @@
 """Personal cabinet — order history and reorder."""
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
-from backend.database import get_db
+from backend.database import get_db, get_sibling_client_ids
 from backend.services.import_real_orders import (
     list_real_orders_for_client,
     get_real_order_detail,
@@ -174,31 +174,23 @@ def list_real_orders(telegram_id: int = Query(...), limit: int = Query(50, ge=1,
     Looks up the client_id linked to this telegram_id and returns all real
     orders from `real_orders`, newest first.
     """
-    conn = get_db()
-    user = conn.execute(
-        "SELECT client_id FROM users WHERE telegram_id = ?",
-        (telegram_id,),
-    ).fetchone()
-    conn.close()
-
-    if not user or not user["client_id"]:
+    client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    if conn:
+        conn.close()
+    if not client_ids:
         return {"ok": True, "orders": [], "linked": False}
 
-    orders = list_real_orders_for_client(user["client_id"], limit=limit)
+    orders = list_real_orders_for_client(client_ids, limit=limit)
     return {"ok": True, "orders": orders, "linked": True}
 
 
 @router.get("/real-orders/{real_order_id}")
 def real_order_detail(real_order_id: int, telegram_id: int = Query(...)):
     """Get a single real order with line items. Only the linked client may view."""
-    conn = get_db()
-    user = conn.execute(
-        "SELECT client_id FROM users WHERE telegram_id = ?",
-        (telegram_id,),
-    ).fetchone()
-    conn.close()
-
-    if not user or not user["client_id"]:
+    client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    if conn:
+        conn.close()
+    if not client_ids:
         return JSONResponse({"ok": False, "error": "Not linked to a client"}, status_code=403)
 
     detail = get_real_order_detail(real_order_id)
@@ -236,12 +228,15 @@ def compare_orders(
         conn.close()
         return JSONResponse({"ok": False, "error": "User not found"}, status_code=404)
 
+    # Resolve all sibling client IDs for multi-phone clients
+    sibling_ids = get_sibling_client_ids(conn, user["client_id"]) if user["client_id"] else []
+
     if real_order_id:
         ro = conn.execute(
             "SELECT doc_date, client_id FROM real_orders WHERE id = ?",
             (real_order_id,),
         ).fetchone()
-        if not ro or ro["client_id"] != user["client_id"]:
+        if not ro or ro["client_id"] not in sibling_ids:
             conn.close()
             return JSONResponse({"ok": False, "error": "Forbidden"}, status_code=403)
         conn.close()
@@ -286,6 +281,28 @@ def _get_client_id_for_user(telegram_id: int):
     return None
 
 
+def _get_all_client_ids_for_user(telegram_id: int):
+    """Resolve telegram_id → all sibling client_ids sharing the same client_id_1c.
+
+    One real-world client (shop) can have up to 5 phone registrations.
+    Financial data may be linked to any of these IDs. This ensures all phones
+    for the same client see the full financial picture.
+
+    Returns (list_of_ids, conn) — caller must close conn.
+    Returns (None, None) if user is not linked.
+    """
+    conn = get_db()
+    user = conn.execute(
+        "SELECT client_id FROM users WHERE telegram_id = ?",
+        (telegram_id,),
+    ).fetchone()
+    if not user or not user["client_id"]:
+        conn.close()
+        return None, None
+    ids = get_sibling_client_ids(conn, user["client_id"])
+    return ids, conn
+
+
 @router.get("/spend-trend")
 def spend_trend(telegram_id: int = Query(...), months: int = Query(12, ge=1, le=36)):
     """Monthly spend aggregates for a client from real_orders + real_order_items.
@@ -293,13 +310,13 @@ def spend_trend(telegram_id: int = Query(...), months: int = Query(12, ge=1, le=
     Returns per-month totals (UZS and USD) for the last N months where the
     client had at least one shipment.  Used by the "My Business" chart.
     """
-    client_id = _get_client_id_for_user(telegram_id)
-    if not client_id:
+    client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    if not client_ids:
         return {"ok": True, "months": [], "linked": False}
 
-    conn = get_db()
+    placeholders = ",".join("?" * len(client_ids))
     rows = conn.execute(
-        """SELECT strftime('%Y-%m', ro.doc_date) AS month,
+        f"""SELECT strftime('%Y-%m', ro.doc_date) AS month,
                   COUNT(DISTINCT ro.id)           AS doc_count,
                   SUM(COALESCE(ri.total_local, 0))     AS total_uzs,
                   SUM(COALESCE(ri.total_currency, 0))  AS total_usd,
@@ -307,11 +324,11 @@ def spend_trend(telegram_id: int = Query(...), months: int = Query(12, ge=1, le=
                   COUNT(*)                              AS line_count
            FROM real_orders ro
            JOIN real_order_items ri ON ri.real_order_id = ro.id
-           WHERE ro.client_id = ?
+           WHERE ro.client_id IN ({placeholders})
            GROUP BY month
            ORDER BY month DESC
            LIMIT ?""",
-        (client_id, months),
+        (*client_ids, months),
     ).fetchall()
     conn.close()
 
@@ -338,24 +355,24 @@ def top_products(telegram_id: int = Query(...), limit: int = Query(5, ge=1, le=2
 
     Returns product name, total quantity, total UZS, total USD, order count.
     """
-    client_id = _get_client_id_for_user(telegram_id)
-    if not client_id:
+    client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    if not client_ids:
         return {"ok": True, "products": [], "linked": False}
 
-    conn = get_db()
+    placeholders = ",".join("?" * len(client_ids))
     rows = conn.execute(
-        """SELECT ri.product_name_1c                       AS name,
+        f"""SELECT ri.product_name_1c                       AS name,
                   SUM(COALESCE(ri.quantity, 0))             AS total_qty,
                   SUM(COALESCE(ri.total_local, 0))         AS total_uzs,
                   SUM(COALESCE(ri.total_currency, 0))      AS total_usd,
                   COUNT(DISTINCT ri.real_order_id)          AS order_count
            FROM real_order_items ri
            JOIN real_orders ro ON ro.id = ri.real_order_id
-           WHERE ro.client_id = ?
+           WHERE ro.client_id IN ({placeholders})
            GROUP BY ri.product_name_1c
            ORDER BY total_uzs DESC, total_qty DESC
            LIMIT ?""",
-        (client_id, limit),
+        (*client_ids, limit),
     ).fetchall()
     conn.close()
 
@@ -379,15 +396,15 @@ def activity_summary(telegram_id: int = Query(...)):
     Returns this_month / prev_month order counts + totals, lifetime aggregates,
     and average order size.
     """
-    client_id = _get_client_id_for_user(telegram_id)
-    if not client_id:
+    client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    if not client_ids:
         return {"ok": True, "summary": None, "linked": False}
 
-    conn = get_db()
+    placeholders = ",".join("?" * len(client_ids))
 
     # Current month + previous month stats
     month_stats = conn.execute(
-        """SELECT strftime('%Y-%m', ro.doc_date) AS month,
+        f"""SELECT strftime('%Y-%m', ro.doc_date) AS month,
                   COUNT(DISTINCT ro.id)           AS doc_count,
                   SUM(COALESCE(ri.total_local, 0))     AS total_uzs,
                   SUM(COALESCE(ri.total_currency, 0))  AS total_usd,
@@ -395,16 +412,16 @@ def activity_summary(telegram_id: int = Query(...)):
                   COUNT(*)                              AS line_count
            FROM real_orders ro
            JOIN real_order_items ri ON ri.real_order_id = ro.id
-           WHERE ro.client_id = ?
+           WHERE ro.client_id IN ({placeholders})
            GROUP BY month
            ORDER BY month DESC
            LIMIT 2""",
-        (client_id,),
+        tuple(client_ids),
     ).fetchall()
 
     # Lifetime stats
     lifetime = conn.execute(
-        """SELECT COUNT(DISTINCT ro.id)           AS total_orders,
+        f"""SELECT COUNT(DISTINCT ro.id)           AS total_orders,
                   SUM(COALESCE(ri.total_local, 0))     AS total_uzs,
                   SUM(COALESCE(ri.total_currency, 0))  AS total_usd,
                   SUM(COALESCE(ri.quantity, 0))         AS total_qty,
@@ -413,8 +430,8 @@ def activity_summary(telegram_id: int = Query(...)):
                   MAX(ro.doc_date)                      AS last_order
            FROM real_orders ro
            JOIN real_order_items ri ON ri.real_order_id = ro.id
-           WHERE ro.client_id = ?""",
-        (client_id,),
+           WHERE ro.client_id IN ({placeholders})""",
+        tuple(client_ids),
     ).fetchone()
     conn.close()
 

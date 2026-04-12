@@ -702,18 +702,27 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
 
 # ── Read API for Cabinet ─────────────────────────────────────────────────
 
-def list_real_orders_for_client(client_id: int, limit: int = 50) -> List[dict]:
-    """List real orders for a client (newest first)."""
+def list_real_orders_for_client(client_id, limit: int = 50) -> List[dict]:
+    """List real orders for a client (newest first).
+
+    client_id can be a single int or a list of ints (sibling IDs for
+    multi-phone clients sharing the same client_id_1c).
+    """
     conn = get_db()
+    if isinstance(client_id, (list, tuple)):
+        ids = client_id
+    else:
+        ids = [client_id]
+    placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
-        """SELECT id, doc_number_1c, doc_date, doc_time, client_name_1c,
+        f"""SELECT id, doc_number_1c, doc_date, doc_time, client_name_1c,
                   currency, exchange_rate, total_sum, total_sum_currency,
                   total_weight, item_count, sale_agent, comment, imported_at
            FROM real_orders
-           WHERE client_id = ?
+           WHERE client_id IN ({placeholders})
            ORDER BY doc_date DESC, doc_time DESC, id DESC
            LIMIT ?""",
-        (client_id, limit),
+        (*ids, limit),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1048,7 +1057,7 @@ def relink_real_orders() -> dict:
     #   id_1c_index: raw client_id_1c → allowed_clients.id
     #   name_index:  py-normalized name → allowed_clients.id (first wins on collision)
     allowed = conn.execute(
-        "SELECT id, name, client_id_1c FROM allowed_clients"
+        "SELECT id, name, client_id_1c FROM allowed_clients WHERE COALESCE(status, 'active') != 'merged' ORDER BY id"
     ).fetchall()
 
     id_1c_index: Dict[str, int] = {}

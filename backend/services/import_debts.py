@@ -76,10 +76,12 @@ def _parse_number(val) -> float:
 
 def _try_match_client(client_name_1c: str, conn) -> Optional[int]:
     """Match 1C client name to allowed_clients.id.
+
+    Always returns the lowest ID (deterministic) and skips merged records.
     Same logic as import_balances._try_match_client.
     """
     row = conn.execute(
-        "SELECT id FROM allowed_clients WHERE client_id_1c = ? LIMIT 1",
+        "SELECT id FROM allowed_clients WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged' ORDER BY id LIMIT 1",
         (client_name_1c,),
     ).fetchone()
     if row:
@@ -87,7 +89,7 @@ def _try_match_client(client_name_1c: str, conn) -> Optional[int]:
 
     normalized = client_name_1c.strip().lower()
     row = conn.execute(
-        "SELECT id FROM allowed_clients WHERE LOWER(TRIM(name)) = ? LIMIT 1",
+        "SELECT id FROM allowed_clients WHERE LOWER(TRIM(name)) = ? AND COALESCE(status, 'active') != 'merged' ORDER BY id LIMIT 1",
         (normalized,),
     ).fetchone()
     if row:
@@ -219,8 +221,11 @@ def apply_debtors_import(file_bytes: bytes) -> dict:
     }
 
 
-def get_client_debt(client_id: int) -> Optional[dict]:
+def get_client_debt(client_id) -> Optional[dict]:
     """Get current debt for a client from the debtors snapshot.
+
+    client_id can be a single int or a list of ints (sibling IDs for
+    multi-phone clients sharing the same client_id_1c).
 
     Returns debt data if client is in the table, or a zero-balance result
     if the table has data but this client isn't in it (= settled).
@@ -228,20 +233,27 @@ def get_client_debt(client_id: int) -> Optional[dict]:
     """
     conn = get_db()
 
+    # Normalize to list of IDs
+    if isinstance(client_id, (list, tuple)):
+        ids = list(client_id)
+    else:
+        ids = [client_id]
+
     # Check if any debtors data exists
     has_data = conn.execute("SELECT COUNT(*) FROM client_debts").fetchone()[0]
     if not has_data:
         conn.close()
         return None  # No debtors report imported — fall back to old system
 
-    # Look for this client
+    # Look for this client (any sibling ID)
+    placeholders = ",".join("?" * len(ids))
     row = conn.execute(
-        """SELECT client_name_1c, debt_uzs, debt_usd,
+        f"""SELECT client_name_1c, debt_uzs, debt_usd,
                   last_transaction_date, last_transaction_no,
                   aging_0_30, aging_31_60, aging_61_90, aging_91_120, aging_120_plus,
                   report_date, imported_at
-           FROM client_debts WHERE client_id = ?""",
-        (client_id,),
+           FROM client_debts WHERE client_id IN ({placeholders})""",
+        tuple(ids),
     ).fetchone()
 
     # Get report metadata

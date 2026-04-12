@@ -288,6 +288,7 @@ def parse_balance_xls(file_bytes: bytes) -> dict:
 def _try_match_client(client_name_1c: str, conn) -> Optional[int]:
     """Try to match a 1C client name to an allowed_clients record.
 
+    Always returns the lowest ID (deterministic) and skips merged records.
     Matching strategy:
     1. Exact match on client_id_1c (if populated)
     2. Normalized name match on allowed_clients.name
@@ -295,7 +296,7 @@ def _try_match_client(client_name_1c: str, conn) -> Optional[int]:
     """
     # 1. Check if any allowed_client has this as their client_id_1c
     row = conn.execute(
-        "SELECT id FROM allowed_clients WHERE client_id_1c = ? LIMIT 1",
+        "SELECT id FROM allowed_clients WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged' ORDER BY id LIMIT 1",
         (client_name_1c,),
     ).fetchone()
     if row:
@@ -304,7 +305,7 @@ def _try_match_client(client_name_1c: str, conn) -> Optional[int]:
     # 2. Normalized name matching (lowercase, stripped)
     normalized = client_name_1c.strip().lower()
     row = conn.execute(
-        "SELECT id FROM allowed_clients WHERE LOWER(TRIM(name)) = ? LIMIT 1",
+        "SELECT id FROM allowed_clients WHERE LOWER(TRIM(name)) = ? AND COALESCE(status, 'active') != 'merged' ORDER BY id LIMIT 1",
         (normalized,),
     ).fetchone()
     if row:
@@ -460,8 +461,11 @@ def apply_balance_import(file_bytes: bytes) -> dict:
     }
 
 
-def get_client_balance(client_id: int) -> Optional[dict]:
+def get_client_balance(client_id) -> Optional[dict]:
     """Get the latest balance for a client by their allowed_clients.id.
+
+    client_id can be a single int or a list of ints (sibling IDs for
+    multi-phone clients sharing the same client_id_1c).
 
     Returns balances per currency (UZS and/or USD), using the most recent
     period for each currency.
@@ -474,24 +478,31 @@ def get_client_balance(client_id: int) -> Optional[dict]:
     """
     conn = get_db()
 
+    # Normalize to list of IDs
+    if isinstance(client_id, (list, tuple)):
+        ids = list(client_id)
+    else:
+        ids = [client_id]
+    placeholders = ",".join("?" * len(ids))
+
     # Get latest balance per currency — use MAX(period_end) so cumulative
     # records (period_end = today) take priority over older monthly ones
     rows = conn.execute(
-        """SELECT cb.client_name_1c, cb.currency, cb.period_start, cb.period_end,
+        f"""SELECT cb.client_name_1c, cb.currency, cb.period_start, cb.period_end,
                   cb.opening_debit, cb.opening_credit,
                   cb.period_debit, cb.period_credit,
                   cb.closing_debit, cb.closing_credit,
                   cb.imported_at
            FROM client_balances cb
            INNER JOIN (
-               SELECT client_id, currency, MAX(period_end) as max_end
+               SELECT currency, MAX(period_end) as max_end
                FROM client_balances
-               WHERE client_id = ?
-               GROUP BY client_id, currency
-           ) latest ON cb.client_id = latest.client_id
-                   AND cb.currency = latest.currency
-                   AND cb.period_end = latest.max_end""",
-        (client_id,),
+               WHERE client_id IN ({placeholders})
+               GROUP BY currency
+           ) latest ON cb.currency = latest.currency
+                   AND cb.period_end = latest.max_end
+           WHERE cb.client_id IN ({placeholders})""",
+        (*ids, *ids),
     ).fetchall()
     conn.close()
 
@@ -532,22 +543,31 @@ def get_client_balance(client_id: int) -> Optional[dict]:
     }
 
 
-def get_client_balance_history(client_id: int, limit: int = 24) -> dict:
+def get_client_balance_history(client_id, limit: int = 24) -> dict:
     """Get balance history for a client, separated by currency.
+
+    client_id can be a single int or a list of ints (sibling IDs for
+    multi-phone clients sharing the same client_id_1c).
 
     Returns dict with 'UZS' and 'USD' keys, each containing a list of
     period snapshots sorted chronologically (oldest first, for charting).
     """
     conn = get_db()
+    # Normalize to list of IDs
+    if isinstance(client_id, (list, tuple)):
+        ids = list(client_id)
+    else:
+        ids = [client_id]
+    placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
-        """SELECT currency, period_start, period_end,
+        f"""SELECT currency, period_start, period_end,
                   opening_debit, opening_credit,
                   period_debit, period_credit,
                   closing_debit, closing_credit
            FROM client_balances
-           WHERE client_id = ?
+           WHERE client_id IN ({placeholders})
            ORDER BY currency, period_start ASC""",
-        (client_id,),
+        tuple(ids),
     ).fetchall()
     conn.close()
 
