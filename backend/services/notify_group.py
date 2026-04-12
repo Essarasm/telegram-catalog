@@ -27,6 +27,8 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
     lines = ["\U0001f4cb <b>Yangi buyurtma!</b>", ""]
     if client_name_1c:
         lines.append(f"\U0001f464 Mijoz (1C): <b>{client_name_1c}</b>")
+    else:
+        lines.append(f"\U0001f464 Mijoz (1C): <i>1C nomi topilmadi</i>")
     if client_name:
         lines.append(f"\U0001f4f1 Telegram: {client_name}")
     lines.append(f"\U0001f4e6 Mahsulotlar: {unique_products} ta nomi, {total_quantity} ta dona")
