@@ -168,8 +168,11 @@ export default function App() {
     if (page === 'product_detail') return;
     const saved = scrollPositions.current[page];
     if (saved != null) {
-      // Wait one frame for the new page to render, then restore
-      requestAnimationFrame(() => window.scrollTo(0, saved));
+      // Double-rAF: first frame lets React commit, second lets browser layout.
+      // This ensures cached data is painted before we restore scroll.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => window.scrollTo(0, saved));
+      });
     } else {
       window.scrollTo(0, 0);
     }
