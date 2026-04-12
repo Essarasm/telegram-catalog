@@ -68,7 +68,7 @@ function fmtMonthLabel(m) {
 }
 
 // ── Mini SVG line chart (pure, no external lib) ──
-function SpendChart({ data, valueKey, color, label, formatValue, summaryLine }) {
+function SpendChart({ data, valueKey, color, label, formatValue, comparisons }) {
   const [tappedIdx, setTappedIdx] = useState(null);
   if (!data || data.length === 0) return null;
   const values = data.map(d => d[valueKey] || 0);
@@ -129,8 +129,20 @@ function SpendChart({ data, valueKey, color, label, formatValue, summaryLine }) 
           </g>
         ))}
       </svg>
-      {/* Per-chart summary line */}
-      {summaryLine && <div className="text-[10px] text-tg-hint text-center mt-0.5">{summaryLine}</div>}
+      {/* Per-chart comparison lines */}
+      {comparisons && comparisons.length > 0 && (
+        <div className="mt-1 space-y-0.5">
+          {comparisons.map((c, ci) => (
+            <div key={ci} className="text-[10px] text-tg-hint text-center">
+              {c.label}: {c.current}{' '}
+              <span className={c.diff > 0 ? 'text-green-500' : c.diff < 0 ? 'text-red-400' : ''}>
+                {c.diff > 0 ? '↑' : c.diff < 0 ? '↓' : '→'}{' '}
+                {c.diff !== 0 ? c.diffStr : t.my_business_orders_same}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -197,7 +209,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
 
     // Rassvet Plus — fetch business intelligence data
     Promise.all([
-      fetch(`${API}/spend-trend?telegram_id=${userId}&months=12`).then(r => r.json()),
+      fetch(`${API}/spend-trend?telegram_id=${userId}&months=24`).then(r => r.json()),
       fetch(`${API}/top-products?telegram_id=${userId}&limit=5`).then(r => r.json()),
       fetch(`${API}/activity-summary?telegram_id=${userId}`).then(r => r.json()),
     ])
@@ -496,11 +508,54 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   // ── My Business with Rassvet section ──
   const hasBusinessData = spendTrend || topProducts || activitySummary;
 
+  // For the chart we show only the last 12 months; full data (up to 24)
+  // is used for YoY comparison lookups.
+  const chartData = spendTrend ? spendTrend.slice(-12) : null;
+
   const MyBusinessSection = () => {
     if (bizLoading || !hasBusinessData) return null;
 
-    const hasUzsTrend = spendTrend?.some(m => m.total_uzs > 0);
-    const hasUsdTrend = spendTrend?.some(m => m.total_usd > 0);
+    const hasUzsTrend = chartData?.some(m => m.total_uzs > 0);
+    const hasUsdTrend = chartData?.some(m => m.total_usd > 0);
+
+    // Build dual comparisons for the latest month: vs last month + vs same month last year
+    const buildComparisons = (key, fmtFn, suffix) => {
+      if (!chartData || chartData.length < 2) return [];
+      const last = chartData[chartData.length - 1];
+      const prev = chartData[chartData.length - 2];
+      const comparisons = [];
+
+      // vs last month
+      const momDiff = (last[key] || 0) - (prev[key] || 0);
+      comparisons.push({
+        label: `vs ${t.my_business_prev_month_short}`,
+        current: `${fmtFn(last[key] || 0)} ${suffix}`.trim(),
+        diff: momDiff,
+        diffStr: fmtFn(Math.abs(momDiff)),
+      });
+
+      // vs same month last year (find YYYY-MM where MM matches but year is -1)
+      if (spendTrend && last.month) {
+        const lastMM = last.month.slice(5, 7);
+        const lastYY = parseInt(last.month.slice(0, 4), 10);
+        const yoyMonth = `${lastYY - 1}-${lastMM}`;
+        const yoyEntry = spendTrend.find(m => m.month === yoyMonth);
+        if (yoyEntry) {
+          const yoyDiff = (last[key] || 0) - (yoyEntry[key] || 0);
+          comparisons.push({
+            label: `vs ${fmtMonthLabel(yoyMonth)}`,
+            current: `${fmtFn(last[key] || 0)} ${suffix}`.trim(),
+            diff: yoyDiff,
+            diffStr: fmtFn(Math.abs(yoyDiff)),
+          });
+        }
+      }
+
+      return comparisons;
+    };
+
+    const uzsComparisons = hasUzsTrend ? buildComparisons('total_uzs', formatUzs, t.balance_currency) : [];
+    const usdComparisons = hasUsdTrend ? buildComparisons('total_usd', (v) => formatUsd(v), '') : [];
 
     return (
       <div className="mb-4">
@@ -509,32 +564,17 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         </div>
 
         {/* Monthly Spend Trend Chart */}
-        {spendTrend && spendTrend.length > 0 && (() => {
-          // Build per-chart summary lines
-          const makeSummary = (key, fmtFn, suffix) => {
-            if (spendTrend.length < 2) return null;
-            const last = spendTrend[spendTrend.length - 1];
-            const prev = spendTrend[spendTrend.length - 2];
-            const diff = (last[key] || 0) - (prev[key] || 0);
-            const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→';
-            const diffStr = diff !== 0 ? fmtFn(Math.abs(diff)) : t.my_business_orders_same;
-            return `${fmtMonthLabel(last.month)}: ${fmtFn(last[key] || 0)} ${suffix} ${arrow} ${diffStr} (vs ${t.my_business_prev_month_short})`;
-          };
-          const uzsSummary = hasUzsTrend ? makeSummary('total_uzs', formatUzs, t.balance_currency) : null;
-          const usdSummary = hasUsdTrend ? makeSummary('total_usd', (v) => formatUsd(v), '') : null;
-
-          return (
-            <div className="bg-tg-secondary rounded-xl p-3 mb-2">
-              <div className="text-xs font-semibold mb-1">{t.my_business_spend_trend}</div>
-              {hasUzsTrend && (
-                <SpendChart data={spendTrend} valueKey="total_uzs" color="#3B82F6" label={`UZS (${t.balance_currency})`} formatValue={(v) => formatUzs(v)} summaryLine={uzsSummary} />
-              )}
-              {hasUsdTrend && (
-                <SpendChart data={spendTrend} valueKey="total_usd" color="#10B981" label="USD ($)" formatValue={(v) => formatUsd(v)} summaryLine={usdSummary} />
-              )}
-            </div>
-          );
-        })()}
+        {chartData && chartData.length > 0 && (
+          <div className="bg-tg-secondary rounded-xl p-3 mb-2">
+            <div className="text-xs font-semibold mb-1">{t.my_business_spend_trend}</div>
+            {hasUzsTrend && (
+              <SpendChart data={chartData} valueKey="total_uzs" color="#3B82F6" label={`UZS (${t.balance_currency})`} formatValue={(v) => formatUzs(v)} comparisons={uzsComparisons} />
+            )}
+            {hasUsdTrend && (
+              <SpendChart data={chartData} valueKey="total_usd" color="#10B981" label="USD ($)" formatValue={(v) => formatUsd(v)} comparisons={usdComparisons} />
+            )}
+          </div>
+        )}
 
         {/* Top Products — ranked by spend, showing frequency too */}
         {topProducts && topProducts.length > 0 && (
