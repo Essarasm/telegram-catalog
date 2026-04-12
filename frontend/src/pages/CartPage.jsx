@@ -29,20 +29,20 @@ function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDel
   const renderTable = (list, currency) => {
     let grandTotal = 0;
     return (
-      <div className="mb-4">
-        <div className="text-sm font-semibold mb-1.5" style={{ color: 'var(--tg-theme-text-color)' }}>
+      <div className="mb-2">
+        <div className="text-xs font-semibold mb-1" style={{ color: 'var(--tg-theme-text-color)' }}>
           Mahsulotlar ({currency})
         </div>
         <div className="overflow-x-auto rounded-lg border" style={{ borderColor: 'var(--tg-theme-hint-color, #999)', borderWidth: '0.5px' }}>
-          <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+          <table className="w-full text-[11px]" style={{ borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ backgroundColor: '#2563EB', color: '#fff' }}>
-                <th className="px-2 py-1.5 text-center font-semibold">#</th>
-                <th className="px-2 py-1.5 text-left font-semibold">Mahsulot nomi</th>
-                <th className="px-2 py-1.5 text-center font-semibold">Birlik</th>
-                <th className="px-2 py-1.5 text-right font-semibold">Miqdor</th>
-                <th className="px-2 py-1.5 text-right font-semibold">Narx</th>
-                <th className="px-2 py-1.5 text-right font-semibold">Jami</th>
+                <th className="px-1.5 py-1 text-center font-semibold">#</th>
+                <th className="px-1.5 py-1 text-left font-semibold">Mahsulot nomi</th>
+                <th className="px-1.5 py-1 text-center font-semibold">Birlik</th>
+                <th className="px-1.5 py-1 text-right font-semibold">Soni</th>
+                <th className="px-1.5 py-1 text-right font-semibold">Narx</th>
+                <th className="px-1.5 py-1 text-right font-semibold">Jami</th>
               </tr>
             </thead>
             <tbody>
@@ -53,18 +53,18 @@ function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDel
                 grandTotal += total;
                 return (
                   <tr key={item.id} style={{ backgroundColor: idx % 2 === 0 ? 'var(--tg-theme-bg-color)' : 'var(--tg-theme-secondary-bg-color)' }}>
-                    <td className="px-2 py-1.5 text-center" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{idx + 1}</td>
-                    <td className="px-2 py-1.5 text-left" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{item.name_display || item.name}</td>
-                    <td className="px-2 py-1.5 text-center" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{item.unit || 'шт'}</td>
-                    <td className="px-2 py-1.5 text-right" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{qty}</td>
-                    <td className="px-2 py-1.5 text-right" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{fmt(price, currency)}</td>
-                    <td className="px-2 py-1.5 text-right font-medium" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{fmt(total, currency)}</td>
+                    <td className="px-1.5 py-1 text-center" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{idx + 1}</td>
+                    <td className="px-1.5 py-1 text-left leading-tight" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)', maxWidth: '120px' }}>{item.name_display || item.name}</td>
+                    <td className="px-1.5 py-1 text-center" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{item.unit || 'шт'}</td>
+                    <td className="px-1.5 py-1 text-right" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{qty}</td>
+                    <td className="px-1.5 py-1 text-right" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{fmt(price, currency)}</td>
+                    <td className="px-1.5 py-1 text-right font-medium" style={{ borderBottom: '0.5px solid var(--tg-theme-hint-color, #ddd)' }}>{fmt(total, currency)}</td>
                   </tr>
                 );
               })}
               <tr style={{ backgroundColor: 'var(--tg-theme-secondary-bg-color)' }}>
-                <td colSpan="5" className="px-2 py-2 text-right font-bold">JAMI:</td>
-                <td className="px-2 py-2 text-right font-bold">{fmt(grandTotal, currency)}</td>
+                <td colSpan="5" className="px-1.5 py-1.5 text-right font-bold">JAMI:</td>
+                <td className="px-1.5 py-1.5 text-right font-bold">{fmt(grandTotal, currency)}</td>
               </tr>
             </tbody>
           </table>
@@ -74,22 +74,23 @@ function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDel
   };
 
   return (
-    <div>
+    <div className="flex flex-col" style={{ minHeight: 'calc(100vh - 120px)' }}>
       {/* Header */}
-      <div className="text-center mb-3">
-        <div className="text-base font-bold">BUYURTMA / ЗАКАЗ</div>
-        <div className="text-xs text-tg-hint mt-1">Sana: {dateStr}</div>
-        {clientName && <div className="text-xs text-tg-hint">Mijoz: {clientName}</div>}
+      <div className="text-center mb-2">
+        <div className="text-sm font-bold">BUYURTMA / ЗАКАЗ</div>
+        <div className="text-[11px] text-tg-hint mt-0.5">Sana: {dateStr}{clientName ? ` · Mijoz: ${clientName}` : ''}</div>
       </div>
 
-      {/* Tables by currency */}
-      {usdItems.length > 0 && renderTable(usdItems, 'USD')}
-      {uzsItems.length > 0 && renderTable(uzsItems, 'UZS')}
+      {/* Scrollable tables area */}
+      <div className="flex-1 overflow-y-auto min-h-0 mb-2" style={{ maxHeight: '45vh' }}>
+        {usdItems.length > 0 && renderTable(usdItems, 'USD')}
+        {uzsItems.length > 0 && renderTable(uzsItems, 'UZS')}
+      </div>
 
-      {/* Delivery / Pickup toggle */}
+      {/* Delivery / Pickup toggle — always visible */}
       <DeliveryToggle value={deliveryType} onChange={onDeliveryChange} />
 
-      {/* Action buttons */}
+      {/* Action buttons — always visible */}
       <div className="space-y-2">
         <button
           onClick={onConfirm}
@@ -120,8 +121,8 @@ function DeliveryToggle({ value, onChange }) {
     { key: 'pickup', emoji: '📦', label: 'Olib ketish' },
   ];
   return (
-    <div className="mb-5 mt-4">
-      <div className="text-center text-sm text-tg-hint mb-2">
+    <div className="mb-3 mt-2">
+      <div className="text-center text-xs text-tg-hint mb-2">
         Yetkazish usulini tanlang:
       </div>
       <div className="flex justify-center gap-3">
