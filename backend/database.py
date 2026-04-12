@@ -454,6 +454,24 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_order_feedback_order ON order_feedback(order_id)")
 
+    # Migration: create unmatched_registrations table (for pending review of unlinked users)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS unmatched_registrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL UNIQUE,
+            phone TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            username TEXT,
+            notification_message_id INTEGER,
+            status TEXT DEFAULT 'pending',
+            linked_client_name TEXT,
+            resolved_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_unmatched_status ON unmatched_registrations(status)")
+
     # Migrations: add columns if missing (safe for existing DBs)
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     for col, coltype in [("latitude", "REAL"), ("longitude", "REAL"),

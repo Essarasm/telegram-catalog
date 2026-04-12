@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 
@@ -143,8 +144,66 @@ async def run_daily_reminder(bot, chat_id: int, hour: int, minute: int, sender) 
             await asyncio.sleep(300)
 
 
+async def _run_daily_client_sync(bot, chat_id: int) -> None:
+    """Re-import the latest Client Master XLSX to keep allowed_clients up to date.
+
+    Runs at 06:00 Tashkent time daily. Uses the same import-client-master API
+    endpoint that the /clientmaster bot command uses. Sends a summary to the
+    Sales group (ORDER_GROUP_CHAT_ID).
+    """
+    import os
+    import httpx
+
+    latest_file = "/data/client_master_latest.xlsx"
+    if not os.path.exists(latest_file):
+        logger.info("Daily client sync skipped — no client_master_latest.xlsx found")
+        return
+
+    _BASE_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.railway.app")
+    ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
+
+    try:
+        with open(latest_file, "rb") as f:
+            file_bytes = f.read()
+
+        api_url = f"{_BASE_URL}/api/finance/import-client-master"
+        async with httpx.AsyncClient(timeout=300) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": ("client_master_daily_sync.xlsx", file_bytes,
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            logger.error(f"Daily client sync failed: {result.get('error')}")
+            return
+
+        totals = result.get("totals", {})
+        approved = result.get("users_retroactively_approved", 0)
+        db_total = result.get("db_total_allowed_clients", 0)
+
+        lines = [
+            "\U0001f504 <b>Kunlik kontragentlar sinxronizatsiyasi</b>",
+            "",
+            f"\u2795 Yangi: {totals.get('inserted', 0)}",
+            f"\u267b\ufe0f Yangilangan: {totals.get('updated', 0)}",
+            f"\U0001f4be Jami: {db_total} mijoz",
+        ]
+        if approved:
+            lines.append(f"\U0001f464 Tasdiqlangan: {approved} foydalanuvchi")
+
+        await bot.send_message(ORDER_GROUP_CHAT_ID, "\n".join(lines), parse_mode="HTML")
+        logger.info(f"Daily client sync complete: +{totals.get('inserted', 0)}, ~{totals.get('updated', 0)}")
+
+    except Exception as e:
+        logger.error(f"Daily client sync error: {e}")
+
+
 def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
-    """Launch the two reminder background tasks. Returns the task handles."""
+    """Launch the reminder and sync background tasks. Returns the task handles."""
+    ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
     tasks = [
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 10, 0, _send_morning_nudge),
@@ -154,6 +213,10 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             run_daily_reminder(bot, chat_id, 17, 0, _send_eod_check),
             name="daily-upload-eod-check",
         ),
+        asyncio.create_task(
+            run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 6, 0, _run_daily_client_sync),
+            name="daily-client-sync",
+        ),
     ]
-    logger.info(f"Started {len(tasks)} daily-upload reminder tasks (chat {chat_id})")
+    logger.info(f"Started {len(tasks)} background tasks (reminders chat={chat_id}, sync chat={ORDER_GROUP_CHAT_ID})")
     return tasks
