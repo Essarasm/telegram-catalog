@@ -189,10 +189,11 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
 
   return (
     <div className="h-full flex flex-col">
-      {/* ── Image area — fills remaining viewport space ── */}
+      {/* ── Image area — capped so price+button stay visible ── */}
       <div
         ref={imgWrapRef}
-        className="relative flex-1 min-h-0 bg-tg-secondary rounded-2xl overflow-hidden flex items-center justify-center"
+        className="relative min-h-0 bg-tg-secondary rounded-2xl overflow-hidden flex items-center justify-center"
+        style={{ maxHeight: '55vh', flex: '1 1 0%' }}
       >
         {imgUrl ? (
           <img
