@@ -517,7 +517,8 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
             const prev = spendTrend[spendTrend.length - 2];
             const diff = (last[key] || 0) - (prev[key] || 0);
             const arrow = diff > 0 ? '↑' : diff < 0 ? '↓' : '→';
-            return `${fmtMonthLabel(last.month)}: ${fmtFn(last[key] || 0)} ${suffix} ${arrow} ${diff !== 0 ? fmtFn(Math.abs(diff)) : t.my_business_orders_same}`;
+            const diffStr = diff !== 0 ? fmtFn(Math.abs(diff)) : t.my_business_orders_same;
+            return `${fmtMonthLabel(last.month)}: ${fmtFn(last[key] || 0)} ${suffix} ${arrow} ${diffStr} (vs ${t.my_business_prev_month_short})`;
           };
           const uzsSummary = hasUzsTrend ? makeSummary('total_uzs', formatUzs, t.balance_currency) : null;
           const usdSummary = hasUsdTrend ? makeSummary('total_usd', (v) => formatUsd(v), '') : null;
@@ -535,27 +536,29 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
           );
         })()}
 
-        {/* Top Products */}
+        {/* Top Products — ranked by spend, showing frequency too */}
         {topProducts && topProducts.length > 0 && (
           <div className="bg-tg-secondary rounded-xl p-3 mb-2">
             <div className="text-xs font-semibold mb-2">{t.my_business_top_products}</div>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               {topProducts.map((p, i) => {
                 const maxUzs = topProducts[0].total_uzs || 1;
                 const barPct = Math.max(5, Math.round((p.total_uzs / maxUzs) * 100));
                 return (
                   <div key={i}>
                     <div className="flex items-center justify-between text-xs">
-                      <span className="truncate flex-1 mr-2">{p.name}</span>
-                      <span className="text-tg-hint whitespace-nowrap">
-                        {p.total_uzs > 0 ? formatUzs(p.total_uzs) : formatUsd(p.total_usd)}
+                      <span className="truncate flex-1 mr-2 font-medium">{p.name}</span>
+                    </div>
+                    <div className="h-1.5 bg-tg-hint/10 rounded-full mt-0.5">
+                      <div className="h-1.5 bg-blue-400 rounded-full" style={{ width: `${barPct}%` }} />
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-tg-hint mt-0.5">
+                      <span>
+                        {p.total_uzs > 0 && <>{formatUzs(p.total_uzs)} {t.balance_currency}</>}
+                        {p.total_uzs > 0 && p.total_usd > 0 && ' / '}
+                        {p.total_usd > 0 && formatUsd(p.total_usd)}
                       </span>
-                    </div>
-                    <div className="h-1 bg-tg-hint/10 rounded-full mt-0.5">
-                      <div className="h-1 bg-blue-400 rounded-full" style={{ width: `${barPct}%` }} />
-                    </div>
-                    <div className="text-[10px] text-tg-hint mt-0.5">
-                      {p.total_qty} {t.my_business_items} · {p.order_count} {t.my_business_orders}
+                      <span>{p.order_count} {t.my_business_orders} · {p.total_qty} {t.my_business_items}</span>
                     </div>
                   </div>
                 );
@@ -602,10 +605,13 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                     <div className="text-[9px] text-tg-hint">{t.my_business_total_orders}</div>
                   </div>
                   <div>
-                    <div className="text-sm font-bold">{formatUzs(activitySummary.lifetime.avg_order_uzs)}</div>
-                    {activitySummary.lifetime.avg_order_usd > 0 && (
-                      <div className="text-[10px] font-semibold text-tg-hint">{formatUsd(activitySummary.lifetime.avg_order_usd)}</div>
-                    )}
+                    <div className="text-sm font-bold">
+                      {formatUzs(activitySummary.lifetime.avg_order_uzs)}
+                      {activitySummary.lifetime.avg_order_usd > 0 && (
+                        <span className="text-tg-hint/60"> / </span>
+                      )}
+                      {activitySummary.lifetime.avg_order_usd > 0 && formatUsd(activitySummary.lifetime.avg_order_usd)}
+                    </div>
                     <div className="text-[9px] text-tg-hint">{t.my_business_avg_order}</div>
                   </div>
                   <div>
