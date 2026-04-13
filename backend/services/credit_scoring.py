@@ -171,11 +171,40 @@ def _load_client_debts(conn) -> Dict[int, dict]:
 
 
 def _load_client_names(conn) -> Dict[int, str]:
-    """Load client_id → display name mapping from allowed_clients."""
+    """Load client_id → display name mapping.
+
+    Prefers the 1C name from client_payments or real_orders (what admins
+    will search for), falls back to allowed_clients.company_name or name.
+    """
+    names: Dict[int, str] = {}
+
+    # Start with allowed_clients as fallback
     rows = conn.execute(
         "SELECT id, COALESCE(company_name, name, '') as dname FROM allowed_clients"
     ).fetchall()
-    return {r["id"]: r["dname"] for r in rows}
+    for r in rows:
+        if r["dname"]:
+            names[r["id"]] = r["dname"]
+
+    # Override with 1C names from real_orders (most recognizable to admins)
+    rows = conn.execute(
+        """SELECT DISTINCT client_id, client_name_1c FROM real_orders
+           WHERE client_id IS NOT NULL AND client_name_1c IS NOT NULL"""
+    ).fetchall()
+    for r in rows:
+        if r["client_name_1c"]:
+            names[r["client_id"]] = r["client_name_1c"]
+
+    # Override with 1C names from client_payments (even fresher)
+    rows = conn.execute(
+        """SELECT DISTINCT client_id, client_name_1c FROM client_payments
+           WHERE client_id IS NOT NULL AND client_name_1c IS NOT NULL"""
+    ).fetchall()
+    for r in rows:
+        if r["client_name_1c"]:
+            names[r["client_id"]] = r["client_name_1c"]
+
+    return names
 
 
 # ── Factor 1: Payment Discipline (FIFO) ─────────────────────────
