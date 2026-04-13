@@ -305,7 +305,10 @@ def _compute_discipline(shipments: List[dict], payments: List[dict],
             if pay["remaining"] <= 0.01:
                 break
 
-    # Evaluate each shipment
+    # Evaluate each shipment — only count RESOLVED shipments (with payment)
+    # in the discipline ratio. Unresolved (no matching payment found) are
+    # excluded because with sparse payment data we can't tell "genuinely
+    # unpaid" from "data gap."
     on_time = 0
     late = 0
     unpaid = 0
@@ -327,12 +330,22 @@ def _compute_discipline(shipments: List[dict], payments: List[dict],
         else:
             late += 1
 
-    total = on_time + late + unpaid
-    if total == 0:
-        return 0.0, 0.0
+    resolved = on_time + late
+    if resolved == 0:
+        # No resolved shipments — can't evaluate discipline
+        return 20.0, -1.0
 
-    on_time_rate = on_time / total
-    discipline_score = on_time_rate * 40.0
+    # Base rate on resolved shipments only (on_time vs late)
+    on_time_rate = on_time / resolved
+
+    # Confidence adjustment: if most shipments are unresolved, we have
+    # low confidence. Blend toward neutral (0.5) proportionally.
+    total = resolved + unpaid
+    confidence = resolved / total if total > 0 else 0
+    # Minimum confidence floor: need at least 30% resolved to trust fully
+    effective_rate = on_time_rate * min(confidence / 0.3, 1.0) + 0.5 * max(0, 1 - confidence / 0.3)
+
+    discipline_score = effective_rate * 40.0
     return discipline_score, on_time_rate
 
 
