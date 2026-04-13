@@ -34,6 +34,14 @@ if _admin_env:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from backend.services.credit_scoring import (
+    run_nightly_scoring,
+    search_client_scores,
+    get_scoring_summary,
+    apply_score_adjustment,
+    detect_anomalies,
+)
+
 
 def html_escape(text: str) -> str:
     """Escape HTML special characters for Telegram parse_mode=HTML."""
@@ -4254,6 +4262,121 @@ async def cmd_scorestats(message: types.Message):
         f"<b>По бакетам:</b>\n{bucket_lines}"
     )
     await message.answer(text, parse_mode="HTML")
+
+
+@dp.message(Command("adjustscore"))
+async def cmd_adjustscore(message: types.Message):
+    """Manual score adjustment. Usage: /adjustscore <name> <delta> <reason>"""
+    if not is_admin(message):
+        return
+
+    args = message.text.split(None, 3)  # /adjustscore <name> <delta> <reason>
+    if len(args) < 4:
+        await message.answer(
+            "Использование: /adjustscore <имя> <дельта> <причина>\n"
+            "Примеры:\n"
+            "  /adjustscore Бахром +15 Задержка сотрудника при вводе\n"
+            "  /adjustscore #142 -20 Возврат товара\n\n"
+            "Дельта: от -50 до +50. Действует 30 дней."
+        )
+        return
+
+    query = args[1].strip()
+    try:
+        delta = int(args[2])
+    except ValueError:
+        await message.answer("Дельта должна быть числом от -50 до +50.")
+        return
+
+    reason = args[3].strip()
+
+    # Find the client
+    try:
+        results = search_client_scores(query, limit=1)
+    except Exception as e:
+        await message.answer("Ошибка поиска: " + str(e))
+        return
+
+    if not results:
+        await message.answer("Клиент не найден в системе скоринга.")
+        return
+
+    client = results[0]
+    cid = client["client_id"]
+    cname = client["client_name"]
+
+    admin_name = ""
+    if message.from_user:
+        admin_name = message.from_user.full_name or message.from_user.username or ""
+    admin_id = message.from_user.id if message.from_user else 0
+
+    result = apply_score_adjustment(
+        client_id=cid,
+        client_name=cname,
+        delta=delta,
+        reason=reason,
+        admin_user_id=admin_id,
+        admin_name=admin_name,
+    )
+
+    if not result.get("ok"):
+        await message.answer("Ошибка: " + result.get("error", "unknown"))
+        return
+
+    sign = "+" if delta > 0 else ""
+    new_score = max(0, min(100, client["score"] + delta))
+    text = (
+        "✅ <b>Корректировка балла</b>\n\n"
+        "Клиент: " + html_escape(cname) + "\n"
+        "Текущий балл: " + str(client["score"]) + "\n"
+        "Дельта: <b>" + sign + str(delta) + "</b>\n"
+        "Новый балл (при пересчёте): ~" + str(new_score) + "\n"
+        "Причина: " + html_escape(reason) + "\n"
+        "Истекает: " + result["expires_at"] + "\n"
+        "Админ: " + html_escape(admin_name)
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
+@dp.message(Command("scoreanomalies"))
+async def cmd_scoreanomalies(message: types.Message):
+    """Weekly anomaly report: clients with score drops + stale payment data."""
+    if not is_admin(message):
+        return
+
+    try:
+        anomalies = detect_anomalies()
+    except Exception as e:
+        await message.answer("Ошибка: " + str(e))
+        return
+
+    if not anomalies:
+        await message.answer(
+            "✅ <b>Аномалии не обнаружены</b>\n\n"
+            "Все клиенты с падением балла имеют свежие данные о платежах.",
+            parse_mode="HTML",
+        )
+        return
+
+    lines = ["⚠️ <b>Аномалии скоринга</b> (" + str(len(anomalies)) + ")\n"]
+    lines.append("Клиенты с падением балла и устаревшими данными Кассы:\n")
+
+    for a in anomalies[:15]:  # limit output
+        lines.append(
+            "• <b>" + html_escape(a["client_name"]) + "</b> "
+            "[" + a["volume_bucket"] + "]\n"
+            "  Балл: " + str(a["previous_score"]) + " → " + str(a["current_score"]) + " "
+            "(−" + str(a["drop"]) + ")\n"
+            "  Посл. оплата: " + str(a["last_payment"]) + "\n"
+            "  Посл. отгрузка: " + str(a["last_order"])
+        )
+
+    if len(anomalies) > 15:
+        lines.append("\n... и ещё " + str(len(anomalies) - 15))
+
+    lines.append("\nДействие: проверьте, не забыли ли сотрудники внести платежи в Кассу.")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 # ───────────────────────────────────────────

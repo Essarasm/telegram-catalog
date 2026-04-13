@@ -434,6 +434,22 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_scores_recalc_date ON client_scores(recalc_date);
         CREATE INDEX IF NOT EXISTS idx_client_scores_score ON client_scores(score);
 
+        -- Session G Phase 4: Manual score adjustments (admin overrides)
+        CREATE TABLE IF NOT EXISTS score_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            client_name TEXT NOT NULL,
+            delta INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            admin_user_id INTEGER NOT NULL,
+            admin_name TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1
+        );
+        CREATE INDEX IF NOT EXISTS idx_score_adj_client ON score_adjustments(client_id);
+        CREATE INDEX IF NOT EXISTS idx_score_adj_active ON score_adjustments(is_active);
+
         -- ─────────────────────────────────────────────────────────────
         -- Session F follow-up: Supply & Returns ingestion pipeline
         -- ─────────────────────────────────────────────────────────────

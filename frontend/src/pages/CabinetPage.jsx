@@ -171,6 +171,10 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [activitySummary, setActivitySummary] = useState(null);
   const [bizLoading, setBizLoading] = useState(true);
 
+  // Credit Score state (Phase 5)
+  const [creditScore, setCreditScore] = useState(null);
+  const [scoreLoading, setScoreLoading] = useState(true);
+
   const userId = getTelegramUserId();
 
   // Load orders and balance
@@ -179,6 +183,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       setLoading(false);
       setBalanceLoading(false);
       setBizLoading(false);
+      setScoreLoading(false);
       return;
     }
     fetch(`${API}/orders?telegram_id=${userId}`)
@@ -220,6 +225,15 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         setBizLoading(false);
       })
       .catch(() => setBizLoading(false));
+
+    // Credit Score — fetch from finance API
+    fetch(`${FINANCE_API}/credit-score?telegram_id=${userId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok && data.has_score) setCreditScore(data.score);
+        setScoreLoading(false);
+      })
+      .catch(() => setScoreLoading(false));
   }, [userId]);
 
   // Toggle expand real order detail
@@ -505,6 +519,103 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     }
   };
 
+  // ── Credit Score Card (Phase 5 — soft launch) ──
+  const CreditScoreCard = () => {
+    if (scoreLoading || !creditScore) return null;
+
+    const score = creditScore.value;
+    const tier = creditScore.tier;
+    const limitUzs = creditScore.credit_limit_uzs;
+    const bucket = creditScore.volume_bucket;
+    const hints = creditScore.hints || [];
+
+    // Tier badge colors (subtle, muted)
+    const tierColors = {
+      'Yangi': { bg: 'bg-gray-100', text: 'text-gray-600', border: 'border-gray-200' },
+      'Oddiy': { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-100' },
+      'Yaxshi': { bg: 'bg-green-50', text: 'text-green-600', border: 'border-green-100' },
+      "A'lo": { bg: 'bg-purple-50', text: 'text-purple-600', border: 'border-purple-100' },
+      'VIP': { bg: 'bg-amber-50', text: 'text-amber-600', border: 'border-amber-100' },
+    };
+    const tc = tierColors[tier] || tierColors['Oddiy'];
+
+    // Score arc: subtle progress indicator
+    const pct = Math.max(0, Math.min(100, score));
+    const arcRadius = 38;
+    const arcCircumference = 2 * Math.PI * arcRadius;
+    const arcOffset = arcCircumference * (1 - pct / 100);
+
+    return (
+      <div className="mb-4">
+        <div className="text-sm text-tg-hint mb-2">
+          ⭐ {t.credit_score_title}
+        </div>
+        <div className="bg-tg-secondary rounded-xl p-4">
+          <div className="flex items-center gap-4">
+            {/* Score circle */}
+            <div className="relative flex-shrink-0" style={{ width: 80, height: 80 }}>
+              <svg viewBox="0 0 80 80" className="w-full h-full">
+                {/* Background circle */}
+                <circle cx="40" cy="40" r={arcRadius} fill="none"
+                  stroke="var(--tg-theme-hint-color, #ccc)" strokeOpacity="0.15"
+                  strokeWidth="5" />
+                {/* Score arc */}
+                <circle cx="40" cy="40" r={arcRadius} fill="none"
+                  stroke={score >= 71 ? '#8B5CF6' : score >= 51 ? '#10B981' : '#6B7280'}
+                  strokeWidth="5" strokeLinecap="round"
+                  strokeDasharray={arcCircumference}
+                  strokeDashoffset={arcOffset}
+                  transform="rotate(-90 40 40)" />
+                {/* Score number */}
+                <text x="40" y="36" textAnchor="middle" fontSize="18" fontWeight="700"
+                  fill="var(--tg-theme-text-color, #333)">{score}</text>
+                <text x="40" y="50" textAnchor="middle" fontSize="8"
+                  fill="var(--tg-theme-hint-color, #999)">/ 100</text>
+              </svg>
+            </div>
+
+            {/* Score details */}
+            <div className="flex-1 min-w-0">
+              {/* Tier badge */}
+              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold border ${tc.bg} ${tc.text} ${tc.border}`}>
+                {tier}
+              </span>
+
+              {/* Credit limit */}
+              <div className="mt-1.5">
+                <div className="text-[10px] text-tg-hint">{t.credit_score_limit}</div>
+                <div className="text-sm font-bold">
+                  {bucket === 'Heavy'
+                    ? t.credit_score_manual_review
+                    : formatUzs(limitUzs) + " " + (t.balance_currency || "so'm")}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Hint bullets */}
+          {hints.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-tg-hint/10 space-y-1">
+              {hints.map((h, i) => (
+                <div key={i} className="text-[10px] text-tg-hint flex items-start gap-1.5">
+                  <span className="text-tg-hint/40 mt-px">•</span>
+                  <span>{h}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Last updated */}
+          {creditScore.recalc_date && (
+            <div className="text-[9px] text-tg-hint/50 text-right mt-2">
+              {t.credit_score_updated}: {creditScore.recalc_date}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // ── My Business with Rassvet section ──
   const hasBusinessData = spendTrend || topProducts || activitySummary;
 
@@ -670,6 +781,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   return (
     <div>
       <MyBusinessSection />
+      <CreditScoreCard />
       <BalanceCard />
 
       {lastOrder && (

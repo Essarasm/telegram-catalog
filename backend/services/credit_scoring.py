@@ -812,6 +812,13 @@ def run_nightly_scoring() -> dict:
     debt_relink = relink_client_debts()
     logger.info("Debt relink: %s", debt_relink)
 
+    # Expire stale score adjustments
+    conn = get_db()
+    expired = expire_old_adjustments()
+    conn.close()
+    if expired:
+        logger.info("Expired %d stale score adjustments", expired)
+
     conn = get_db()
     try:
         today_str = date.today().strftime("%Y-%m-%d")
@@ -840,6 +847,22 @@ def run_nightly_scoring() -> dict:
             result = score_single_client(
                 cid, shipments, payments, debt_info, default_fx
             )
+
+            # Apply active score adjustment (Phase 4)
+            adj = conn.execute(
+                """SELECT delta FROM score_adjustments
+                   WHERE client_id = ? AND is_active = 1 AND expires_at >= ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (cid, today_str),
+            ).fetchone()
+            if adj:
+                adjusted_score = max(0, min(100, result["score"] + adj["delta"]))
+                result["score"] = adjusted_score
+                result["tier"] = _classify_tier(adjusted_score)
+                # Recalculate credit limit with adjusted score
+                bucket, base_limit = _classify_bucket(result["monthly_volume_usd"])
+                if bucket != "Heavy":
+                    result["credit_limit_uzs"] = base_limit * (adjusted_score / 100.0)
 
             # Upsert into client_scores
             conn.execute(
@@ -1138,5 +1161,179 @@ def get_scoring_summary() -> dict:
             "tiers": tiers,
             "buckets": buckets,
         }
+    finally:
+        conn.close()
+
+
+# ── Phase 4: Score Adjustments ───────────────────────────────────
+
+SCORE_ADJUSTMENT_EXPIRY_DAYS = 30
+ANOMALY_STALENESS_DAYS = 10
+ANOMALY_SCORE_DROP_THRESHOLD = 10
+
+
+def get_active_adjustment(client_id: int) -> Optional[dict]:
+    """Get the active (non-expired) score adjustment for a client."""
+    conn = get_db()
+    try:
+        today_str = date.today().strftime("%Y-%m-%d")
+        row = conn.execute(
+            """SELECT * FROM score_adjustments
+               WHERE client_id = ? AND is_active = 1 AND expires_at >= ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (client_id, today_str),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def apply_score_adjustment(
+    client_id: int,
+    client_name: str,
+    delta: int,
+    reason: str,
+    admin_user_id: int,
+    admin_name: str = "",
+) -> dict:
+    """Create a manual score adjustment for a client.
+
+    Delta must be between -50 and +50. Expires after SCORE_ADJUSTMENT_EXPIRY_DAYS.
+    Deactivates any prior active adjustment for the same client.
+    """
+    if not (-50 <= delta <= 50):
+        return {"ok": False, "error": "Delta must be between -50 and +50"}
+
+    if not reason.strip():
+        return {"ok": False, "error": "Reason is required"}
+
+    conn = get_db()
+    try:
+        expires_at = (date.today() + timedelta(days=SCORE_ADJUSTMENT_EXPIRY_DAYS)).strftime("%Y-%m-%d")
+
+        # Deactivate any prior active adjustments for this client
+        conn.execute(
+            "UPDATE score_adjustments SET is_active = 0 WHERE client_id = ? AND is_active = 1",
+            (client_id,),
+        )
+
+        conn.execute(
+            """INSERT INTO score_adjustments
+               (client_id, client_name, delta, reason, admin_user_id, admin_name, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (client_id, client_name, delta, reason.strip(), admin_user_id, admin_name, expires_at),
+        )
+        conn.commit()
+
+        return {
+            "ok": True,
+            "client_id": client_id,
+            "client_name": client_name,
+            "delta": delta,
+            "reason": reason.strip(),
+            "expires_at": expires_at,
+        }
+    except Exception as e:
+        logger.exception("apply_score_adjustment failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+def expire_old_adjustments() -> int:
+    """Deactivate all expired score adjustments. Returns count of expired."""
+    conn = get_db()
+    try:
+        today_str = date.today().strftime("%Y-%m-%d")
+        cursor = conn.execute(
+            "UPDATE score_adjustments SET is_active = 0 WHERE is_active = 1 AND expires_at < ?",
+            (today_str,),
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def detect_anomalies() -> List[dict]:
+    """Detect scoring anomalies: clients whose score dropped significantly
+    but payment data looks stale (possible employee data entry lag).
+
+    Criteria (from spec §7.3):
+    - Score dropped >= ANOMALY_SCORE_DROP_THRESHOLD points
+    - No client_payments in the last ANOMALY_STALENESS_DAYS days
+    - Client has real_orders activity in the same period (still ordering)
+
+    Returns list of anomaly dicts.
+    """
+    conn = get_db()
+    try:
+        today = date.today()
+        today_str = today.strftime("%Y-%m-%d")
+        staleness_cutoff = (today - timedelta(days=ANOMALY_STALENESS_DAYS)).strftime("%Y-%m-%d")
+
+        # Get the two most recent scoring dates
+        dates = conn.execute(
+            "SELECT DISTINCT recalc_date FROM client_scores ORDER BY recalc_date DESC LIMIT 2"
+        ).fetchall()
+
+        if len(dates) < 2:
+            return []
+
+        current_date = dates[0]["recalc_date"]
+        previous_date = dates[1]["recalc_date"]
+
+        # Find clients with significant score drops
+        drops = conn.execute(
+            """SELECT c1.client_id, c1.client_name,
+                      c1.score as current_score, c2.score as previous_score,
+                      (c2.score - c1.score) as drop_amount,
+                      c1.volume_bucket, c1.monthly_volume_usd
+               FROM client_scores c1
+               JOIN client_scores c2 ON c1.client_id = c2.client_id
+               WHERE c1.recalc_date = ? AND c2.recalc_date = ?
+                 AND (c2.score - c1.score) >= ?
+               ORDER BY (c2.score - c1.score) DESC""",
+            (current_date, previous_date, ANOMALY_SCORE_DROP_THRESHOLD),
+        ).fetchall()
+
+        anomalies = []
+        for d in drops:
+            cid = d["client_id"]
+
+            # Check: no payments in the last ANOMALY_STALENESS_DAYS
+            last_payment = conn.execute(
+                """SELECT MAX(doc_date) as last_pay
+                   FROM client_payments WHERE client_id = ?""",
+                (cid,),
+            ).fetchone()
+
+            last_pay_date = last_payment["last_pay"] if last_payment else None
+            if last_pay_date and last_pay_date >= staleness_cutoff:
+                continue  # has recent payments — not stale
+
+            # Check: still has active orders
+            last_order = conn.execute(
+                """SELECT MAX(doc_date) as last_ord
+                   FROM real_orders WHERE client_id = ?""",
+                (cid,),
+            ).fetchone()
+
+            last_ord_date = last_order["last_ord"] if last_order else None
+            if not last_ord_date or last_ord_date < staleness_cutoff:
+                continue  # no recent orders either — drop may be legitimate
+
+            anomalies.append({
+                "client_id": cid,
+                "client_name": d["client_name"],
+                "current_score": d["current_score"],
+                "previous_score": d["previous_score"],
+                "drop": d["drop_amount"],
+                "volume_bucket": d["volume_bucket"],
+                "last_payment": last_pay_date or "—",
+                "last_order": last_ord_date,
+            })
+
+        return anomalies
     finally:
         conn.close()

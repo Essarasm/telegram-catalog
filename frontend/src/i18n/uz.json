@@ -150,5 +150,12 @@
   "my_business_no_data": "Hali ma'lumot yo'q",
   "my_business_orders_up": "ko'paydi",
   "my_business_orders_down": "kamaydi",
-  "my_business_orders_same": "o'zgarmadi"
+  "my_business_orders_same": "o'zgarmadi",
+  "credit_score_title": "Kredit bahosi",
+  "credit_score_limit": "Kredit limiti",
+  "credit_score_hint_1": "To'lovlarni o'z vaqtida amalga oshirish balingizni oshiradi",
+  "credit_score_hint_2": "Muntazam xaridlar balingizga ijobiy ta'sir qiladi",
+  "credit_score_hint_3": "Uzoq muddatli hamkorlik yuqori baho beradi",
+  "credit_score_updated": "yangilangan",
+  "credit_score_manual_review": "Individual ko'rib chiqish"
 }

@@ -29,6 +29,9 @@ from backend.services.credit_scoring import (
     run_nightly_scoring,
     get_scoring_summary,
     debug_client_scores,
+    apply_score_adjustment,
+    detect_anomalies,
+    search_client_scores,
 )
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
