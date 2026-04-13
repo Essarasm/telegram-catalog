@@ -683,10 +683,13 @@ def get_client_score(client_id: int) -> Optional[dict]:
         conn.close()
 
 
-def search_client_scores(name_substring: str, limit: int = 10) -> List[dict]:
-    """Search for clients by name substring and return their latest scores.
+def search_client_scores(query: str, limit: int = 10) -> List[dict]:
+    """Search for clients and return their latest scores.
 
-    Uses case-insensitive LIKE matching on client_name.
+    Supports:
+      - "#123" → lookup by allowed_clients.id
+      - Text → search across client_id_1c, client_name (LIKE), and
+               client_scores.client_name (1C name stored at scoring time)
     """
     conn = get_db()
     try:
@@ -697,15 +700,92 @@ def search_client_scores(name_substring: str, limit: int = 10) -> List[dict]:
         if not latest or not latest["d"]:
             return []
 
-        pattern = f"%{name_substring}%"
+        recalc_date = latest["d"]
+
+        # Direct ID lookup: "#123"
+        if query.startswith("#") and query[1:].isdigit():
+            client_id = int(query[1:])
+            rows = conn.execute(
+                """SELECT * FROM client_scores
+                   WHERE recalc_date = ? AND client_id = ?
+                   LIMIT 1""",
+                (recalc_date, client_id),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+        # Text search: match against client_scores.client_name (1C name)
+        # AND allowed_clients.client_id_1c / name (for broader coverage)
+        pattern = f"%{query}%"
+
+        # First: search client_scores.client_name directly
         rows = conn.execute(
             """SELECT * FROM client_scores
-               WHERE recalc_date = ? AND client_name LIKE ?
+               WHERE recalc_date = ? AND LOWER(client_name) LIKE LOWER(?)
                ORDER BY score DESC
                LIMIT ?""",
-            (latest["d"], pattern, limit),
+            (recalc_date, pattern, limit),
+        ).fetchall()
+
+        if rows:
+            return [dict(r) for r in rows]
+
+        # Fallback: search allowed_clients by client_id_1c or name,
+        # then join to client_scores
+        rows = conn.execute(
+            """SELECT cs.* FROM client_scores cs
+               JOIN allowed_clients ac ON ac.id = cs.client_id
+               WHERE cs.recalc_date = ?
+                 AND (LOWER(ac.client_id_1c) LIKE LOWER(?)
+                      OR LOWER(ac.name) LIKE LOWER(?))
+               ORDER BY cs.score DESC
+               LIMIT ?""",
+            (recalc_date, pattern, pattern, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def debug_client_scores(limit: int = 10) -> dict:
+    """Return sample client_scores rows for debugging."""
+    conn = get_db()
+    try:
+        latest = conn.execute(
+            "SELECT MAX(recalc_date) as d FROM client_scores"
+        ).fetchone()
+        if not latest or not latest["d"]:
+            return {"error": "No scoring data"}
+
+        total = conn.execute(
+            "SELECT COUNT(*) as c FROM client_scores WHERE recalc_date = ?",
+            (latest["d"],),
+        ).fetchone()["c"]
+
+        # Sample top-scored clients
+        rows = conn.execute(
+            """SELECT client_id, client_name, score, volume_bucket,
+                      monthly_volume_usd
+               FROM client_scores
+               WHERE recalc_date = ?
+               ORDER BY monthly_volume_usd DESC
+               LIMIT ?""",
+            (latest["d"], limit),
+        ).fetchall()
+
+        return {
+            "date": latest["d"],
+            "total": total,
+            "sample": [
+                {
+                    "client_id": r["client_id"],
+                    "client_name": r["client_name"],
+                    "score": r["score"],
+                    "bucket": r["volume_bucket"],
+                    "monthly_usd": round(r["monthly_volume_usd"], 0),
+                }
+                for r in rows
+            ],
+        }
     finally:
         conn.close()
 

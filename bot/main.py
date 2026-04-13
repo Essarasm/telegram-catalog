@@ -4058,8 +4058,10 @@ async def cmd_clientscore(message: types.Message):
     args = (message.text or "").split(maxsplit=1)
     if len(args) < 2 or not args[1].strip():
         await message.answer(
-            "Использование: /clientscore <имя клиента>\n"
-            "Пример: /clientscore Бахром"
+            "Использование: /clientscore <имя или #ID>\n"
+            "Примеры:\n"
+            "  /clientscore Бахром\n"
+            "  /clientscore #142"
         )
         return
 

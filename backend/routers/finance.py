@@ -28,6 +28,7 @@ from backend.services.credit_scoring import (
     get_client_score,
     run_nightly_scoring,
     get_scoring_summary,
+    debug_client_scores,
 )
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
@@ -461,3 +462,9 @@ def trigger_scoring(admin_key: str = Form("rassvet2026")):
 def scoring_summary():
     """Get summary statistics from the latest scoring run."""
     return get_scoring_summary()
+
+
+@router.get("/scoring-debug")
+def scoring_debug(limit: int = 10):
+    """Debug: show sample client_scores rows (top by volume)."""
+    return debug_client_scores(limit)
