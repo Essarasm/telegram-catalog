@@ -1406,3 +1406,205 @@ def get_real_order_sample_for_client(client_substring: str) -> dict:
         "items_with_sum_currency": items_with_sum_currency,
         "items_with_total_currency": items_with_total_currency,
     }
+
+
+# ── Ingest unmatched SKUs into products table + relink ─────────────
+
+# Brand family → (category_id, producer_id) mapping.
+# Determined by inspecting existing products for each brand in prod DB.
+_BRAND_FAMILY_MAP = {
+    # OSCAR products: Лак, Жидкое стекло, Олиф
+    "БТ Лак OSCAR":    (10, 21),   # Laklar & Oliflar, Oscar
+    "Жидкое стекло OSCAR": (10, 21),
+    "Олиф OSCAR":      (10, 21),
+    # ДЕЛЮКС water emulsions
+    "ДЕЛЮКС в/э":      (17, 4),    # Suv Emulsiya & Gruntovka, De Luxe
+    "ДЕЛЮКС ЧЕРНЫЙ":   (17, 4),
+    # ДекоАРТ Эмаль variants
+    "ДекоАРТ Эмаль":   (1, 5),     # Bo'yoq & Emal, Dekoart
+    "Декор Лак":        (10, 5),    # Laklar & Oliflar, Dekoart
+    "Декор DEKOCENTO":  (14, 5),    # Qorishma & Suvoq, Dekoart (decorative coating)
+    # ДЕКОАРТ Универсал Эмульсия
+    "ДЕКОАРТ Универсал": (17, 5),   # Suv Emulsiya & Gruntovka, Dekoart
+    "ДЕКОАРТ СТРОНГ ФАСАД": (17, 5),
+    "ДЕКОАРТ KF":       (17, 5),
+    # ДЕКАСТАР
+    "ДЕКАСТАР":         (17, 5),    # Suv Emulsiya & Gruntovka, Dekoart
+    # Скоч Травертин
+    "Скоч Травертин":   (15, 21),   # Qurilish Mollari, Oscar
+    # АНТИМОРОЗ
+    "АНТИМОРОЗ":        (3, 12),    # Boshqa Mahsulot, Gogle
+    # Электрод MONOLIT
+    "Электрод  MONOLIT": (7, 36),   # Elektrodlar, Xitoy
+    # Кафель
+    "Кафель":           (3, 36),    # Boshqa Mahsulot, Xitoy
+    # ЛЕСКА-ЖИЛКА
+    "ЛЕСКА-ЖИЛКА":      (3, 36),    # Boshqa Mahsulot, Xitoy
+    # СИЛКОАТ
+    "СИЛКОАТ":          (14, 30),   # Qorishma & Suvoq, Silkcoat
+}
+
+
+def _classify_product(name_1c: str) -> Tuple[int, int]:
+    """Return (category_id, producer_id) for an unmatched 1C product name.
+
+    Tries longest-prefix match against _BRAND_FAMILY_MAP keys.
+    Falls back to category 20 (Yangi mahsulotlar) + producer 21 (Oscar)
+    if no match found — the fallback is safe because these will be
+    manually reviewed anyway.
+    """
+    # Sort by key length descending for longest-prefix-first matching
+    for prefix in sorted(_BRAND_FAMILY_MAP.keys(), key=len, reverse=True):
+        if name_1c.upper().startswith(prefix.upper()):
+            return _BRAND_FAMILY_MAP[prefix]
+    # Fallback: "Yangi mahsulotlar" (new products) category
+    return (20, 21)
+
+
+def ingest_unmatched_skus() -> dict:
+    """Find all product names in real_order_items with product_id IS NULL,
+    add them to the products table, and relink the items.
+
+    For each unmatched product_name_1c:
+    1. Check it doesn't already exist in products.name (case-insensitive)
+    2. Classify into category/producer based on brand family patterns
+    3. Generate a display name using the import_products pipeline
+    4. INSERT into products
+    5. UPDATE real_order_items SET product_id = new_id WHERE product_name_1c matches
+
+    Returns summary stats.
+    """
+    from backend.services.import_products import generate_display_name
+    from backend.database import build_search_text, rebuild_all_search_text
+
+    conn = get_db()
+
+    # Step 1: Get all distinct unmatched product names
+    unmatched = conn.execute(
+        """SELECT DISTINCT product_name_1c
+           FROM real_order_items
+           WHERE product_id IS NULL
+             AND product_name_1c IS NOT NULL
+             AND TRIM(product_name_1c) != ''"""
+    ).fetchall()
+
+    added = 0
+    already_existed = 0
+    relinked_items = 0
+    skipped = 0
+    details = []
+
+    for row in unmatched:
+        name_1c = row["product_name_1c"].strip()
+        if not name_1c:
+            skipped += 1
+            continue
+
+        # Check if product already exists (exact or case-insensitive)
+        existing = conn.execute(
+            "SELECT id FROM products WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+            (name_1c,)
+        ).fetchone()
+
+        if existing:
+            # Product exists but items weren't linked — relink them
+            pid = existing[0]
+            already_existed += 1
+            updated = conn.execute(
+                """UPDATE real_order_items
+                   SET product_id = ?
+                   WHERE product_name_1c = ? AND product_id IS NULL""",
+                (pid, row["product_name_1c"])
+            ).rowcount
+            relinked_items += updated
+            details.append({
+                "name_1c": name_1c,
+                "action": "relinked_existing",
+                "product_id": pid,
+                "items_relinked": updated,
+            })
+            continue
+
+        # Step 2: Classify
+        cat_id, prod_id = _classify_product(name_1c)
+
+        # Step 3: Generate display name
+        # Get the producer's Cyrillic name for stripping
+        prod_row = conn.execute("SELECT name FROM producers WHERE id = ?", (prod_id,)).fetchone()
+        producer_cyrillic = prod_row["name"] if prod_row else ""
+        display_name = generate_display_name(name_1c, producer_cyrillic)
+
+        # Step 4: Parse weight from name
+        from backend.services.parse_weight import parse_weight_from_name
+        weight = parse_weight_from_name(name_1c)
+
+        # Build search text
+        cat_row = conn.execute("SELECT name FROM categories WHERE id = ?", (cat_id,)).fetchone()
+        cat_name = cat_row["name"] if cat_row else ""
+        search_text = build_search_text(
+            name_1c, display_name, producer_cyrillic, None, cat_name
+        )
+
+        # INSERT
+        cursor = conn.execute(
+            """INSERT INTO products
+               (name, name_display, category_id, producer_id, unit,
+                price_usd, price_uzs, weight, is_active, search_text)
+               VALUES (?, ?, ?, ?, 'sht', 0, 0, ?, 1, ?)""",
+            (name_1c, display_name, cat_id, prod_id, weight, search_text)
+        )
+        new_pid = cursor.lastrowid
+        added += 1
+
+        # Step 5: Relink items
+        updated = conn.execute(
+            """UPDATE real_order_items
+               SET product_id = ?
+               WHERE product_name_1c = ? AND product_id IS NULL""",
+            (new_pid, row["product_name_1c"])
+        ).rowcount
+        relinked_items += updated
+
+        details.append({
+            "name_1c": name_1c,
+            "action": "added",
+            "product_id": new_pid,
+            "display_name": display_name,
+            "category_id": cat_id,
+            "producer_id": prod_id,
+            "items_relinked": updated,
+        })
+
+    # Update denormalized counts
+    conn.execute("""
+        UPDATE categories SET product_count = (
+            SELECT COUNT(*) FROM products WHERE products.category_id = categories.id AND is_active = 1
+        )
+    """)
+    conn.execute("""
+        UPDATE producers SET product_count = (
+            SELECT COUNT(*) FROM products WHERE products.producer_id = producers.id AND is_active = 1
+        )
+    """)
+
+    conn.commit()
+
+    # Get new match stats
+    db_total = conn.execute("SELECT COUNT(*) FROM real_order_items").fetchone()[0]
+    db_matched = conn.execute(
+        "SELECT COUNT(*) FROM real_order_items WHERE product_id IS NOT NULL"
+    ).fetchone()[0]
+    db_unmatched = db_total - db_matched
+
+    conn.close()
+
+    return {
+        "ok": True,
+        "products_added": added,
+        "products_already_existed": already_existed,
+        "items_relinked": relinked_items,
+        "skipped": skipped,
+        "new_match_rate": f"{db_matched}/{db_total} ({100*db_matched/db_total:.1f}%)" if db_total else "N/A",
+        "remaining_unmatched": db_unmatched,
+        "details": details,
+    }

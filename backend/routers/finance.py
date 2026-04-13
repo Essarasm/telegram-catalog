@@ -20,6 +20,7 @@ from backend.services.import_real_orders import (
     relink_real_orders,
     get_real_order_sample_for_client,
     backfill_real_order_totals,
+    ingest_unmatched_skus,
 )
 from backend.services.import_client_master import apply_client_master_import
 from backend.services.import_cash import apply_cash_import
@@ -245,6 +246,25 @@ def backfill_real_order_totals_endpoint(
     if admin_key != "rassvet2026":
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return backfill_real_order_totals()
+
+
+@router.post("/ingest-unmatched-skus")
+def api_ingest_unmatched_skus(
+    admin_key: str = Form(""),
+):
+    """Add all unmatched product names from real_order_items to the products table.
+
+    For each distinct product_name_1c WHERE product_id IS NULL:
+    - Classifies into category/producer by brand family patterns
+    - Generates a Latin display name via the import_products pipeline
+    - INSERTs into products
+    - UPDATEs real_order_items.product_id to link them
+
+    Idempotent: skips products that already exist in the products table.
+    """
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return ingest_unmatched_skus()
 
 
 @router.post("/import-client-master")

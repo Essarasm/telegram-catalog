@@ -1378,6 +1378,8 @@ async def cmd_help(message: types.Message):
         "Haqiqiy buyurtmalardagi bog'lanmagan mahsulotlar ro'yxati (ko'p qatordan kam tomonga)\n\n"
         "<b>/relinkrealorders</b>\n"
         "Bog'lanmagan haqiqiy buyurtmalarni qayta bog'lash (allowed_clients yangilagandan keyin)\n\n"
+        "<b>/ingestskus</b>\n"
+        "Bog'lanmagan mahsulotlarni products jadvaliga qo'shish + real_order_items qayta bog'lash\n\n"
         "<b>/clientmaster</b> (reply to XLSX file)\n"
         "Client Master jadvalini allowed_clients ga import qilish (1C cyrillic nomlari + telefonlar)\n\n"
         "<b>/realordersample</b> <code>&lt;mijoz parchasi&gt;</code>\n"
@@ -3315,6 +3317,75 @@ async def cmd_relinkrealorders(message: types.Message):
 
     except Exception as e:
         logger.error(f"Relinkrealorders error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@dp.message(Command("ingestskus"))
+async def cmd_ingest_skus(message: types.Message):
+    """Add all unmatched product names from real_order_items to the products table.
+
+    For each distinct product_name_1c WHERE product_id IS NULL:
+    - Classifies into category/producer by brand family patterns
+    - Generates a Latin display name via the import_products pipeline
+    - INSERTs into products
+    - UPDATEs real_order_items.product_id to link them
+    """
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Yangi SKU'lar qo'shilmoqda...")
+
+    try:
+        import httpx
+
+        api_url = f"{_BASE_URL}/api/finance/ingest-unmatched-skus"
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                api_url,
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(
+                f"❌ Xatolik: {result.get('error', 'Unknown')}"
+            )
+            return
+
+        added = result.get("products_added", 0)
+        existed = result.get("products_already_existed", 0)
+        relinked = result.get("items_relinked", 0)
+        match_rate = result.get("new_match_rate", "N/A")
+        remaining = result.get("remaining_unmatched", 0)
+
+        lines = [
+            "✅ <b>SKU ingestion tugadi</b>\n",
+            f"➕ Yangi mahsulotlar qo'shildi: {added}",
+            f"♻️ Mavjud mahsulotlar (qayta bog'landi): {existed}",
+            f"🔗 Bog'langan qatorlar: {relinked}",
+            "",
+            f"<b>📊 Yangi match rate:</b> {match_rate}",
+            f"❌ Hali ham bog'lanmagan: {remaining} qator",
+        ]
+
+        # Show details of top 15 added products
+        details = result.get("details", [])
+        if details:
+            lines.append("\n<b>Qo'shilgan mahsulotlar:</b>")
+            for d in details[:15]:
+                action = "➕" if d["action"] == "added" else "♻️"
+                lines.append(
+                    f"{action} <code>{d['name_1c'][:45]}</code> "
+                    f"→ {d.get('display_name', d.get('product_id', '?'))[:25]} "
+                    f"({d['items_relinked']} qator)"
+                )
+            if len(details) > 15:
+                lines.append(f"  ... va yana {len(details) - 15} ta")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"Ingest SKUs error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
