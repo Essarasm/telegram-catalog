@@ -713,33 +713,35 @@ def search_client_scores(query: str, limit: int = 10) -> List[dict]:
             ).fetchall()
             return [dict(r) for r in rows]
 
-        # Text search: match against client_scores.client_name (1C name)
-        # AND allowed_clients.client_id_1c / name (for broader coverage)
+        # Search across multiple name sources:
+        # 1. client_scores.client_name (Latin, from allowed_clients)
+        # 2. allowed_clients.client_id_1c (Cyrillic 1C name)
+        # 3. allowed_clients.name (app registration name)
+        # 4. real_orders.client_name_1c (raw 1C Cyrillic)
+        # 5. client_payments.client_name_1c (raw 1C Cyrillic)
         pattern = f"%{query}%"
 
-        # First: search client_scores.client_name directly
+        # Single query joining all name sources
         rows = conn.execute(
-            """SELECT * FROM client_scores
-               WHERE recalc_date = ? AND LOWER(client_name) LIKE LOWER(?)
-               ORDER BY score DESC
-               LIMIT ?""",
-            (recalc_date, pattern, limit),
-        ).fetchall()
-
-        if rows:
-            return [dict(r) for r in rows]
-
-        # Fallback: search allowed_clients by client_id_1c or name,
-        # then join to client_scores
-        rows = conn.execute(
-            """SELECT cs.* FROM client_scores cs
-               JOIN allowed_clients ac ON ac.id = cs.client_id
+            """SELECT DISTINCT cs.* FROM client_scores cs
+               LEFT JOIN allowed_clients ac ON ac.id = cs.client_id
                WHERE cs.recalc_date = ?
-                 AND (LOWER(ac.client_id_1c) LIKE LOWER(?)
-                      OR LOWER(ac.name) LIKE LOWER(?))
+                 AND (
+                   cs.client_name LIKE ?
+                   OR ac.client_id_1c LIKE ?
+                   OR ac.name LIKE ?
+                   OR cs.client_id IN (
+                     SELECT DISTINCT client_id FROM real_orders
+                     WHERE client_name_1c LIKE ? AND client_id IS NOT NULL
+                   )
+                   OR cs.client_id IN (
+                     SELECT DISTINCT client_id FROM client_payments
+                     WHERE client_name_1c LIKE ? AND client_id IS NOT NULL
+                   )
+                 )
                ORDER BY cs.score DESC
                LIMIT ?""",
-            (recalc_date, pattern, pattern, limit),
+            (recalc_date, pattern, pattern, pattern, pattern, pattern, limit),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
