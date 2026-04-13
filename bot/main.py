@@ -4047,32 +4047,6 @@ async def handle_registration_reply(message: types.Message):
         conn.close()
 
 
-# ───────────────────────────────────────────
-# Fallback — only for private chats
-# ───────────────────────────────────────────
-
-@dp.message()
-async def fallback(message: types.Message):
-    """Handle unrecognized messages in private chats."""
-    if message.chat.type != "private":
-        return
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📋 Katalogni ochish",
-                    web_app=WebAppInfo(url=WEBAPP_URL),
-                )
-            ]
-        ]
-    )
-    await message.answer(
-        "Katalogni ochish uchun quyidagi tugmani bosing:",
-        reply_markup=keyboard,
-    )
-
-
 # ── Session G: Credit Scoring Commands ─────────────────────────────
 
 @dp.message(Command("clientscore"))
@@ -4269,6 +4243,32 @@ async def cmd_scorestats(message: types.Message):
         f"<b>По бакетам:</b>\n{bucket_lines}"
     )
     await message.answer(text, parse_mode="HTML")
+
+
+# ───────────────────────────────────────────
+# Fallback — only for private chats (MUST BE LAST — catches all unmatched messages)
+# ───────────────────────────────────────────
+
+@dp.message()
+async def fallback(message: types.Message):
+    """Handle unrecognized messages in private chats."""
+    if message.chat.type != "private":
+        return
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📋 Katalogni ochish",
+                    web_app=WebAppInfo(url=WEBAPP_URL),
+                )
+            ]
+        ]
+    )
+    await message.answer(
+        "Katalogni ochish uchun quyidagi tugmani bosing:",
+        reply_markup=keyboard,
+    )
 
 
 async def main():
