@@ -82,6 +82,16 @@ def _parse_period(period_text: str) -> Tuple[Optional[str], Optional[str]]:
                 last_day = calendar.monthrange(year, month_num)[1]
                 return f"{year:04d}-{month_num:02d}-01", f"{year:04d}-{month_num:02d}-{last_day:02d}"
 
+    # Format 3: "за 2 Квартал 2026 г." — quarterly period
+    q_match = re.search(r'за\s+(\d)\s*[Кк]вартал\s+(\d{4})', period_text)
+    if q_match:
+        quarter = int(q_match.group(1))
+        year = int(q_match.group(2))
+        start_month = (quarter - 1) * 3 + 1
+        end_month = quarter * 3
+        last_day = calendar.monthrange(year, end_month)[1]
+        return f"{year:04d}-{start_month:02d}-01", f"{year:04d}-{end_month:02d}-{last_day:02d}"
+
     return None, None
 
 
