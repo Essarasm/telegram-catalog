@@ -4095,7 +4095,7 @@ async def cmd_clientscore(message: types.Message):
             f"\n"
             f"── Факторы ──\n"
             f"Дисциплина:     {r['discipline_score']:5.1f} / 40  "
-            f"({'мало данных' if r.get('on_time_rate', 0) < 0 else f\"{r['on_time_rate']*100:.0f}% вовремя\"})\n"
+            f"({('мало данных' if r.get('on_time_rate', 0) < 0 else str(round(r['on_time_rate']*100)) + '% вовремя')})\n"
             f"Долг:           {r['debt_score']:5.1f} / 25  (коэфф. {r['debt_ratio']:.2f})\n"
             f"Регулярность:   {r['consistency_score']:5.1f} / 20  (CV = {r['consistency_cv']:.2f})\n"
             f"Стаж:           {r['tenure_score']:5.1f} / 15  ({r['tenure_months']:.0f} мес.)\n"
