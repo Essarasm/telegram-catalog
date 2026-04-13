@@ -38,7 +38,7 @@ class CacheControlMiddleware:
 load_dotenv()
 
 from backend.database import init_db
-from backend.routers import categories, products, export, cart, users, reports, cabinet, search, finance, admin, feedback
+from backend.routers import categories, products, export, cart, users, reports, cabinet, search, finance, admin, feedback, locations
 
 app = FastAPI(title="Katalog API", version="1.0.0")
 
@@ -116,6 +116,8 @@ app.include_router(search.router)
 app.include_router(finance.router)
 app.include_router(admin.router)
 app.include_router(feedback.router)
+app.include_router(locations.router)
+app.include_router(locations.client_router)
 
 # Serve admin dashboard (static HTML)
 admin_dir = Path("./admin")

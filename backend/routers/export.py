@@ -42,6 +42,8 @@ class ExportRequest(BaseModel):
     client_name: Optional[str] = ""
     telegram_id: Optional[int] = 0
     delivery_type: Optional[str] = "delivery"  # 'delivery' or 'pickup'
+    location_district_id: Optional[int] = None  # Session M: delivery location
+    location_moljal_id: Optional[int] = None
 
 
 def _build_order_items(req: ExportRequest):
@@ -132,9 +134,10 @@ def _save_order_to_db(req: ExportRequest, order_items, client_label):
         delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
 
         cursor = conn.execute(
-            """INSERT INTO orders (telegram_id, client_name, client_phone, total_usd, total_uzs, item_count, status, delivery_type)
-               VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?)""",
-            (req.telegram_id or 0, client_label, client_phone, usd_total, uzs_total, len(order_items), delivery_type),
+            """INSERT INTO orders (telegram_id, client_name, client_phone, total_usd, total_uzs, item_count, status, delivery_type, location_district_id, location_moljal_id)
+               VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?)""",
+            (req.telegram_id or 0, client_label, client_phone, usd_total, uzs_total, len(order_items), delivery_type,
+             req.location_district_id, req.location_moljal_id),
         )
         order_id = cursor.lastrowid
 
@@ -201,12 +204,28 @@ def export_order(req: ExportRequest):
         media_type = "application/pdf"
         filename = "buyurtma.pdf"
 
+    # Resolve location names for notification
+    location_text = ""
+    if req.location_district_id:
+        try:
+            conn = get_db()
+            d_row = conn.execute("SELECT name FROM locations WHERE id = ?", (req.location_district_id,)).fetchone()
+            if d_row:
+                location_text = d_row["name"]
+            if req.location_moljal_id:
+                m_row = conn.execute("SELECT name FROM locations WHERE id = ?", (req.location_moljal_id,)).fetchone()
+                if m_row:
+                    location_text += f" → {m_row['name']}"
+            conn.close()
+        except Exception:
+            pass
+
     # Send Excel to sales group (always, regardless of user format choice)
     import logging
     logger = logging.getLogger(__name__)
     try:
         delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
-        group_ok = send_order_to_group(order_items, excel_data, client_label, delivery_type=delivery_type, client_name_1c=client_name_1c)
+        group_ok = send_order_to_group(order_items, excel_data, client_label, delivery_type=delivery_type, client_name_1c=client_name_1c, location_text=location_text)
         if not group_ok:
             logger.error("send_order_to_group returned False")
     except Exception as e:
@@ -230,6 +249,8 @@ def export_order(req: ExportRequest):
         caption_lines.append("\U0001f4e6 Olib ketish")
     else:
         caption_lines.append("\U0001f69b Yetkazib berish")
+        if location_text:
+            caption_lines.append(f"\U0001f4cd Manzil: {location_text}")
     caption_lines.append("")
     if usd_total > 0:
         caption_lines.append(f"\U0001f4b5 Jami (USD): <b>${usd_total:,.2f}</b>")

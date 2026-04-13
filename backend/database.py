@@ -434,22 +434,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_scores_recalc_date ON client_scores(recalc_date);
         CREATE INDEX IF NOT EXISTS idx_client_scores_score ON client_scores(score);
 
-        -- Session G Phase 4: Manual score adjustments (admin overrides)
-        CREATE TABLE IF NOT EXISTS score_adjustments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id INTEGER NOT NULL,
-            client_name TEXT NOT NULL,
-            delta INTEGER NOT NULL,
-            reason TEXT NOT NULL,
-            admin_user_id INTEGER NOT NULL,
-            admin_name TEXT,
-            created_at TEXT DEFAULT (datetime('now')),
-            expires_at TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1
-        );
-        CREATE INDEX IF NOT EXISTS idx_score_adj_client ON score_adjustments(client_id);
-        CREATE INDEX IF NOT EXISTS idx_score_adj_active ON score_adjustments(is_active);
-
         -- ─────────────────────────────────────────────────────────────
         -- Session F follow-up: Supply & Returns ingestion pipeline
         -- ─────────────────────────────────────────────────────────────
@@ -510,11 +494,33 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_supply_order_items_order ON supply_order_items(supply_order_id);
         CREATE INDEX IF NOT EXISTS idx_supply_order_items_product ON supply_order_items(matched_product_id);
+
+        -- ─────────────────────────────────────────────────────────────
+        -- Session M: Location hierarchy for delivery logistics
+        -- Single table with type + parent_id for Viloyat → District → Mo'ljal
+        -- ─────────────────────────────────────────────────────────────
+        CREATE TABLE IF NOT EXISTS locations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('viloyat', 'district', 'moljal')),
+            parent_id INTEGER,
+            client_count INTEGER DEFAULT 0,
+            sort_order INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            FOREIGN KEY (parent_id) REFERENCES locations(id),
+            UNIQUE(name, type, parent_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_locations_type ON locations(type);
+        CREATE INDEX IF NOT EXISTS idx_locations_parent ON locations(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_locations_active ON locations(is_active);
     """)
     conn.commit()
 
     # Seed daily_upload_schedule with the 8 checklist items (idempotent).
     _seed_daily_upload_schedule(conn)
+
+    # Seed location hierarchy (idempotent).
+    _seed_locations(conn)
 
     # Migration: add delivery_type to orders
     order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
@@ -563,12 +569,19 @@ def init_db():
 
     # Migration: add client_id_1c and company_name to allowed_clients
     ac_cols = {row[1] for row in conn.execute("PRAGMA table_info(allowed_clients)").fetchall()}
-    for col, coltype in [("client_id_1c", "TEXT"), ("company_name", "TEXT")]:
+    for col, coltype in [("client_id_1c", "TEXT"), ("company_name", "TEXT"),
+                          ("location_district_id", "INTEGER"), ("location_moljal_id", "INTEGER")]:
         if col not in ac_cols:
             conn.execute(f"ALTER TABLE allowed_clients ADD COLUMN {col} {coltype}")
 
     # Create index on client_id_1c (after migration ensures column exists)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_1c ON allowed_clients(client_id_1c)")
+
+    # Migration: add location columns to orders
+    order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    for col, coltype in [("location_district_id", "INTEGER"), ("location_moljal_id", "INTEGER")]:
+        if col not in order_cols:
+            conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype}")
 
     # Migration: add stock columns to products
     prod_cols = {row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
@@ -698,6 +711,157 @@ def rebuild_all_search_text(conn=None):
     if own_conn:
         conn.close()
     return count
+
+
+def _seed_locations(conn):
+    """Seed the location hierarchy: Viloyat → District → Mo'ljal.
+
+    Idempotent (UNIQUE constraint on name+type+parent_id prevents duplicates).
+    Data curated from Client Master 16.03.26.xlsx analysis (Session M, 2026-04-13).
+    """
+    # Check if already seeded
+    existing = conn.execute("SELECT COUNT(*) FROM locations").fetchone()[0]
+    if existing > 0:
+        return
+
+    # ── Viloyats ──
+    viloyats = [
+        ("Samarqand", 10), ("Jizzax", 20), ("Qashqadaryo", 30),
+        ("Navoiy", 40), ("Sughd (Tajikistan)", 50), ("Toshkent", 60),
+        ("Syrdaryo", 70), ("Buxoro", 80),
+    ]
+    viloyat_ids = {}
+    for name, sort in viloyats:
+        conn.execute(
+            "INSERT OR IGNORE INTO locations (name, type, parent_id, sort_order) VALUES (?, 'viloyat', NULL, ?)",
+            (name, sort),
+        )
+        row = conn.execute(
+            "SELECT id FROM locations WHERE name = ? AND type = 'viloyat'", (name,)
+        ).fetchone()
+        viloyat_ids[name] = row[0]
+
+    sam_id = viloyat_ids["Samarqand"]
+
+    # ── Districts (Shahar/Tuman) ── mapped to viloyat
+    districts_samarkand = [
+        ("Samarqand shahar", 10), ("Urgut tuman", 20), ("Payariq tuman", 30),
+        ("Pastdarg'om tuman", 40), ("Jombay tuman", 50), ("Bulung'ur tuman", 60),
+        ("Ishtixon tuman", 70), ("Kattaqo'rg'on", 80), ("Oqdaryo tuman", 90),
+        ("Toyloq tuman", 100), ("Qo'shrabot tuman", 110), ("Narpay tuman", 120),
+        ("Nurobod tuman", 130), ("Kattaqo'rg'on tuman", 140), ("Paxtachi tuman", 150),
+        ("Samarqand tuman", 160), ("Kattaqo'rg'on shahar", 170),
+    ]
+    districts_other = [
+        ("G'allaorol tuman", viloyat_ids.get("Jizzax", sam_id), 10),
+        ("Xatirchi tuman", viloyat_ids.get("Navoiy", sam_id), 10),
+        ("Jizzax", viloyat_ids.get("Jizzax", sam_id), 20),
+        ("Baxmal", viloyat_ids.get("Jizzax", sam_id), 30),
+        ("Qarshi", viloyat_ids.get("Qashqadaryo", sam_id), 10),
+        ("G'uzor", viloyat_ids.get("Qashqadaryo", sam_id), 20),
+        ("Shahrisabz", viloyat_ids.get("Qashqadaryo", sam_id), 30),
+        ("Panjakent", viloyat_ids.get("Sughd (Tajikistan)", sam_id), 10),
+        ("Navoiy", viloyat_ids.get("Navoiy", sam_id), 20),
+        ("Davlatobod", viloyat_ids.get("Navoiy", sam_id), 30),
+        ("Toshkent", viloyat_ids.get("Toshkent", sam_id), 10),
+        ("Chordara", viloyat_ids.get("Syrdaryo", sam_id), 10),
+        ("Buxoro", viloyat_ids.get("Buxoro", sam_id), 10),
+    ]
+
+    district_ids = {}
+    for name, sort in districts_samarkand:
+        conn.execute(
+            "INSERT OR IGNORE INTO locations (name, type, parent_id, sort_order) VALUES (?, 'district', ?, ?)",
+            (name, sam_id, sort),
+        )
+        row = conn.execute(
+            "SELECT id FROM locations WHERE name = ? AND type = 'district' AND parent_id = ?",
+            (name, sam_id),
+        ).fetchone()
+        district_ids[name] = row[0]
+
+    for name, vid, sort in districts_other:
+        conn.execute(
+            "INSERT OR IGNORE INTO locations (name, type, parent_id, sort_order) VALUES (?, 'district', ?, ?)",
+            (name, vid, sort),
+        )
+        row = conn.execute(
+            "SELECT id FROM locations WHERE name = ? AND type = 'district' AND parent_id = ?",
+            (name, vid),
+        ).fetchone()
+        district_ids[name] = row[0]
+
+    # ── Mo'ljals ── mapped to district
+    # Curated from Client Master: 163 raw values → 148 after merging duplicates.
+    # Sorted by client_count descending (most popular first = lower sort_order).
+    sam_shahar_id = district_ids["Samarqand shahar"]
+
+    # All mo'ljals mapped to Samarqand shahar (the 106 unique ones from the data).
+    # Mo'ljals for rural tumans are very sparse in the data (few clients have them),
+    # so we seed only the city ones initially. Admin can add more via API.
+    samarkand_moljals = [
+        "Chelak", "Juma", "Loyish", "Titova", "Kirpichka", "Mikrorayon",
+        "Mingchinor", "Charxin", "Dagbet", "Selskiy", "Jartepa",
+        "Metall Bozor", "Nariman", "Super", "Dallager", "Mirbozor",
+        "Metan", "Ulugbek", "Oqtosh", "Afsona", "Oqdaryo", "Sogdiana",
+        "Gorgaz", "Payshanba shaharchasi", "Motrid", "Trikotajka",
+        "Erkin Savdo", "Lenin Bayroq", "Pavarot", "Kaftarxona",
+        "G'o's shaharchasi", "DSK", "Ravonak", "Oqmachit", "Juma Bozor",
+        "Sattepo", "Taksomotorniy", "Bo'g'izag'on", "Zarmitan", "Sochak",
+        "Xazora", "Al-Buxoriy", "Aziz Bozor", "Saexat", "Temir Bozor",
+        "Raysentr", "Kolxoz Pobeda", "Marxabo", "Gagarina", "Nagorniy",
+        "Limonadka", "Xishrav", "Xujasoat", "Bionur", "Go'zalkent shaharchasi",
+        "Arabxona", "Frunze", "Siyob Bozor", "Avtovokzal", "Ovoshnoy",
+        "Geofizika", "BAM", "Elektroset", "Tabachka", "Kildon shaharchasi",
+        "Sadriddin Ayni", "Yangiqo'rg'on", "Xatirchi", "Chayniy", "Rajab Amin",
+        "Jush", "Moshin Bozor", "Gelyon", "Rudakiy", "Yuksalish", "Jom",
+        "Yangi Bozor", "Kadan", "Panjob", "Ingichka shaharchasi", "Doshkolniy",
+        "Bakaleya", "Ziyovuddin", "Stroy Bazar", "Suzangaron", "Vokzal",
+        "Namozgox", "Shoxizinda", "Andijoni", "Za Liniya", "Shurboicha",
+        "Oktyabrskaya", "Farxod Poselka", "Quyi turkman",
+        "Marjonbuloq shaharchasi", "Galabotir", "Yangi-Ariq", "Qoratepa",
+        "Med Kolledj", "Taxta Bozor", "Payshanba Qishloq",
+        "Yangi Zapchast Bozor", "Obl Gai", "Karasinka", "O'ramas shaharchasi",
+        "Kakandskaya", "Spitamen Shox", "Korasuv", "Aeroport", "Andoq",
+        "Qush Chinor", "Oqsoy", "Beshkapa MFY", "Bahrin MFY", "Chimboyobod",
+        "Mo'minobod", "Qoradaryo shaharchasi", "Po'latdarxon", "Respublika",
+        "Pulimug'ob aholi punkti", "Krytyy Rynok", "Melnichniy", "Yangiariq",
+        "Ikar", "Plemsavxoz", "Gor bolnitsa", "Nurbulok", "Pendjikentskaya",
+        "Obl bolnitsa", "Chumchuqli", "Tankoviy", "Ohalik MFY", "Chorshanba",
+        "Kumushkent shaharchasi", "Pishchevoy", "Samgasi", "Navbogchiyon MFY",
+        "Mo'lyon", "Nayman MFY", "G'azira", "Travmatologiya", "Lo'blaxur",
+        "Krenkelya", "Primkent", "23 fevral", "To'rtayg'ir", "Chortut", "Badal",
+    ]
+
+    # Some Mo'ljals that appear outside Samarkand city (in rural tumans)
+    rural_moljals = {
+        "Urgut tuman": ["Chelak", "Charxin"],
+        "Payariq tuman": ["Loyish", "Mingchinor"],
+        "Jombay tuman": ["Jartepa"],
+        "Bulung'ur tuman": ["Oqtosh"],
+    }
+
+    sort_idx = 10
+    for name in samarkand_moljals:
+        conn.execute(
+            "INSERT OR IGNORE INTO locations (name, type, parent_id, sort_order) VALUES (?, 'moljal', ?, ?)",
+            (name, sam_shahar_id, sort_idx),
+        )
+        sort_idx += 10
+
+    for district_name, moljal_names in rural_moljals.items():
+        d_id = district_ids.get(district_name)
+        if not d_id:
+            continue
+        for name in moljal_names:
+            conn.execute(
+                "INSERT OR IGNORE INTO locations (name, type, parent_id, sort_order) VALUES (?, 'moljal', ?, ?)",
+                (name, d_id, 10),
+            )
+
+    conn.commit()
+    loc_count = conn.execute("SELECT COUNT(*) FROM locations").fetchone()[0]
+    print(f"[database] Seeded {loc_count} location entries (viloyats + districts + mo'ljals)")
 
 
 def _seed_daily_upload_schedule(conn):

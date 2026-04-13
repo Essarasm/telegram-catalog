@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { formatCartPrice } from '../utils/api';
 import { useLongPress } from '../hooks/useLongPress';
+import LocationPicker from '../components/LocationPicker';
 import t from '../i18n/uz.json';
 
 const API_BASE = '/api';
@@ -8,7 +9,7 @@ const API_BASE = '/api';
 /* ───────────────────────────────────────────
    Order Preview — HTML table mirroring the PDF
    ─────────────────────────────────────────── */
-function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDeliveryChange }) {
+function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDeliveryChange, locationData, onLocationChange, telegramId }) {
   const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
   const clientName = tgUser
     ? `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim()
@@ -89,6 +90,16 @@ function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDel
 
       {/* Delivery / Pickup toggle — always visible */}
       <DeliveryToggle value={deliveryType} onChange={onDeliveryChange} />
+
+      {/* Location picker — only when delivery is selected */}
+      {deliveryType === 'delivery' && (
+        <LocationPicker
+          telegramId={telegramId}
+          onLocationChange={onLocationChange}
+          initialDistrictId={locationData?.district_id}
+          initialMoljalId={locationData?.moljal_id}
+        />
+      )}
 
       {/* Action buttons — always visible */}
       <div className="space-y-2">
@@ -278,6 +289,9 @@ export default function CartPage({ cart, onNavigate }) {
   const [previewFormat, setPreviewFormat] = useState(null); // 'pdf' | 'xlsx' | null
   const [deliveryType, setDeliveryType] = useState('delivery'); // 'delivery' | 'pickup'
 
+  // Session M: delivery location state
+  const [locationData, setLocationData] = useState({ district_id: null, moljal_id: null, district_name: null, moljal_name: null });
+
   // Post-order feedback state
   const [justOrdered, setJustOrdered] = useState(false);
   const [lastOrderId, setLastOrderId] = useState(null);
@@ -346,6 +360,8 @@ export default function CartPage({ cart, onNavigate }) {
           client_name: clientName,
           telegram_id: telegramId,
           delivery_type: deliveryType,
+          location_district_id: deliveryType === 'delivery' ? locationData.district_id : null,
+          location_moljal_id: deliveryType === 'delivery' ? locationData.moljal_id : null,
         }),
       });
 
@@ -431,6 +447,9 @@ export default function CartPage({ cart, onNavigate }) {
           onBack={() => setPreviewFormat(null)}
           deliveryType={deliveryType}
           onDeliveryChange={setDeliveryType}
+          locationData={locationData}
+          onLocationChange={setLocationData}
+          telegramId={window.Telegram?.WebApp?.initDataUnsafe?.user?.id}
         />
       </div>
     );
