@@ -24,6 +24,11 @@ from backend.services.import_real_orders import (
 )
 from backend.services.import_client_master import apply_client_master_import
 from backend.services.import_cash import apply_cash_import
+from backend.services.credit_scoring import (
+    get_client_score,
+    run_nightly_scoring,
+    get_scoring_summary,
+)
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
 
@@ -386,3 +391,73 @@ def client_balance_history(
     history = get_client_balance_history(client_ids, limit)
 
     return {"ok": True, "history": history}
+
+
+# ── Session G: Credit Score endpoints ────────────────────────────
+
+@router.get("/credit-score")
+def client_credit_score(telegram_id: int = Query(...)):
+    """Get credit score for a client (used by Personal Cabinet).
+
+    Returns score, tier, volume bucket, credit limit, and 3 hint bullets
+    in Uzbek for the soft-launch UI.
+    """
+    conn = get_db()
+
+    user = conn.execute(
+        "SELECT client_id FROM users WHERE telegram_id = ?",
+        (telegram_id,),
+    ).fetchone()
+
+    if not user or not user["client_id"]:
+        conn.close()
+        return {"ok": True, "has_score": False, "message": "No client record linked"}
+
+    # Resolve all sibling IDs
+    client_ids = get_sibling_client_ids(conn, user["client_id"])
+    conn.close()
+
+    # Try to find a score for any sibling
+    score_data = None
+    for cid in client_ids:
+        score_data = get_client_score(cid)
+        if score_data:
+            break
+
+    if not score_data:
+        return {"ok": True, "has_score": False, "message": "No scoring data yet"}
+
+    # Uzbek hint bullets (spec §6.1)
+    hints = [
+        "To'lovlarni o'z vaqtida amalga oshirish balingizni oshiradi",
+        "Muntazam xaridlar balingizga ijobiy ta'sir qiladi",
+        "Uzoq muddatli hamkorlik yuqori baho beradi",
+    ]
+
+    return {
+        "ok": True,
+        "has_score": True,
+        "score": {
+            "value": score_data["score"],
+            "tier": score_data["tier"],
+            "credit_limit_uzs": score_data["credit_limit_uzs"],
+            "volume_bucket": score_data["volume_bucket"],
+            "monthly_volume_usd": score_data["monthly_volume_usd"],
+            "recalc_date": score_data["recalc_date"],
+            "hints": hints,
+        },
+    }
+
+
+@router.post("/run-scoring")
+def trigger_scoring(admin_key: str = Form("rassvet2026")):
+    """Manually trigger scoring recalculation (admin only)."""
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    return run_nightly_scoring()
+
+
+@router.get("/scoring-summary")
+def scoring_summary():
+    """Get summary statistics from the latest scoring run."""
+    return get_scoring_summary()

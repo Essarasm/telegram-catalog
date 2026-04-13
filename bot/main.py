@@ -4073,6 +4073,204 @@ async def fallback(message: types.Message):
     )
 
 
+# ── Session G: Credit Scoring Commands ─────────────────────────────
+
+@dp.message(Command("clientscore"))
+async def cmd_clientscore(message: types.Message):
+    """Look up credit score for a client. Usage: /clientscore <name_substring>"""
+    if not is_admin(message):
+        return
+
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip():
+        await message.answer(
+            "Использование: /clientscore <имя клиента>\n"
+            "Пример: /clientscore Бахром"
+        )
+        return
+
+    query = args[1].strip()
+    try:
+        from backend.services.credit_scoring import search_client_scores
+        results = search_client_scores(query, limit=5)
+    except Exception as e:
+        logger.error(f"/clientscore error: {e}")
+        await message.answer(f"Ошибка: {e}")
+        return
+
+    if not results:
+        await message.answer(
+            f"Клиент «{html_escape(query)}» не найден в системе скоринга.\n"
+            "Запустите /runscore для пересчёта баллов.",
+            parse_mode="HTML",
+        )
+        return
+
+    for r in results:
+        # Format credit limit
+        limit_str = "Ручной контроль" if r["volume_bucket"] == "Heavy" else f"{r['credit_limit_uzs']:,.0f} сўм"
+
+        text = (
+            f"📊 <b>Кредитный балл: {html_escape(r['client_name'])}</b>\n"
+            f"\n"
+            f"Балл: <b>{r['score']}</b> / 100 — <b>{html_escape(r['tier'])}</b>\n"
+            f"Бакет: {html_escape(r['volume_bucket'])} (${r['monthly_volume_usd']:,.0f}/мес)\n"
+            f"Лимит: {limit_str}\n"
+            f"\n"
+            f"── Факторы ──\n"
+            f"Дисциплина:     {r['discipline_score']:5.1f} / 40  ({r['on_time_rate']*100:.0f}% вовремя)\n"
+            f"Долг:           {r['debt_score']:5.1f} / 25  (коэфф. {r['debt_ratio']:.2f})\n"
+            f"Регулярность:   {r['consistency_score']:5.1f} / 20  (CV = {r['consistency_cv']:.2f})\n"
+            f"Стаж:           {r['tenure_score']:5.1f} / 15  ({r['tenure_months']:.0f} мес.)\n"
+            f"\n"
+            f"Последний пересчёт: {r['recalc_date']} {r['recalc_time']}"
+        )
+        await message.answer(text, parse_mode="HTML")
+
+
+@dp.message(Command("runscore"))
+async def cmd_runscore(message: types.Message):
+    """Manually trigger credit score recalculation for all clients."""
+    if not is_admin(message):
+        return
+
+    status_msg = await message.answer("⏳ Пересчёт кредитных баллов...")
+
+    try:
+        from backend.services.credit_scoring import run_nightly_scoring
+        result = run_nightly_scoring()
+    except Exception as e:
+        logger.error(f"/runscore error: {e}")
+        await status_msg.edit_text(f"❌ Ошибка: {e}")
+        return
+
+    if not result.get("ok"):
+        await status_msg.edit_text(f"❌ Ошибка: {result.get('error', 'unknown')}")
+        return
+
+    tiers = result.get("tiers", {})
+    buckets = result.get("buckets", {})
+
+    tier_lines = "\n".join(f"  {k}: {v}" for k, v in sorted(tiers.items()))
+    bucket_lines = "\n".join(f"  {k}: {v}" for k, v in sorted(buckets.items()))
+
+    text = (
+        f"✅ <b>Скоринг завершён</b>\n"
+        f"\n"
+        f"Клиентов оценено: <b>{result['scored']}</b>\n"
+        f"Курс USD/UZS: {result['fx_rate']:,.0f}\n"
+        f"Дата: {result['date']}\n"
+        f"\n"
+        f"<b>По уровням:</b>\n{tier_lines}\n"
+        f"\n"
+        f"<b>По бакетам:</b>\n{bucket_lines}"
+    )
+    await status_msg.edit_text(text, parse_mode="HTML")
+
+
+@dp.message(Command("payments"))
+async def cmd_payments(message: types.Message):
+    """View recent payments for a client. Usage: /payments <name_substring> [count]"""
+    if not is_admin(message):
+        return
+
+    args = (message.text or "").split(maxsplit=2)
+    if len(args) < 2 or not args[1].strip():
+        await message.answer(
+            "Использование: /payments <имя клиента> [кол-во]\n"
+            "Пример: /payments Бахром 10"
+        )
+        return
+
+    query = args[1].strip()
+    limit = 10
+    if len(args) > 2:
+        try:
+            limit = int(args[2].strip())
+            limit = max(1, min(50, limit))
+        except ValueError:
+            pass
+
+    conn = get_db()
+    try:
+        pattern = f"%{query}%"
+        rows = conn.execute(
+            """SELECT doc_number_1c, doc_date, client_name_1c,
+                      currency, amount_local, amount_currency, corr_account
+               FROM client_payments
+               WHERE client_name_1c LIKE ?
+               ORDER BY doc_date DESC
+               LIMIT ?""",
+            (pattern, limit),
+        ).fetchall()
+
+        if not rows:
+            await message.answer(f"Платежи для «{html_escape(query)}» не найдены.")
+            conn.close()
+            return
+
+        # Count total payments
+        total = conn.execute(
+            "SELECT COUNT(*) as c FROM client_payments WHERE client_name_1c LIKE ?",
+            (pattern,),
+        ).fetchone()["c"]
+
+        lines = [f"💰 <b>Платежи: {html_escape(rows[0]['client_name_1c'] or query)}</b>"]
+        lines.append(f"Всего: {total} | Показано: {len(rows)}\n")
+
+        for r in rows:
+            if r["currency"] == "USD":
+                amt = f"${r['amount_currency']:,.2f}"
+            else:
+                amt = f"{r['amount_local']:,.0f} UZS"
+            lines.append(f"  {r['doc_date']}  {amt}  №{r['doc_number_1c']}")
+
+        await message.answer("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/payments error: {e}")
+        await message.answer(f"Ошибка: {e}")
+    finally:
+        conn.close()
+
+
+@dp.message(Command("scorestats"))
+async def cmd_scorestats(message: types.Message):
+    """Show summary statistics from the latest scoring run."""
+    if not is_admin(message):
+        return
+
+    try:
+        from backend.services.credit_scoring import get_scoring_summary
+        summary = get_scoring_summary()
+    except Exception as e:
+        logger.error(f"/scorestats error: {e}")
+        await message.answer(f"Ошибка: {e}")
+        return
+
+    if not summary.get("ok"):
+        await message.answer("Данных скоринга ещё нет. Запустите /runscore.")
+        return
+
+    tiers = summary.get("tiers", {})
+    buckets = summary.get("buckets", {})
+
+    tier_lines = "\n".join(f"  {k}: {v}" for k, v in sorted(tiers.items()))
+    bucket_lines = "\n".join(f"  {k}: {v}" for k, v in sorted(buckets.items()))
+
+    text = (
+        f"📊 <b>Статистика скоринга</b>\n"
+        f"\n"
+        f"Дата пересчёта: {summary['date']}\n"
+        f"Всего клиентов: <b>{summary['total_clients']}</b>\n"
+        f"Средний балл: <b>{summary['avg_score']}</b>\n"
+        f"\n"
+        f"<b>По уровням:</b>\n{tier_lines}\n"
+        f"\n"
+        f"<b>По бакетам:</b>\n{bucket_lines}"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
 async def main():
     logger.info("Bot started in polling mode...")
     try:

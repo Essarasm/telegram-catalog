@@ -401,6 +401,40 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_payments_currency ON client_payments(currency);
 
         -- ─────────────────────────────────────────────────────────────
+        -- Session G: Credit scoring engine
+        -- ─────────────────────────────────────────────────────────────
+
+        -- Nightly scoring snapshots — one row per client per recalc date.
+        CREATE TABLE IF NOT EXISTS client_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            client_name TEXT NOT NULL,
+            score INTEGER NOT NULL DEFAULT 0,
+            tier TEXT NOT NULL DEFAULT 'Yangi',
+            volume_bucket TEXT NOT NULL DEFAULT 'Micro',
+            monthly_volume_usd REAL DEFAULT 0,
+            credit_limit_uzs REAL DEFAULT 0,
+            -- per-factor scores
+            discipline_score REAL DEFAULT 0,
+            debt_score REAL DEFAULT 0,
+            consistency_score REAL DEFAULT 0,
+            tenure_score REAL DEFAULT 0,
+            -- underlying metrics (for /clientscore display)
+            on_time_rate REAL DEFAULT 0,
+            debt_ratio REAL DEFAULT 0,
+            consistency_cv REAL DEFAULT 0,
+            tenure_months REAL DEFAULT 0,
+            -- metadata
+            recalc_date TEXT NOT NULL,
+            recalc_time TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(client_id, recalc_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_scores_client_id ON client_scores(client_id);
+        CREATE INDEX IF NOT EXISTS idx_client_scores_recalc_date ON client_scores(recalc_date);
+        CREATE INDEX IF NOT EXISTS idx_client_scores_score ON client_scores(score);
+
+        -- ─────────────────────────────────────────────────────────────
         -- Session F follow-up: Supply & Returns ingestion pipeline
         -- ─────────────────────────────────────────────────────────────
 
