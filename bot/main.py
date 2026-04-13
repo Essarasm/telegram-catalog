@@ -2894,7 +2894,7 @@ async def cmd_supply(message: types.Message):
             async with sess.get(file_url) as resp:
                 file_bytes = await resp.read()
 
-        api_url = f"{API_BASE_URL}/api/finance/import-supply"
+        api_url = f"{_BASE_URL}/api/finance/import-supply"
         form = aiohttp.FormData()
         form.add_field("file", file_bytes, filename=fname)
         form.add_field("admin_key", "rassvet2026")
