@@ -4130,12 +4130,20 @@ async def cmd_runscore(message: types.Message):
     tier_lines = "\n".join(f"  {k}: {v}" for k, v in sorted(tiers.items()))
     bucket_lines = "\n".join(f"  {k}: {v}" for k, v in sorted(buckets.items()))
 
+    # Relink info (payments/debts fixed before scoring)
+    pay_fix = result.get("payments_relinked", 0)
+    debt_fix = result.get("debts_relinked", 0)
+    relink_line = ""
+    if pay_fix or debt_fix:
+        relink_line = f"\n🔗 Привязано: платежей {pay_fix}, долгов {debt_fix}\n"
+
     text = (
         f"✅ <b>Скоринг завершён</b>\n"
         f"\n"
         f"Клиентов оценено: <b>{result['scored']}</b>\n"
         f"Курс USD/UZS: {result['fx_rate']:,.0f}\n"
         f"Дата: {result['date']}\n"
+        f"{relink_line}"
         f"\n"
         f"<b>По уровням:</b>\n{tier_lines}\n"
         f"\n"

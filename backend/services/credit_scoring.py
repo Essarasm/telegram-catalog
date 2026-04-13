@@ -22,9 +22,22 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
+import re
+
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
+
+
+# ── Cyrillic-aware normalization (SQLite LOWER is ASCII-only) ────
+
+def _py_normalize(name: Optional[str]) -> str:
+    """Python-side normalization for Cyrillic-aware comparison."""
+    if not name:
+        return ""
+    s = str(name).strip().lower().replace("ё", "е")
+    s = re.sub(r"\s+", " ", s)
+    return s
 
 # ── Tuneable constants (from spec §12) ───────────────────────────
 
@@ -560,6 +573,182 @@ def score_single_client(
     }
 
 
+# ── Relink: fix NULL client_id caused by SQLite ASCII-only LOWER ──
+
+def _build_allowed_indexes(conn) -> tuple:
+    """Build in-memory indexes for Cyrillic-aware client matching.
+
+    Returns (id_1c_index, name_index) where:
+      id_1c_index: raw client_id_1c string → allowed_clients.id
+      name_index:  py-normalized name → allowed_clients.id
+    """
+    allowed = conn.execute(
+        "SELECT id, name, client_id_1c FROM allowed_clients "
+        "WHERE COALESCE(status, 'active') != 'merged' ORDER BY id"
+    ).fetchall()
+
+    id_1c_index: Dict[str, int] = {}
+    name_index: Dict[str, int] = {}
+    for a in allowed:
+        if a["client_id_1c"]:
+            id_1c_index.setdefault(str(a["client_id_1c"]), a["id"])
+        if a["name"]:
+            norm = _py_normalize(a["name"])
+            if norm and norm not in name_index:
+                name_index[norm] = a["id"]
+    return id_1c_index, name_index
+
+
+def relink_client_payments() -> dict:
+    """Re-match client_id for client_payments rows where client_id IS NULL.
+
+    Same approach as relink_real_orders() — Python-side Cyrillic-aware
+    normalization that SQLite's ASCII-only LOWER() can't handle.
+    """
+    conn = get_db()
+    try:
+        id_1c_index, name_index = _build_allowed_indexes(conn)
+
+        unmatched = conn.execute(
+            "SELECT id, client_name_1c FROM client_payments WHERE client_id IS NULL"
+        ).fetchall()
+
+        cache: Dict[str, Optional[int]] = {}
+        relinked = 0
+        still_unmatched = 0
+
+        for row in unmatched:
+            raw = row["client_name_1c"] or ""
+            if not raw.strip():
+                still_unmatched += 1
+                continue
+
+            if raw not in cache:
+                resolved = None
+                if raw in id_1c_index:
+                    resolved = id_1c_index[raw]
+                else:
+                    norm = _py_normalize(raw)
+                    if norm and norm in name_index:
+                        resolved = name_index[norm]
+                cache[raw] = resolved
+
+            resolved = cache[raw]
+            if resolved is None:
+                still_unmatched += 1
+                continue
+
+            conn.execute(
+                "UPDATE client_payments SET client_id = ? WHERE id = ?",
+                (resolved, row["id"]),
+            )
+            relinked += 1
+
+        conn.commit()
+
+        total = conn.execute("SELECT COUNT(*) FROM client_payments").fetchone()[0]
+        matched = conn.execute(
+            "SELECT COUNT(*) FROM client_payments WHERE client_id IS NOT NULL"
+        ).fetchone()[0]
+        conn.close()
+
+        logger.info(
+            "relink_client_payments: relinked=%d, still_unmatched=%d, total=%d, matched=%d",
+            relinked, still_unmatched, total, matched,
+        )
+        return {
+            "ok": True,
+            "scanned": len(unmatched),
+            "relinked": relinked,
+            "still_unmatched": still_unmatched,
+            "total": total,
+            "matched": matched,
+            "match_pct": round(matched / total * 100, 1) if total else 0,
+        }
+    except Exception as e:
+        logger.exception("relink_client_payments failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def relink_client_debts() -> dict:
+    """Re-match client_id for client_debts rows where client_id IS NULL."""
+    conn = get_db()
+    try:
+        id_1c_index, name_index = _build_allowed_indexes(conn)
+
+        unmatched = conn.execute(
+            "SELECT id, client_name_1c FROM client_debts WHERE client_id IS NULL"
+        ).fetchall()
+
+        cache: Dict[str, Optional[int]] = {}
+        relinked = 0
+        still_unmatched = 0
+
+        for row in unmatched:
+            raw = row["client_name_1c"] or ""
+            if not raw.strip():
+                still_unmatched += 1
+                continue
+
+            if raw not in cache:
+                resolved = None
+                if raw in id_1c_index:
+                    resolved = id_1c_index[raw]
+                else:
+                    norm = _py_normalize(raw)
+                    if norm and norm in name_index:
+                        resolved = name_index[norm]
+                cache[raw] = resolved
+
+            resolved = cache[raw]
+            if resolved is None:
+                still_unmatched += 1
+                continue
+
+            conn.execute(
+                "UPDATE client_debts SET client_id = ? WHERE id = ?",
+                (resolved, row["id"]),
+            )
+            relinked += 1
+
+        conn.commit()
+
+        total = conn.execute("SELECT COUNT(*) FROM client_debts").fetchone()[0]
+        matched = conn.execute(
+            "SELECT COUNT(*) FROM client_debts WHERE client_id IS NOT NULL"
+        ).fetchone()[0]
+        conn.close()
+
+        logger.info(
+            "relink_client_debts: relinked=%d, still_unmatched=%d, total=%d, matched=%d",
+            relinked, still_unmatched, total, matched,
+        )
+        return {
+            "ok": True,
+            "scanned": len(unmatched),
+            "relinked": relinked,
+            "still_unmatched": still_unmatched,
+            "total": total,
+            "matched": matched,
+            "match_pct": round(matched / total * 100, 1) if total else 0,
+        }
+    except Exception as e:
+        logger.exception("relink_client_debts failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 # ── Batch scoring (nightly run) ──────────────────────────────────
 
 def run_nightly_scoring() -> dict:
@@ -567,6 +756,18 @@ def run_nightly_scoring() -> dict:
 
     Returns summary stats.
     """
+    # ── Pre-scoring: fix NULL client_id values caused by SQLite LOWER ──
+    # client_payments and client_debts use _try_match_client() which relies
+    # on SQLite LOWER() — ASCII-only, doesn't fold Cyrillic. This relink
+    # pass uses Python str.lower() to match names the original import missed.
+    logger.info("Pre-scoring: relinking client_payments...")
+    pay_relink = relink_client_payments()
+    logger.info("Payment relink: %s", pay_relink)
+
+    logger.info("Pre-scoring: relinking client_debts...")
+    debt_relink = relink_client_debts()
+    logger.info("Debt relink: %s", debt_relink)
+
     conn = get_db()
     try:
         today_str = date.today().strftime("%Y-%m-%d")
@@ -653,6 +854,8 @@ def run_nightly_scoring() -> dict:
             "fx_rate": default_fx,
             "tiers": dict(tier_counts),
             "buckets": dict(bucket_counts),
+            "payments_relinked": pay_relink.get("relinked", 0),
+            "debts_relinked": debt_relink.get("relinked", 0),
         }
         logger.info("Nightly scoring complete: %s", summary)
         return summary
