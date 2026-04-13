@@ -115,10 +115,8 @@ export default function App() {
 
   const navigateTo = (p, data) => {
     try {
-      // Save current scroll position before leaving (skip for product_detail overlay)
-      if (p !== 'product_detail') {
-        scrollPositions.current[page] = window.scrollY;
-      }
+      // Save current scroll position before leaving
+      scrollPositions.current[page] = window.scrollY;
       if (p === 'producers' && data) {
         setSelectedCategory(data);
         setSelectedProducer(null);
