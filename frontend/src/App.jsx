@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import { useCart } from './hooks/useCart';
 import CatalogPage from './pages/CatalogPage';
 import ProducersPage from './pages/ProducersPage';
@@ -160,17 +160,15 @@ export default function App() {
   // Keep ref in sync
   goBackRef.current = goBack;
 
-  // Restore saved scroll position after page transition renders
-  useEffect(() => {
+  // Restore saved scroll position after page transition renders.
+  // useLayoutEffect fires synchronously after DOM commit but BEFORE browser
+  // paint, so the user never sees the page at the wrong scroll position.
+  useLayoutEffect(() => {
     // product_detail is an overlay — don't touch scroll
     if (page === 'product_detail') return;
     const saved = scrollPositions.current[page];
     if (saved != null) {
-      // Double-rAF: first frame lets React commit, second lets browser layout.
-      // This ensures cached data is painted before we restore scroll.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => window.scrollTo(0, saved));
-      });
+      window.scrollTo(0, saved);
     } else {
       window.scrollTo(0, 0);
     }
