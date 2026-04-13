@@ -226,14 +226,45 @@ def _compute_discipline(shipments: List[dict], payments: List[dict],
                         default_fx: float) -> Tuple[float, float]:
     """FIFO-allocate payments against shipments and compute on-time rate.
 
+    Only evaluates shipments within the payment data window: from the
+    earliest payment date minus DEFAULT_CREDIT_TERM_DAYS (to capture
+    shipments that those payments could cover) through the latest payment
+    date. Shipments outside this window are excluded from discipline
+    scoring because we simply don't have payment data for them.
+
     Returns (discipline_score [0-40], on_time_rate [0-1]).
     """
-    if not shipments:
-        return 0.0, 0.0
+    if not shipments or not payments:
+        # No payments at all → can't evaluate discipline; give neutral score
+        return 20.0, -1.0  # -1 signals "no data" to caller
 
-    # Convert shipments to USD amounts with dates
+    # Determine the payment data window
+    pay_dates = []
+    for p in payments:
+        try:
+            dt = datetime.strptime(p["doc_date"], "%Y-%m-%d").date()
+            pay_dates.append(dt)
+        except (ValueError, TypeError):
+            continue
+
+    if not pay_dates:
+        return 20.0, -1.0
+
+    earliest_pay = min(pay_dates)
+    latest_pay = max(pay_dates)
+    # Include shipments from (earliest_pay - credit_term) to cover debts
+    # that those payments were meant to settle
+    window_start = earliest_pay - timedelta(days=DEFAULT_CREDIT_TERM_DAYS + SCORING_LAG_BUFFER_DAYS)
+    window_start_str = window_start.strftime("%Y-%m-%d")
+    window_end_str = latest_pay.strftime("%Y-%m-%d")
+
+    # Convert shipments to USD amounts with dates (only in window)
     ship_queue = []
     for s in shipments:
+        if not s["doc_date"]:
+            continue
+        if s["doc_date"] < window_start_str or s["doc_date"] > window_end_str:
+            continue  # outside payment data window
         usd = _amount_to_usd(
             s["total_sum"], s["total_sum_currency"],
             s["currency"], s.get("exchange_rate") or default_fx,
@@ -248,7 +279,7 @@ def _compute_discipline(shipments: List[dict], payments: List[dict],
         })
 
     if not ship_queue:
-        return 0.0, 0.0
+        return 20.0, -1.0  # no shipments in payment window
 
     # Sort payments by date for FIFO allocation
     pay_list = []
