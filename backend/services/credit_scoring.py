@@ -952,7 +952,7 @@ def search_client_scores(query: str, limit: int = 10) -> List[dict]:
 
 
 def debug_client_scores(limit: int = 10) -> dict:
-    """Return sample client_scores rows for debugging."""
+    """Return sample client_scores rows + payment/debt match diagnostics."""
     conn = get_db()
     try:
         latest = conn.execute(
@@ -969,13 +969,52 @@ def debug_client_scores(limit: int = 10) -> dict:
         # Sample top-scored clients
         rows = conn.execute(
             """SELECT client_id, client_name, score, volume_bucket,
-                      monthly_volume_usd
+                      monthly_volume_usd, discipline_score, consistency_score,
+                      on_time_rate, consistency_cv
                FROM client_scores
                WHERE recalc_date = ?
                ORDER BY monthly_volume_usd DESC
                LIMIT ?""",
             (latest["d"], limit),
         ).fetchall()
+
+        # ── Payment match diagnostics ──
+        pay_total = conn.execute("SELECT COUNT(*) as c FROM client_payments").fetchone()["c"]
+        pay_matched = conn.execute(
+            "SELECT COUNT(*) as c FROM client_payments WHERE client_id IS NOT NULL"
+        ).fetchone()["c"]
+
+        # Sample unmatched payment names
+        unmatched_pay = conn.execute(
+            """SELECT client_name_1c, COUNT(*) as cnt
+               FROM client_payments WHERE client_id IS NULL AND client_name_1c IS NOT NULL
+               GROUP BY client_name_1c ORDER BY cnt DESC LIMIT 10"""
+        ).fetchall()
+
+        # Check payments for top client (client_id from first row)
+        top_client_payments = []
+        if rows:
+            top_cid = rows[0]["client_id"]
+            top_pays = conn.execute(
+                """SELECT doc_date, client_name_1c, client_id, currency,
+                          amount_local, amount_currency
+                   FROM client_payments WHERE client_id = ?
+                   ORDER BY doc_date DESC LIMIT 5""",
+                (top_cid,),
+            ).fetchall()
+            top_client_payments = [dict(r) for r in top_pays]
+
+        # Debt match diagnostics
+        debt_total = conn.execute("SELECT COUNT(*) as c FROM client_debts").fetchone()["c"]
+        debt_matched = conn.execute(
+            "SELECT COUNT(*) as c FROM client_debts WHERE client_id IS NOT NULL"
+        ).fetchone()["c"]
+
+        # Shipment match diagnostics
+        ship_total = conn.execute("SELECT COUNT(*) as c FROM real_orders").fetchone()["c"]
+        ship_matched = conn.execute(
+            "SELECT COUNT(*) as c FROM real_orders WHERE client_id IS NOT NULL"
+        ).fetchone()["c"]
 
         return {
             "date": latest["d"],
@@ -987,9 +1026,26 @@ def debug_client_scores(limit: int = 10) -> dict:
                     "score": r["score"],
                     "bucket": r["volume_bucket"],
                     "monthly_usd": round(r["monthly_volume_usd"], 0),
+                    "discipline": r["discipline_score"],
+                    "consistency": r["consistency_score"],
+                    "on_time_rate": r["on_time_rate"],
+                    "cv": r["consistency_cv"],
                 }
                 for r in rows
             ],
+            "data_match_rates": {
+                "payments": {"total": pay_total, "matched": pay_matched,
+                             "pct": round(pay_matched / pay_total * 100, 1) if pay_total else 0},
+                "debts": {"total": debt_total, "matched": debt_matched,
+                          "pct": round(debt_matched / debt_total * 100, 1) if debt_total else 0},
+                "shipments": {"total": ship_total, "matched": ship_matched,
+                              "pct": round(ship_matched / ship_total * 100, 1) if ship_total else 0},
+            },
+            "top_unmatched_payment_names": [
+                {"name": r["client_name_1c"], "count": r["cnt"]}
+                for r in unmatched_pay
+            ],
+            "top_client_payments": top_client_payments,
         }
     finally:
         conn.close()

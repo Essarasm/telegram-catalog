@@ -468,3 +468,65 @@ def scoring_summary():
 def scoring_debug(limit: int = 10):
     """Debug: show sample client_scores rows (top by volume)."""
     return debug_client_scores(limit)
+
+
+@router.get("/payments-debug")
+def payments_debug(client_id: int = 0):
+    """Debug: inspect client_payments match rates and sample data."""
+    conn = get_db()
+    try:
+        total = conn.execute("SELECT COUNT(*) as c FROM client_payments").fetchone()["c"]
+        matched = conn.execute("SELECT COUNT(*) as c FROM client_payments WHERE client_id IS NOT NULL").fetchone()["c"]
+        null_id = total - matched
+
+        # Sample unmatched names
+        unmatched_names = conn.execute(
+            """SELECT client_name_1c, COUNT(*) as cnt
+               FROM client_payments WHERE client_id IS NULL
+               GROUP BY client_name_1c ORDER BY cnt DESC LIMIT 15"""
+        ).fetchall()
+
+        # If specific client_id given, show their payments
+        client_payments = []
+        if client_id:
+            rows = conn.execute(
+                """SELECT id, doc_date, client_name_1c, client_id, currency,
+                          amount_local, amount_currency, fx_rate
+                   FROM client_payments
+                   WHERE client_id = ?
+                   ORDER BY doc_date DESC LIMIT 10""",
+                (client_id,),
+            ).fetchall()
+            client_payments = [dict(r) for r in rows]
+
+        # Also check: how many payments exist for a known name substring
+        # (e.g., for client 694 = Зиедилло, what names appear?)
+        ziedillo_payments = conn.execute(
+            """SELECT id, doc_date, client_name_1c, client_id, currency,
+                      amount_local, amount_currency
+               FROM client_payments
+               WHERE client_name_1c LIKE '%Зиедилло%' OR client_name_1c LIKE '%Ziedillo%'
+               ORDER BY doc_date DESC LIMIT 5"""
+        ).fetchall()
+
+        # Check allowed_clients name for client 694
+        ac_694 = conn.execute(
+            "SELECT id, name, client_id_1c FROM allowed_clients WHERE id = 694"
+        ).fetchone()
+
+        conn.close()
+        return {
+            "total_payments": total,
+            "matched_payments": matched,
+            "unmatched_payments": null_id,
+            "match_pct": round(matched / total * 100, 1) if total else 0,
+            "top_unmatched_names": [
+                {"name": r["client_name_1c"], "count": r["cnt"]}
+                for r in unmatched_names
+            ],
+            "client_694_payments": client_payments if client_id == 694 else [],
+            "ziedillo_name_search": [dict(r) for r in ziedillo_payments],
+            "allowed_client_694": dict(ac_694) if ac_694 else None,
+        }
+    finally:
+        conn.close()
