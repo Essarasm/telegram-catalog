@@ -1,27 +1,16 @@
 import { useState, useEffect } from 'react';
-import t from '../i18n/uz.json';
 
 const API_BASE = '/api';
 
 /**
- * LocationPicker — cascading dropdown for delivery address.
- * Viloyat → District → Mo'ljal
- *
- * Props:
- *   telegramId: number — to load/save the client's saved location
- *   onLocationChange: ({ district_id, moljal_id, district_name, moljal_name }) => void
- *   initialDistrictId: number | null
- *   initialMoljalId: number | null
+ * LocationPicker — simplified dropdown for delivery address.
+ * Shows Samarkand districts + "Boshqa" option. No mo'ljal level.
  */
-export default function LocationPicker({ telegramId, onLocationChange, initialDistrictId, initialMoljalId }) {
+export default function LocationPicker({ telegramId, onLocationChange, initialDistrictId }) {
   const [tree, setTree] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  // Selection state
-  const [selectedViloyat, setSelectedViloyat] = useState(null);
   const [selectedDistrict, setSelectedDistrict] = useState(initialDistrictId || null);
-  const [selectedMoljal, setSelectedMoljal] = useState(initialMoljalId || null);
+  const [isOther, setIsOther] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // Load location tree on mount
@@ -31,66 +20,43 @@ export default function LocationPicker({ telegramId, onLocationChange, initialDi
       .then(data => {
         setTree(data.viloyats || []);
         setLoading(false);
-
-        // If initial values provided, set the viloyat from the district's parent
-        if (initialDistrictId && data.viloyats) {
-          for (const v of data.viloyats) {
-            const d = v.districts?.find(d => d.id === initialDistrictId);
-            if (d) {
-              setSelectedViloyat(v.id);
-              break;
-            }
-          }
-        }
       })
-      .catch(err => {
-        console.error('Failed to load locations:', err);
-        setError('Joylashuvlar yuklanmadi');
-        setLoading(false);
-      });
-  }, [initialDistrictId]);
+      .catch(() => setLoading(false));
+  }, []);
 
   // Load client's saved location on mount
   useEffect(() => {
     if (!telegramId || initialDistrictId) return;
-
     fetch(`${API_BASE}/client-location?telegram_id=${telegramId}`)
       .then(r => r.json())
       .then(data => {
-        if (data.has_location) {
-          setSelectedDistrict(data.district_id);
-          setSelectedMoljal(data.moljal_id);
-          if (data.viloyat_id) setSelectedViloyat(data.viloyat_id);
+        if (data.manual?.district_id) {
+          setSelectedDistrict(data.manual.district_id);
           onLocationChange?.({
-            district_id: data.district_id,
-            moljal_id: data.moljal_id,
-            district_name: data.district_name,
-            moljal_name: data.moljal_name,
+            district_id: data.manual.district_id,
+            moljal_id: null,
+            district_name: data.manual.district_name,
+            moljal_name: null,
           });
         }
       })
       .catch(() => {});
   }, [telegramId]);
 
-  // Derived: districts and moljals from tree
-  const viloyats = tree || [];
-  const selectedViloyatObj = viloyats.find(v => v.id === selectedViloyat);
-  const districts = selectedViloyatObj?.districts || [];
-  const selectedDistrictObj = districts.find(d => d.id === selectedDistrict);
-  const moljals = selectedDistrictObj?.moljals || [];
+  // Find Samarkand viloyat and its districts
+  const samarkandViloyat = tree?.find(v => v.name?.toLowerCase().includes('samarqand'));
+  const districts = samarkandViloyat?.districts || [];
 
-  const handleViloyatChange = (vid) => {
-    const id = vid ? parseInt(vid) : null;
-    setSelectedViloyat(id);
-    setSelectedDistrict(null);
-    setSelectedMoljal(null);
-    onLocationChange?.({ district_id: null, moljal_id: null });
-  };
-
-  const handleDistrictChange = (did) => {
-    const id = did ? parseInt(did) : null;
+  const handleChange = (val) => {
+    if (val === 'other') {
+      setIsOther(true);
+      setSelectedDistrict(null);
+      onLocationChange?.({ district_id: null, moljal_id: null, district_name: 'Boshqa hudud', moljal_name: null });
+      return;
+    }
+    setIsOther(false);
+    const id = val ? parseInt(val) : null;
     setSelectedDistrict(id);
-    setSelectedMoljal(null);
     const dObj = districts.find(d => d.id === id);
     onLocationChange?.({
       district_id: id,
@@ -100,123 +66,54 @@ export default function LocationPicker({ telegramId, onLocationChange, initialDi
     });
   };
 
-  const handleMoljalChange = (mid) => {
-    const id = mid ? parseInt(mid) : null;
-    setSelectedMoljal(id);
-    const mObj = moljals.find(m => m.id === id);
-    const dObj = districts.find(d => d.id === selectedDistrict);
-    onLocationChange?.({
-      district_id: selectedDistrict,
-      moljal_id: id,
-      district_name: dObj?.name || null,
-      moljal_name: mObj?.name || null,
-    });
-  };
-
-  const handleSaveLocation = async () => {
+  const handleSave = async () => {
     if (!telegramId || !selectedDistrict) return;
     setSaving(true);
     try {
       await fetch(`${API_BASE}/client-location`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          telegram_id: telegramId,
-          district_id: selectedDistrict,
-          moljal_id: selectedMoljal,
-        }),
+        body: JSON.stringify({ telegram_id: telegramId, district_id: selectedDistrict }),
       });
-    } catch (err) {
-      console.error('Failed to save location:', err);
-    }
+    } catch {}
     setSaving(false);
   };
 
   if (loading) {
-    return (
-      <div className="text-center text-xs text-tg-hint py-2">
-        Joylashuvlar yuklanmoqda...
-      </div>
-    );
+    return <div className="text-center text-xs text-tg-hint py-2">Yuklanmoqda...</div>;
   }
 
-  if (error) {
-    return (
-      <div className="text-center text-xs text-red-400 py-2">{error}</div>
-    );
-  }
-
-  const selectClass = "w-full rounded-lg px-3 py-2.5 text-sm border-0 outline-none appearance-none";
   const selectStyle = {
     backgroundColor: 'var(--tg-theme-secondary-bg-color)',
     color: 'var(--tg-theme-text-color)',
   };
 
   return (
-    <div className="space-y-2 mb-3">
-      <div className="text-xs text-tg-hint font-medium mb-1">
-        📍 Yetkazish manzili
-      </div>
+    <div className="mb-3">
+      <div className="text-xs text-tg-hint font-medium mb-1.5">📍 Tuman/shaharni tanlang</div>
+      <select
+        value={isOther ? 'other' : (selectedDistrict || '')}
+        onChange={(e) => handleChange(e.target.value)}
+        className="w-full rounded-lg px-3 py-2.5 text-sm border-0 outline-none appearance-none"
+        style={selectStyle}
+      >
+        <option value="">Tanlang...</option>
+        {districts.map(d => (
+          <option key={d.id} value={d.id}>{d.name}</option>
+        ))}
+        <option value="other">Boshqa hudud</option>
+      </select>
 
-      {/* Viloyat — pre-select Samarkand if only one is relevant */}
-      {viloyats.length > 1 && (
-        <select
-          value={selectedViloyat || ''}
-          onChange={(e) => handleViloyatChange(e.target.value)}
-          className={selectClass}
-          style={selectStyle}
-        >
-          <option value="">Viloyatni tanlang</option>
-          {viloyats.map(v => (
-            <option key={v.id} value={v.id}>{v.name}</option>
-          ))}
-        </select>
-      )}
-
-      {/* District */}
-      {(selectedViloyat || viloyats.length === 1) && (
-        <select
-          value={selectedDistrict || ''}
-          onChange={(e) => handleDistrictChange(e.target.value)}
-          className={selectClass}
-          style={selectStyle}
-        >
-          <option value="">Tuman/shaharni tanlang</option>
-          {(viloyats.length === 1 ? viloyats[0].districts : districts).map(d => (
-            <option key={d.id} value={d.id}>{d.name}</option>
-          ))}
-        </select>
-      )}
-
-      {/* Mo'ljal */}
-      {selectedDistrict && moljals.length > 0 && (
-        <select
-          value={selectedMoljal || ''}
-          onChange={(e) => handleMoljalChange(e.target.value)}
-          className={selectClass}
-          style={selectStyle}
-        >
-          <option value="">Mo'ljalni tanlang (ixtiyoriy)</option>
-          {moljals.map(m => (
-            <option key={m.id} value={m.id}>{m.name}</option>
-          ))}
-        </select>
-      )}
-
-      {/* Summary + save */}
-      {selectedDistrict && (
-        <div className="flex items-center justify-between">
+      {(selectedDistrict || isOther) && (
+        <div className="flex items-center justify-between mt-1.5">
           <div className="text-xs text-green-500 font-medium">
-            {selectedDistrictObj?.name}
-            {selectedMoljal && moljals.find(m => m.id === selectedMoljal)
-              ? ` → ${moljals.find(m => m.id === selectedMoljal).name}`
-              : ''}
+            {isOther ? 'Boshqa hudud' : districts.find(d => d.id === selectedDistrict)?.name}
           </div>
-          {telegramId && (
+          {telegramId && selectedDistrict && (
             <button
-              onClick={handleSaveLocation}
+              onClick={handleSave}
               disabled={saving}
-              className="text-xs px-3 py-1 rounded-full bg-tg-button text-tg-button-text disabled:opacity-50"
+              className="text-[10px] px-3 py-1 rounded-full bg-tg-button text-tg-button-text disabled:opacity-50"
             >
               {saving ? '...' : 'Saqlash'}
             </button>

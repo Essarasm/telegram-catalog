@@ -133,11 +133,23 @@ def _save_order_to_db(req: ExportRequest, order_items, client_label):
         # Validate delivery_type
         delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
 
+        # Fetch GPS coordinates from user profile (if available)
+        user_lat, user_lng, user_addr = None, None, None
+        if req.telegram_id:
+            geo_row = conn.execute(
+                "SELECT latitude, longitude, location_address FROM users WHERE telegram_id = ?",
+                (req.telegram_id,),
+            ).fetchone()
+            if geo_row and geo_row["latitude"] and geo_row["longitude"]:
+                user_lat = geo_row["latitude"]
+                user_lng = geo_row["longitude"]
+                user_addr = geo_row["location_address"] or ""
+
         cursor = conn.execute(
-            """INSERT INTO orders (telegram_id, client_name, client_phone, total_usd, total_uzs, item_count, status, delivery_type, location_district_id, location_moljal_id)
-               VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?)""",
+            """INSERT INTO orders (telegram_id, client_name, client_phone, total_usd, total_uzs, item_count, status, delivery_type, location_district_id, location_moljal_id, latitude, longitude, location_address)
+               VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?, ?)""",
             (req.telegram_id or 0, client_label, client_phone, usd_total, uzs_total, len(order_items), delivery_type,
-             req.location_district_id, req.location_moljal_id),
+             req.location_district_id, req.location_moljal_id, user_lat, user_lng, user_addr),
         )
         order_id = cursor.lastrowid
 
@@ -220,12 +232,35 @@ def export_order(req: ExportRequest):
         except Exception:
             pass
 
+    # GPS address as fallback/addition to location_text
+    maps_link = ""
+    user_lat = user_lng = user_addr = None
+    if req.telegram_id:
+        try:
+            conn = get_db()
+            geo_row = conn.execute(
+                "SELECT latitude, longitude, location_address FROM users WHERE telegram_id = ?",
+                (req.telegram_id,),
+            ).fetchone()
+            conn.close()
+            if geo_row and geo_row["latitude"] and geo_row["longitude"]:
+                user_lat = geo_row["latitude"]
+                user_lng = geo_row["longitude"]
+                user_addr = geo_row["location_address"] or ""
+        except Exception:
+            pass
+
+    if user_lat and user_lng:
+        if not location_text and user_addr:
+            location_text = user_addr
+        maps_link = f"https://maps.google.com/?q={user_lat},{user_lng}"
+
     # Send Excel to sales group (always, regardless of user format choice)
     import logging
     logger = logging.getLogger(__name__)
     try:
         delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
-        group_ok = send_order_to_group(order_items, excel_data, client_label, delivery_type=delivery_type, client_name_1c=client_name_1c, location_text=location_text)
+        group_ok = send_order_to_group(order_items, excel_data, client_label, delivery_type=delivery_type, client_name_1c=client_name_1c, location_text=location_text, maps_link=maps_link)
         if not group_ok:
             logger.error("send_order_to_group returned False")
     except Exception as e:
@@ -251,6 +286,8 @@ def export_order(req: ExportRequest):
         caption_lines.append("\U0001f69b Yetkazib berish")
         if location_text:
             caption_lines.append(f"\U0001f4cd Manzil: {location_text}")
+        if maps_link:
+            caption_lines.append(f"\U0001f5fa <a href=\"{maps_link}\">Xaritada ko'rish</a>")
     caption_lines.append("")
     if usd_total > 0:
         caption_lines.append(f"\U0001f4b5 Jami (USD): <b>${usd_total:,.2f}</b>")

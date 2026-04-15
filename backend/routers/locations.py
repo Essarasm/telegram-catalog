@@ -38,6 +38,15 @@ class ClientLocationSave(BaseModel):
     moljal_id: Optional[int] = None
 
 
+class GpsLocationSave(BaseModel):
+    telegram_id: int
+    latitude: float
+    longitude: float
+    address: str = ""
+    region: str = ""
+    district: str = ""
+
+
 # ── Read endpoints ──────────────────────────────────────────
 
 @router.get("/tree")
@@ -182,55 +191,80 @@ client_router = APIRouter(prefix="/api/client-location", tags=["client-location"
 
 @client_router.get("")
 def get_client_location(telegram_id: int = Query(...)):
-    """Get a client's saved delivery location."""
+    """Get a client's saved delivery location (GPS + manual)."""
     conn = get_db()
 
-    # Find client_id from telegram_id
     user = conn.execute(
-        "SELECT client_id FROM users WHERE telegram_id = ?", (telegram_id,)
+        "SELECT client_id, latitude, longitude, location_address, location_region, location_district, location_updated FROM users WHERE telegram_id = ?",
+        (telegram_id,),
     ).fetchone()
-    if not user or not user["client_id"]:
+
+    if not user:
         conn.close()
-        return {"has_location": False}
+        return {"has_location": False, "has_gps": False}
 
-    client = conn.execute(
-        "SELECT location_district_id, location_moljal_id FROM allowed_clients WHERE id = ?",
-        (user["client_id"],),
-    ).fetchone()
-    conn.close()
+    # GPS location from user sharing
+    has_gps = bool(user["latitude"] and user["longitude"])
+    gps_data = None
+    if has_gps:
+        gps_data = {
+            "latitude": user["latitude"],
+            "longitude": user["longitude"],
+            "address": user["location_address"] or "",
+            "region": user["location_region"] or "",
+            "district": user["location_district"] or "",
+            "updated": user["location_updated"] or "",
+        }
 
-    if not client or not client["location_district_id"]:
-        return {"has_location": False}
-
-    # Resolve names
-    conn = get_db()
-    district = conn.execute(
-        "SELECT id, name, parent_id FROM locations WHERE id = ?",
-        (client["location_district_id"],),
-    ).fetchone()
-    moljal = None
-    if client["location_moljal_id"]:
-        moljal = conn.execute(
-            "SELECT id, name FROM locations WHERE id = ?",
-            (client["location_moljal_id"],),
+    # Manual location from allowed_clients
+    manual_data = None
+    if user["client_id"]:
+        client = conn.execute(
+            "SELECT location_district_id, location_moljal_id FROM allowed_clients WHERE id = ?",
+            (user["client_id"],),
         ).fetchone()
 
-    viloyat = None
-    if district and district["parent_id"]:
-        viloyat = conn.execute(
-            "SELECT id, name FROM locations WHERE id = ?",
-            (district["parent_id"],),
-        ).fetchone()
+        if client and client["location_district_id"]:
+            district = conn.execute(
+                "SELECT id, name, parent_id FROM locations WHERE id = ?",
+                (client["location_district_id"],),
+            ).fetchone()
+            moljal = None
+            if client["location_moljal_id"]:
+                moljal = conn.execute(
+                    "SELECT id, name FROM locations WHERE id = ?",
+                    (client["location_moljal_id"],),
+                ).fetchone()
+            viloyat = None
+            if district and district["parent_id"]:
+                viloyat = conn.execute(
+                    "SELECT id, name FROM locations WHERE id = ?",
+                    (district["parent_id"],),
+                ).fetchone()
+
+            manual_data = {
+                "district_id": client["location_district_id"],
+                "district_name": district["name"] if district else None,
+                "moljal_id": client["location_moljal_id"],
+                "moljal_name": moljal["name"] if moljal else None,
+                "viloyat_id": viloyat["id"] if viloyat else None,
+                "viloyat_name": viloyat["name"] if viloyat else None,
+            }
+
     conn.close()
 
     return {
-        "has_location": True,
-        "district_id": client["location_district_id"],
-        "district_name": district["name"] if district else None,
-        "moljal_id": client["location_moljal_id"],
-        "moljal_name": moljal["name"] if moljal else None,
-        "viloyat_id": viloyat["id"] if viloyat else None,
-        "viloyat_name": viloyat["name"] if viloyat else None,
+        "has_location": has_gps or manual_data is not None,
+        "has_gps": has_gps,
+        "gps": gps_data,
+        "manual": manual_data,
+        # Backward compatibility
+        "district_id": manual_data["district_id"] if manual_data else None,
+        "district_name": manual_data["district_name"] if manual_data else None,
+        "moljal_id": manual_data["moljal_id"] if manual_data else None,
+        "moljal_name": manual_data["moljal_name"] if manual_data else None,
+        "viloyat_id": manual_data["viloyat_id"] if manual_data else None,
+        "viloyat_name": manual_data["viloyat_name"] if manual_data else None,
     }
 
 
@@ -272,6 +306,26 @@ def save_client_location(data: ClientLocationSave):
     conn.execute(
         "UPDATE allowed_clients SET location_district_id = ?, location_moljal_id = ? WHERE id = ?",
         (data.district_id, data.moljal_id, user["client_id"]),
+    )
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@client_router.post("/gps")
+def save_gps_location(data: GpsLocationSave):
+    """Save GPS coordinates + address from the in-app map picker."""
+    conn = get_db()
+    user = conn.execute(
+        "SELECT telegram_id FROM users WHERE telegram_id = ?", (data.telegram_id,)
+    ).fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+
+    conn.execute(
+        "UPDATE users SET latitude = ?, longitude = ?, location_address = ?, location_region = ?, location_district = ?, location_updated = datetime('now') WHERE telegram_id = ?",
+        (data.latitude, data.longitude, data.address, data.region, data.district, data.telegram_id),
     )
     conn.commit()
     conn.close()

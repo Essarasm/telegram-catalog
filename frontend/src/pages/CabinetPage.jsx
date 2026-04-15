@@ -67,13 +67,20 @@ function fmtMonthLabel(m) {
   return m.slice(5, 7) + '/' + m.slice(2, 4);
 }
 
+function fmtMonthFull(m) {
+  if (!m || m.length < 7) return m || '';
+  const monthIdx = parseInt(m.slice(5, 7), 10) - 1;
+  const names = ['Yan', 'Fev', 'Mar', 'Apr', 'May', 'Iyun', 'Iyul', 'Avg', 'Sen', 'Okt', 'Noy', 'Dek'];
+  return `${names[monthIdx]} ${m.slice(2, 4)}`;
+}
+
 // ── Mini SVG line chart (pure, no external lib) ──
-function SpendChart({ data, valueKey, color, label, formatValue, comparisons }) {
+function SpendChart({ data, valueKey, color, label, formatValue, header, comparisons }) {
   const [tappedIdx, setTappedIdx] = useState(null);
   if (!data || data.length === 0) return null;
   const values = data.map(d => d[valueKey] || 0);
   const maxVal = Math.max(...values, 1);
-  const W = 300, H = 140, PAD_TOP = 28, PAD_BOT = 22, PAD_LEFT = 4, PAD_RIGHT = 4;
+  const W = 300, H = 120, PAD_TOP = 8, PAD_BOT = 8, PAD_LEFT = 4, PAD_RIGHT = 4;
   const chartW = W - PAD_LEFT - PAD_RIGHT;
   const chartH = H - PAD_TOP - PAD_BOT;
   const step = data.length > 1 ? chartW / (data.length - 1) : 0;
@@ -93,8 +100,16 @@ function SpendChart({ data, valueKey, color, label, formatValue, comparisons }) 
 
   return (
     <div className="mt-2">
-      {label && <div className="text-[10px] text-tg-hint mb-1">{label}</div>}
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: '140px' }}>
+      {/* Header: last closed month label + amount */}
+      <div className="flex items-baseline justify-between mb-1">
+        <span className="text-[10px] text-tg-hint">{label}</span>
+        {header && (
+          <span className="text-xs font-semibold" style={{ color }}>
+            {header.month}: {header.value}
+          </span>
+        )}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: '120px' }}>
         <defs>
           <linearGradient id={`grad-${color}`} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={color} stopOpacity="0.3" />
@@ -110,18 +125,19 @@ function SpendChart({ data, valueKey, color, label, formatValue, comparisons }) 
         {data.length > 1 && <path d={areaPath} fill={`url(#grad-${color})`} />}
         {/* Line */}
         {data.length > 1 && <path d={linePath} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
-        {/* Dots + month labels — tappable */}
+        {/* Dots — tappable, no x-axis labels */}
         {points.map((p, i) => (
           <g key={i} onClick={() => handleDotTap(i)} style={{ cursor: 'pointer' }}>
-            {/* Invisible larger tap target */}
             <circle cx={p.x} cy={p.y} r="12" fill="transparent" />
             <circle cx={p.x} cy={p.y} r={tappedIdx === i ? 5 : 3} fill={color} />
-            <text x={p.x} y={H - 4} textAnchor="middle" fontSize="8" fill="var(--tg-theme-hint-color, #999)">{fmtMonthLabel(data[i].month)}</text>
             {/* Tooltip on tap */}
             {tappedIdx === i && (
               <>
-                <rect x={Math.max(2, Math.min(p.x - 40, W - 82))} y={Math.max(2, p.y - 22)} width="80" height="16" rx="4" fill="var(--tg-theme-bg-color, #fff)" stroke={color} strokeWidth="0.5" />
-                <text x={Math.max(42, Math.min(p.x, W - 42))} y={Math.max(13, p.y - 10)} textAnchor="middle" fontSize="9" fontWeight="600" fill={color}>
+                <rect x={Math.max(2, Math.min(p.x - 50, W - 102))} y={Math.max(2, p.y - 32)} width="100" height="26" rx="4" fill="var(--tg-theme-bg-color, #fff)" stroke={color} strokeWidth="0.5" />
+                <text x={Math.max(52, Math.min(p.x, W - 52))} y={Math.max(13, p.y - 21)} textAnchor="middle" fontSize="8" fill="var(--tg-theme-hint-color, #999)">
+                  {fmtMonthFull(data[i].month)}
+                </text>
+                <text x={Math.max(52, Math.min(p.x, W - 52))} y={Math.max(25, p.y - 10)} textAnchor="middle" fontSize="9" fontWeight="600" fill={color}>
                   {formatValue ? formatValue(p.v) : p.v.toLocaleString('ru-RU')}
                 </text>
               </>
@@ -129,15 +145,15 @@ function SpendChart({ data, valueKey, color, label, formatValue, comparisons }) 
           </g>
         ))}
       </svg>
-      {/* Per-chart comparison lines */}
+      {/* Comparison lines */}
       {comparisons && comparisons.length > 0 && (
         <div className="mt-1 space-y-0.5">
           {comparisons.map((c, ci) => (
             <div key={ci} className="text-[10px] text-tg-hint text-center">
-              {c.label}: {c.current}{' '}
-              <span className={c.diff > 0 ? 'text-green-500' : c.diff < 0 ? 'text-red-400' : ''}>
+              {c.vsLabel}{' '}
+              <span className={c.diff > 0 ? 'text-green-500 font-medium' : c.diff < 0 ? 'text-red-400 font-medium' : ''}>
                 {c.diff > 0 ? '↑' : c.diff < 0 ? '↓' : '→'}{' '}
-                {c.diff !== 0 ? c.diffStr : t.my_business_orders_same}
+                {c.diff !== 0 ? c.diffStr : '—'}
               </span>
             </div>
           ))}
@@ -163,7 +179,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [expandedRealId, setExpandedRealId] = useState(null);
   const [expandedRealItems, setExpandedRealItems] = useState([]);
   const [loadingRealDetail, setLoadingRealDetail] = useState(false);
-  const [compareModal, setCompareModal] = useState(null); // { kind, sourceLabel, orders, loading }
 
   // Rassvet Plus — business intelligence state
   const [spendTrend, setSpendTrend] = useState(null);
@@ -174,6 +189,9 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   // Credit Score state (Phase 5)
   const [creditScore, setCreditScore] = useState(null);
   const [scoreLoading, setScoreLoading] = useState(true);
+
+  // Location state
+  const [userLocation, setUserLocation] = useState(null);
 
   const userId = getTelegramUserId();
 
@@ -214,13 +232,13 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
 
     // Rassvet Plus — fetch business intelligence data
     Promise.all([
-      fetch(`${API}/spend-trend?telegram_id=${userId}&months=24`).then(r => r.json()),
+      fetch(`${API}/spend-trend?telegram_id=${userId}&months=16`).then(r => r.json()),
       fetch(`${API}/top-products?telegram_id=${userId}&limit=5`).then(r => r.json()),
       fetch(`${API}/activity-summary?telegram_id=${userId}`).then(r => r.json()),
     ])
       .then(([trend, products, activity]) => {
         if (trend.ok && trend.months?.length > 0) setSpendTrend(trend.months);
-        if (products.ok && products.products?.length > 0) setTopProducts(products.products);
+        if (products.ok) setTopProducts({ uzs: products.top_uzs || [], usd: products.top_usd || [] });
         if (activity.ok && activity.summary) setActivitySummary(activity.summary);
         setBizLoading(false);
       })
@@ -234,6 +252,14 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         setScoreLoading(false);
       })
       .catch(() => setScoreLoading(false));
+
+    // Fetch saved location
+    fetch(`/api/client-location?telegram_id=${userId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.has_gps && data.gps) setUserLocation(data.gps);
+      })
+      .catch(() => {});
   }, [userId]);
 
   // Toggle expand real order detail
@@ -253,29 +279,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       setExpandedRealItems([]);
     }
     setLoadingRealDetail(false);
-  };
-
-  // Open compare modal — find counterpart of a real order or wishlist order
-  const openCompare = async ({ realOrderId, wishlistOrderId, sourceLabel }) => {
-    setCompareModal({ kind: realOrderId ? 'real' : 'wishlist', sourceLabel, orders: [], loading: true });
-    try {
-      const param = realOrderId
-        ? `real_order_id=${realOrderId}`
-        : `wishlist_order_id=${wishlistOrderId}`;
-      const res = await fetch(`${API}/compare?telegram_id=${userId}&${param}&days=5`);
-      const data = await res.json();
-      // Returned `kind` describes the result set: when looking up from a real
-      // order we get wish-list orders back, and vice versa.
-      const resultKind = realOrderId ? 'wishlist' : 'real';
-      setCompareModal({
-        kind: resultKind,
-        sourceLabel,
-        orders: data.orders || [],
-        loading: false,
-      });
-    } catch {
-      setCompareModal((prev) => prev && { ...prev, orders: [], loading: false });
-    }
   };
 
   // Toggle expand order detail
@@ -617,11 +620,18 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   };
 
   // ── My Business with Rassvet section ──
-  const hasBusinessData = spendTrend || topProducts || activitySummary;
+  const hasBusinessData = spendTrend || (topProducts && (topProducts.uzs?.length > 0 || topProducts.usd?.length > 0)) || activitySummary;
 
   // For the chart we show only the last 12 months; full data (up to 24)
   // is used for YoY comparison lookups.
-  const chartData = spendTrend ? spendTrend.slice(-12) : null;
+  // Exclude current (not yet closed) month from the chart
+  const chartData = (() => {
+    if (!spendTrend) return null;
+    const now = new Date();
+    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const closed = spendTrend.filter(m => m.month < currentMonth);
+    return closed.slice(-15);
+  })();
 
   const MyBusinessSection = () => {
     if (bizLoading || !hasBusinessData) return null;
@@ -629,44 +639,58 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     const hasUzsTrend = chartData?.some(m => m.total_uzs > 0);
     const hasUsdTrend = chartData?.some(m => m.total_usd > 0);
 
-    // Build dual comparisons for the latest month: vs last month + vs same month last year
-    const buildComparisons = (key, fmtFn, suffix) => {
-      if (!chartData || chartData.length < 2) return [];
-      const last = chartData[chartData.length - 1];
-      const prev = chartData[chartData.length - 2];
+    // Build chart header + comparisons based on last CLOSED month
+    const buildChartInfo = (key, fmtFn, suffix) => {
+      if (!chartData || chartData.length < 2) return { header: null, comparisons: [] };
+
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const lastEntry = chartData[chartData.length - 1];
+      const isCurrentMonth = lastEntry.month === currentMonth;
+      const closedIdx = isCurrentMonth ? chartData.length - 2 : chartData.length - 1;
+      const prevIdx = closedIdx - 1;
+
+      if (closedIdx < 0) return { header: null, comparisons: [] };
+      const closed = chartData[closedIdx];
+      const closedVal = closed[key] || 0;
+      const closedLabel = fmtMonthFull(closed.month);
+
+      const header = { month: closedLabel, value: `${fmtFn(closedVal)} ${suffix}`.trim() };
       const comparisons = [];
 
-      // vs last month
-      const momDiff = (last[key] || 0) - (prev[key] || 0);
-      comparisons.push({
-        label: `vs ${t.my_business_prev_month_short}`,
-        current: `${fmtFn(last[key] || 0)} ${suffix}`.trim(),
-        diff: momDiff,
-        diffStr: fmtFn(Math.abs(momDiff)),
-      });
+      // Line 1: vs previous month
+      if (prevIdx >= 0) {
+        const prev = chartData[prevIdx];
+        const prevVal = prev[key] || 0;
+        const momDiff = closedVal - prevVal;
+        comparisons.push({
+          vsLabel: `vs ${fmtMonthFull(prev.month)}`,
+          diff: momDiff,
+          diffStr: fmtFn(Math.abs(momDiff)),
+        });
+      }
 
-      // vs same month last year (find YYYY-MM where MM matches but year is -1)
-      if (spendTrend && last.month) {
-        const lastMM = last.month.slice(5, 7);
-        const lastYY = parseInt(last.month.slice(0, 4), 10);
-        const yoyMonth = `${lastYY - 1}-${lastMM}`;
+      // Line 2: vs same month last year
+      if (spendTrend && closed.month) {
+        const mm = closed.month.slice(5, 7);
+        const yy = parseInt(closed.month.slice(0, 4), 10);
+        const yoyMonth = `${yy - 1}-${mm}`;
         const yoyEntry = spendTrend.find(m => m.month === yoyMonth);
         if (yoyEntry) {
-          const yoyDiff = (last[key] || 0) - (yoyEntry[key] || 0);
+          const yoyDiff = closedVal - (yoyEntry[key] || 0);
           comparisons.push({
-            label: `vs ${fmtMonthLabel(yoyMonth)}`,
-            current: `${fmtFn(last[key] || 0)} ${suffix}`.trim(),
+            vsLabel: `vs ${fmtMonthFull(yoyMonth)}`,
             diff: yoyDiff,
             diffStr: fmtFn(Math.abs(yoyDiff)),
           });
         }
       }
 
-      return comparisons;
+      return { header, comparisons };
     };
 
-    const uzsComparisons = hasUzsTrend ? buildComparisons('total_uzs', formatUzs, t.balance_currency) : [];
-    const usdComparisons = hasUsdTrend ? buildComparisons('total_usd', (v) => formatUsd(v), '') : [];
+    const uzsInfo = hasUzsTrend ? buildChartInfo('total_uzs', formatUzs, t.balance_currency) : { header: null, comparisons: [] };
+    const usdInfo = hasUsdTrend ? buildChartInfo('total_usd', (v) => formatUsd(v), '') : { header: null, comparisons: [] };
 
     return (
       <div className="mb-4">
@@ -679,42 +703,70 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
           <div className="bg-tg-secondary rounded-xl p-3 mb-2">
             <div className="text-xs font-semibold mb-1">{t.my_business_spend_trend}</div>
             {hasUzsTrend && (
-              <SpendChart data={chartData} valueKey="total_uzs" color="#3B82F6" label={`UZS (${t.balance_currency})`} formatValue={(v) => formatUzs(v)} comparisons={uzsComparisons} />
+              <SpendChart data={chartData} valueKey="total_uzs" color="#3B82F6" label={`UZS (${t.balance_currency})`} formatValue={(v) => formatUzs(v)} header={uzsInfo.header} comparisons={uzsInfo.comparisons} />
             )}
             {hasUsdTrend && (
-              <SpendChart data={chartData} valueKey="total_usd" color="#10B981" label="USD ($)" formatValue={(v) => formatUsd(v)} comparisons={usdComparisons} />
+              <SpendChart data={chartData} valueKey="total_usd" color="#10B981" label="USD ($)" formatValue={(v) => formatUsd(v)} header={usdInfo.header} comparisons={usdInfo.comparisons} />
             )}
           </div>
         )}
 
-        {/* Top Products — ranked by spend, showing frequency too */}
-        {topProducts && topProducts.length > 0 && (
+        {/* Top Products — ranked by spend, split by currency */}
+        {topProducts && (topProducts.uzs?.length > 0 || topProducts.usd?.length > 0) && (
           <div className="bg-tg-secondary rounded-xl p-3 mb-2">
             <div className="text-xs font-semibold mb-2">{t.my_business_top_products}</div>
-            <div className="space-y-2">
-              {topProducts.map((p, i) => {
-                const maxUzs = topProducts[0].total_uzs || 1;
-                const barPct = Math.max(5, Math.round((p.total_uzs / maxUzs) * 100));
-                return (
-                  <div key={i}>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="truncate flex-1 mr-2 font-medium">{p.name}</span>
-                    </div>
-                    <div className="h-1.5 bg-tg-hint/10 rounded-full mt-0.5">
-                      <div className="h-1.5 bg-blue-400 rounded-full" style={{ width: `${barPct}%` }} />
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] text-tg-hint mt-0.5">
-                      <span>
-                        {p.total_uzs > 0 && <>{formatUzs(p.total_uzs)} {t.balance_currency}</>}
-                        {p.total_uzs > 0 && p.total_usd > 0 && ' / '}
-                        {p.total_usd > 0 && formatUsd(p.total_usd)}
-                      </span>
-                      <span>{p.order_count} {t.my_business_orders} · {p.total_qty} {t.my_business_items}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+
+            {topProducts.uzs?.length > 0 && (
+              <div className="mb-3">
+                <div className="text-[10px] text-tg-hint font-medium mb-1.5">UZS</div>
+                <div className="space-y-2">
+                  {topProducts.uzs.map((p, i) => {
+                    const maxVal = topProducts.uzs[0].total_uzs || 1;
+                    const barPct = Math.max(5, Math.round((p.total_uzs / maxVal) * 100));
+                    return (
+                      <div key={`uzs-${i}`}>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="truncate flex-1 mr-2 font-medium">{p.name}</span>
+                        </div>
+                        <div className="h-1.5 bg-tg-hint/10 rounded-full mt-0.5">
+                          <div className="h-1.5 bg-blue-400 rounded-full" style={{ width: `${barPct}%` }} />
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] text-tg-hint mt-0.5">
+                          <span>{formatUzs(p.total_uzs)} {t.balance_currency}</span>
+                          <span>{p.order_count} {t.my_business_orders} · {p.total_qty} {t.my_business_items}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {topProducts.usd?.length > 0 && (
+              <div>
+                <div className="text-[10px] text-tg-hint font-medium mb-1.5">USD</div>
+                <div className="space-y-2">
+                  {topProducts.usd.map((p, i) => {
+                    const maxVal = topProducts.usd[0].total_usd || 1;
+                    const barPct = Math.max(5, Math.round((p.total_usd / maxVal) * 100));
+                    return (
+                      <div key={`usd-${i}`}>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="truncate flex-1 mr-2 font-medium">{p.name}</span>
+                        </div>
+                        <div className="h-1.5 bg-tg-hint/10 rounded-full mt-0.5">
+                          <div className="h-1.5 bg-green-400 rounded-full" style={{ width: `${barPct}%` }} />
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] text-tg-hint mt-0.5">
+                          <span>{formatUsd(p.total_usd)}</span>
+                          <span>{p.order_count} {t.my_business_orders} · {p.total_qty} {t.my_business_items}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -722,29 +774,46 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         {activitySummary && (
           <div className="bg-tg-secondary rounded-xl p-3 mb-2">
             <div className="text-xs font-semibold mb-2">{t.my_business_activity}</div>
-            <div className="grid grid-cols-2 gap-2 text-center">
-              {/* This month */}
-              <div className="bg-tg-bg rounded-lg p-2">
-                <div className="text-[10px] text-tg-hint">{t.my_business_this_month}</div>
-                <div className="text-lg font-bold">{activitySummary.this_month.doc_count}</div>
-                <div className="text-[10px] text-tg-hint">{t.my_business_orders}</div>
-                {activitySummary.prev_month.doc_count > 0 && (() => {
-                  const curr = activitySummary.this_month.doc_count;
-                  const prev = activitySummary.prev_month.doc_count;
-                  const diff = curr - prev;
-                  if (diff === 0) return <div className="text-[10px] text-tg-hint">→ {t.my_business_orders_same}</div>;
-                  const arrow = diff > 0 ? '↑' : '↓';
-                  const color = diff > 0 ? 'text-green-500' : 'text-red-400';
-                  return <div className={`text-[10px] ${color}`}>{arrow} {Math.abs(diff)} {diff > 0 ? t.my_business_orders_up : t.my_business_orders_down}</div>;
-                })()}
+            {activitySummary.last_active_month ? (
+              /* No recent activity — show last active month instead */
+              <div className="bg-tg-bg rounded-lg p-3">
+                <div className="text-[10px] text-tg-hint mb-1">So'nggi faol oy</div>
+                <div className="text-sm font-bold mb-1">{fmtMonthFull(activitySummary.last_active_month.month)}</div>
+                <div className="text-[11px] text-tg-hint">
+                  {activitySummary.last_active_month.doc_count} {t.my_business_orders}
+                  {activitySummary.last_active_month.total_uzs > 0 && (
+                    <> · {formatUzs(activitySummary.last_active_month.total_uzs)} {t.balance_currency}</>
+                  )}
+                  {activitySummary.last_active_month.total_usd > 0 && (
+                    <> · {formatUsd(activitySummary.last_active_month.total_usd)}</>
+                  )}
+                </div>
               </div>
-              {/* Previous month */}
-              <div className="bg-tg-bg rounded-lg p-2">
-                <div className="text-[10px] text-tg-hint">{t.my_business_prev_month}</div>
-                <div className="text-lg font-bold">{activitySummary.prev_month.doc_count}</div>
-                <div className="text-[10px] text-tg-hint">{t.my_business_orders}</div>
+            ) : (
+              <div className="grid grid-cols-2 gap-2 text-center">
+                {/* This month */}
+                <div className="bg-tg-bg rounded-lg p-2">
+                  <div className="text-[10px] text-tg-hint">{t.my_business_this_month}</div>
+                  <div className="text-lg font-bold">{activitySummary.this_month.doc_count}</div>
+                  <div className="text-[10px] text-tg-hint">{t.my_business_orders}</div>
+                  {activitySummary.prev_month.doc_count > 0 && (() => {
+                    const curr = activitySummary.this_month.doc_count;
+                    const prev = activitySummary.prev_month.doc_count;
+                    const diff = curr - prev;
+                    if (diff === 0) return <div className="text-[10px] text-tg-hint">→ {t.my_business_orders_same}</div>;
+                    const arrow = diff > 0 ? '↑' : '↓';
+                    const color = diff > 0 ? 'text-green-500' : 'text-red-400';
+                    return <div className={`text-[10px] ${color}`}>{arrow} {Math.abs(diff)} {diff > 0 ? t.my_business_orders_up : t.my_business_orders_down}</div>;
+                  })()}
+                </div>
+                {/* Previous month */}
+                <div className="bg-tg-bg rounded-lg p-2">
+                  <div className="text-[10px] text-tg-hint">{t.my_business_prev_month}</div>
+                  <div className="text-lg font-bold">{activitySummary.prev_month.doc_count}</div>
+                  <div className="text-[10px] text-tg-hint">{t.my_business_orders}</div>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Lifetime stats */}
             {activitySummary.lifetime.total_orders > 0 && (
@@ -778,8 +847,41 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     );
   };
 
+  const handleShareLocation = () => {
+    window.Telegram?.WebApp?.openTelegramLink('https://t.me/samrassvetbot?start=share_location');
+    setTimeout(() => window.Telegram?.WebApp?.close(), 300);
+  };
+
   return (
     <div>
+      {/* Location card */}
+      {userLocation ? (
+        <div className="bg-tg-secondary rounded-xl p-3 mb-3 flex items-center gap-2">
+          <span className="text-base">📍</span>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs font-medium truncate">{userLocation.address || "Joylashuv saqlangan"}</div>
+          </div>
+          <button
+            onClick={handleShareLocation}
+            className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-bg text-tg-link whitespace-nowrap"
+          >
+            Yangilash
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={handleShareLocation}
+          className="w-full bg-tg-secondary rounded-xl p-3 mb-3 flex items-center gap-2 active:opacity-80 transition-opacity"
+        >
+          <span className="text-base">📍</span>
+          <div className="flex-1 text-left">
+            <div className="text-xs font-medium">Joylashuvni saqlash</div>
+            <div className="text-[10px] text-tg-hint">Telegram orqali joylashuvingizni yuboring</div>
+          </div>
+          <span className="text-tg-link text-xs">→</span>
+        </button>
+      )}
+
       <MyBusinessSection />
       <CreditScoreCard />
       <BalanceCard />
@@ -989,18 +1091,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                             ))}
                           </div>
 
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openCompare({
-                                realOrderId: ro.id,
-                                sourceLabel: `${t.real_order_doc} ${ro.doc_number_1c}`,
-                              });
-                            }}
-                            className="w-full mt-3 bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
-                          >
-                            🔀 {t.compare_button}
-                          </button>
                         </>
                       )}
                     </div>
@@ -1047,107 +1137,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                 {t.reorder_cancel}
               </button>
             </div>
-          </div>
-        </>
-      )}
-
-      {/* Compare modal */}
-      {compareModal && (
-        <>
-          <div
-            className="fixed inset-0 bg-black/50 z-[100]"
-            onClick={() => setCompareModal(null)}
-          />
-          <div className="fixed bottom-0 left-0 right-0 z-[101] bg-tg-bg rounded-t-2xl p-5 pb-8 shadow-2xl max-h-[80vh] overflow-y-auto">
-            <div className="w-10 h-1 bg-tg-hint/30 rounded-full mx-auto mb-4" />
-            <div className="text-center mb-4">
-              <div className="text-base font-semibold">🔀 {t.compare_title}</div>
-              <div className="text-xs text-tg-hint mt-1">
-                {compareModal.sourceLabel}
-              </div>
-            </div>
-
-            {compareModal.loading ? (
-              <div className="text-center py-8 text-tg-hint text-sm">{t.loading}</div>
-            ) : compareModal.orders.length === 0 ? (
-              <div className="text-center py-8">
-                <div className="text-3xl mb-2">🤷</div>
-                <div className="text-sm font-medium">{t.compare_no_match}</div>
-                <div className="text-xs text-tg-hint mt-1">{t.compare_no_match_desc}</div>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <div className="text-xs text-tg-hint mb-1">
-                  {compareModal.kind === 'real'
-                    ? t.compare_real_side
-                    : t.compare_wishlist_side}
-                  {' · '}
-                  {compareModal.orders.length} {t.compare_match_found}
-                </div>
-                {compareModal.orders.map((o) => (
-                  <div key={o.id} className="bg-tg-secondary rounded-xl p-3">
-                    {compareModal.kind === 'real' ? (
-                      <>
-                        <div className="text-sm font-semibold">
-                          {t.real_order_doc} {o.doc_number_1c}
-                        </div>
-                        <div className="text-xs text-tg-hint mt-1">
-                          {formatDocDate(o.doc_date)} · {o.item_count} {t.real_order_items_count}
-                        </div>
-                        {/* Mixed-currency docs may have both sides
-                            populated — show both lines, see comment
-                            on the main real-orders list header. */}
-                        {(() => {
-                          const hasUzs = (o.total_sum || 0) > 0;
-                          const hasUsd = (o.total_sum_currency || 0) > 0;
-                          if (!hasUzs && !hasUsd) {
-                            return <div className="text-sm font-bold mt-1">—</div>;
-                          }
-                          return (
-                            <>
-                              {hasUzs && (
-                                <div className="text-sm font-bold mt-1">
-                                  {formatUzs(o.total_sum)} {t.balance_currency}
-                                </div>
-                              )}
-                              {hasUsd && (
-                                <div className="text-sm font-bold mt-1">
-                                  {formatUsd(o.total_sum_currency)}
-                                </div>
-                              )}
-                            </>
-                          );
-                        })()}
-                      </>
-                    ) : (
-                      <>
-                        <div className="text-sm font-semibold">#{o.id}</div>
-                        <div className="text-xs text-tg-hint mt-1">
-                          {formatDate(o.created_at)} · {o.item_count} {t.items_count}
-                        </div>
-                        {o.total_uzs > 0 && (
-                          <div className="text-sm font-bold mt-1">
-                            {formatCartPrice(o.total_uzs, 'UZS')}
-                          </div>
-                        )}
-                        {o.total_usd > 0 && (
-                          <div className="text-sm font-bold">
-                            {formatCartPrice(o.total_usd, 'USD')}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <button
-              onClick={() => setCompareModal(null)}
-              className="w-full mt-4 text-tg-hint text-sm py-2"
-            >
-              {t.close}
-            </button>
           </div>
         </>
       )}

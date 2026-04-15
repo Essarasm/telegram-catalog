@@ -563,7 +563,11 @@ def init_db():
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     for col, coltype in [("latitude", "REAL"), ("longitude", "REAL"),
                           ("is_approved", "INTEGER DEFAULT 0"),
-                          ("client_id", "INTEGER")]:
+                          ("client_id", "INTEGER"),
+                          ("location_address", "TEXT"),
+                          ("location_updated", "TEXT"),
+                          ("location_region", "TEXT"),
+                          ("location_district", "TEXT")]:
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {coltype}")
 
@@ -579,7 +583,8 @@ def init_db():
 
     # Migration: add location columns to orders
     order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
-    for col, coltype in [("location_district_id", "INTEGER"), ("location_moljal_id", "INTEGER")]:
+    for col, coltype in [("location_district_id", "INTEGER"), ("location_moljal_id", "INTEGER"),
+                          ("latitude", "REAL"), ("longitude", "REAL"), ("location_address", "TEXT")]:
         if col not in order_cols:
             conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {coltype}")
 

@@ -11,7 +11,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ORDER_GROUP_CHAT_ID = os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463")
 
 
-def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = ""):
+def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = ""):
     """Send order summary + Excel file to the sales managers' Telegram group."""
     if not BOT_TOKEN or not ORDER_GROUP_CHAT_ID:
         logger.warning("ORDER_GROUP_CHAT_ID or BOT_TOKEN not set, skipping group notification")
@@ -45,6 +45,8 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
         lines.append("\U0001f69b Yetkazib berish")
         if location_text:
             lines.append(f"\U0001f4cd Manzil: {location_text}")
+        if maps_link:
+            lines.append(f"\U0001f5fa <a href=\"{maps_link}\">Xaritada ko'rish</a>")
     lines.append("")
     lines.append("\U0001f4ce Excel fayl ilova qilingan")
 

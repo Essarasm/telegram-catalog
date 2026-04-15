@@ -1,15 +1,17 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, lazy, Suspense } from 'react';
 import { formatCartPrice } from '../utils/api';
 import { useLongPress } from '../hooks/useLongPress';
 import LocationPicker from '../components/LocationPicker';
 import t from '../i18n/uz.json';
+
+const MapPicker = lazy(() => import('../components/MapPicker'));
 
 const API_BASE = '/api';
 
 /* ───────────────────────────────────────────
    Order Preview — HTML table mirroring the PDF
    ─────────────────────────────────────────── */
-function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDeliveryChange, locationData, onLocationChange, telegramId }) {
+function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDeliveryChange, locationData, onLocationChange, telegramId, gpsLocation, showManualPicker, onToggleManualPicker, onOpenMap }) {
   const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
   const clientName = tgUser
     ? `${tgUser.first_name || ''} ${tgUser.last_name || ''}`.trim()
@@ -91,14 +93,58 @@ function OrderPreview({ items, onConfirm, onBack, exporting, deliveryType, onDel
       {/* Delivery / Pickup toggle — always visible */}
       <DeliveryToggle value={deliveryType} onChange={onDeliveryChange} />
 
-      {/* Location picker — only when delivery is selected */}
+      {/* Location — only when delivery is selected */}
       {deliveryType === 'delivery' && (
-        <LocationPicker
-          telegramId={telegramId}
-          onLocationChange={onLocationChange}
-          initialDistrictId={locationData?.district_id}
-          initialMoljalId={locationData?.moljal_id}
-        />
+        <div className="mb-3">
+          {gpsLocation ? (
+            /* User already shared location — just show it */
+            <div className="bg-tg-secondary rounded-xl p-3 mb-2 flex items-center gap-2">
+              <span className="text-base">📍</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{gpsLocation.address || "Joylashuv saqlangan"}</div>
+              </div>
+            </div>
+          ) : (
+            /* No location — primary: Telegram native, secondary: map, tertiary: manual */
+            <div className="mb-2">
+              <button
+                onClick={() => {
+                  window.Telegram?.WebApp?.openTelegramLink('https://t.me/samrassvetbot?start=share_location');
+                  setTimeout(() => window.Telegram?.WebApp?.close(), 300);
+                }}
+                className="w-full bg-tg-button text-tg-button-text rounded-xl py-3 font-semibold text-sm active:scale-95 transition-transform mb-2"
+              >
+                📍 Joylashuvni yuborish
+              </button>
+              <div className="text-center text-[10px] text-tg-hint mb-2">
+                Telegram orqali aniq joylashuvingizni yuboring
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={onOpenMap}
+                  className="flex-1 text-[11px] py-1.5 rounded-lg bg-tg-secondary text-tg-link"
+                >
+                  🗺 Xaritadan tanlash
+                </button>
+                <button
+                  onClick={() => onToggleManualPicker(!showManualPicker)}
+                  className="flex-1 text-[11px] py-1.5 rounded-lg bg-tg-secondary text-tg-hint"
+                >
+                  {showManualPicker ? '▲ Yopish' : '📋 Qo\'lda tanlash'}
+                </button>
+              </div>
+              {showManualPicker && (
+                <div className="mt-2">
+                  <LocationPicker
+                    telegramId={telegramId}
+                    onLocationChange={onLocationChange}
+                    initialDistrictId={locationData?.district_id}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       {/* Action buttons — always visible */}
@@ -291,6 +337,9 @@ export default function CartPage({ cart, onNavigate }) {
 
   // Session M: delivery location state
   const [locationData, setLocationData] = useState({ district_id: null, moljal_id: null, district_name: null, moljal_name: null });
+  const [gpsLocation, setGpsLocation] = useState(null); // { latitude, longitude, address }
+  const [showManualPicker, setShowManualPicker] = useState(false);
+  const [showMap, setShowMap] = useState(false);
 
   // Post-order feedback state
   const [justOrdered, setJustOrdered] = useState(false);
@@ -303,6 +352,23 @@ export default function CartPage({ cart, onNavigate }) {
   // Clear any pending undo timer on unmount
   useEffect(() => () => {
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+  }, []);
+
+  // Fetch saved GPS location on mount
+  useEffect(() => {
+    const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+    if (!tgUser?.id) return;
+    fetch(`${API_BASE}/client-location?telegram_id=${tgUser.id}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.gps) {
+          setGpsLocation(data.gps);
+        }
+        if (data.manual) {
+          setLocationData(data.manual);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const handleGoToCatalog = () => {
@@ -450,7 +516,34 @@ export default function CartPage({ cart, onNavigate }) {
           locationData={locationData}
           onLocationChange={setLocationData}
           telegramId={window.Telegram?.WebApp?.initDataUnsafe?.user?.id}
+          gpsLocation={gpsLocation}
+          showManualPicker={showManualPicker}
+          onToggleManualPicker={setShowManualPicker}
+          onOpenMap={() => setShowMap(true)}
         />
+        {showMap && (
+          <Suspense fallback={null}>
+            <MapPicker
+              initialLat={gpsLocation?.latitude}
+              initialLng={gpsLocation?.longitude}
+              onConfirm={async (lat, lng, address) => {
+                const tgUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+                if (tgUser?.id) {
+                  try {
+                    await fetch(`${API_BASE}/client-location/gps`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ telegram_id: tgUser.id, latitude: lat, longitude: lng, address }),
+                    });
+                  } catch {}
+                }
+                setGpsLocation({ latitude: lat, longitude: lng, address });
+                setShowMap(false);
+              }}
+              onClose={() => setShowMap(false)}
+            />
+          </Suspense>
+        )}
       </div>
     );
   }

@@ -12,6 +12,9 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     MenuButtonWebApp,
     WebAppInfo,
 )
@@ -124,7 +127,19 @@ def _track_daily_upload(
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
-    """Send welcome message with Mini App button."""
+    """Send welcome message with Mini App button, or location prompt if deep-linked."""
+    # Check for deep link parameter
+    args = message.text.split(maxsplit=1)
+    deep_link = args[1] if len(args) > 1 else ""
+
+    if deep_link == "share_location":
+        # User came from Mini App to share location
+        await message.answer(
+            "📍 Yetkazib berish manzilini saqlash uchun joylashuvingizni yuboring.\n\n"
+            "📎 tugmasini bosing → Joylashuv → yuboring.",
+        )
+        return
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -347,6 +362,156 @@ async def cmd_approve(message: types.Message):
         f"📱 {user['phone']}\n"
         f"🆔 {telegram_id}\n\n"
         f"Ilovani qayta ochsa, narxlarni ko'radi.",
+        parse_mode="HTML",
+    )
+
+
+@dp.message(Command("link"))
+async def cmd_link(message: types.Message):
+    """
+    Link a user to an existing 1C client.
+    Usage: /link telegram_id 1C_client_name
+       or: /link telegram_id phone_number
+    """
+    if not is_admin(message):
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3 or not parts[1].isdigit():
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "<code>/link telegram_id 1C_nomi</code>\n"
+            "<code>/link telegram_id telefon_raqam</code>\n\n"
+            "<b>Misollar:</b>\n"
+            "<code>/link 123456789 ООО Акбар</code>\n"
+            "<code>/link 123456789 901234567</code>\n\n"
+            "Foydalanuvchini mavjud 1C mijozga bog'laydi.",
+            parse_mode="HTML",
+        )
+        return
+
+    telegram_id = int(parts[1])
+    lookup = parts[2].strip()
+    conn = get_db()
+
+    # Find the user
+    user = conn.execute(
+        "SELECT telegram_id, phone, first_name, is_approved, client_id FROM users WHERE telegram_id = ?",
+        (telegram_id,),
+    ).fetchone()
+
+    if not user:
+        await message.reply(f"❌ Telegram ID {telegram_id} topilmadi.")
+        conn.close()
+        return
+
+    # Try to find the target client: first by phone, then by client_id_1c
+    lookup_norm = normalize_phone(lookup)
+    target_client = None
+
+    if len(lookup_norm) >= 9:
+        # Lookup by phone number
+        target_client = conn.execute(
+            "SELECT id, client_id_1c, name, phone_normalized FROM allowed_clients "
+            "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' LIMIT 1",
+            (lookup_norm,),
+        ).fetchone()
+
+    if not target_client:
+        # Lookup by client_id_1c name
+        target_client = conn.execute(
+            "SELECT id, client_id_1c, name, phone_normalized FROM allowed_clients "
+            "WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged' LIMIT 1",
+            (lookup,),
+        ).fetchone()
+
+    if not target_client:
+        # Try partial match on client_id_1c
+        target_client = conn.execute(
+            "SELECT id, client_id_1c, name, phone_normalized FROM allowed_clients "
+            "WHERE client_id_1c LIKE ? AND COALESCE(status, 'active') != 'merged' LIMIT 1",
+            (f"%{lookup}%",),
+        ).fetchone()
+
+    if not target_client:
+        await message.reply(
+            f"❌ Mijoz topilmadi: <b>{lookup}</b>\n\n"
+            "1C nomi yoki telefon raqamini tekshiring.",
+            parse_mode="HTML",
+        )
+        conn.close()
+        return
+
+    client_id_1c = target_client["client_id_1c"]
+    if not client_id_1c:
+        await message.reply(
+            f"❌ Mijoz (ID={target_client['id']}) da client_id_1c yo'q.\n"
+            "Avval 1C nomini belgilash kerak.",
+            parse_mode="HTML",
+        )
+        conn.close()
+        return
+
+    # Check if user already has an allowed_clients row
+    user_phone_norm = normalize_phone(user["phone"])
+    existing_row = conn.execute(
+        "SELECT id, client_id_1c FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+        (user_phone_norm,),
+    ).fetchone()
+
+    if existing_row:
+        # Update existing row with the correct client_id_1c
+        conn.execute(
+            "UPDATE allowed_clients SET client_id_1c = ?, matched_telegram_id = ? WHERE id = ?",
+            (client_id_1c, telegram_id, existing_row["id"]),
+        )
+        client_id = existing_row["id"]
+    else:
+        # Create new allowed_clients row linked to the same client_id_1c
+        conn.execute(
+            "INSERT INTO allowed_clients (phone_normalized, name, source_sheet, status, client_id_1c, matched_telegram_id) "
+            "VALUES (?, ?, 'bot_linked', 'active', ?, ?)",
+            (user_phone_norm, user["first_name"], client_id_1c, telegram_id),
+        )
+        client_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # Approve and link the user
+    conn.execute(
+        "UPDATE users SET is_approved = 1, client_id = ? WHERE telegram_id = ?",
+        (client_id, telegram_id),
+    )
+    conn.commit()
+
+    # Persist to backup
+    try:
+        from backend.services.backup_users import save_user_to_backup
+        row = conn.execute(
+            "SELECT telegram_id, phone, first_name, last_name, username, latitude, longitude, is_approved, client_id, registered_at FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        if row:
+            save_user_to_backup(dict(row))
+    except Exception as e:
+        logging.warning(f"backup after /link failed: {e}")
+
+    # Count all sibling phones for this client
+    siblings = conn.execute(
+        "SELECT phone_normalized, name FROM allowed_clients "
+        "WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged'",
+        (client_id_1c,),
+    ).fetchall()
+
+    sibling_lines = [f"  📱 {s['phone_normalized']} — {s['name'] or '—'}" for s in siblings]
+
+    conn.close()
+
+    await message.reply(
+        f"✅ Bog'landi!\n\n"
+        f"📛 {user['first_name'] or '—'} ({user['phone']})\n"
+        f"🏢 1C mijoz: <b>{client_id_1c}</b>\n\n"
+        f"📋 Bog'langan telefonlar ({len(siblings)}):\n" +
+        "\n".join(sibling_lines) +
+        f"\n\n💡 Endi kabinet, balans va buyurtma tarixini ko'radi.",
         parse_mode="HTML",
     )
 
@@ -1364,6 +1529,8 @@ async def cmd_help(message: types.Message):
         "Yangi mijozni qo'shish\n\n"
         "<b>/approve</b> <code>telegram_id</code>\n"
         "Foydalanuvchini tasdiqlash\n\n"
+        "<b>/link</b> <code>telegram_id 1C_nomi_yoki_telefon</code>\n"
+        "Foydalanuvchini mavjud 1C mijozga bog'lash\n\n"
         "<b>/list</b>\n"
         "Tasdiqlanmaganlar ro'yxati\n\n"
         "<b>/prices</b> (reply to Excel file)\n"
@@ -4380,6 +4547,117 @@ async def cmd_scoreanomalies(message: types.Message):
 
 
 # ───────────────────────────────────────────
+# ───────────────────────────────────────────
+# Location sharing handler (MUST be before fallback)
+# ───────────────────────────────────────────
+
+def _reverse_geocode(lat: float, lng: float) -> dict:
+    """Reverse geocode lat/lng using Nominatim (OpenStreetMap).
+
+    Returns dict with keys: address, region, district.
+    """
+    result = {"address": "", "region": "", "district": ""}
+    try:
+        import httpx
+        resp = httpx.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"lat": lat, "lon": lng, "format": "json", "accept-language": "uz,ru", "zoom": 16},
+            headers={"User-Agent": "RassvetCatalogBot/1.0"},
+            timeout=5,
+        )
+        data = resp.json()
+        addr = data.get("address", {})
+
+        # Region (viloyat)
+        result["region"] = addr.get("state", "")
+
+        # District (tuman/shahar) — try county first, then city/town
+        result["district"] = addr.get("county", "") or addr.get("city", "") or addr.get("town", "") or addr.get("village", "")
+
+        # Build readable address: city/district + street details
+        parts = []
+        city = addr.get("city", "") or addr.get("town", "") or addr.get("village", "")
+        if city:
+            parts.append(city)
+        # Add street-level detail
+        road = addr.get("road", "")
+        neighbourhood = addr.get("neighbourhood", "") or addr.get("suburb", "")
+        if road:
+            street = road
+            if addr.get("house_number"):
+                street += " " + addr["house_number"]
+            parts.append(street)
+        elif neighbourhood:
+            parts.append(neighbourhood)
+
+        result["address"] = ", ".join(parts) if parts else data.get("display_name", "")[:100]
+    except Exception as e:
+        logger.warning(f"Reverse geocode failed: {e}")
+    return result
+
+
+@dp.message(F.location)
+async def handle_location_before_fallback(message: types.Message):
+    """Handle shared location from user — save coordinates + reverse geocode."""
+    loc = message.location
+    telegram_id = message.from_user.id
+
+    conn = get_db()
+    user = conn.execute(
+        "SELECT telegram_id, first_name, is_approved FROM users WHERE telegram_id = ?",
+        (telegram_id,),
+    ).fetchone()
+
+    if not user:
+        conn.close()
+        await message.reply(
+            "❌ Siz hali ro'yxatdan o'tmagansiz.\n"
+            "Avval ilovada ro'yxatdan o'ting.",
+        )
+        return
+
+    geo = _reverse_geocode(loc.latitude, loc.longitude)
+
+    conn.execute(
+        "UPDATE users SET latitude = ?, longitude = ?, location_address = ?, location_region = ?, location_district = ?, location_updated = datetime('now') WHERE telegram_id = ?",
+        (loc.latitude, loc.longitude, geo["address"], geo["region"], geo["district"], telegram_id),
+    )
+    conn.commit()
+    conn.close()
+
+    maps_url = f"https://maps.google.com/?q={loc.latitude},{loc.longitude}"
+    # Build display: region + district + address detail
+    display_parts = []
+    if geo["region"]:
+        display_parts.append(geo["region"])
+    if geo["address"]:
+        display_parts.append(geo["address"])
+    address_display = ", ".join(display_parts) if display_parts else "manzil aniqlandi"
+
+    # First remove any reply keyboard
+    await message.answer(
+        f"✅ Joylashuvingiz saqlandi!\n\n"
+        f"📍 <b>{address_display}</b>\n"
+        f"🗺 <a href=\"{maps_url}\">Xaritada ko'rish</a>\n\n"
+        f"💡 Buyurtma berishda ushbu manzil ishlatiladi.\n"
+        f"Yangilash uchun yangi joylashuv yuboring.",
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+        reply_markup=ReplyKeyboardRemove(),
+    )
+
+    # Then send the catalog button separately
+    back_keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Katalogga qaytish", web_app=WebAppInfo(url=WEBAPP_URL))]
+        ]
+    )
+    await message.answer(
+        "Katalogni ochish uchun quyidagi tugmani bosing:",
+        reply_markup=back_keyboard,
+    )
+
+
 # Fallback — only for private chats (MUST BE LAST — catches all unmatched messages)
 # ───────────────────────────────────────────
 
