@@ -9,9 +9,6 @@ __pycache__
 .env
 .credentials
 
-# Images (served from /data/images on Railway volume)
-images
-
 # Local database (Railway uses /data mount)
 data/catalog.db
 data/catalog.db-wal
