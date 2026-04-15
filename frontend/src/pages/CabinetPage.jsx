@@ -561,65 +561,37 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         <div className="text-sm text-tg-hint mb-2">
           ⭐ {t.credit_score_title}
         </div>
-        <div className="bg-tg-secondary rounded-xl p-4">
-          <div className="flex items-center gap-4">
-            {/* Score circle */}
-            <div className="relative flex-shrink-0" style={{ width: 80, height: 80 }}>
+        <div className="bg-tg-secondary rounded-xl p-5">
+          {/* Centered score circle — no tier, no credit limit, no updated footer.
+              Keeps the visual identity (arc + number) and the improvement hints. */}
+          <div className="flex justify-center">
+            <div className="relative" style={{ width: 128, height: 128 }}>
               <svg viewBox="0 0 80 80" className="w-full h-full">
-                {/* Background circle */}
                 <circle cx="40" cy="40" r={arcRadius} fill="none"
                   stroke="var(--tg-theme-hint-color, #ccc)" strokeOpacity="0.15"
                   strokeWidth="5" />
-                {/* Score arc */}
                 <circle cx="40" cy="40" r={arcRadius} fill="none"
                   stroke={score >= 71 ? '#8B5CF6' : score >= 51 ? '#10B981' : '#6B7280'}
                   strokeWidth="5" strokeLinecap="round"
                   strokeDasharray={arcCircumference}
                   strokeDashoffset={arcOffset}
                   transform="rotate(-90 40 40)" />
-                {/* Score number */}
-                <text x="40" y="36" textAnchor="middle" fontSize="18" fontWeight="700"
+                <text x="40" y="38" textAnchor="middle" fontSize="18" fontWeight="700"
                   fill="var(--tg-theme-text-color, #333)">{score}</text>
-                <text x="40" y="50" textAnchor="middle" fontSize="8"
+                <text x="40" y="52" textAnchor="middle" fontSize="7"
                   fill="var(--tg-theme-hint-color, #999)">/ 100</text>
               </svg>
             </div>
-
-            {/* Score details */}
-            <div className="flex-1 min-w-0">
-              {/* Tier badge */}
-              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold border ${tc.bg} ${tc.text} ${tc.border}`}>
-                {tier}
-              </span>
-
-              {/* Credit limit */}
-              <div className="mt-1.5">
-                <div className="text-[10px] text-tg-hint">{t.credit_score_limit}</div>
-                <div className="text-sm font-bold">
-                  {bucket === 'Heavy'
-                    ? t.credit_score_manual_review
-                    : formatUzs(limitUzs) + " " + (t.balance_currency || "so'm")}
-                </div>
-              </div>
-            </div>
           </div>
 
-          {/* Hint bullets */}
           {hints.length > 0 && (
-            <div className="mt-3 pt-3 border-t border-tg-hint/10 space-y-1">
+            <div className="mt-4 pt-4 border-t border-tg-hint/10 space-y-1.5">
               {hints.map((h, i) => (
-                <div key={i} className="text-[10px] text-tg-hint flex items-start gap-1.5">
+                <div key={i} className="text-[11px] text-tg-hint flex items-start gap-1.5">
                   <span className="text-tg-hint/40 mt-px">•</span>
                   <span>{h}</span>
                 </div>
               ))}
-            </div>
-          )}
-
-          {/* Last updated */}
-          {creditScore.recalc_date && (
-            <div className="text-[9px] text-tg-hint/50 text-right mt-2">
-              {t.credit_score_updated}: {creditScore.recalc_date}
             </div>
           )}
         </div>
@@ -891,9 +863,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       )}
 
       <MyBusinessSection />
-      {/* Credit score card is hidden until product owner flips it on.
-          Backend scoring continues to run — see /api/finance/credit-score. */}
-      {false && <CreditScoreCard />}
       <BalanceCard />
 
       {lastOrder && (
@@ -995,7 +964,31 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         </>
       )}
 
-      {/* ── Real orders (1C shipments) ── */}
+      {/* ── Last 10 payments (credit side of акт сверки — date + amount only) ── */}
+      {payments.length > 0 && (
+        <div className="mb-4">
+          <div className="text-sm text-tg-hint mb-2">
+            💳 {t.payments_title}
+            <span className="text-[10px] ml-1 opacity-60">· {t.payments_subtitle}</span>
+          </div>
+          <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
+            {payments.map((p) => (
+              <div key={p.id} className="px-4 py-2.5 flex items-center gap-3">
+                <div className="flex-1 min-w-0 text-sm font-medium">
+                  {formatDocDate(p.date)}
+                </div>
+                <div className="text-sm font-semibold whitespace-nowrap">
+                  {p.currency === 'USD'
+                    ? formatUsd(p.amount)
+                    : `${formatUzs(p.amount)} ${t.balance_currency || "so'm"}`}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Real orders (1C shipments) — placed right before the score card ── */}
       {realOrders.length > 0 && (
         <div className="mb-4">
           <div className="text-sm text-tg-hint mb-2">
@@ -1112,34 +1105,11 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         </div>
       )}
 
-      {/* ── Last 10 payments (from client_payments / 1C) ── */}
-      {payments.length > 0 && (
-        <div className="mb-4">
-          <div className="text-sm text-tg-hint mb-2">
-            💳 {t.payments_title}
-            <span className="text-[10px] ml-1 opacity-60">· {t.payments_subtitle}</span>
-          </div>
-          <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
-            {payments.map((p) => (
-              <div key={p.id} className="px-4 py-2.5 flex items-center gap-3">
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium">
-                    {formatDocDate(p.date)}{p.time ? ` · ${p.time}` : ''}
-                  </div>
-                  {p.basis && (
-                    <div className="text-[11px] text-tg-hint truncate">{p.basis}</div>
-                  )}
-                </div>
-                <div className="text-sm font-semibold whitespace-nowrap">
-                  {p.currency === 'USD'
-                    ? formatUsd(p.amount)
-                    : `${formatUzs(p.amount)} ${t.balance_currency || "so'm"}`}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Financial behaviour score — pinned to the bottom of the Cabinet,
+          directly below real orders. Backend continues to compute via
+          /api/finance/credit-score; the card shows only the arc + number +
+          improvement hints per product-owner call. */}
+      <CreditScoreCard />
 
       {/* Reorder confirmation dialog */}
       {reorderDialog && (
