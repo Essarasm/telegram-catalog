@@ -100,11 +100,14 @@ def _track_daily_upload(
     file_name: str | None = None,
     row_count: int = 0,
     notes: str | None = None,
+    upload_date: str | None = None,
 ) -> None:
     """Fire-and-forget: record a successful upload into daily_uploads.
 
-    Any exception is logged and swallowed — a tracking failure must never
-    break the main upload flow.
+    When ``upload_date`` is provided (e.g. a historical snapshot reimport),
+    the row is registered under that date instead of today. Any exception is
+    logged and swallowed — a tracking failure must never break the main
+    upload flow.
     """
     try:
         from backend.services.daily_uploads import record_upload
@@ -116,9 +119,39 @@ def _track_daily_upload(
             file_name=file_name,
             row_count=int(row_count or 0),
             notes=notes,
+            upload_date=upload_date,
         )
     except Exception as e:
         logger.error(f"daily_uploads tracking failed for {upload_type}: {e}")
+
+
+_DDMMYYYY_RE = __import__("re").compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
+
+
+def _extract_snapshot_date(message: types.Message) -> str | None:
+    """Parse a DD/MM/YYYY token from the command caption/text, if present.
+
+    Looks first at the document caption (for file-with-caption uploads),
+    then at the reply-to-message text, then at the message text. Returns
+    ISO YYYY-MM-DD or None.
+    """
+    candidates: list[str] = []
+    if message.text:
+        candidates.append(message.text)
+    if message.caption:
+        candidates.append(message.caption)
+    if message.reply_to_message and message.reply_to_message.caption:
+        candidates.append(message.reply_to_message.caption)
+    for text in candidates:
+        m = _DDMMYYYY_RE.search(text)
+        if m:
+            try:
+                from datetime import date as _date
+                return _date(int(m.group(3)), int(m.group(2)),
+                             int(m.group(1))).isoformat()
+            except (ValueError, TypeError):
+                continue
+    return None
 
 
 # ───────────────────────────────────────────
@@ -608,6 +641,7 @@ async def cmd_prices(message: types.Message):
             message,
             file_name=doc.file_name,
             row_count=int(result.get("excel_products") or 0),
+            upload_date=_extract_snapshot_date(message),
         )
 
         lines = [
@@ -728,6 +762,7 @@ async def cmd_stock(message: types.Message):
             message,
             file_name=doc.file_name,
             row_count=int(result.get("excel_products") or 0),
+            upload_date=_extract_snapshot_date(message),
         )
 
         sc = result.get('status_counts', {})
@@ -1902,11 +1937,17 @@ async def cmd_debtors(message: types.Message):
             await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
             return
 
+        # Snapshot date = the report_date the importer parsed out of the XLS
+        # title ("Дебиторская задолженность на 2 Апреля 2026 г.").
+        # This keeps the historical checklist accurate when past-dated files
+        # are re-uploaded.
+        snapshot_date = result.get("report_date") or _extract_snapshot_date(message)
         _track_daily_upload(
             "debtors",
             message,
             file_name=doc.file_name,
             row_count=int(result.get("total_clients") or 0),
+            upload_date=snapshot_date,
         )
 
         lines = [
@@ -2689,11 +2730,16 @@ async def cmd_cash(message: types.Message):
         cash_item = next((i for i in ck["items"] if i["upload_type"] == "cash"), None)
         if cash_item:
             actual = cash_item.get("actual_count", 0)
-            expected = cash_item.get("expected_count_per_day", 2)
-            if actual < expected:
-                lines.append(f"\n📋 Bugungi касса: {actual}/{expected} (kechqurun fayl ham kerak)")
+            # Reminder target (ritual) may exceed the checklist target.
+            reminder = cash_item.get("reminder_count_per_day") or \
+                       cash_item.get("expected_count_per_day", 1)
+            if actual < reminder:
+                lines.append(
+                    f"\n📋 Bugungi касса: {actual}/{reminder} "
+                    f"(kechqurun fayl ham kerak)"
+                )
             else:
-                lines.append(f"\n📋 Bugungi касса: ✅ {actual}/{expected} tugatildi")
+                lines.append(f"\n📋 Bugungi касса: ✅ {actual}/{reminder} tugatildi")
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
 

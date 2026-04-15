@@ -607,6 +607,23 @@ def init_db():
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_products_search_text ON products(search_text)")
 
+    # Migration: add reminder_count_per_day to daily_upload_schedule.
+    # Decoupled from expected_count_per_day: the checklist counts 1 upload
+    # as "done", while the EOD reminder still nags if the operator skipped
+    # the afternoon batch (e.g. cash: expected=1, reminder=2).
+    sched_cols = {row[1] for row in conn.execute(
+        "PRAGMA table_info(daily_upload_schedule)").fetchall()}
+    if "reminder_count_per_day" not in sched_cols:
+        conn.execute(
+            "ALTER TABLE daily_upload_schedule ADD COLUMN "
+            "reminder_count_per_day INTEGER DEFAULT NULL"
+        )
+        # Seed: cash gets reminder_count=2 (afternoon nudge).
+        conn.execute(
+            "UPDATE daily_upload_schedule SET reminder_count_per_day = 2 "
+            "WHERE upload_type = 'cash'"
+        )
+
     conn.commit()
     conn.close()
 

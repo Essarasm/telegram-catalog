@@ -104,26 +104,48 @@ async def _send_eod_check(bot, chat_id: int) -> None:
             it for it in ck["items"]
             if it.get("required_today") and it["status"] in ("pending", "failed")
         ]
-        if not missing_items:
+        # Also nudge on items that are checklist-done but behind on the
+        # reminder-count target (e.g. cash: expected=1, reminder=2).
+        nudge_items = [
+            it for it in ck["items"]
+            if it.get("required_today")
+            and it["status"] == "done"
+            and (it.get("reminder_count_per_day") or 0)
+                 > it.get("actual_count", 0)
+        ]
+        if not missing_items and not nudge_items:
             return
 
         lines = [
             "⚠️ <b>Tugash nuqtasi / Конец дня — есть пропуски!</b>\n",
             f"📋 {html_escape(ck['date_ru'])}\n",
-            "Bugun hali yuklanmagan:",
         ]
-        for it in missing_items:
-            name = html_escape(it.get("display_name_ru") or it.get("upload_type"))
-            cmd = html_escape(it.get("command") or "")
-            exp = it.get("expected_count_per_day", 1)
-            act = it.get("actual_count", 0)
-            if exp > 1:
-                lines.append(f"  • {name} — {act}/{exp}  ({cmd})")
-            else:
-                lines.append(f"  • {name}  ({cmd})")
+        if missing_items:
+            lines.append("Bugun hali yuklanmagan:")
+            for it in missing_items:
+                name = html_escape(it.get("display_name_ru") or it.get("upload_type"))
+                cmd = html_escape(it.get("command") or "")
+                exp = it.get("expected_count_per_day", 1)
+                act = it.get("actual_count", 0)
+                if exp > 1:
+                    lines.append(f"  • {name} — {act}/{exp}  ({cmd})")
+                else:
+                    lines.append(f"  • {name}  ({cmd})")
+        if nudge_items:
+            lines.append("")
+            lines.append("Eslatma / Напоминание (takroriy yuklash):")
+            for it in nudge_items:
+                name = html_escape(it.get("display_name_ru") or it.get("upload_type"))
+                cmd = html_escape(it.get("command") or "")
+                rem = it.get("reminder_count_per_day") or 0
+                act = it.get("actual_count", 0)
+                lines.append(f"  • {name} — {act}/{rem}  ({cmd})")
         lines.append(f"\nYakuniy: {ck['done']}/{ck['total_required']}")
         await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
-        logger.info(f"EOD escalation sent to {chat_id} — {len(missing_items)} missing")
+        logger.info(
+            f"EOD sent to {chat_id} — {len(missing_items)} missing, "
+            f"{len(nudge_items)} nudge"
+        )
     except Exception as e:
         logger.error(f"EOD check failed: {e}")
 
