@@ -2712,13 +2712,17 @@ async def handle_cash_document(message: types.Message):
 
 @dp.message(Command("fxrate"))
 async def cmd_fxrate(message: types.Message):
-    """Set today's USD/UZS rate. Usage: /fxrate 12650"""
+    """Set USD/UZS rate.
+
+    Usage:
+        /fxrate 12650                  → bugungi kurs
+        /fxrate 01/04/2026 11230       → o'tgan sana (DD/MM/YYYY)
+    """
     if not is_admin(message):
         return
 
     parts = (message.text or "").split()
     if len(parts) < 2:
-        # Show current rate
         from backend.services.daily_uploads import get_latest_fx_rate
         latest = get_latest_fx_rate()
         if latest:
@@ -2727,21 +2731,46 @@ async def cmd_fxrate(message: types.Message):
                 f"Sana: {latest['rate_date']}\n"
                 f"Kurs: <b>{latest['rate']:,.2f}</b> UZS/USD\n"
                 f"Kiritgan: {html_escape(latest.get('uploaded_by_name') or '—')}\n\n"
-                f"💡 Yangilash: <code>/fxrate 12650</code>",
+                f"💡 Bugungi kurs: <code>/fxrate 12650</code>\n"
+                f"💡 O'tgan sana: <code>/fxrate 01/04/2026 11230</code>",
                 parse_mode="HTML",
             )
         else:
             await message.reply(
                 "❌ Kurs hali kiritilmagan.\n\n"
-                "💡 Foydalanish: <code>/fxrate 12650</code>",
+                "💡 Foydalanish:\n"
+                "<code>/fxrate 12650</code>\n"
+                "<code>/fxrate 01/04/2026 11230</code>",
                 parse_mode="HTML",
             )
         return
 
+    # Optional DD/MM/YYYY date as first arg
+    rate_date = None
+    rate_token = parts[1]
+    if "/" in parts[1] and len(parts) >= 3:
+        try:
+            dd, mm, yyyy = parts[1].split("/")
+            from datetime import date as _date
+            rate_date = _date(int(yyyy), int(mm), int(dd)).isoformat()
+        except (ValueError, TypeError):
+            await message.reply(
+                "❌ Sana formati noto'g'ri. DD/MM/YYYY bo'lishi kerak.\n"
+                "Masalan: <code>/fxrate 01/04/2026 11230</code>",
+                parse_mode="HTML",
+            )
+            return
+        rate_token = parts[2]
+
     try:
-        rate = float(parts[1].replace(",", ".").replace(" ", ""))
+        rate = float(rate_token.replace(",", ".").replace(" ", ""))
     except ValueError:
-        await message.reply("❌ Kurs raqam bo'lishi kerak. Masalan: /fxrate 12650")
+        await message.reply(
+            "❌ Kurs raqam bo'lishi kerak.\n"
+            "Masalan: <code>/fxrate 12650</code> yoki "
+            "<code>/fxrate 01/04/2026 11230</code>",
+            parse_mode="HTML",
+        )
         return
 
     if rate < 5000 or rate > 20000:
@@ -2755,11 +2784,17 @@ async def cmd_fxrate(message: types.Message):
         from backend.services.daily_uploads import set_fx_rate, tashkent_today_str
         user_name = _sender_display_name(message)
         user_id = message.from_user.id if message.from_user else None
-        set_fx_rate(rate, user_id=user_id, user_name=user_name)
+        result = set_fx_rate(
+            rate,
+            user_id=user_id,
+            user_name=user_name,
+            rate_date=rate_date,
+        )
+        shown_date = result.get("rate_date") or tashkent_today_str()
 
         await message.reply(
             f"✅ <b>FX rate saqlandi</b>\n\n"
-            f"📅 Sana: {tashkent_today_str()}\n"
+            f"📅 Sana: {shown_date}\n"
             f"💱 Kurs: <b>{rate:,.2f}</b> UZS/USD\n"
             f"👤 Kiritgan: {html_escape(user_name)}",
             parse_mode="HTML",
