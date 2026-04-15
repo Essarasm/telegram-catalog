@@ -1,0 +1,36 @@
+# Version control & dev tools
+.git
+node_modules
+__pycache__
+*.pyc
+.claude
+
+# Secrets
+.env
+.credentials
+
+# Images (served from /data/images on Railway volume)
+images
+
+# Local database (Railway uses /data mount)
+data/catalog.db
+data/catalog.db-wal
+data/catalog.db-shm
+
+# Docs & session logs
+obsidian-vault
+
+# Root-level docs (1C files, photos, etc. dropped here for processing)
+# Note: data/*.xlsx is kept (needed by import scripts)
+/Rassvet_Master.xlsx
+/Rassvet_Public_Offer_Lawyer_Brief.docx
+/clients_data*.csv
+/*.pdf
+/*.doc
+/*.docx
+/*.jpg
+/*.jpeg
+/*.png
+/*.zip
+/*.heic
+/*.xls
