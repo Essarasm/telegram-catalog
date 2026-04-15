@@ -539,3 +539,51 @@ def activity_summary(telegram_id: int = Query(...)):
             },
         },
     }
+
+
+@router.get("/payments")
+def list_client_payments(
+    telegram_id: int = Query(...),
+    limit: int = Query(10, ge=1, le=100),
+):
+    """Return the most recent payments from client_payments for this client.
+
+    Used by the Cabinet "Oxirgi to'lovlar" section. Newest first, one row per
+    1C document. Amount is shown in the document's original currency.
+    """
+    client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    if not client_ids:
+        if conn:
+            conn.close()
+        return {"ok": True, "payments": [], "linked": False}
+
+    placeholders = ",".join("?" * len(client_ids))
+    rows = conn.execute(
+        f"""SELECT id, doc_number_1c, doc_date, doc_time,
+                   amount_local, amount_currency, currency,
+                   basis, cashflow_category
+            FROM client_payments
+            WHERE client_id IN ({placeholders})
+            ORDER BY doc_date DESC, doc_time DESC, id DESC
+            LIMIT ?""",
+        tuple(client_ids) + (limit,),
+    ).fetchall()
+    conn.close()
+
+    payments = []
+    for r in rows:
+        currency = (r["currency"] or "UZS").upper()
+        # Prefer the currency-native amount; fall back to local if unset.
+        amount = r["amount_currency"] if (r["amount_currency"] or 0) else r["amount_local"]
+        payments.append({
+            "id": r["id"],
+            "doc_number": r["doc_number_1c"],
+            "date": r["doc_date"],
+            "time": (r["doc_time"] or "")[:5],
+            "amount": float(amount or 0),
+            "currency": currency,
+            "basis": r["basis"] or "",
+            "category": r["cashflow_category"] or "",
+        })
+
+    return {"ok": True, "payments": payments, "linked": True}

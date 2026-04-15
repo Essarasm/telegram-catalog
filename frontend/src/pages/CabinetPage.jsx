@@ -173,6 +173,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [reordering, setReordering] = useState(false);
   const [toast, setToast] = useState(null);
   const [balance, setBalance] = useState(null);
+  const [payments, setPayments] = useState([]);
   const [balanceLoading, setBalanceLoading] = useState(true);
   const [realOrders, setRealOrders] = useState([]);
   const [realLoading, setRealLoading] = useState(true);
@@ -229,6 +230,13 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         setRealLoading(false);
       })
       .catch(() => setRealLoading(false));
+
+    fetch(`${API}/payments?telegram_id=${userId}&limit=10`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) setPayments(data.payments || []);
+      })
+      .catch(() => {});
 
     // Rassvet Plus — fetch business intelligence data
     Promise.all([
@@ -883,7 +891,9 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       )}
 
       <MyBusinessSection />
-      <CreditScoreCard />
+      {/* Credit score card is hidden until product owner flips it on.
+          Backend scoring continues to run — see /api/finance/credit-score. */}
+      {false && <CreditScoreCard />}
       <BalanceCard />
 
       {lastOrder && (
@@ -993,7 +1003,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
             <span className="text-[10px] ml-1 opacity-60">· {t.real_orders_subtitle}</span>
           </div>
           <div className="space-y-2">
-            {realOrders.slice(0, 5).map((ro) => {
+            {realOrders.slice(0, 10).map((ro) => {
               const isOpen = expandedRealId === ro.id;
               return (
                 <div key={ro.id} className="bg-tg-secondary rounded-xl overflow-hidden">
@@ -1098,6 +1108,35 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Last 10 payments (from client_payments / 1C) ── */}
+      {payments.length > 0 && (
+        <div className="mb-4">
+          <div className="text-sm text-tg-hint mb-2">
+            💳 {t.payments_title}
+            <span className="text-[10px] ml-1 opacity-60">· {t.payments_subtitle}</span>
+          </div>
+          <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
+            {payments.map((p) => (
+              <div key={p.id} className="px-4 py-2.5 flex items-center gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium">
+                    {formatDocDate(p.date)}{p.time ? ` · ${p.time}` : ''}
+                  </div>
+                  {p.basis && (
+                    <div className="text-[11px] text-tg-hint truncate">{p.basis}</div>
+                  )}
+                </div>
+                <div className="text-sm font-semibold whitespace-nowrap">
+                  {p.currency === 'USD'
+                    ? formatUsd(p.amount)
+                    : `${formatUzs(p.amount)} ${t.balance_currency || "so'm"}`}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
