@@ -258,7 +258,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                 }}
               >
                 {/* Product image — larger */}
-                <div className="w-full aspect-square bg-gray-100 flex items-center justify-center overflow-hidden p-3">
+                <div className="w-full aspect-square bg-tg-bg flex items-center justify-center overflow-hidden p-3">
                   {imgUrl ? (
                     <img src={imgUrl} alt="" className="w-full h-full object-contain" loading="lazy" />
                   ) : (
