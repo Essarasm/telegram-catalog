@@ -1,5 +1,5 @@
 [deploy]
-startCommand = "mkdir -p /data/images && rsync -a --delete ./images/ /data/images/ && python -m backend.services.backup_users backup && python -m backend.services.import_products && python -m backend.services.update_display_names && python -m backend.services.sync_images && python -m backend.services.import_clients && python -m backend.services.backup_users restore && python start_all.py"
+startCommand = "mkdir -p /data/images && rm -rf /data/images/* && cp -r ./images/. /data/images/ && python -m backend.services.backup_users backup && python -m backend.services.import_products && python -m backend.services.update_display_names && python -m backend.services.sync_images && python -m backend.services.import_clients && python -m backend.services.backup_users restore && python start_all.py"
 
 [[mounts]]
 mountPath = "/data"
