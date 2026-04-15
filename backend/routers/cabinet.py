@@ -197,7 +197,7 @@ def real_order_detail(real_order_id: int, telegram_id: int = Query(...)):
     if not detail:
         return JSONResponse({"ok": False, "error": "Real order not found"}, status_code=404)
 
-    if detail["order"].get("client_id") != user["client_id"]:
+    if detail["order"].get("client_id") not in client_ids:
         return JSONResponse({"ok": False, "error": "Forbidden"}, status_code=403)
 
     return {"ok": True, **detail}
@@ -332,36 +332,52 @@ def spend_trend(telegram_id: int = Query(...), months: int = Query(12, ge=1, le=
     ).fetchall()
     conn.close()
 
-    data = []
+    # Index existing data by month
+    by_month = {}
     for r in rows:
-        data.append({
+        by_month[r["month"]] = {
             "month": r["month"],
             "doc_count": r["doc_count"],
             "total_uzs": round(float(r["total_uzs"] or 0)),
             "total_usd": round(float(r["total_usd"] or 0), 2),
             "total_qty": round(float(r["total_qty"] or 0), 1),
             "line_count": r["line_count"],
-        })
+        }
 
-    # Reverse so oldest month is first (chronological order for chart)
-    data.reverse()
+    # Zero-fill missing months in the requested window (ending at current month)
+    from datetime import date
+    today = date.today()
+    data = []
+    for i in range(months - 1, -1, -1):
+        y = today.year
+        m = today.month - i
+        while m <= 0:
+            m += 12
+            y -= 1
+        key = f"{y:04d}-{m:02d}"
+        if key in by_month:
+            data.append(by_month[key])
+        else:
+            data.append({
+                "month": key, "doc_count": 0, "total_uzs": 0, "total_usd": 0,
+                "total_qty": 0, "line_count": 0,
+            })
 
     return {"ok": True, "months": data, "linked": True}
 
 
 @router.get("/top-products")
 def top_products(telegram_id: int = Query(...), limit: int = Query(5, ge=1, le=20)):
-    """Client's top products by total spend (UZS), from real_order_items.
+    """Client's top products by total spend, from real_order_items.
 
-    Returns product name, total quantity, total UZS, total USD, order count.
+    Returns two lists: top by UZS and top by USD (each up to `limit` items).
     """
     client_ids, conn = _get_all_client_ids_for_user(telegram_id)
     if not client_ids:
-        return {"ok": True, "products": [], "linked": False}
+        return {"ok": True, "products": [], "top_uzs": [], "top_usd": [], "linked": False}
 
     placeholders = ",".join("?" * len(client_ids))
-    rows = conn.execute(
-        f"""SELECT ri.product_name_1c                       AS name,
+    base_query = f"""SELECT ri.product_name_1c                       AS name,
                   SUM(COALESCE(ri.quantity, 0))             AS total_qty,
                   SUM(COALESCE(ri.total_local, 0))         AS total_uzs,
                   SUM(COALESCE(ri.total_currency, 0))      AS total_usd,
@@ -369,24 +385,33 @@ def top_products(telegram_id: int = Query(...), limit: int = Query(5, ge=1, le=2
            FROM real_order_items ri
            JOIN real_orders ro ON ro.id = ri.real_order_id
            WHERE ro.client_id IN ({placeholders})
-           GROUP BY ri.product_name_1c
-           ORDER BY total_uzs DESC, total_qty DESC
-           LIMIT ?""",
+           GROUP BY ri.product_name_1c"""
+
+    rows_uzs = conn.execute(
+        base_query + " HAVING total_uzs > 0 ORDER BY total_uzs DESC, total_qty DESC LIMIT ?",
+        (*client_ids, limit),
+    ).fetchall()
+
+    rows_usd = conn.execute(
+        base_query + " HAVING total_usd > 0 ORDER BY total_usd DESC, total_qty DESC LIMIT ?",
         (*client_ids, limit),
     ).fetchall()
     conn.close()
 
-    products = []
-    for r in rows:
-        products.append({
+    def to_list(rows):
+        return [{
             "name": (r["name"] or "").strip(),
             "total_qty": round(float(r["total_qty"] or 0), 1),
             "total_uzs": round(float(r["total_uzs"] or 0)),
             "total_usd": round(float(r["total_usd"] or 0), 2),
             "order_count": r["order_count"],
-        })
+        } for r in rows]
 
-    return {"ok": True, "products": products, "linked": True}
+    top_uzs = to_list(rows_uzs)
+    top_usd = to_list(rows_usd)
+
+    # Backward compatibility: "products" returns the combined view (UZS first)
+    return {"ok": True, "products": top_uzs, "top_uzs": top_uzs, "top_usd": top_usd, "linked": True}
 
 
 @router.get("/activity-summary")
@@ -402,7 +427,15 @@ def activity_summary(telegram_id: int = Query(...)):
 
     placeholders = ",".join("?" * len(client_ids))
 
-    # Current month + previous month stats
+    # Calendar-based current month and previous month
+    from datetime import date
+    today = date.today()
+    this_month_key = today.strftime("%Y-%m")
+    prev_year = today.year if today.month > 1 else today.year - 1
+    prev_m = today.month - 1 if today.month > 1 else 12
+    prev_month_key = f"{prev_year:04d}-{prev_m:02d}"
+
+    # Fetch stats for exactly these two calendar months
     month_stats = conn.execute(
         f"""SELECT strftime('%Y-%m', ro.doc_date) AS month,
                   COUNT(DISTINCT ro.id)           AS doc_count,
@@ -413,11 +446,13 @@ def activity_summary(telegram_id: int = Query(...)):
            FROM real_orders ro
            JOIN real_order_items ri ON ri.real_order_id = ro.id
            WHERE ro.client_id IN ({placeholders})
-           GROUP BY month
-           ORDER BY month DESC
-           LIMIT 2""",
-        tuple(client_ids),
+             AND strftime('%Y-%m', ro.doc_date) IN (?, ?)
+           GROUP BY month""",
+        (*client_ids, this_month_key, prev_month_key),
     ).fetchall()
+
+    # Index by month key so we can assign to this/prev regardless of presence
+    stats_by_month = {row["month"]: row for row in month_stats}
 
     # Lifetime stats
     lifetime = conn.execute(
@@ -448,8 +483,35 @@ def activity_summary(telegram_id: int = Query(...)):
             "line_count": row["line_count"],
         }
 
-    this_month = _month_dict(month_stats[0] if month_stats else None)
-    prev_month = _month_dict(month_stats[1] if len(month_stats) > 1 else None)
+    this_month = _month_dict(stats_by_month.get(this_month_key))
+    if not this_month.get("month"):
+        this_month["month"] = this_month_key
+    prev_month = _month_dict(stats_by_month.get(prev_month_key))
+    if not prev_month.get("month"):
+        prev_month["month"] = prev_month_key
+
+    # Find last active month (regardless of calendar) — useful when current/prev are empty
+    last_active_month = None
+    if (this_month["doc_count"] == 0) and (prev_month["doc_count"] == 0):
+        conn2 = get_db()
+        placeholders2 = ",".join("?" * len(client_ids))
+        last_row = conn2.execute(
+            f"""SELECT strftime('%Y-%m', ro.doc_date) AS month,
+                      COUNT(DISTINCT ro.id)           AS doc_count,
+                      SUM(COALESCE(ri.total_local, 0))     AS total_uzs,
+                      SUM(COALESCE(ri.total_currency, 0))  AS total_usd,
+                      SUM(COALESCE(ri.quantity, 0))         AS total_qty,
+                      COUNT(*)                              AS line_count
+               FROM real_orders ro
+               JOIN real_order_items ri ON ri.real_order_id = ro.id
+               WHERE ro.client_id IN ({placeholders2})
+               GROUP BY month
+               ORDER BY month DESC
+               LIMIT 1""",
+            tuple(client_ids),
+        ).fetchone()
+        conn2.close()
+        last_active_month = _month_dict(last_row)
 
     total_orders = lifetime["total_orders"] or 0
     avg_uzs = round(float(lifetime["total_uzs"] or 0) / total_orders) if total_orders else 0
@@ -462,6 +524,7 @@ def activity_summary(telegram_id: int = Query(...)):
         "summary": {
             "this_month": this_month,
             "prev_month": prev_month,
+            "last_active_month": last_active_month,
             "lifetime": {
                 "total_orders": total_orders,
                 "total_uzs": round(float(lifetime["total_uzs"] or 0)),
