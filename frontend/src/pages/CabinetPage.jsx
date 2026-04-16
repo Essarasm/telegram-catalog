@@ -163,6 +163,23 @@ function SpendChart({ data, valueKey, color, label, formatValue, header, compari
   );
 }
 
+function AktSheetItemsLoader({ orderId, onLoaded }) {
+  useEffect(() => {
+    const userId = getUserId();
+    if (!orderId || !userId) { onLoaded([]); return; }
+    let cancelled = false;
+    fetch(`${API}/real-orders/${orderId}?telegram_id=${userId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled) return;
+        onLoaded(data?.ok ? (data.items || []) : []);
+      })
+      .catch(() => { if (!cancelled) onLoaded([]); });
+    return () => { cancelled = true; };
+  }, [orderId]);
+  return <div className="text-[11px] text-tg-hint py-1">…</div>;
+}
+
 export default function CabinetPage({ cart, onNavigateToCart }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -184,8 +201,8 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   // Акт сверки state
   const [aktUzs, setAktUzs] = useState(null);
   const [aktUsd, setAktUsd] = useState(null);
-  const [aktCurrency, setAktCurrency] = useState('UZS');
   const [aktSheet, setAktSheet] = useState(null);  // payment or order detail
+  const [aktSheetItems, setAktSheetItems] = useState(null);  // order items when sheet is an order
 
   // Rassvet Plus — business intelligence state
   const [spendTrend, setSpendTrend] = useState(null);
@@ -244,17 +261,13 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       })
       .catch(() => {});
 
-    // Акт сверки — both currencies in parallel
+    // Hisob-kitob — both currencies in parallel (merged into one timeline)
     Promise.all([
       fetch(`${API}/akt-sverki?telegram_id=${userId}&currency=UZS&limit=80`).then(r => r.json()),
       fetch(`${API}/akt-sverki?telegram_id=${userId}&currency=USD&limit=80`).then(r => r.json()),
     ]).then(([uzs, usd]) => {
       if (uzs?.ok) setAktUzs(uzs);
       if (usd?.ok) setAktUsd(usd);
-      // Pick the currency with more events as default visible
-      const uzsEvents = (uzs?.events || []).length;
-      const usdEvents = (usd?.events || []).length;
-      setAktCurrency(usdEvents > uzsEvents ? 'USD' : 'UZS');
     }).catch(() => {});
 
     // Rassvet Plus — fetch business intelligence data
@@ -618,21 +631,21 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     );
   };
 
-  // ── Акт сверки (unified orders + payments timeline with FIFO) ──
-  const aktCur = aktCurrency === 'USD' ? aktUsd : aktUzs;
+  // ── Hisob-kitob (unified orders + payments timeline with FIFO, both currencies merged) ──
   const fmtAmount = (v, cur) =>
     cur === 'USD' ? formatUsd(v) : `${formatUzs(v)} ${t.balance_currency || "so'm"}`;
 
-  const AktSverkiHero = () => {
-    if (!aktCur || !aktCur.linked) return null;
-    const s = aktCur.state || {};
-    const cur = aktCur.currency;
+  const renderMiniStatus = (akt) => {
+    if (!akt || !akt.linked) return null;
+    const s = akt.state || {};
+    const cur = akt.currency;
+    if (s.code === 'clean' && (akt.events || []).length === 0) return null;  // no activity in this currency
     let bg, icon, title, sub;
     if (s.code === 'clean') {
       bg = 'bg-green-50 border-green-200 text-green-800';
       icon = '✅';
       title = t.akt_clean_title;
-      sub = t.akt_clean_sub;
+      sub = cur + ' — ' + t.akt_clean_sub;
     } else if (s.code === 'advance') {
       bg = 'bg-emerald-50 border-emerald-200 text-emerald-800';
       icon = '💚';
@@ -642,25 +655,25 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       bg = 'bg-amber-50 border-amber-200 text-amber-800';
       icon = '🟡';
       title = `${t.akt_debt_title}: ${fmtAmount(s.debt, cur)}`;
-      sub = `${s.days_overdue} ${t.akt_days}. ${t.akt_days_to_call.replace('{n}', Math.max(0, 15 - s.days_overdue))}`;
+      sub = `${s.days_overdue} ${t.akt_days} · ${t.akt_days_to_call.replace('{n}', Math.max(0, 15 - s.days_overdue))}`;
     } else if (s.code === 'debt_15_29') {
       bg = 'bg-orange-50 border-orange-300 text-orange-900';
       icon = '⚠️';
       title = `${t.akt_debt_title}: ${fmtAmount(s.debt, cur)}`;
-      sub = `${s.days_overdue} ${t.akt_days}. ${t.akt_will_call_soon}`;
+      sub = `${s.days_overdue} ${t.akt_days} · ${t.akt_will_call_soon}`;
     } else if (s.code === 'debt_30_plus') {
       bg = 'bg-red-50 border-red-300 text-red-900';
       icon = '🔴';
       title = `${t.akt_debt_overdue}: ${fmtAmount(s.debt, cur)}`;
-      sub = `${t.akt_overdue_by} ${s.days_overdue} ${t.akt_days}. ${t.akt_contact_today}`;
+      sub = `${t.akt_overdue_by} ${s.days_overdue} ${t.akt_days}`;
     } else return null;
     return (
-      <div className={`rounded-xl p-3.5 mb-3 border ${bg}`}>
-        <div className="flex items-start gap-2.5">
-          <span className="text-xl flex-shrink-0 leading-none mt-0.5">{icon}</span>
+      <div className={`rounded-xl p-3 border ${bg} flex-1 min-w-0`}>
+        <div className="flex items-start gap-2">
+          <span className="text-base flex-shrink-0 leading-none mt-0.5">{icon}</span>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold">{title}</div>
-            <div className="text-[11px] mt-0.5 opacity-80">{sub}</div>
+            <div className="text-[13px] font-semibold truncate">{title}</div>
+            <div className="text-[10px] mt-0.5 opacity-80 leading-tight">{sub}</div>
           </div>
         </div>
       </div>
@@ -668,38 +681,39 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   };
 
   const AktSverkiSection = () => {
-    if (!aktCur || !aktCur.linked) return null;
-    const hasUzs = (aktUzs?.events || []).length > 0;
-    const hasUsd = (aktUsd?.events || []).length > 0;
-    if (!hasUzs && !hasUsd) return null;
-    const events = [...(aktCur.events || [])].reverse();  // newest first
+    const uzsLinked = aktUzs?.linked;
+    const usdLinked = aktUsd?.linked;
+    if (!uzsLinked && !usdLinked) return null;
+    const uzsEvents = aktUzs?.events || [];
+    const usdEvents = aktUsd?.events || [];
+    if (uzsEvents.length === 0 && usdEvents.length === 0) return null;
+
+    // Merge both currencies into one chronological stream (newest first)
+    const events = [...uzsEvents, ...usdEvents].sort((a, b) => {
+      const d = (b.date || '').localeCompare(a.date || '');
+      if (d !== 0) return d;
+      return (b.id || 0) - (a.id || 0);
+    });
+
+    const uzsStatus = renderMiniStatus(aktUzs);
+    const usdStatus = renderMiniStatus(aktUsd);
 
     return (
       <div className="mb-4">
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-sm text-tg-hint">
-            📒 {t.akt_title}
-          </div>
-          {hasUzs && hasUsd && (
-            <div className="flex rounded-lg bg-tg-secondary p-0.5 text-[11px] font-medium">
-              <button
-                onClick={() => setAktCurrency('UZS')}
-                className={`px-2.5 py-1 rounded-md ${aktCurrency === 'UZS' ? 'bg-tg-bg shadow-sm' : 'text-tg-hint'}`}
-              >UZS</button>
-              <button
-                onClick={() => setAktCurrency('USD')}
-                className={`px-2.5 py-1 rounded-md ${aktCurrency === 'USD' ? 'bg-tg-bg shadow-sm' : 'text-tg-hint'}`}
-              >USD</button>
-            </div>
-          )}
+        <div className="text-sm text-tg-hint mb-2">
+          📒 {t.akt_title}
         </div>
 
-        <AktSverkiHero />
+        {(uzsStatus || usdStatus) && (
+          <div className="flex gap-2 mb-3">
+            {uzsStatus}
+            {usdStatus}
+          </div>
+        )}
 
         <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
           {events.map((e) => {
             const isOrder = e.type === 'order';
-            const amount = (isOrder ? -1 : 1) * e.amount;
             const running = e.running_balance || 0;
             const paidFully = isOrder && (e.remaining || 0) <= 0.01;
             const partial = isOrder && (e.remaining || 0) > 0.01 && (e.remaining || 0) < e.amount;
@@ -707,14 +721,14 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
             const rowIcon = isOrder ? '🚚' : '💳';
             return (
               <button
-                key={`${e.type}-${e.id}`}
-                onClick={() => setAktSheet({ ...e, currency: aktCur.currency })}
+                key={`${e.currency}-${e.type}-${e.id}`}
+                onClick={() => { setAktSheet({ ...e }); setAktSheetItems(null); }}
                 className="w-full px-4 py-2.5 flex items-center gap-3 text-left active:bg-tg-bg/30"
               >
                 <span className="text-base flex-shrink-0">{rowIcon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium">
-                    {formatDocDate(e.date)}{e.time ? ` · ${e.time}` : ''}
+                    {formatDocDate(e.date)}
                     {isOrder && paidFully && <span className="text-[10px] text-green-600 ml-1.5">✓ {t.akt_order_paid}</span>}
                     {isOrder && partial && <span className="text-[10px] text-amber-600 ml-1.5">● {t.akt_order_partial}</span>}
                     {isOrder && !paidFully && !partial && <span className="text-[10px] text-tg-hint ml-1.5">○ {t.akt_order_unpaid}</span>}
@@ -1245,7 +1259,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                     +{fmtAmount(aktSheet.amount, aktSheet.currency)}
                   </div>
                   <div className="text-xs text-tg-hint mt-0.5">
-                    {formatDocDate(aktSheet.date)}{aktSheet.time ? ` · ${aktSheet.time}` : ''}
+                    {formatDocDate(aktSheet.date)}
                   </div>
                 </div>
                 {(aktSheet.covers || []).length > 0 ? (
@@ -1294,13 +1308,52 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                     −{fmtAmount(aktSheet.amount, aktSheet.currency)}
                   </div>
                   <div className="text-xs text-tg-hint mt-0.5">
-                    {formatDocDate(aktSheet.date)}{aktSheet.time ? ` · ${aktSheet.time}` : ''}
+                    {formatDocDate(aktSheet.date)}
                   </div>
                 </div>
+                {(aktSheet.remaining || 0) > 0.01 && (
+                  <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-900">
+                    {t.akt_remaining}: <b>{fmtAmount(aktSheet.remaining, aktSheet.currency)}</b>
+                  </div>
+                )}
+
+                {/* Items — loaded on demand from /api/cabinet/real-orders/{id} */}
+                <div className="mb-3">
+                  <div className="text-xs text-tg-hint mb-2">{t.real_order_view_items}:</div>
+                  {aktSheetItems === null ? (
+                    <AktSheetItemsLoader
+                      orderId={aktSheet.id}
+                      onLoaded={setAktSheetItems}
+                    />
+                  ) : aktSheetItems.length > 0 ? (
+                    <div className="space-y-1 max-h-60 overflow-y-auto">
+                      {aktSheetItems.map((item, idx) => (
+                        <div key={idx} className="flex items-center gap-2 py-1 border-b border-tg-hint/10">
+                          <div className="flex-1 min-w-0 text-[12px] truncate">
+                            {item.product_name_1c || item.name_display}
+                          </div>
+                          <div className="text-[11px] text-tg-hint whitespace-nowrap">
+                            {item.quantity}
+                          </div>
+                          <div className="text-[11px] font-semibold whitespace-nowrap min-w-[72px] text-right">
+                            {(item.total_local || 0) > 0
+                              ? formatUzs(item.total_local)
+                              : (item.total_currency || 0) > 0
+                                ? formatUsd(item.total_currency)
+                                : '—'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-tg-hint">—</div>
+                  )}
+                </div>
+
                 {(aktSheet.paid_by || []).length > 0 && (
                   <>
                     <div className="text-xs text-tg-hint mb-2">{t.akt_paid_by}:</div>
-                    <div className="space-y-1.5">
+                    <div className="space-y-1.5 mb-3">
                       {aktSheet.paid_by.map((p, i) => (
                         <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
                           <span className="text-xs">{p.kind === 'advance' ? '💚' : '💳'}</span>
@@ -1320,13 +1373,8 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                     </div>
                   </>
                 )}
-                {(aktSheet.remaining || 0) > 0.01 && (
-                  <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-900">
-                    {t.akt_remaining}: <b>{fmtAmount(aktSheet.remaining, aktSheet.currency)}</b>
-                  </div>
-                )}
                 {(aktSheet.paid_by || []).length === 0 && (aktSheet.remaining || 0) > 0.01 && (
-                  <div className="text-sm text-tg-hint text-center py-4">
+                  <div className="text-[11px] text-tg-hint italic mb-2">
                     {t.akt_order_unpaid_full}
                   </div>
                 )}
