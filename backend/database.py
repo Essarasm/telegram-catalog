@@ -667,6 +667,27 @@ def init_db():
         ON confirmed_orders(wishlist_order_id)
     """)
 
+    # Agent flag + placed_by attribution. Enables the agent dashboard:
+    #   is_agent=1 users see a daily/monthly stats card in their Cabinet
+    #   orders.placed_by_telegram_id records who physically placed the
+    #   order, even when /testclient impersonation is active (order.client_id
+    #   stays the client's id; placed_by_telegram_id is the agent's tg id).
+    user_cols_agent = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "is_agent" not in user_cols_agent:
+        conn.execute("ALTER TABLE users ADD COLUMN is_agent INTEGER DEFAULT 0")
+    order_cols4 = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    if "placed_by_telegram_id" not in order_cols4:
+        conn.execute("ALTER TABLE orders ADD COLUMN placed_by_telegram_id INTEGER")
+        # Backfill: every existing order's placed_by = its telegram_id
+        conn.execute(
+            "UPDATE orders SET placed_by_telegram_id = telegram_id "
+            "WHERE placed_by_telegram_id IS NULL"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orders_placed_by "
+        "ON orders(placed_by_telegram_id)"
+    )
+
     conn.commit()
     conn.close()
 

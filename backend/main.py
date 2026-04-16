@@ -117,6 +117,8 @@ app.include_router(finance.router)
 app.include_router(admin.router)
 app.include_router(feedback.router)
 app.include_router(locations.router)
+from backend.routers import agent
+app.include_router(agent.router)
 app.include_router(locations.client_router)
 
 # Serve admin dashboard (static HTML)

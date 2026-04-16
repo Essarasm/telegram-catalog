@@ -1405,6 +1405,64 @@ async def on_testclient_callback(cb: types.CallbackQuery):
         conn.close()
 
 
+@dp.message(Command("makeagent"))
+async def cmd_makeagent(message: types.Message):
+    """Toggle users.is_agent for a given Telegram ID.
+
+    Usage:
+        /makeagent 652836922            — set is_agent=1
+        /makeagent 652836922 off        — set is_agent=0
+        /makeagent list                 — show all current agents
+    """
+    if not is_admin(message):
+        return
+    parts = (message.text or "").split()
+    conn = get_db()
+    try:
+        if len(parts) == 2 and parts[1].lower() == "list":
+            rows = conn.execute(
+                "SELECT telegram_id, first_name, last_name, client_id "
+                "FROM users WHERE is_agent = 1"
+            ).fetchall()
+            if not rows:
+                await message.reply("Agentlar ro'yxati bo'sh.")
+                return
+            lines = [f"👔 <b>Agentlar ({len(rows)}):</b>", ""]
+            for r in rows:
+                name = " ".join(filter(None, [r["first_name"], r["last_name"]])) or "—"
+                lines.append(f"  <code>{r['telegram_id']}</code> — {html_escape(name)}")
+            await message.reply("\n".join(lines), parse_mode="HTML")
+            return
+
+        if len(parts) < 2 or not parts[1].isdigit():
+            await message.reply(
+                "Foydalanish:\n"
+                "<code>/makeagent 652836922</code> — qo'shish\n"
+                "<code>/makeagent 652836922 off</code> — o'chirish\n"
+                "<code>/makeagent list</code> — ro'yxat",
+                parse_mode="HTML",
+            )
+            return
+
+        target_id = int(parts[1])
+        turn_off = len(parts) >= 3 and parts[2].lower() in ("off", "0", "false")
+        new_value = 0 if turn_off else 1
+
+        conn.execute(
+            "INSERT OR IGNORE INTO users (telegram_id, is_approved) VALUES (?, 1)",
+            (target_id,),
+        )
+        conn.execute(
+            "UPDATE users SET is_agent = ? WHERE telegram_id = ?",
+            (new_value, target_id),
+        )
+        conn.commit()
+        label = "✅ Agent qilindi" if new_value else "❌ Agent emas"
+        await message.reply(f"{label}: <code>{target_id}</code>", parse_mode="HTML")
+    finally:
+        conn.close()
+
+
 @dp.message(Command("testclient"))
 async def cmd_testclient(message: types.Message, _override_arg: str | None = None):
     """Link admin's account to a 1C client for testing the Cabinet balance view.

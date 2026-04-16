@@ -1,5 +1,12 @@
 {
   "add_to_cart": "Qo'shish",
+  "agent_clients": "mijoz",
+  "agent_dashboard_beta": "Beta",
+  "agent_dashboard_title": "Agent paneli",
+  "agent_orders": "buyurtma",
+  "agent_recent": "Oxirgi buyurtmalar",
+  "agent_this_month": "Bu oy",
+  "agent_today": "Bugun",
   "akt_advance_sub": "Keyingi buyurtma uchun foydalaning",
   "akt_advance_title": "Avans",
   "akt_balance": "Balans",

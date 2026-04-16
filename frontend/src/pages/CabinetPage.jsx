@@ -295,6 +295,9 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   // Confirmed-vs-wishlist diff sheet
   const [confirmSheet, setConfirmSheet] = useState(null);  // {wishlistOrderId, loading, data}
 
+  // Agent dashboard (only populated if this user is an agent)
+  const [agentStats, setAgentStats] = useState(null);
+
   // Rassvet Plus — business intelligence state
   const [spendTrend, setSpendTrend] = useState(null);
   const [topProducts, setTopProducts] = useState(null);
@@ -356,6 +359,12 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     fetch(`${API}/akt-sverki?telegram_id=${userId}&limit=80`)
       .then(r => r.json())
       .then(data => { if (data?.ok) setAkt(data); })
+      .catch(() => {});
+
+    // Agent dashboard (403 if not an agent → ignored)
+    fetch(`/api/agent/stats?telegram_id=${userId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.ok) setAgentStats(data); })
       .catch(() => {});
 
     // Rassvet Plus — fetch business intelligence data
@@ -714,6 +723,73 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     );
   };
 
+  // ── Agent dashboard card (only rendered if /api/agent/stats returned 200) ──
+  const AgentStatsCard = () => {
+    if (!agentStats || !agentStats.is_agent) return null;
+    const today = agentStats.today || {};
+    const month = agentStats.month || {};
+    const fmtUzsInt = (v) => (v || 0).toLocaleString('ru-RU').replace(/,/g, ' ');
+    return (
+      <div className="mb-4 rounded-xl p-4 bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-lg">
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-[11px] uppercase tracking-wider opacity-90">
+            {t.agent_dashboard_title || 'Agent paneli'}
+          </div>
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20">
+            {t.agent_dashboard_beta || 'Beta'}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <div className="text-[10px] opacity-80 uppercase">{t.agent_today || 'Bugun'}</div>
+            <div className="text-2xl font-bold leading-tight">{today.order_count || 0}</div>
+            <div className="text-[10px] opacity-80">{t.agent_orders || "buyurtma"}</div>
+            {(today.total_uzs > 0) && (
+              <div className="text-[11px] mt-1">{fmtUzsInt(today.total_uzs)} so'm</div>
+            )}
+            {(today.total_usd > 0) && (
+              <div className="text-[11px]">${(today.total_usd).toFixed(2)}</div>
+            )}
+          </div>
+          <div>
+            <div className="text-[10px] opacity-80 uppercase">{t.agent_this_month || 'Oy'}</div>
+            <div className="text-2xl font-bold leading-tight">{month.order_count || 0}</div>
+            <div className="text-[10px] opacity-80">
+              {t.agent_orders || "buyurtma"} · {month.unique_clients || 0} {t.agent_clients || "mijoz"}
+            </div>
+            {(month.total_uzs > 0) && (
+              <div className="text-[11px] mt-1">{fmtUzsInt(month.total_uzs)} so'm</div>
+            )}
+            {(month.total_usd > 0) && (
+              <div className="text-[11px]">${(month.total_usd).toFixed(2)}</div>
+            )}
+          </div>
+        </div>
+        {(agentStats.recent_orders || []).length > 0 && (
+          <div className="mt-3 pt-3 border-t border-white/20">
+            <div className="text-[10px] opacity-80 uppercase mb-1.5">
+              {t.agent_recent || 'Oxirgi buyurtmalar'}
+            </div>
+            <div className="space-y-1">
+              {agentStats.recent_orders.slice(0, 3).map((o) => (
+                <div key={o.id} className="text-[11px] flex items-center gap-2">
+                  <span className="opacity-70 whitespace-nowrap">
+                    {(o.created_at || '').slice(5, 10)}
+                  </span>
+                  <span className="flex-1 truncate">{o.client_1c}</span>
+                  <span className="opacity-80 whitespace-nowrap">
+                    {o.total_uzs > 0 ? fmtUzsInt(o.total_uzs) + ' ' : ''}
+                    {o.total_usd > 0 ? '$' + o.total_usd.toFixed(2) : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // ── Hisob-kitob (unified dual-currency timeline) ──
   const fmtUzs = (v) => `${formatUzs(v)} ${t.balance_currency || "so'm"}`;
   const fmtUsd = (v) => formatUsd(v);
@@ -1058,6 +1134,11 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
 
   return (
     <div>
+      {/* Agent dashboard — pinned to the very top for motivation.
+          Only renders for users with is_agent = 1 (the endpoint returns 403
+          otherwise, so non-agents see nothing). */}
+      <AgentStatsCard />
+
       {/* Client 1C name — identifies which 1C account the Telegram user is linked to */}
       {akt?.client_1c_name && (
         <div className="mb-3 text-center">
