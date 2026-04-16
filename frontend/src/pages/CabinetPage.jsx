@@ -679,12 +679,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     const events = akt.events || [];
     if (events.length === 0) return null;
 
-    // Only show a currency card if there's actual activity in it.
-    const uzsActive = events.some(e => (e.uzs_amount || 0) > 0);
-    const usdActive = events.some(e => (e.usd_amount || 0) > 0);
-    const uzsStatus = uzsActive ? renderMiniStatus(akt.uzs_state, 'UZS') : null;
-    const usdStatus = usdActive ? renderMiniStatus(akt.usd_state, 'USD') : null;
-
     // newest first
     const rows = [...events].reverse();
 
@@ -694,36 +688,13 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
           📒 {t.akt_title}
         </div>
 
-        {(uzsStatus || usdStatus) && (
-          <div className="flex gap-2 mb-3">
-            {uzsStatus}
-            {usdStatus}
-          </div>
-        )}
-
         <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
           {rows.map((e) => {
             const isOrder = e.type === 'order';
             const sign = isOrder ? '−' : '+';
             const rowIcon = isOrder ? '🚚' : '💳';
-            const uzsRem = e.uzs_remaining || 0;
-            const usdRem = e.usd_remaining || 0;
             const uzsAmt = e.uzs_amount || 0;
             const usdAmt = e.usd_amount || 0;
-            // Paid state: consider only currencies actually in this order
-            let badge = null;
-            if (isOrder) {
-              const uzsDone = uzsAmt <= 0 || uzsRem <= 0.01;
-              const usdDone = usdAmt <= 0 || usdRem <= 0.01;
-              const uzsPartial = uzsAmt > 0 && uzsRem > 0.01 && uzsRem < uzsAmt;
-              const usdPartial = usdAmt > 0 && usdRem > 0.01 && usdRem < usdAmt;
-              if (uzsDone && usdDone) badge = { cls: 'text-green-600', txt: `✓ ${t.akt_order_paid}` };
-              else if (uzsPartial || usdPartial) badge = { cls: 'text-amber-600', txt: `● ${t.akt_order_partial}` };
-              else badge = { cls: 'text-tg-hint', txt: `○ ${t.akt_order_unpaid}` };
-            } else if ((e.uzs_advance_created || 0) > 0.01 || (e.usd_advance_created || 0) > 0.01) {
-              badge = { cls: 'text-emerald-600', txt: `+ ${t.akt_created_advance}` };
-            }
-
             return (
               <button
                 key={`${e.type}-${e.id}`}
@@ -734,13 +705,19 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium">
                     {formatDocDate(e.date)}
-                    {badge && <span className={`text-[10px] ml-1.5 ${badge.cls}`}>{badge.txt}</span>}
                   </div>
                   <div className="text-[11px] text-tg-hint">
-                    {isOrder ? `${t.akt_order_doc} ${e.doc_number || ''}` : t.akt_payment}
+                    {isOrder ? (
+                      <>
+                        {t.akt_order_doc} {e.doc_number || ''}
+                        <span className="ml-1.5 text-tg-link">· {t.akt_tap_to_view_items} →</span>
+                      </>
+                    ) : (
+                      t.akt_payment
+                    )}
                   </div>
                 </div>
-                <div className="text-right flex-shrink-0 min-w-[120px]">
+                <div className="text-right flex-shrink-0">
                   {uzsAmt > 0 && (
                     <div className={`text-[13px] font-semibold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
                       {sign}{fmtUzs(uzsAmt)}
@@ -751,19 +728,6 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                       {sign}{fmtUsd(usdAmt)}
                     </div>
                   )}
-                  <div className="text-[9px] text-tg-hint/70 mt-0.5 leading-tight">
-                    {t.akt_balance}:
-                    {uzsActive && (
-                      <div className={e.uzs_balance < 0 ? 'text-red-500' : e.uzs_balance > 0 ? 'text-emerald-600' : ''}>
-                        {e.uzs_balance < 0 ? '−' : e.uzs_balance > 0 ? '+' : ''}{fmtUzs(Math.abs(e.uzs_balance || 0))}
-                      </div>
-                    )}
-                    {usdActive && (
-                      <div className={e.usd_balance < 0 ? 'text-red-500' : e.usd_balance > 0 ? 'text-emerald-600' : ''}>
-                        {e.usd_balance < 0 ? '−' : e.usd_balance > 0 ? '+' : ''}{fmtUsd(Math.abs(e.usd_balance || 0))}
-                      </div>
-                    )}
-                  </div>
                 </div>
               </button>
             );
