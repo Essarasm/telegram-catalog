@@ -1589,20 +1589,20 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
             (search, search, search),
         ).fetchall()
 
-        cb_only = []
-        if len(matches) < 15:
-            cb_only = conn.execute(
-                """SELECT DISTINCT cb.client_name_1c,
-                          COUNT(*) as bal_count,
-                          MAX(cb.period_end) as latest_period
-                   FROM client_balances cb
-                   WHERE LOWER(cb.client_name_1c) LIKE ?
-                     AND (cb.client_id IS NULL
-                          OR cb.client_id NOT IN (SELECT id FROM allowed_clients))
-                   GROUP BY cb.client_name_1c
-                   LIMIT ?""",
-                (search, 15 - len(matches)),
-            ).fetchall()
+        # Always fetch up to 5 🟡 (not-yet-whitelisted) 1C-only matches so
+        # new clients aren't buried when 15 whitelisted hits fill the list.
+        cb_only = conn.execute(
+            """SELECT DISTINCT cb.client_name_1c,
+                      COUNT(*) as bal_count,
+                      MAX(cb.period_end) as latest_period
+               FROM client_balances cb
+               WHERE LOWER(cb.client_name_1c) LIKE ?
+                 AND (cb.client_id IS NULL
+                      OR cb.client_id NOT IN (SELECT id FROM allowed_clients))
+               GROUP BY cb.client_name_1c
+               LIMIT 5""",
+            (search,),
+        ).fetchall()
 
         if not matches and not cb_only:
             conn.close()
@@ -1626,7 +1626,16 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
 
         kb_rows: list[list[InlineKeyboardButton]] = []
 
-        # Group matches by client_id_1c so multi-phone siblings roll up
+        # 🟡 entries first — they're rare, actionable, and easy to miss
+        # when buried below 15 existing whitelisted matches.
+        for c in cb_only:
+            cname = (c['client_name_1c'] or "").strip()
+            kb_rows.append([InlineKeyboardButton(
+                text=f"🟡 {cname}"[:64],
+                callback_data=f"tc:add:{cname[:40]}",
+            )])
+
+        # Group whitelisted matches by client_id_1c so multi-phone siblings roll up
         from collections import OrderedDict
         _grouped = OrderedDict()
         for m in matches:
@@ -1659,14 +1668,6 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
                         text=f"└ {sub}"[:64],
                         callback_data=f"tc:link:{m['id']}",
                     )])
-
-        for c in cb_only:
-            cname = (c['client_name_1c'] or "").strip()
-            # 🟡 marker stays — it's the signal that this is not-yet-whitelisted.
-            kb_rows.append([InlineKeyboardButton(
-                text=f"🟡 {cname}"[:64],
-                callback_data=f"tc:add:{cname[:40]}",
-            )])
 
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
         await message.reply(header, parse_mode="HTML", reply_markup=kb)
