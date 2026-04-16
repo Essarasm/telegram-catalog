@@ -1362,12 +1362,21 @@ async def on_testclient_callback(cb: types.CallbackQuery):
                     ("", client_name_1c, client_name_1c, "bot_from_1c", "active"),
                 )
                 new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                conn.execute(
-                    "UPDATE client_balances SET client_id = ? "
-                    "WHERE client_name_1c = ? AND client_id IS NULL",
+
+            # Link every financial table that keys on client_name_1c so the
+            # Cabinet (which queries by client_id) has data to show. Without
+            # this, the cabinet is empty because only client_balances was
+            # being linked before.
+            linked_counts = {}
+            for table in ("client_balances", "real_orders",
+                          "client_payments", "client_debts"):
+                cur = conn.execute(
+                    f"UPDATE {table} SET client_id = ? "
+                    f"WHERE client_name_1c = ? AND client_id IS NULL",
                     (new_id, client_name_1c),
                 )
-            # Link the agent to this newly added client in one shot
+                linked_counts[table] = cur.rowcount
+
             conn.execute(
                 "UPDATE users SET client_id = ? WHERE telegram_id = ?",
                 (new_id, telegram_id),
@@ -1375,10 +1384,15 @@ async def on_testclient_callback(cb: types.CallbackQuery):
             conn.commit()
             await cb.answer(f"Ro'yxatga qo'shildi va bog'landi", show_alert=False)
             try:
+                linked_summary = " · ".join(
+                    f"{k.replace('client_', '').replace('_', '.')}={v}"
+                    for k, v in linked_counts.items() if v
+                ) or "yo'q"
                 await cb.message.reply(
                     f"✅ <b>Ro'yxatga qo'shildi va bog'landi:</b> "
                     f"{html_escape(client_name_1c)}\n"
-                    f"🆔 allowed_clients #{new_id}",
+                    f"🆔 allowed_clients #{new_id}\n"
+                    f"🔗 Bog'landi: {linked_summary}",
                     parse_mode="HTML",
                 )
             except Exception:
