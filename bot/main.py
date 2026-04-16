@@ -700,6 +700,141 @@ async def cmd_prices(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
 
 
+@dp.message(Command("syncimages"))
+async def cmd_syncimages(message: types.Message):
+    """Upload product images to the Railway volume.
+
+    Usage:
+        Reply to a ZIP file with /syncimages — extracts PNGs named {product_id}.png
+        Reply to a single PNG with /syncimages — copies it directly
+        /syncimages status — show current image count on the volume
+
+    After upload, re-runs sync_images to update product.image_path in the DB.
+    """
+    if not is_admin(message):
+        return
+
+    import zipfile, tempfile, shutil
+
+    images_dir = Path(os.getenv("IMAGES_DIR", "./images"))
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    parts = (message.text or "").split()
+    if len(parts) >= 2 and parts[1].lower() == "status":
+        count = sum(1 for f in images_dir.iterdir()
+                    if f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'))
+        total_mb = sum(f.stat().st_size for f in images_dir.iterdir()
+                       if f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp')) / 1024 / 1024
+        await message.reply(
+            f"📸 <b>Volume image status</b>\n\n"
+            f"📂 Path: {images_dir}\n"
+            f"🖼 Files: {count}\n"
+            f"💾 Size: {total_mb:.1f} MB",
+            parse_mode="HTML",
+        )
+        return
+
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "📸 <b>/syncimages</b>\n\n"
+            "Foydalanish:\n"
+            "• ZIP fayl bilan javob: <code>/syncimages</code>\n"
+            "• Bitta PNG bilan javob: <code>/syncimages</code>\n"
+            "• Status: <code>/syncimages status</code>\n\n"
+            "ZIP ichidagi {product_id}.png fayllar /data/images/ ga ko'chiriladi.",
+            parse_mode="HTML",
+        )
+        return
+
+    status_msg = await message.reply("⏳ Rasmlar yuklanmoqda...")
+
+    try:
+        import httpx
+        file_info = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        fname = (doc.file_name or "").lower()
+        added = 0
+        replaced = 0
+        skipped = 0
+
+        if fname.endswith(".zip"):
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+            try:
+                with zipfile.ZipFile(tmp_path, "r") as zf:
+                    for name in zf.namelist():
+                        base = Path(name).name
+                        if not base or base.startswith(".") or base.startswith("__"):
+                            continue
+                        if Path(base).suffix.lower() not in ('.png', '.jpg', '.jpeg', '.webp'):
+                            continue
+                        stem = Path(base).stem
+                        try:
+                            int(stem)
+                        except ValueError:
+                            skipped += 1
+                            continue
+                        dest = images_dir / base
+                        existed = dest.exists()
+                        with zf.open(name) as src, open(dest, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                        if existed:
+                            replaced += 1
+                        else:
+                            added += 1
+            finally:
+                os.unlink(tmp_path)
+        elif fname.endswith(('.png', '.jpg', '.jpeg', '.webp')):
+            stem = Path(fname).stem
+            try:
+                int(stem)
+            except ValueError:
+                await status_msg.edit_text(
+                    f"❌ Fayl nomi {fname} product ID emas. "
+                    "Fayl nomi {{product_id}}.png bo'lishi kerak."
+                )
+                return
+            dest = images_dir / fname
+            existed = dest.exists()
+            with open(dest, "wb") as f:
+                f.write(file_bytes)
+            if existed:
+                replaced += 1
+            else:
+                added += 1
+        else:
+            await status_msg.edit_text("❌ Faqat ZIP yoki PNG/JPG fayllar qabul qilinadi.")
+            return
+
+        from backend.services.sync_images import sync
+        sync()
+
+        total = sum(1 for f in images_dir.iterdir()
+                    if f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'))
+        await status_msg.edit_text(
+            f"✅ <b>Rasmlar yuklandi!</b>\n\n"
+            f"➕ Yangi: {added}\n"
+            f"🔄 Almashtirdi: {replaced}\n"
+            f"⏭ O'tkazib yuborildi: {skipped}\n"
+            f"📂 Jami volumeda: {total}",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"syncimages error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
 @dp.message(Command("stock"))
 async def cmd_stock(message: types.Message):
     """Update stock/inventory levels from an Excel file. Reply to a document with /stock."""

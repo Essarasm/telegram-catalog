@@ -9,6 +9,9 @@ __pycache__
 .env
 .credentials
 
+# Images (managed separately via /syncimages bot command — not uploaded with code deploys)
+images
+
 # Local database (Railway uses /data mount)
 data/catalog.db
 data/catalog.db-wal
