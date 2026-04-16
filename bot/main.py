@@ -2133,6 +2133,88 @@ async def handle_album_document(message: types.Message):
 # /debtors — import дебиторская задолженность
 # ───────────────────────────────────────────
 
+@dp.message(Command("clients"))
+async def cmd_clients(message: types.Message):
+    """Upload the allowed-clients list (XLS/XLSX).
+
+    Usage: send an Excel file with columns phone, name, client_id_1c,
+    company_name (all except phone optional), with /clients as caption,
+    OR reply to the file with /clients.
+    """
+    if not is_admin(message):
+        return
+
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            "Mijozlar ro'yxati Excel faylini /clients caption bilan yuboring.\n\n"
+            "Ustunlar: <code>phone, name, client_id_1c, company_name</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.lower().endswith(('.xls', '.xlsx')):
+        await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply("⏳ Mijozlar ro'yxati yuklanmoqda...")
+
+    try:
+        import httpx
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        api_url = f"{_BASE_URL}/api/finance/import-clients"
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes,
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                data={"admin_key": "rassvet2026"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        _track_daily_upload(
+            "clients",
+            message,
+            file_name=doc.file_name,
+            row_count=int(result.get("inserted", 0) + result.get("updated", 0)),
+        )
+
+        await status_msg.edit_text(
+            f"✅ <b>Mijozlar ro'yxati yangilandi!</b>\n\n"
+            f"➕ Yangi: {result.get('inserted', 0)}\n"
+            f"🔄 Yangilangan: {result.get('updated', 0)}\n"
+            f"⏭ O'tkazib yuborildi: {result.get('skipped', 0)}\n"
+            f"📊 Jami ro'yxatda: {result.get('total_clients', 0)}",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"/clients error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
+
+
+@dp.message(F.document & F.caption.startswith("/clients"))
+async def handle_clients_document(message: types.Message):
+    """Handle XLS/XLSX file sent with /clients as caption."""
+    if not is_admin(message):
+        return
+    await cmd_clients(message)
+
+
 @dp.message(Command("debtors"))
 async def cmd_debtors(message: types.Message):
     """Import client debts from 1C 'Дебиторская задолженность на дату'.

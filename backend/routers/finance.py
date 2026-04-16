@@ -87,6 +87,21 @@ async def bulk_import(
     return result
 
 
+@router.post("/import-clients")
+async def import_clients_upload(
+    file: UploadFile = File(...),
+    admin_key: str = Form(""),
+):
+    """Upload the allowed-clients list (XLS/XLSX). Powers the /clients bot command."""
+    if admin_key != "rassvet2026":
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+    file_bytes = await file.read()
+    if not file_bytes:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+    from backend.services.import_clients import apply_clients_upload
+    return apply_clients_upload(file_bytes, filename_hint=file.filename or "")
+
+
 @router.post("/import-debts")
 async def import_debts(
     file: UploadFile = File(...),

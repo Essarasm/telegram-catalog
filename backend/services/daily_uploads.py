@@ -26,6 +26,7 @@ TASHKENT = ZoneInfo("Asia/Tashkent")
 VALID_UPLOAD_TYPES = {
     "balances_uzs", "balances_usd", "stock", "prices",
     "debtors", "realorders", "cash", "fxrate", "supply",
+    "clients",
 }
 
 
@@ -325,11 +326,14 @@ def render_checklist_text(checklist: dict, header: Optional[str] = None) -> str:
         name = it["display_name_ru"]
         expected = it.get("expected_count_per_day", 1)
         actual = it.get("actual_count", 0)
+        command = it.get("command") or ""
+        # Show the /command only for items that still need action —
+        # completed items already have who/when info; skipped ones don't.
+        cmd_suffix = f"  {command}" if command and it["status"] not in ("done", "skipped") else ""
 
         if it["status"] == "done":
             who = it.get("uploaded_by_name") or "—"
             when = it.get("uploaded_at") or ""
-            # Trim seconds for readability
             if when and len(when) >= 16:
                 when = when[11:16]
             line = f"{icon} {name} — {when} · {who}"
@@ -339,11 +343,10 @@ def render_checklist_text(checklist: dict, header: Optional[str] = None) -> str:
             if reason:
                 line += f" ({reason})"
         elif expected > 1 and actual > 0:
-            # partial progress (касса 1/2)
             who = it.get("uploaded_by_name") or "—"
-            line = f"{icon} {name} — {actual}/{expected} · {who}"
+            line = f"{icon} {name} — {actual}/{expected} · {who}{cmd_suffix}"
         else:
-            line = f"{icon} {name}"
+            line = f"{icon} {name}{cmd_suffix}"
         lines.append(line)
 
     lines.append("")

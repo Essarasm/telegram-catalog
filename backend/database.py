@@ -942,6 +942,7 @@ def _seed_daily_upload_schedule(conn):
         ("cash",         "Касса",               "Kassa",              "/cash",     2, "1,2,3,4,5,6", 70),
         ("fxrate",       "Курс валют",          "Valyuta kursi",      "/fxrate",   1, "1,2,3,4,5,6", 80),
         ("supply",       "Поступление/Возврат", "Kirim/Qaytarish",    "/supply",   1, "1,2,3,4,5,6", 90),
+        ("clients",      "Клиенты",             "Mijozlar",           "/clients",  1, "1,2,3,4,5,6", 100),
     ]
     for r in rows:
         conn.execute(
