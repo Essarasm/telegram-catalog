@@ -198,9 +198,8 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [expandedRealItems, setExpandedRealItems] = useState([]);
   const [loadingRealDetail, setLoadingRealDetail] = useState(false);
 
-  // Акт сверки state
-  const [aktUzs, setAktUzs] = useState(null);
-  const [aktUsd, setAktUsd] = useState(null);
+  // Hisob-kitob state (unified dual-currency)
+  const [akt, setAkt] = useState(null);
   const [aktSheet, setAktSheet] = useState(null);  // payment or order detail
   const [aktSheetItems, setAktSheetItems] = useState(null);  // order items when sheet is an order
 
@@ -261,14 +260,11 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
       })
       .catch(() => {});
 
-    // Hisob-kitob — both currencies in parallel (merged into one timeline)
-    Promise.all([
-      fetch(`${API}/akt-sverki?telegram_id=${userId}&currency=UZS&limit=80`).then(r => r.json()),
-      fetch(`${API}/akt-sverki?telegram_id=${userId}&currency=USD&limit=80`).then(r => r.json()),
-    ]).then(([uzs, usd]) => {
-      if (uzs?.ok) setAktUzs(uzs);
-      if (usd?.ok) setAktUsd(usd);
-    }).catch(() => {});
+    // Hisob-kitob — unified dual-currency акт сверки
+    fetch(`${API}/akt-sverki?telegram_id=${userId}&limit=80`)
+      .then(r => r.json())
+      .then(data => { if (data?.ok) setAkt(data); })
+      .catch(() => {});
 
     // Rassvet Plus — fetch business intelligence data
     Promise.all([
@@ -631,41 +627,39 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     );
   };
 
-  // ── Hisob-kitob (unified orders + payments timeline with FIFO, both currencies merged) ──
-  const fmtAmount = (v, cur) =>
-    cur === 'USD' ? formatUsd(v) : `${formatUzs(v)} ${t.balance_currency || "so'm"}`;
+  // ── Hisob-kitob (unified dual-currency timeline) ──
+  const fmtUzs = (v) => `${formatUzs(v)} ${t.balance_currency || "so'm"}`;
+  const fmtUsd = (v) => formatUsd(v);
 
-  const renderMiniStatus = (akt) => {
-    if (!akt || !akt.linked) return null;
-    const s = akt.state || {};
-    const cur = akt.currency;
-    if (s.code === 'clean' && (akt.events || []).length === 0) return null;  // no activity in this currency
+  const renderMiniStatus = (state, currency) => {
+    if (!state) return null;
+    const fmt = currency === 'USD' ? fmtUsd : fmtUzs;
     let bg, icon, title, sub;
-    if (s.code === 'clean') {
+    if (state.code === 'clean') {
       bg = 'bg-green-50 border-green-200 text-green-800';
       icon = '✅';
-      title = t.akt_clean_title;
-      sub = cur + ' — ' + t.akt_clean_sub;
-    } else if (s.code === 'advance') {
+      title = `${currency}: ${t.akt_clean_title}`;
+      sub = t.akt_clean_sub;
+    } else if (state.code === 'advance') {
       bg = 'bg-emerald-50 border-emerald-200 text-emerald-800';
       icon = '💚';
-      title = `${t.akt_advance_title}: ${fmtAmount(s.advance, cur)}`;
+      title = `${t.akt_advance_title}: ${fmt(state.advance)}`;
       sub = t.akt_advance_sub;
-    } else if (s.code === 'debt_0_14') {
+    } else if (state.code === 'debt_0_14') {
       bg = 'bg-amber-50 border-amber-200 text-amber-800';
       icon = '🟡';
-      title = `${t.akt_debt_title}: ${fmtAmount(s.debt, cur)}`;
-      sub = `${s.days_overdue} ${t.akt_days} · ${t.akt_days_to_call.replace('{n}', Math.max(0, 15 - s.days_overdue))}`;
-    } else if (s.code === 'debt_15_29') {
+      title = `${t.akt_debt_title}: ${fmt(state.debt)}`;
+      sub = `${state.days_overdue} ${t.akt_days} · ${t.akt_days_to_call.replace('{n}', Math.max(0, 15 - state.days_overdue))}`;
+    } else if (state.code === 'debt_15_29') {
       bg = 'bg-orange-50 border-orange-300 text-orange-900';
       icon = '⚠️';
-      title = `${t.akt_debt_title}: ${fmtAmount(s.debt, cur)}`;
-      sub = `${s.days_overdue} ${t.akt_days} · ${t.akt_will_call_soon}`;
-    } else if (s.code === 'debt_30_plus') {
+      title = `${t.akt_debt_title}: ${fmt(state.debt)}`;
+      sub = `${state.days_overdue} ${t.akt_days} · ${t.akt_will_call_soon}`;
+    } else if (state.code === 'debt_30_plus') {
       bg = 'bg-red-50 border-red-300 text-red-900';
       icon = '🔴';
-      title = `${t.akt_debt_overdue}: ${fmtAmount(s.debt, cur)}`;
-      sub = `${t.akt_overdue_by} ${s.days_overdue} ${t.akt_days}`;
+      title = `${t.akt_debt_overdue}: ${fmt(state.debt)}`;
+      sub = `${t.akt_overdue_by} ${state.days_overdue} ${t.akt_days}`;
     } else return null;
     return (
       <div className={`rounded-xl p-3 border ${bg} flex-1 min-w-0`}>
@@ -681,22 +675,18 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   };
 
   const AktSverkiSection = () => {
-    const uzsLinked = aktUzs?.linked;
-    const usdLinked = aktUsd?.linked;
-    if (!uzsLinked && !usdLinked) return null;
-    const uzsEvents = aktUzs?.events || [];
-    const usdEvents = aktUsd?.events || [];
-    if (uzsEvents.length === 0 && usdEvents.length === 0) return null;
+    if (!akt || !akt.linked) return null;
+    const events = akt.events || [];
+    if (events.length === 0) return null;
 
-    // Merge both currencies into one chronological stream (newest first)
-    const events = [...uzsEvents, ...usdEvents].sort((a, b) => {
-      const d = (b.date || '').localeCompare(a.date || '');
-      if (d !== 0) return d;
-      return (b.id || 0) - (a.id || 0);
-    });
+    // Only show a currency card if there's actual activity in it.
+    const uzsActive = events.some(e => (e.uzs_amount || 0) > 0);
+    const usdActive = events.some(e => (e.usd_amount || 0) > 0);
+    const uzsStatus = uzsActive ? renderMiniStatus(akt.uzs_state, 'UZS') : null;
+    const usdStatus = usdActive ? renderMiniStatus(akt.usd_state, 'USD') : null;
 
-    const uzsStatus = renderMiniStatus(aktUzs);
-    const usdStatus = renderMiniStatus(aktUsd);
+    // newest first
+    const rows = [...events].reverse();
 
     return (
       <div className="mb-4">
@@ -712,38 +702,67 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         )}
 
         <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
-          {events.map((e) => {
+          {rows.map((e) => {
             const isOrder = e.type === 'order';
-            const running = e.running_balance || 0;
-            const paidFully = isOrder && (e.remaining || 0) <= 0.01;
-            const partial = isOrder && (e.remaining || 0) > 0.01 && (e.remaining || 0) < e.amount;
             const sign = isOrder ? '−' : '+';
             const rowIcon = isOrder ? '🚚' : '💳';
+            const uzsRem = e.uzs_remaining || 0;
+            const usdRem = e.usd_remaining || 0;
+            const uzsAmt = e.uzs_amount || 0;
+            const usdAmt = e.usd_amount || 0;
+            // Paid state: consider only currencies actually in this order
+            let badge = null;
+            if (isOrder) {
+              const uzsDone = uzsAmt <= 0 || uzsRem <= 0.01;
+              const usdDone = usdAmt <= 0 || usdRem <= 0.01;
+              const uzsPartial = uzsAmt > 0 && uzsRem > 0.01 && uzsRem < uzsAmt;
+              const usdPartial = usdAmt > 0 && usdRem > 0.01 && usdRem < usdAmt;
+              if (uzsDone && usdDone) badge = { cls: 'text-green-600', txt: `✓ ${t.akt_order_paid}` };
+              else if (uzsPartial || usdPartial) badge = { cls: 'text-amber-600', txt: `● ${t.akt_order_partial}` };
+              else badge = { cls: 'text-tg-hint', txt: `○ ${t.akt_order_unpaid}` };
+            } else if ((e.uzs_advance_created || 0) > 0.01 || (e.usd_advance_created || 0) > 0.01) {
+              badge = { cls: 'text-emerald-600', txt: `+ ${t.akt_created_advance}` };
+            }
+
             return (
               <button
-                key={`${e.currency}-${e.type}-${e.id}`}
+                key={`${e.type}-${e.id}`}
                 onClick={() => { setAktSheet({ ...e }); setAktSheetItems(null); }}
-                className="w-full px-4 py-2.5 flex items-center gap-3 text-left active:bg-tg-bg/30"
+                className="w-full px-4 py-2.5 flex items-start gap-3 text-left active:bg-tg-bg/30"
               >
-                <span className="text-base flex-shrink-0">{rowIcon}</span>
+                <span className="text-base flex-shrink-0 mt-0.5">{rowIcon}</span>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium">
                     {formatDocDate(e.date)}
-                    {isOrder && paidFully && <span className="text-[10px] text-green-600 ml-1.5">✓ {t.akt_order_paid}</span>}
-                    {isOrder && partial && <span className="text-[10px] text-amber-600 ml-1.5">● {t.akt_order_partial}</span>}
-                    {isOrder && !paidFully && !partial && <span className="text-[10px] text-tg-hint ml-1.5">○ {t.akt_order_unpaid}</span>}
-                    {!isOrder && (e.advance_created || 0) > 0.01 && <span className="text-[10px] text-emerald-600 ml-1.5">+ {t.akt_created_advance}</span>}
+                    {badge && <span className={`text-[10px] ml-1.5 ${badge.cls}`}>{badge.txt}</span>}
                   </div>
                   <div className="text-[11px] text-tg-hint">
                     {isOrder ? `${t.akt_order_doc} ${e.doc_number || ''}` : t.akt_payment}
                   </div>
                 </div>
-                <div className="text-right flex-shrink-0">
-                  <div className={`text-sm font-semibold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
-                    {sign}{fmtAmount(e.amount, e.currency)}
-                  </div>
-                  <div className={`text-[10px] ${running < 0 ? 'text-red-500' : running > 0 ? 'text-emerald-600' : 'text-tg-hint'}`}>
-                    {t.akt_balance}: {running < 0 ? '−' : running > 0 ? '+' : ''}{fmtAmount(Math.abs(running), e.currency)}
+                <div className="text-right flex-shrink-0 min-w-[120px]">
+                  {uzsAmt > 0 && (
+                    <div className={`text-[13px] font-semibold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
+                      {sign}{fmtUzs(uzsAmt)}
+                    </div>
+                  )}
+                  {usdAmt > 0 && (
+                    <div className={`text-[13px] font-semibold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
+                      {sign}{fmtUsd(usdAmt)}
+                    </div>
+                  )}
+                  <div className="text-[9px] text-tg-hint/70 mt-0.5 leading-tight">
+                    {t.akt_balance}:
+                    {uzsActive && (
+                      <div className={e.uzs_balance < 0 ? 'text-red-500' : e.uzs_balance > 0 ? 'text-emerald-600' : ''}>
+                        {e.uzs_balance < 0 ? '−' : e.uzs_balance > 0 ? '+' : ''}{fmtUzs(Math.abs(e.uzs_balance || 0))}
+                      </div>
+                    )}
+                    {usdActive && (
+                      <div className={e.usd_balance < 0 ? 'text-red-500' : e.usd_balance > 0 ? 'text-emerald-600' : ''}>
+                        {e.usd_balance < 0 ? '−' : e.usd_balance > 0 ? '+' : ''}{fmtUsd(Math.abs(e.usd_balance || 0))}
+                      </div>
+                    )}
                   </div>
                 </div>
               </button>
@@ -1255,76 +1274,88 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
               <>
                 <div className="text-center mb-4">
                   <div className="text-[11px] text-tg-hint uppercase tracking-wide">{t.akt_payment}</div>
-                  <div className="text-2xl font-bold text-emerald-600 mt-1">
-                    +{fmtAmount(aktSheet.amount, aktSheet.currency)}
-                  </div>
-                  <div className="text-xs text-tg-hint mt-0.5">
-                    {formatDocDate(aktSheet.date)}
-                  </div>
-                </div>
-                {(aktSheet.covers || []).length > 0 ? (
-                  <>
-                    <div className="text-xs text-tg-hint mb-2">{t.akt_covers_fifo}:</div>
-                    <div className="space-y-1.5">
-                      {aktSheet.covers.map((c, i) => (
-                        <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
-                          <span className="text-xs">{c.fully_closed ? '✅' : '🟡'}</span>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium">
-                              {t.akt_order_doc} {c.order_doc || `#${c.order_id}`}
-                            </div>
-                            <div className="text-[11px] text-tg-hint">
-                              {formatDocDate(c.order_date)} · {c.fully_closed ? t.akt_fully_closed : t.akt_partially_closed}
-                            </div>
-                          </div>
-                          <div className="text-sm font-semibold">
-                            {fmtAmount(c.amount, aktSheet.currency)}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {(aktSheet.advance_created || 0) > 0.01 && (
-                      <div className="mt-3 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800">
-                        💚 {t.akt_created_advance_full}: <b>{fmtAmount(aktSheet.advance_created, aktSheet.currency)}</b>
-                      </div>
+                  <div className="mt-1 space-y-0.5">
+                    {(aktSheet.uzs_amount || 0) > 0 && (
+                      <div className="text-xl font-bold text-emerald-600">+{fmtUzs(aktSheet.uzs_amount)}</div>
                     )}
-                    <div className="mt-3 text-[10px] text-tg-hint opacity-70">
-                      {t.akt_fifo_disclaimer}
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-sm text-tg-hint text-center py-4">
-                    {(aktSheet.advance_created || 0) > 0.01
-                      ? `💚 ${t.akt_created_advance_full}: ${fmtAmount(aktSheet.advance_created, aktSheet.currency)}`
-                      : t.akt_no_links}
+                    {(aktSheet.usd_amount || 0) > 0 && (
+                      <div className="text-xl font-bold text-emerald-600">+{fmtUsd(aktSheet.usd_amount)}</div>
+                    )}
                   </div>
-                )}
+                  <div className="text-xs text-tg-hint mt-1">{formatDocDate(aktSheet.date)}</div>
+                </div>
+                {['uzs', 'usd'].map((ccy) => {
+                  const covers = aktSheet[`${ccy}_covers`] || [];
+                  const adv = aktSheet[`${ccy}_advance_created`] || 0;
+                  const fmt = ccy === 'usd' ? fmtUsd : fmtUzs;
+                  const amt = aktSheet[`${ccy}_amount`] || 0;
+                  if (amt <= 0) return null;
+                  return (
+                    <div key={ccy} className="mb-3">
+                      <div className="text-[11px] text-tg-hint uppercase tracking-wide mb-1.5">
+                        {ccy.toUpperCase()} — {t.akt_covers_fifo}
+                      </div>
+                      {covers.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {covers.map((c, i) => (
+                            <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
+                              <span className="text-xs">{c.fully_closed ? '✅' : '🟡'}</span>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-sm font-medium">
+                                  {t.akt_order_doc} {c.order_doc || `#${c.order_id}`}
+                                </div>
+                                <div className="text-[11px] text-tg-hint">
+                                  {formatDocDate(c.order_date)} · {c.fully_closed ? t.akt_fully_closed : t.akt_partially_closed}
+                                </div>
+                              </div>
+                              <div className="text-sm font-semibold">{fmt(c.amount)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-tg-hint italic">{t.akt_no_links}</div>
+                      )}
+                      {adv > 0.01 && (
+                        <div className="mt-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800">
+                          💚 {t.akt_created_advance_full}: <b>{fmt(adv)}</b>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                <div className="mt-2 text-[10px] text-tg-hint opacity-70">
+                  {t.akt_fifo_disclaimer}
+                </div>
               </>
             ) : (
               <>
                 <div className="text-center mb-4">
                   <div className="text-[11px] text-tg-hint uppercase tracking-wide">{t.akt_order_doc} {aktSheet.doc_number}</div>
-                  <div className="text-2xl font-bold text-red-500 mt-1">
-                    −{fmtAmount(aktSheet.amount, aktSheet.currency)}
+                  <div className="mt-1 space-y-0.5">
+                    {(aktSheet.uzs_amount || 0) > 0 && (
+                      <div className="text-xl font-bold text-red-500">−{fmtUzs(aktSheet.uzs_amount)}</div>
+                    )}
+                    {(aktSheet.usd_amount || 0) > 0 && (
+                      <div className="text-xl font-bold text-red-500">−{fmtUsd(aktSheet.usd_amount)}</div>
+                    )}
                   </div>
-                  <div className="text-xs text-tg-hint mt-0.5">
-                    {formatDocDate(aktSheet.date)}
-                  </div>
+                  <div className="text-xs text-tg-hint mt-1">{formatDocDate(aktSheet.date)}</div>
                 </div>
-                {(aktSheet.remaining || 0) > 0.01 && (
-                  <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-900">
-                    {t.akt_remaining}: <b>{fmtAmount(aktSheet.remaining, aktSheet.currency)}</b>
+
+                {/* Remaining (per currency that has a debt) */}
+                {((aktSheet.uzs_remaining || 0) > 0.01 || (aktSheet.usd_remaining || 0) > 0.01) && (
+                  <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-900 space-y-0.5">
+                    <div>{t.akt_remaining}:</div>
+                    {(aktSheet.uzs_remaining || 0) > 0.01 && <div><b>{fmtUzs(aktSheet.uzs_remaining)}</b></div>}
+                    {(aktSheet.usd_remaining || 0) > 0.01 && <div><b>{fmtUsd(aktSheet.usd_remaining)}</b></div>}
                   </div>
                 )}
 
-                {/* Items — loaded on demand from /api/cabinet/real-orders/{id} */}
+                {/* Items */}
                 <div className="mb-3">
                   <div className="text-xs text-tg-hint mb-2">{t.real_order_view_items}:</div>
                   {aktSheetItems === null ? (
-                    <AktSheetItemsLoader
-                      orderId={aktSheet.id}
-                      onLoaded={setAktSheetItems}
-                    />
+                    <AktSheetItemsLoader orderId={aktSheet.id} onLoaded={setAktSheetItems} />
                   ) : aktSheetItems.length > 0 ? (
                     <div className="space-y-1 max-h-60 overflow-y-auto">
                       {aktSheetItems.map((item, idx) => (
@@ -1332,9 +1363,7 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                           <div className="flex-1 min-w-0 text-[12px] truncate">
                             {item.product_name_1c || item.name_display}
                           </div>
-                          <div className="text-[11px] text-tg-hint whitespace-nowrap">
-                            {item.quantity}
-                          </div>
+                          <div className="text-[11px] text-tg-hint whitespace-nowrap">{item.quantity}</div>
                           <div className="text-[11px] font-semibold whitespace-nowrap min-w-[72px] text-right">
                             {(item.total_local || 0) > 0
                               ? formatUzs(item.total_local)
@@ -1350,34 +1379,34 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                   )}
                 </div>
 
-                {(aktSheet.paid_by || []).length > 0 && (
-                  <>
-                    <div className="text-xs text-tg-hint mb-2">{t.akt_paid_by}:</div>
-                    <div className="space-y-1.5 mb-3">
-                      {aktSheet.paid_by.map((p, i) => (
-                        <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
-                          <span className="text-xs">{p.kind === 'advance' ? '💚' : '💳'}</span>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium">
-                              {p.kind === 'advance' ? t.akt_from_advance : t.akt_payment}
+                {/* Paid by — per currency */}
+                {['uzs', 'usd'].map((ccy) => {
+                  const paidBy = aktSheet[`${ccy}_paid_by`] || [];
+                  const amt = aktSheet[`${ccy}_amount`] || 0;
+                  const fmt = ccy === 'usd' ? fmtUsd : fmtUzs;
+                  if (amt <= 0 || paidBy.length === 0) return null;
+                  return (
+                    <div key={ccy} className="mb-3">
+                      <div className="text-[11px] text-tg-hint uppercase tracking-wide mb-1.5">
+                        {ccy.toUpperCase()} — {t.akt_paid_by}
+                      </div>
+                      <div className="space-y-1.5">
+                        {paidBy.map((p, i) => (
+                          <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
+                            <span className="text-xs">{p.kind === 'advance' ? '💚' : '💳'}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium">
+                                {p.kind === 'advance' ? t.akt_from_advance : t.akt_payment}
+                              </div>
+                              <div className="text-[11px] text-tg-hint">{formatDocDate(p.date)}</div>
                             </div>
-                            <div className="text-[11px] text-tg-hint">
-                              {formatDocDate(p.date)}
-                            </div>
+                            <div className="text-sm font-semibold">{fmt(p.amount)}</div>
                           </div>
-                          <div className="text-sm font-semibold">
-                            {fmtAmount(p.amount, aktSheet.currency)}
-                          </div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </>
-                )}
-                {(aktSheet.paid_by || []).length === 0 && (aktSheet.remaining || 0) > 0.01 && (
-                  <div className="text-[11px] text-tg-hint italic mb-2">
-                    {t.akt_order_unpaid_full}
-                  </div>
-                )}
+                  );
+                })}
               </>
             )}
             <button

@@ -1,13 +1,16 @@
-"""Акт сверки — FIFO-based allocation of payments to orders per client+currency.
+"""Акт сверки — unified dual-currency timeline with FIFO allocation.
 
-Returns a unified timeline (orders + payments, chronological), a per-event
-running balance, FIFO links (which payments covered which orders, and
-vice versa), and the current balance state (clean / advance / debt).
+Each event carries BOTH uzs_amount and usd_amount. Orders are one row per
+real_orders.id (may have both currencies in their line items). Payments
+are grouped per (date, client_id) to collapse the 1C "касса UZS + касса
+USD" pair into one client-facing payment event.
+
+FIFO runs independently per currency; each event also carries the running
+balance of BOTH currencies after the event.
 """
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Iterable
 
 from backend.database import get_db
 
@@ -19,202 +22,204 @@ def _as_float(x) -> float:
         return 0.0
 
 
-def _fetch_events(conn, client_ids: list[int], currency: str) -> list[dict]:
-    """Pull orders + payments for the given client ids in the given currency.
-
-    Orders: use total_sum_currency if currency=USD, total_sum if UZS.
-    Payments: amount_currency if present else amount_local.
-    """
+def _fetch_events(conn, client_ids: list[int]) -> list[dict]:
     placeholders = ",".join("?" * len(client_ids))
+
+    # Orders: one row per real_orders.id, with both currency totals.
+    order_rows = conn.execute(
+        f"""SELECT id, doc_date, doc_time, doc_number_1c,
+                   COALESCE(total_sum, 0) AS uzs_amount,
+                   COALESCE(total_sum_currency, 0) AS usd_amount
+            FROM real_orders
+            WHERE client_id IN ({placeholders})
+              AND (COALESCE(total_sum, 0) > 0 OR COALESCE(total_sum_currency, 0) > 0)""",
+        tuple(client_ids),
+    ).fetchall()
+
     events: list[dict] = []
-
-    if currency == "USD":
-        order_rows = conn.execute(
-            f"""SELECT id, doc_date, doc_time, doc_number_1c,
-                       COALESCE(total_sum_currency, 0) AS amount
-                FROM real_orders
-                WHERE client_id IN ({placeholders})
-                  AND currency = 'USD'
-                  AND COALESCE(total_sum_currency, 0) > 0""",
-            tuple(client_ids),
-        ).fetchall()
-    else:
-        order_rows = conn.execute(
-            f"""SELECT id, doc_date, doc_time, doc_number_1c,
-                       COALESCE(total_sum, 0) AS amount
-                FROM real_orders
-                WHERE client_id IN ({placeholders})
-                  AND (currency IS NULL OR currency = 'UZS')
-                  AND COALESCE(total_sum, 0) > 0""",
-            tuple(client_ids),
-        ).fetchall()
-
     for r in order_rows:
         events.append({
             "type": "order",
             "id": r["id"],
             "doc_number": r["doc_number_1c"],
             "date": r["doc_date"],
-            "time": (r["doc_time"] or "")[:5],
-            "amount": _as_float(r["amount"]),
-            "currency": currency,
+            "uzs_amount": _as_float(r["uzs_amount"]),
+            "usd_amount": _as_float(r["usd_amount"]),
         })
 
+    # Payments: sum per (date, client_id) across all касса entries of either
+    # currency — one logical "client paid money today" event.
     pay_rows = conn.execute(
-        f"""SELECT id, doc_date, doc_time, doc_number_1c,
-                   amount_local, amount_currency, currency
+        f"""SELECT doc_date,
+                   SUM(CASE WHEN UPPER(COALESCE(currency,'UZS'))='UZS'
+                            THEN COALESCE(amount_currency, amount_local, 0)
+                            ELSE 0 END) AS uzs_amount,
+                   SUM(CASE WHEN UPPER(currency)='USD'
+                            THEN COALESCE(amount_currency, amount_local, 0)
+                            ELSE 0 END) AS usd_amount,
+                   GROUP_CONCAT(id) AS ids,
+                   MAX(doc_number_1c) AS doc_number
             FROM client_payments
             WHERE client_id IN ({placeholders})
-              AND UPPER(COALESCE(currency, 'UZS')) = ?""",
-        tuple(client_ids) + (currency,),
+            GROUP BY doc_date""",
+        tuple(client_ids),
     ).fetchall()
     for r in pay_rows:
-        amt = _as_float(r["amount_currency"]) or _as_float(r["amount_local"])
-        if amt <= 0:
+        uzs = _as_float(r["uzs_amount"])
+        usd = _as_float(r["usd_amount"])
+        if uzs <= 0 and usd <= 0:
             continue
         events.append({
             "type": "payment",
-            "id": r["id"],
-            "doc_number": r["doc_number_1c"],
+            "id": "pay-" + str(r["ids"] or ""),
+            "ids": [int(x) for x in (r["ids"] or "").split(",") if x.strip().isdigit()],
+            "doc_number": r["doc_number"] or "",
             "date": r["doc_date"],
-            "time": (r["doc_time"] or "")[:5],
-            "amount": amt,
-            "currency": currency,
+            "uzs_amount": uzs,
+            "usd_amount": usd,
         })
 
-    events.sort(key=lambda e: (e["date"] or "", e["time"] or "", e["id"]))
+    # Sort: by date asc, then type (orders before payments on same date), then id.
+    def _key(e):
+        return (e["date"] or "", 0 if e["type"] == "order" else 1,
+                str(e.get("id", "")))
+    events.sort(key=_key)
     return events
 
 
 def _allocate_fifo(events: list[dict]) -> dict:
-    """Walk the events; maintain an advance pool and an open-orders queue.
-
-    Each event gets:
-      - running_balance after the event (advance - sum(remaining))
-      - for orders: remaining, paid_by (list of {payment_id, amount, date})
-      - for payments: covers (list of {order_id, amount, date}),
-        advance_created
-    Returns: {events, current_balance, oldest_debt_date, total_debt,
-              advance, open_orders, closed_orders}
-    """
-    open_orders: list[dict] = []  # refs into events (order rows)
-    advance = 0.0
+    open_uzs: list[dict] = []
+    open_usd: list[dict] = []
+    uzs_adv = 0.0
+    usd_adv = 0.0
 
     for e in events:
+        e["uzs_paid_by"] = []
+        e["usd_paid_by"] = []
+        e["uzs_covers"] = []
+        e["usd_covers"] = []
+
         if e["type"] == "order":
-            e.setdefault("paid_by", [])
-            e["remaining"] = e["amount"]
-            # First consume any advance sitting on the account
-            if advance > 0:
-                used = min(advance, e["remaining"])
-                advance -= used
-                e["remaining"] -= used
-                e["paid_by"].append({
-                    "kind": "advance",
-                    "amount": used,
-                    "date": e["date"],
-                })
-            if e["remaining"] > 0:
-                open_orders.append(e)
+            for ccy, amt_key, open_queue, adv_var in [
+                ("uzs", "uzs_amount", open_uzs, "uzs_adv"),
+                ("usd", "usd_amount", open_usd, "usd_adv"),
+            ]:
+                amt = e[amt_key]
+                if amt <= 0:
+                    e[f"{ccy}_remaining"] = 0
+                    continue
+                adv = uzs_adv if adv_var == "uzs_adv" else usd_adv
+                if adv > 0:
+                    used = min(adv, amt)
+                    amt -= used
+                    if adv_var == "uzs_adv":
+                        uzs_adv -= used
+                    else:
+                        usd_adv -= used
+                    e[f"{ccy}_paid_by"].append({
+                        "kind": "advance", "amount": used, "date": e["date"],
+                    })
+                e[f"{ccy}_remaining"] = amt
+                if amt > 0:
+                    open_queue.append(e)
         elif e["type"] == "payment":
-            e.setdefault("covers", [])
-            to_allocate = e["amount"]
-            for order in list(open_orders):
-                if to_allocate <= 0:
-                    break
-                used = min(order["remaining"], to_allocate)
-                order["remaining"] -= used
-                order["paid_by"].append({
-                    "kind": "payment",
-                    "payment_id": e["id"],
-                    "amount": used,
-                    "date": e["date"],
-                })
-                e["covers"].append({
-                    "order_id": order["id"],
-                    "order_doc": order.get("doc_number"),
-                    "order_date": order["date"],
-                    "amount": used,
-                    "fully_closed": order["remaining"] <= 0.001,
-                })
-                to_allocate -= used
-                if order["remaining"] <= 0.001:
-                    open_orders.remove(order)
-            e["advance_created"] = to_allocate
-            advance += to_allocate
-        # running balance after the event
-        open_sum = sum(o["remaining"] for o in open_orders)
-        e["running_balance"] = round(advance - open_sum, 2)
+            for ccy, amt_key, open_queue, adv_var in [
+                ("uzs", "uzs_amount", open_uzs, "uzs_adv"),
+                ("usd", "usd_amount", open_usd, "usd_adv"),
+            ]:
+                to_alloc = e[amt_key]
+                if to_alloc <= 0:
+                    e[f"{ccy}_advance_created"] = 0
+                    continue
+                for order in list(open_queue):
+                    if to_alloc <= 0:
+                        break
+                    rem_key = f"{ccy}_remaining"
+                    if order[rem_key] <= 0:
+                        continue
+                    used = min(order[rem_key], to_alloc)
+                    order[rem_key] -= used
+                    to_alloc -= used
+                    order[f"{ccy}_paid_by"].append({
+                        "kind": "payment",
+                        "payment_event_id": e["id"],
+                        "amount": used,
+                        "date": e["date"],
+                    })
+                    e[f"{ccy}_covers"].append({
+                        "order_id": order["id"],
+                        "order_doc": order.get("doc_number"),
+                        "order_date": order["date"],
+                        "amount": used,
+                        "fully_closed": order[rem_key] <= 0.001,
+                    })
+                    if order[rem_key] <= 0.001:
+                        open_queue.remove(order)
+                e[f"{ccy}_advance_created"] = to_alloc
+                if adv_var == "uzs_adv":
+                    uzs_adv += to_alloc
+                else:
+                    usd_adv += to_alloc
 
-    total_debt = round(sum(o["remaining"] for o in open_orders), 2)
-    oldest_debt = None
-    if open_orders:
-        oldest_debt = min(o["date"] for o in open_orders)
+        # Running balances after event
+        e["uzs_balance"] = round(
+            uzs_adv - sum(o.get("uzs_remaining", 0) or 0 for o in open_uzs), 2)
+        e["usd_balance"] = round(
+            usd_adv - sum(o.get("usd_remaining", 0) or 0 for o in open_usd), 2)
 
+    uzs_debt = round(sum(o.get("uzs_remaining", 0) or 0 for o in open_uzs), 2)
+    usd_debt = round(sum(o.get("usd_remaining", 0) or 0 for o in open_usd), 2)
+
+    oldest = {
+        "uzs": min((o["date"] for o in open_uzs), default=None),
+        "usd": min((o["date"] for o in open_usd), default=None),
+    }
     return {
         "events": events,
-        "current_balance": round(advance - total_debt, 2),
-        "advance": round(advance, 2) if advance > 0 else 0.0,
-        "total_debt": total_debt,
-        "oldest_debt_date": oldest_debt,
-        "open_orders_count": len(open_orders),
+        "uzs_balance": round(uzs_adv - uzs_debt, 2),
+        "usd_balance": round(usd_adv - usd_debt, 2),
+        "uzs_debt": uzs_debt,
+        "usd_debt": usd_debt,
+        "uzs_advance": round(uzs_adv, 2) if uzs_adv > 0 else 0,
+        "usd_advance": round(usd_adv, 2) if usd_adv > 0 else 0,
+        "oldest_debt": oldest,
     }
 
 
-def _state_from_totals(total_debt: float, advance: float,
-                       oldest_debt_date: str | None) -> dict:
-    """Classify the current state for the hero card.
-
-    Buckets by age of the oldest open debt:
-      - clean (no debt, no advance)
-      - advance (positive balance)
-      - debt_0_14
-      - debt_15_29
-      - debt_30_plus
-    """
-    if total_debt <= 0.001 and advance > 0.001:
+def _state_for(debt: float, advance: float, oldest_date: str | None) -> dict:
+    if debt <= 0.001 and advance > 0.001:
         return {"code": "advance", "days_overdue": 0, "advance": advance}
-    if total_debt <= 0.001:
+    if debt <= 0.001:
         return {"code": "clean", "days_overdue": 0}
-
     days = 0
-    if oldest_debt_date:
+    if oldest_date:
         try:
-            d = datetime.strptime(oldest_debt_date, "%Y-%m-%d").date()
+            d = datetime.strptime(oldest_date, "%Y-%m-%d").date()
             days = (date.today() - d).days
         except (ValueError, TypeError):
             days = 0
-
     if days < 15:
         code = "debt_0_14"
     elif days < 30:
         code = "debt_15_29"
     else:
         code = "debt_30_plus"
-    return {
-        "code": code, "days_overdue": days,
-        "debt": total_debt, "since": oldest_debt_date,
-    }
+    return {"code": code, "days_overdue": days, "debt": debt, "since": oldest_date}
 
 
-def build(client_ids: list[int], currency: str = "UZS",
-          events_limit: int | None = None) -> dict:
-    """Public: build the full акт-сверки payload for a client (one currency)."""
+def build(client_ids: list[int], events_limit: int | None = None) -> dict:
+    """Return a unified dual-currency акт сверки for the client."""
     if not client_ids:
-        return {"ok": True, "linked": False, "currency": currency,
-                "events": [], "state": {"code": "clean", "days_overdue": 0}}
+        return {"ok": True, "linked": False, "events": [],
+                "uzs_state": {"code": "clean", "days_overdue": 0},
+                "usd_state": {"code": "clean", "days_overdue": 0}}
 
     conn = get_db()
     try:
-        events = _fetch_events(conn, client_ids, currency)
+        events = _fetch_events(conn, client_ids)
     finally:
         conn.close()
-
     allocated = _allocate_fifo(events)
-    state = _state_from_totals(
-        allocated["total_debt"], allocated["advance"],
-        allocated["oldest_debt_date"],
-    )
 
     events_out = allocated["events"]
     if events_limit and len(events_out) > events_limit:
@@ -223,12 +228,16 @@ def build(client_ids: list[int], currency: str = "UZS",
     return {
         "ok": True,
         "linked": True,
-        "currency": currency,
-        "state": state,
-        "current_balance": allocated["current_balance"],
-        "total_debt": allocated["total_debt"],
-        "advance": allocated["advance"],
-        "oldest_debt_date": allocated["oldest_debt_date"],
         "events": events_out,
         "total_events": len(allocated["events"]),
+        "uzs_state": _state_for(allocated["uzs_debt"], allocated["uzs_advance"],
+                                allocated["oldest_debt"]["uzs"]),
+        "usd_state": _state_for(allocated["usd_debt"], allocated["usd_advance"],
+                                allocated["oldest_debt"]["usd"]),
+        "uzs_balance": allocated["uzs_balance"],
+        "usd_balance": allocated["usd_balance"],
+        "uzs_debt": allocated["uzs_debt"],
+        "usd_debt": allocated["usd_debt"],
+        "uzs_advance": allocated["uzs_advance"],
+        "usd_advance": allocated["usd_advance"],
     }
