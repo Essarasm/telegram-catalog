@@ -77,13 +77,33 @@ def normalize_phone(raw: str) -> str:
 
 
 def is_admin(message: types.Message) -> bool:
-    """Check if user is an admin. Allow from sales/admin groups or listed admin IDs."""
-    if ADMIN_IDS and message.from_user.id in ADMIN_IDS:
+    """Check if the sender is an admin who may run commands here.
+
+    Rule: Sotuv bo'lim (ORDER_GROUP_CHAT_ID) is kept clean — the only bot
+    traffic there is the "new order #N" card + the manager's reply-with-
+    Excel confirmation. Admin commands are silenced in Sotuv so they
+    don't clutter the order feed. Use the dedicated Admin group (or DM
+    the bot as an ADMIN_IDS user) for all other bot commands.
+    """
+    if message.chat.id == ORDER_GROUP_CHAT_ID:
+        return False
+    if ADMIN_IDS and message.from_user and message.from_user.id in ADMIN_IDS:
         return True
-    # Allow commands from the sales managers group or admin/ops group
-    if message.chat.id in (ORDER_GROUP_CHAT_ID, ADMIN_GROUP_CHAT_ID):
+    if message.chat.id == ADMIN_GROUP_CHAT_ID:
         return True
     return False
+
+
+def _is_sotuv_sender(message: types.Message) -> bool:
+    """Looser gate for reply-driven flows that are inherently Sotuv-bound.
+
+    Used by the registration-reply handler (sales team replies to an
+    unmatched-registration notification with a client name). These are not
+    commands — they're responses to prompts the bot itself posted in
+    Sotuv, so we gate on chat identity only and let any group member
+    respond.
+    """
+    return message.chat.id == ORDER_GROUP_CHAT_ID
 
 
 def _sender_display_name(message: types.Message) -> str:
@@ -4704,12 +4724,12 @@ async def handle_registration_reply(message: types.Message):
       - A 1C client name → links the user to that client and approves them
       - 'new' → marks as new client (still approves the user)
     """
-    # Only process in the Sales group
-    if message.chat.id != ORDER_GROUP_CHAT_ID:
+    # Only process in the Sales group — this reply flow is inherently
+    # Sotuv-bound. We use _is_sotuv_sender (chat-scoped) rather than
+    # is_admin (which has Sotuv silenced to prevent command clutter).
+    if not _is_sotuv_sender(message):
         return
     if not message.text or not message.text.strip():
-        return
-    if not is_admin(message):
         return
 
     replied_msg_id = message.reply_to_message.message_id
