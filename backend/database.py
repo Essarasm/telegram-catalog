@@ -636,6 +636,37 @@ def init_db():
             ) WHERE client_id IS NULL
         """)
 
+    # Migration: track sales-group message ids per order so we can link
+    # manager replies (Excel file) back to the original wishlist order.
+    order_cols3 = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    for col in ("sales_group_message_id", "sales_group_doc_message_id"):
+        if col not in order_cols3:
+            conn.execute(f"ALTER TABLE orders ADD COLUMN {col} INTEGER")
+
+    # Manager-confirmed orders: the 1C-exported Excel that replaces the
+    # wishlist order once sales managers + Uncle finalize it in 1C.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS confirmed_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            wishlist_order_id INTEGER,
+            file_name TEXT,
+            telegram_file_id TEXT,
+            confirmed_by_tg_id INTEGER,
+            confirmed_by_name TEXT,
+            total_uzs REAL DEFAULT 0,
+            total_usd REAL DEFAULT 0,
+            item_count INTEGER DEFAULT 0,
+            items_json TEXT,
+            doc_number_1c TEXT,
+            doc_date TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_confirmed_orders_wishlist
+        ON confirmed_orders(wishlist_order_id)
+    """)
+
     conn.commit()
     conn.close()
 

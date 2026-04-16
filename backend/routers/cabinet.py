@@ -29,20 +29,26 @@ def list_orders(telegram_id: int = Query(...)):
 
     if client_id:
         rows = conn.execute(
-            """SELECT id, telegram_id, client_name, client_phone,
-                      total_usd, total_uzs, item_count, status, created_at
-               FROM orders
-               WHERE client_id = ?
-               ORDER BY created_at DESC""",
+            """SELECT o.id, o.telegram_id, o.client_name, o.client_phone,
+                      o.total_usd, o.total_uzs, o.item_count, o.status,
+                      o.created_at,
+                      (SELECT COUNT(*) FROM confirmed_orders co
+                       WHERE co.wishlist_order_id = o.id) AS confirmed_count
+               FROM orders o
+               WHERE o.client_id = ?
+               ORDER BY o.created_at DESC""",
             (client_id,),
         ).fetchall()
     else:
         rows = conn.execute(
-            """SELECT id, telegram_id, client_name, client_phone,
-                      total_usd, total_uzs, item_count, status, created_at
-               FROM orders
-               WHERE telegram_id = ? AND client_id IS NULL
-               ORDER BY created_at DESC""",
+            """SELECT o.id, o.telegram_id, o.client_name, o.client_phone,
+                      o.total_usd, o.total_uzs, o.item_count, o.status,
+                      o.created_at,
+                      (SELECT COUNT(*) FROM confirmed_orders co
+                       WHERE co.wishlist_order_id = o.id) AS confirmed_count
+               FROM orders o
+               WHERE o.telegram_id = ? AND o.client_id IS NULL
+               ORDER BY o.created_at DESC""",
             (telegram_id,),
         ).fetchall()
     conn.close()
@@ -59,6 +65,7 @@ def list_orders(telegram_id: int = Query(...)):
             "item_count": r["item_count"],
             "status": r["status"],
             "created_at": r["created_at"],
+            "has_confirmed": bool(r["confirmed_count"]),
         })
     return {"orders": orders}
 
@@ -598,6 +605,122 @@ def akt_sverki(
         result = build_akt_sverki(client_ids, events_limit=limit)
     result["client_1c_name"] = client_1c_name
     return result
+
+
+@router.get("/confirmed-order/{wishlist_order_id}")
+def confirmed_order_diff(wishlist_order_id: int, telegram_id: int = Query(...)):
+    """Diff the wishlist order against the manager-confirmed (1C) version."""
+    import json as _json
+    client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    if not client_ids:
+        if conn:
+            conn.close()
+        return {"ok": False, "error": "not linked"}
+
+    placeholders = ",".join("?" * len(client_ids))
+    wish_order = conn.execute(
+        f"SELECT * FROM orders WHERE id = ? AND client_id IN ({placeholders})",
+        (wishlist_order_id,) + tuple(client_ids),
+    ).fetchone()
+    if not wish_order:
+        conn.close()
+        return JSONResponse({"ok": False, "error": "not your order"}, status_code=403)
+
+    wish_items = [
+        {
+            "name": r["product_name"] or "",
+            "qty": float(r["quantity"] or 0),
+            "price": float(r["price"] or 0),
+            "currency": r["currency"] or "UZS",
+        }
+        for r in conn.execute(
+            "SELECT product_name, quantity, price, currency FROM order_items WHERE order_id = ?",
+            (wishlist_order_id,),
+        ).fetchall()
+    ]
+
+    confirmed_row = conn.execute(
+        "SELECT * FROM confirmed_orders WHERE wishlist_order_id = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (wishlist_order_id,),
+    ).fetchone()
+    conn.close()
+
+    if not confirmed_row:
+        return {
+            "ok": True,
+            "wishlist": {
+                "id": wishlist_order_id,
+                "total_uzs": wish_order["total_uzs"],
+                "total_usd": wish_order["total_usd"],
+                "items": wish_items,
+            },
+            "confirmed": None,
+        }
+
+    confirmed_items = _json.loads(confirmed_row["items_json"] or "[]")
+
+    # Diff by normalized name. Exact cyrillic name is the stable join key
+    # between /realorders exports and the wishlist item snapshots.
+    def _norm(s: str) -> str:
+        return " ".join((s or "").lower().split())
+
+    wish_by = {}
+    for it in wish_items:
+        wish_by.setdefault(_norm(it["name"]), []).append(it)
+    conf_by = {}
+    for it in confirmed_items:
+        conf_by.setdefault(_norm(it["name"]), []).append(it)
+
+    kept, reduced, increased, removed, added = [], [], [], [], []
+    all_keys = set(wish_by) | set(conf_by)
+    for k in all_keys:
+        w_list = wish_by.get(k, [])
+        c_list = conf_by.get(k, [])
+        w_qty = sum(x["qty"] for x in w_list)
+        c_qty = sum(x["qty"] for x in c_list)
+        label = (w_list or c_list)[0]["name"]
+        if w_qty > 0 and c_qty <= 0:
+            removed.append({"name": label, "qty": w_qty})
+        elif w_qty <= 0 and c_qty > 0:
+            added.append({"name": label, "qty": c_qty})
+        elif abs(w_qty - c_qty) < 0.001:
+            kept.append({"name": label, "qty": w_qty})
+        elif c_qty < w_qty:
+            reduced.append({"name": label, "wish_qty": w_qty, "confirmed_qty": c_qty})
+        else:
+            increased.append({"name": label, "wish_qty": w_qty, "confirmed_qty": c_qty})
+
+    for bucket in (kept, reduced, increased, removed, added):
+        bucket.sort(key=lambda x: x["name"])
+
+    return {
+        "ok": True,
+        "wishlist": {
+            "id": wishlist_order_id,
+            "total_uzs": wish_order["total_uzs"],
+            "total_usd": wish_order["total_usd"],
+            "items": wish_items,
+        },
+        "confirmed": {
+            "file_name": confirmed_row["file_name"],
+            "confirmed_by_name": confirmed_row["confirmed_by_name"],
+            "created_at": confirmed_row["created_at"],
+            "doc_number_1c": confirmed_row["doc_number_1c"],
+            "doc_date": confirmed_row["doc_date"],
+            "total_uzs": confirmed_row["total_uzs"],
+            "total_usd": confirmed_row["total_usd"],
+            "item_count": confirmed_row["item_count"],
+            "items": confirmed_items,
+        },
+        "diff": {
+            "kept": kept,
+            "reduced": reduced,
+            "increased": increased,
+            "removed": removed,
+            "added": added,
+        },
+    }
 
 
 @router.get("/payments")

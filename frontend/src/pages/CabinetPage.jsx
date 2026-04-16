@@ -292,6 +292,9 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [aktSheet, setAktSheet] = useState(null);  // payment or order detail
   const [aktSheetItems, setAktSheetItems] = useState(null);  // order items when sheet is an order
 
+  // Confirmed-vs-wishlist diff sheet
+  const [confirmSheet, setConfirmSheet] = useState(null);  // {wishlistOrderId, loading, data}
+
   // Rassvet Plus — business intelligence state
   const [spendTrend, setSpendTrend] = useState(null);
   const [topProducts, setTopProducts] = useState(null);
@@ -1116,11 +1119,16 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-semibold">#{ord.id}</span>
                           <span className="text-xs px-2 py-0.5 rounded-full bg-tg-bg text-tg-hint">
                             {STATUS_ICONS[ord.status]} {STATUS_LABELS[ord.status] || ord.status}
                           </span>
+                          {ord.has_confirmed && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
+                              ✅ {t.wishlist_confirmed}
+                            </span>
+                          )}
                         </div>
                         <div className="text-xs text-tg-hint mt-1">
                           {formatDate(ord.created_at)} · {ord.item_count} {t.items_count}
@@ -1198,6 +1206,26 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                               🔀 {t.compare_button}
                             </button>
                           </div>
+                          {ord.has_confirmed && (
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                setConfirmSheet({ wishlistOrderId: ord.id, loading: true, data: null });
+                                try {
+                                  const res = await fetch(
+                                    `${API}/confirmed-order/${ord.id}?telegram_id=${getTelegramUserId()}`
+                                  );
+                                  const data = await res.json();
+                                  setConfirmSheet({ wishlistOrderId: ord.id, loading: false, data });
+                                } catch {
+                                  setConfirmSheet({ wishlistOrderId: ord.id, loading: false, data: null });
+                                }
+                              }}
+                              className="w-full mt-2 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
+                            >
+                              ✅ {t.wishlist_show_confirmed_diff}
+                            </button>
+                          )}
                         </>
                       )}
                     </div>
@@ -1489,6 +1517,96 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                 {t.reorder_cancel}
               </button>
             )}
+          </div>
+        </>
+      )}
+
+      {/* Confirmed order vs wish-list diff sheet */}
+      {confirmSheet && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-[100]" onClick={() => setConfirmSheet(null)} />
+          <div className="fixed bottom-0 left-0 right-0 z-[101] bg-tg-bg rounded-t-2xl p-5 pb-8 shadow-2xl max-h-[85vh] overflow-y-auto">
+            <div className="w-10 h-1 bg-tg-hint/30 rounded-full mx-auto mb-4" />
+            <div className="text-center mb-4">
+              <div className="text-[11px] text-tg-hint uppercase tracking-wide">
+                {t.wishlist_confirmed_title} · #{confirmSheet.wishlistOrderId}
+              </div>
+            </div>
+            {confirmSheet.loading ? (
+              <div className="text-center text-tg-hint py-10">…</div>
+            ) : !confirmSheet.data || !confirmSheet.data.ok || !confirmSheet.data.confirmed ? (
+              <div className="text-center text-tg-hint py-6 text-sm">{t.wishlist_confirmed_empty}</div>
+            ) : (
+              (() => {
+                const d = confirmSheet.data.diff;
+                const conf = confirmSheet.data.confirmed;
+                const wish = confirmSheet.data.wishlist;
+                const section = (list, cls, icon, label, showQtyChange) => list.length > 0 && (
+                  <div className="mb-3">
+                    <div className={`text-[11px] uppercase tracking-wide mb-1 ${cls}`}>
+                      {icon} {label} ({list.length})
+                    </div>
+                    <div className="space-y-1">
+                      {list.map((it, i) => (
+                        <div key={i} className="text-[12px] flex items-center gap-2">
+                          <div className="flex-1 min-w-0 truncate">{it.name}</div>
+                          <div className="text-tg-hint whitespace-nowrap">
+                            {showQtyChange
+                              ? `${it.wish_qty} → ${it.confirmed_qty}`
+                              : (it.qty ?? '')}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+                return (
+                  <>
+                    <div className="bg-tg-secondary rounded-lg p-3 mb-4 text-[11px]">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-tg-hint">{t.wishlist_confirmed_file}:</span>
+                        <span className="font-medium truncate ml-2">{conf.file_name || '—'}</span>
+                      </div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-tg-hint">{t.wishlist_confirmed_by}:</span>
+                        <span className="font-medium">{conf.confirmed_by_name || '—'}</span>
+                      </div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-tg-hint">{t.wishlist_confirmed_items}:</span>
+                        <span className="font-medium">{conf.item_count}</span>
+                      </div>
+                      {(conf.total_uzs > 0) && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-tg-hint">UZS:</span>
+                          <span className="font-medium">
+                            {formatUzs(wish.total_uzs)} → <b>{formatUzs(conf.total_uzs)}</b>
+                          </span>
+                        </div>
+                      )}
+                      {(conf.total_usd > 0) && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-tg-hint">USD:</span>
+                          <span className="font-medium">
+                            {formatUsd(wish.total_usd)} → <b>{formatUsd(conf.total_usd)}</b>
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    {section(d.kept, 'text-green-600', '✓', t.wishlist_diff_kept, false)}
+                    {section(d.reduced, 'text-amber-600', '↓', t.wishlist_diff_reduced, true)}
+                    {section(d.increased, 'text-blue-600', '↑', t.wishlist_diff_increased, true)}
+                    {section(d.removed, 'text-red-600', '✗', t.wishlist_diff_removed, false)}
+                    {section(d.added, 'text-violet-600', '+', t.wishlist_diff_added, false)}
+                  </>
+                );
+              })()
+            )}
+            <button
+              onClick={() => setConfirmSheet(null)}
+              className="mt-4 w-full py-2.5 rounded-xl bg-tg-secondary text-sm font-medium"
+            >
+              {t.reorder_cancel}
+            </button>
           </div>
         </>
       )}

@@ -11,11 +11,16 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ORDER_GROUP_CHAT_ID = os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463")
 
 
-def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = ""):
-    """Send order summary + Excel file to the sales managers' Telegram group."""
+def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = "", order_id: int = 0):
+    """Send order summary + Excel file to the sales managers' Telegram group.
+
+    Returns a dict {ok, text_message_id, doc_message_id} so the caller can
+    persist the message ids on the order row and later match manager
+    reply-to messages back to this order.
+    """
     if not BOT_TOKEN or not ORDER_GROUP_CHAT_ID:
         logger.warning("ORDER_GROUP_CHAT_ID or BOT_TOKEN not set, skipping group notification")
-        return False
+        return {"ok": False}
 
     usd_items = [it for it in items if it.get("currency", "USD") == "USD"]
     uzs_items = [it for it in items if it.get("currency", "USD") == "UZS"]
@@ -25,6 +30,8 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
     unique_products = len(items)
 
     lines = ["\U0001f4cb <b>Yangi buyurtma!</b>", ""]
+    if order_id:
+        lines[0] = f"\U0001f4cb <b>Yangi buyurtma #{order_id}</b>"
     if client_name_1c:
         lines.append(f"\U0001f464 Mijoz (1C): <b>{client_name_1c}</b>")
     else:
@@ -55,30 +62,46 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
     try:
         api_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-        httpx.post(
+        text_resp = httpx.post(
             f"{api_url}/sendMessage",
             json={"chat_id": ORDER_GROUP_CHAT_ID, "text": message_text, "parse_mode": "HTML"},
             timeout=10,
         )
+        text_mid = None
+        try:
+            j = text_resp.json()
+            if j.get("ok"):
+                text_mid = (j.get("result") or {}).get("message_id")
+        except Exception:
+            pass
 
         from datetime import datetime, timezone, timedelta
         timestamp = datetime.now(timezone(timedelta(hours=5))).strftime("%d_%m_%Y_%H%M")
-        filename = f"buyurtma_{client_name.replace(' ', '_') or 'noname'}_{timestamp}.xlsx"
+        filename = f"buyurtma_{order_id or client_name.replace(' ', '_') or 'noname'}_{timestamp}.xlsx"
 
-        httpx.post(
+        doc_resp = httpx.post(
             f"{api_url}/sendDocument",
-            data={"chat_id": ORDER_GROUP_CHAT_ID},
+            data={"chat_id": ORDER_GROUP_CHAT_ID,
+                  "caption": f"#Buyurtma_{order_id}" if order_id else ""},
             files={"document": (filename, io.BytesIO(excel_bytes),
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
             timeout=15,
         )
+        doc_mid = None
+        try:
+            j = doc_resp.json()
+            if j.get("ok"):
+                doc_mid = (j.get("result") or {}).get("message_id")
+        except Exception:
+            pass
 
-        logger.info(f"Order notification sent to group {ORDER_GROUP_CHAT_ID}")
-        return True
+        logger.info(f"Order notification sent to group {ORDER_GROUP_CHAT_ID} "
+                    f"(text_mid={text_mid}, doc_mid={doc_mid})")
+        return {"ok": True, "text_message_id": text_mid, "doc_message_id": doc_mid}
 
     except Exception as e:
         logger.error(f"Failed to send order to group: {e}")
-        return False
+        return {"ok": False}
 
 
 def send_file_to_user(telegram_id: int, file_bytes: bytes, filename: str,

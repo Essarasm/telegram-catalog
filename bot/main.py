@@ -2770,6 +2770,137 @@ async def handle_realorders_document(message: types.Message):
     await cmd_realorders(message)
 
 
+@dp.message(F.document & F.chat.id == ORDER_GROUP_CHAT_ID & F.reply_to_message)
+async def handle_order_confirmation_reply(message: types.Message):
+    """Sotuv bo'lim group: a manager replies to a "Yangi buyurtma #N" message
+    (or its attached Excel) with the 1C-exported Excel of the finalized order.
+
+    The bot finds the matching wishlist order via stored sales-group message
+    ids, parses the Excel, stores it as a confirmed_orders row linked to the
+    wishlist order, and notifies the client in DM.
+    """
+    doc = message.document
+    fname = (doc.file_name or "").lower()
+    if not (fname.endswith(".xls") or fname.endswith(".xlsx")):
+        return
+
+    replied_mid = message.reply_to_message.message_id
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT id, telegram_id, client_name, client_name AS cname
+               FROM orders
+               WHERE sales_group_message_id = ? OR sales_group_doc_message_id = ?
+               LIMIT 1""",
+            (replied_mid, replied_mid),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        # Reply not tied to a known order — ignore silently so /realorders
+        # and other document replies keep working.
+        return
+
+    wishlist_order_id = row["id"]
+    client_tg_id = row["telegram_id"]
+
+    status_msg = await message.reply("⏳ Tasdiqlangan buyurtma yuklanmoqda...")
+    try:
+        import httpx
+        from backend.services.import_real_orders import parse_real_orders_xls
+        from backend.database import get_db as _get_db
+
+        file = await bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        parsed = parse_real_orders_xls(file_bytes, filename_hint=doc.file_name or "")
+        if not parsed.get("ok") or not parsed.get("documents"):
+            await status_msg.edit_text(
+                "❌ Fayl o'qib bo'lmadi. /realorders formatidagi xls kutilayotgan edi."
+            )
+            return
+        docs = parsed["documents"]
+        first = docs[0]
+
+        items = first.get("items") or []
+        total_uzs = sum(float(it.get("total_local") or 0) for it in items)
+        total_usd = sum(float(it.get("total_currency") or 0) for it in items)
+
+        import json as _json
+        items_payload = [
+            {
+                "name": it.get("product_name_1c") or "",
+                "qty": float(it.get("quantity") or 0),
+                "price_uzs": float(it.get("price") or 0) if not it.get("price_currency") else 0,
+                "price_usd": float(it.get("price_currency") or 0),
+                "total_uzs": float(it.get("total_local") or 0),
+                "total_usd": float(it.get("total_currency") or 0),
+            }
+            for it in items
+        ]
+        uploader = _sender_display_name(message)
+        uploader_id = message.from_user.id if message.from_user else None
+
+        conn2 = _get_db()
+        try:
+            conn2.execute(
+                """INSERT INTO confirmed_orders
+                   (wishlist_order_id, file_name, telegram_file_id,
+                    confirmed_by_tg_id, confirmed_by_name,
+                    total_uzs, total_usd, item_count, items_json,
+                    doc_number_1c, doc_date)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    wishlist_order_id,
+                    doc.file_name, doc.file_id,
+                    uploader_id, uploader,
+                    total_uzs, total_usd, len(items),
+                    _json.dumps(items_payload, ensure_ascii=False),
+                    first.get("doc_number_1c"), first.get("doc_date"),
+                ),
+            )
+            conn2.execute(
+                "UPDATE orders SET status = 'confirmed' WHERE id = ?",
+                (wishlist_order_id,),
+            )
+            conn2.commit()
+        finally:
+            conn2.close()
+
+        # Notify the client
+        try:
+            if client_tg_id:
+                import httpx as _httpx
+                _httpx.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    json={
+                        "chat_id": client_tg_id,
+                        "text": (
+                            "✅ <b>Buyurtmangiz tayyor!</b>\n\n"
+                            "Boshqaruvchilar buyurtmangizni 1C ga kiritdilar. "
+                            "Qanaqa farqlar borligini ilovadagi 'Kabinet' bo'limida ko'ring."
+                        ),
+                        "parse_mode": "HTML",
+                    },
+                    timeout=10,
+                )
+        except Exception as e:
+            logger.error(f"Failed to notify client about confirmed order: {e}")
+
+        await status_msg.edit_text(
+            f"✅ Tasdiqlangan buyurtma saqlandi (#{wishlist_order_id}).\n"
+            f"📦 {len(items)} ta tovar · UZS {total_uzs:,.0f} · USD {total_usd:,.2f}\n"
+            f"🧾 Mijozga ilovaga xabar yuborildi."
+        )
+    except Exception as e:
+        logger.error(f"Order confirmation reply failed: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
+
+
 # ─────────────────────────────────────────────────────────────────
 # Session F renewal: Daily Upload Checklist — new commands
 # /cash, /fxrate, /today, /skipupload, /holiday, /backfilldailyuploads

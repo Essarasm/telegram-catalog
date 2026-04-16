@@ -258,14 +258,35 @@ def export_order(req: ExportRequest):
             location_text = user_addr
         maps_link = f"https://maps.google.com/?q={user_lat},{user_lng}"
 
-    # Send Excel to sales group (always, regardless of user format choice)
+    # Send Excel to sales group (always, regardless of user format choice).
+    # Capture message ids so we can link the manager's eventual reply-with-Excel
+    # (the confirmed order from 1C) back to this wishlist order.
     import logging
     logger = logging.getLogger(__name__)
     try:
         delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
-        group_ok = send_order_to_group(order_items, excel_data, client_label, delivery_type=delivery_type, client_name_1c=client_name_1c, location_text=location_text, maps_link=maps_link)
-        if not group_ok:
-            logger.error("send_order_to_group returned False")
+        group_result = send_order_to_group(
+            order_items, excel_data, client_label,
+            delivery_type=delivery_type, client_name_1c=client_name_1c,
+            location_text=location_text, maps_link=maps_link,
+            order_id=order_id,
+        )
+        if not group_result or not group_result.get("ok"):
+            logger.error(f"send_order_to_group failed: {group_result}")
+        else:
+            text_mid = group_result.get("text_message_id")
+            doc_mid = group_result.get("doc_message_id")
+            if text_mid or doc_mid:
+                conn_ids = get_db()
+                try:
+                    conn_ids.execute(
+                        "UPDATE orders SET sales_group_message_id = ?, "
+                        "sales_group_doc_message_id = ? WHERE id = ?",
+                        (text_mid, doc_mid, order_id),
+                    )
+                    conn_ids.commit()
+                finally:
+                    conn_ids.close()
     except Exception as e:
         logger.error(f"send_order_to_group exception: {e}")
 

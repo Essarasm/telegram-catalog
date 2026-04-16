@@ -210,6 +210,18 @@
   "undo": "Bekor qilish",
   "unit": "Birlik",
   "weight_missing_some": "{count} ta mahsulotda og'irlik ko'rsatilmagan",
+  "wishlist_confirmed": "Tasdiqlangan",
+  "wishlist_confirmed_by": "Tasdiqlagan",
+  "wishlist_confirmed_empty": "Hali tasdiqlangan versiya kelmagan",
+  "wishlist_confirmed_file": "Fayl",
+  "wishlist_confirmed_items": "Jami tovarlar",
+  "wishlist_confirmed_title": "Tasdiqlangan buyurtma",
+  "wishlist_diff_added": "Qo'shildi",
+  "wishlist_diff_increased": "Ko'paytirildi",
+  "wishlist_diff_kept": "O'zgarmagan",
+  "wishlist_diff_reduced": "Kamaytirildi",
+  "wishlist_diff_removed": "Olib tashlandi",
   "wishlist_orders_subtitle": "Siz ilova orqali yuborgan",
-  "wishlist_orders_title": "Ilova orqali berilgan buyurtmalar"
+  "wishlist_orders_title": "Ilova orqali berilgan buyurtmalar",
+  "wishlist_show_confirmed_diff": "Farqlarni ko'rish"
 }
