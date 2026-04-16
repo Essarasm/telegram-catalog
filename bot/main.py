@@ -96,12 +96,7 @@ def is_admin(message: types.Message) -> bool:
 
 def _is_sotuv_sender(message: types.Message) -> bool:
     """Looser gate for reply-driven flows that are inherently Sotuv-bound.
-
-    Used by the registration-reply handler (sales team replies to an
-    unmatched-registration notification with a client name). These are not
-    commands — they're responses to prompts the bot itself posted in
-    Sotuv, so we gate on chat identity only and let any group member
-    respond.
+    Kept for historical Sotuv-anchored replies; no active caller today.
     """
     return message.chat.id == ORDER_GROUP_CHAT_ID
 
@@ -4724,10 +4719,9 @@ async def handle_registration_reply(message: types.Message):
       - A 1C client name → links the user to that client and approves them
       - 'new' → marks as new client (still approves the user)
     """
-    # Only process in the Sales group — this reply flow is inherently
-    # Sotuv-bound. We use _is_sotuv_sender (chat-scoped) rather than
-    # is_admin (which has Sotuv silenced to prevent command clutter).
-    if not _is_sotuv_sender(message):
+    # Registration notifications now post in the Admin group. Only accept
+    # replies there (and silently ignore replies in Sotuv / Agents / DMs).
+    if message.chat.id != ADMIN_GROUP_CHAT_ID:
         return
     if not message.text or not message.text.strip():
         return

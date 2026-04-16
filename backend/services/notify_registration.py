@@ -7,7 +7,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ORDER_GROUP_CHAT_ID = os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463")
+ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051")
 # Legacy fallbacks (kept for backward compatibility)
 MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID", "")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
@@ -37,7 +37,7 @@ def send_registration_notification(
         logger.warning("BOT_TOKEN not set, skipping registration notification")
         return None
 
-    chat_id = MANAGER_CHAT_ID or ORDER_GROUP_CHAT_ID
+    chat_id = MANAGER_CHAT_ID or ADMIN_GROUP_CHAT_ID
     if not chat_id:
         return None
 
