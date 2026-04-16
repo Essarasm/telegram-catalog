@@ -3037,7 +3037,7 @@ async def handle_realorders_document(message: types.Message):
     await cmd_realorders(message)
 
 
-@dp.message(F.document & F.chat.id == ORDER_GROUP_CHAT_ID & F.reply_to_message)
+@dp.message(F.document & (F.chat.id == ORDER_GROUP_CHAT_ID) & F.reply_to_message)
 async def handle_order_confirmation_reply(message: types.Message):
     """Sotuv bo'lim group: a manager replies to a "Yangi buyurtma #N" message
     (or its attached Excel) with the 1C-exported Excel of the finalized order.
