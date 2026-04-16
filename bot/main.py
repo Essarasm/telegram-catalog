@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import (
+    ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -18,6 +19,8 @@ from aiogram.types import (
     MenuButtonWebApp,
     WebAppInfo,
 )
+
+TESTCLIENT_PROMPT = "🔎 Qidirish uchun mijoz ismini yozing"
 
 load_dotenv()
 
@@ -1392,11 +1395,11 @@ async def on_testclient_callback(cb: types.CallbackQuery):
 
 
 @dp.message(Command("testclient"))
-async def cmd_testclient(message: types.Message):
+async def cmd_testclient(message: types.Message, _override_arg: str | None = None):
     """Link admin's account to a 1C client for testing the Cabinet balance view.
 
     Usage:
-        /testclient              — show current link + top clients to choose from
+        /testclient              — prompt user for a name (force-reply)
         /testclient КЛИЕНТ       — search by name and link to first match
         /testclient #123         — link to allowed_clients.id directly
         /testclient clear        — remove the test link
@@ -1406,8 +1409,11 @@ async def cmd_testclient(message: types.Message):
 
     telegram_id = message.from_user.id
     conn = get_db()
-    parts = message.text.split(maxsplit=1)
-    arg = parts[1].strip() if len(parts) > 1 else ""
+    if _override_arg is not None:
+        arg = _override_arg.strip()
+    else:
+        parts = message.text.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
 
     # Ensure this admin has a users record
     user = conn.execute("SELECT client_id FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
@@ -1666,35 +1672,36 @@ async def cmd_testclient(message: types.Message):
         await message.reply(header, parse_mode="HTML", reply_markup=kb)
         return
 
-    # /testclient (no args) — show current state + usage hints
-    current_name = "—"
-    current_1c = "—"
-    current_bal = 0
-    if user["client_id"]:
-        linked = conn.execute(
-            "SELECT name, client_id_1c FROM allowed_clients WHERE id = ?", (user["client_id"],)
-        ).fetchone()
-        if linked:
-            current_name = html_escape(linked["name"] or "—")
-            current_1c = html_escape(linked["client_id_1c"] or "—")
-            current_bal = conn.execute(
-                "SELECT COUNT(*) FROM client_balances WHERE client_id = ?", (user["client_id"],)
-            ).fetchone()[0]
+    # /testclient (no args) — force-reply prompt. User's next message (a
+    # plain name) is picked up by handle_testclient_reply below and routed
+    # through the normal search path. Keeps agents one tap away from the
+    # search without needing to remember the /testclient name syntax.
     conn.close()
+    await message.reply(
+        TESTCLIENT_PROMPT,
+        reply_markup=ForceReply(
+            selective=True,
+            input_field_placeholder="Masalan: Улугбек",
+        ),
+    )
 
-    lines = [
-        f"🔗 <b>Joriy bog'lanish:</b>\n"
-        f"  Mijoz: {current_name}\n"
-        f"  1C: <code>{current_1c}</code>\n"
-        f"  Balans yozuvlari: {current_bal} oy\n",
-    ]
 
-    lines.append("<b>Foydalanish:</b>")
-    lines.append("<code>/testclient Улугбек</code> — 1C nomi bo'yicha qidirish")
-    lines.append("<code>/testclient #123</code> — ID bo'yicha bog'lash")
-    lines.append("<code>/testclient clear</code> — bog'lanishni o'chirish")
-
-    await message.reply("\n".join(lines), parse_mode="HTML")
+@dp.message(F.reply_to_message & F.text)
+async def handle_testclient_reply(message: types.Message):
+    """When a user replies to the /testclient force-reply prompt, treat
+    the reply's text as the search query and dispatch to cmd_testclient."""
+    if not _is_agent_or_admin(message):
+        return
+    rt = message.reply_to_message
+    if not rt or not rt.from_user or not rt.from_user.is_bot:
+        return
+    # Match on the exact prompt we sent so we don't eat other reply flows.
+    if (rt.text or "").strip() != TESTCLIENT_PROMPT:
+        return
+    query = (message.text or "").strip()
+    if not query:
+        return
+    await cmd_testclient(message, _override_arg=query)
 
 
 @dp.message(Command("demand"))

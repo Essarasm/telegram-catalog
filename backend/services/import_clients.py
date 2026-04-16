@@ -165,18 +165,42 @@ def _normalize_headers(raw_headers: list) -> list:
     ) for h in raw_headers]
 
 
+def _score_header_row(raw_row) -> int:
+    """Return the number of canonical fields this row hits."""
+    known = {"phone", "name", "client_id_1c", "company_name", "location", "source"}
+    return sum(1 for h in _normalize_headers(raw_row) if h in known)
+
+
+def _find_header_row(table_rows, max_scan: int = 10) -> int:
+    """1C exports often put the sheet title / metadata on rows 1-3 and the
+    real header on row 2-5. Pick the earliest row with the most alias hits,
+    preferring the first row that scores >= 2."""
+    best_idx, best_score = 0, -1
+    for i, row in enumerate(table_rows[:max_scan]):
+        s = _score_header_row(row)
+        if s > best_score:
+            best_score = s
+            best_idx = i
+        if s >= 2:
+            return i
+    return best_idx
+
+
 def _iter_rows_from_xlsx(file_bytes: bytes):
-    """Return (headers_raw, list of dicts) from an xlsx."""
+    """Return (headers_raw, list of dicts) from an xlsx, auto-detecting the
+    real header row (1C exports often have a title row above it)."""
     from openpyxl import load_workbook
     wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
         return [], []
-    header_raw = [("" if c is None else str(c)) for c in rows[0]]
+    hdr_idx = _find_header_row(rows)
+    header_row = rows[hdr_idx]
+    header_raw = [("" if c is None else str(c)) for c in header_row]
     headers = _normalize_headers(header_raw)
     out = []
-    for row in rows[1:]:
+    for row in rows[hdr_idx + 1:]:
         data = {headers[i]: (row[i] if i < len(row) else None)
                 for i in range(len(headers))}
         out.append(data)
@@ -184,16 +208,22 @@ def _iter_rows_from_xlsx(file_bytes: bytes):
 
 
 def _iter_rows_from_xls(file_bytes: bytes):
-    """Return (headers_raw, list of dicts) from a legacy .xls."""
+    """Return (headers_raw, list of dicts) from a legacy .xls, auto-detecting
+    the real header row."""
     import xlrd
     wb = xlrd.open_workbook(file_contents=file_bytes, encoding_override="cp1251")
     sh = wb.sheet_by_index(0)
     if sh.nrows < 1:
         return [], []
-    header_raw = [str(sh.cell_value(0, c) or "") for c in range(sh.ncols)]
+    all_rows = [
+        [sh.cell_value(r, c) for c in range(sh.ncols)]
+        for r in range(min(sh.nrows, 10))
+    ]
+    hdr_idx = _find_header_row(all_rows)
+    header_raw = [str(sh.cell_value(hdr_idx, c) or "") for c in range(sh.ncols)]
     headers = _normalize_headers(header_raw)
     out = []
-    for r in range(1, sh.nrows):
+    for r in range(hdr_idx + 1, sh.nrows):
         row = {}
         for c in range(sh.ncols):
             v = sh.cell_value(r, c)
