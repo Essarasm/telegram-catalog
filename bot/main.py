@@ -1282,6 +1282,115 @@ def _is_agent_or_admin(message: types.Message) -> bool:
     return False
 
 
+def _is_agent_or_admin_cb(cb: types.CallbackQuery) -> bool:
+    """Same gate as _is_agent_or_admin but for callback queries."""
+    chat_id = cb.message.chat.id if cb.message else None
+    if ADMIN_IDS and cb.from_user and cb.from_user.id in ADMIN_IDS:
+        return True
+    if chat_id in (ORDER_GROUP_CHAT_ID, ADMIN_GROUP_CHAT_ID, AGENTS_GROUP_CHAT_ID):
+        return True
+    return False
+
+
+@dp.callback_query(F.data.startswith("tc:"))
+async def on_testclient_callback(cb: types.CallbackQuery):
+    """Inline-button replacement for typing /testclient #ID or addclient."""
+    if not _is_agent_or_admin_cb(cb):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+    data = cb.data or ""
+    parts = data.split(":", 2)
+    if len(parts) < 2:
+        await cb.answer()
+        return
+    action = parts[1]
+    telegram_id = cb.from_user.id if cb.from_user else 0
+    if not telegram_id:
+        await cb.answer()
+        return
+    conn = get_db()
+    try:
+        # Ensure this user has a users row
+        conn.execute(
+            "INSERT OR IGNORE INTO users (telegram_id, first_name, is_approved) "
+            "VALUES (?, ?, 1)",
+            (telegram_id, (cb.from_user.first_name or "Admin")),
+        )
+
+        if action == "noop":
+            await cb.answer()
+            return
+
+        if action == "link" and len(parts) == 3 and parts[2].isdigit():
+            target_id = int(parts[2])
+            target = conn.execute(
+                "SELECT id, name, client_id_1c FROM allowed_clients WHERE id = ?",
+                (target_id,),
+            ).fetchone()
+            if not target:
+                await cb.answer("Mijoz topilmadi", show_alert=True)
+                return
+            conn.execute(
+                "UPDATE users SET client_id = ? WHERE telegram_id = ?",
+                (target_id, telegram_id),
+            )
+            conn.commit()
+            name_html = html_escape(target["client_id_1c"] or target["name"] or f"#{target_id}")
+            await cb.answer(f"Bog'landi: {target['client_id_1c'] or target['name']}"[:200])
+            try:
+                await cb.message.reply(
+                    f"✅ <b>Bog'landi:</b> {name_html}\n"
+                    f"🆔 allowed_clients #{target_id}\n\n"
+                    f"Kabinetni oching — mijoz ma'lumotlarini ko'ring.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return
+
+        if action == "add" and len(parts) == 3:
+            client_name_1c = parts[2]
+            existing = conn.execute(
+                "SELECT id FROM allowed_clients WHERE client_id_1c = ? LIMIT 1",
+                (client_name_1c,),
+            ).fetchone()
+            if existing:
+                new_id = existing["id"]
+            else:
+                conn.execute(
+                    "INSERT INTO allowed_clients (phone_normalized, name, "
+                    "client_id_1c, source_sheet, status) VALUES (?, ?, ?, ?, ?)",
+                    ("", client_name_1c, client_name_1c, "bot_from_1c", "active"),
+                )
+                new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                conn.execute(
+                    "UPDATE client_balances SET client_id = ? "
+                    "WHERE client_name_1c = ? AND client_id IS NULL",
+                    (new_id, client_name_1c),
+                )
+            # Link the agent to this newly added client in one shot
+            conn.execute(
+                "UPDATE users SET client_id = ? WHERE telegram_id = ?",
+                (new_id, telegram_id),
+            )
+            conn.commit()
+            await cb.answer(f"Ro'yxatga qo'shildi va bog'landi", show_alert=False)
+            try:
+                await cb.message.reply(
+                    f"✅ <b>Ro'yxatga qo'shildi va bog'landi:</b> "
+                    f"{html_escape(client_name_1c)}\n"
+                    f"🆔 allowed_clients #{new_id}",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+            return
+
+        await cb.answer()
+    finally:
+        conn.close()
+
+
 @dp.message(Command("testclient"))
 async def cmd_testclient(message: types.Message):
     """Link admin's account to a 1C client for testing the Cabinet balance view.
@@ -1455,11 +1564,13 @@ async def cmd_testclient(message: types.Message):
             )
             return
 
-    # /testclient NAME — search by name (Cyrillic or Latin), always show list
+    # /testclient NAME — search by name (Cyrillic or Latin), show tappable buttons
     if arg:
-        search = f"%{arg.lower()}%"
-        # Case-insensitive search using LOWER() — needed for Cyrillic (LIKE is ASCII-only)
-        # Search across allowed_clients (name, client_id_1c) AND client_balances (client_name_1c)
+        import unicodedata
+        normalized = unicodedata.normalize("NFC", arg).strip().lower()
+        search = f"%{normalized}%"
+        # Case-insensitive search using our custom Unicode LOWER function.
+        # Both sides (DB value + query) are NFC-normalized + lowercased.
         matches = conn.execute(
             """SELECT ac.id, ac.name, ac.client_id_1c,
                       (SELECT COUNT(*) FROM client_balances WHERE client_id = ac.id) as bal_count
@@ -1475,7 +1586,6 @@ async def cmd_testclient(message: types.Message):
             (search, search, search),
         ).fetchall()
 
-        # Fallback: search client_balances for clients NOT in allowed_clients
         cb_only = []
         if len(matches) < 15:
             cb_only = conn.execute(
@@ -1501,65 +1611,59 @@ async def cmd_testclient(message: types.Message):
             )
             return
 
-        lines = []
-
-        if matches:
-            # Group results by client_id_1c so multi-phone clients show as one entry
-            from collections import OrderedDict
-            _grouped = OrderedDict()
-            for m in matches:
-                cid = (m['client_id_1c'] or '').strip()
-                key = cid if cid else f"__no1c_{m['id']}"
-                _grouped.setdefault(key, []).append(m)
-
-            unique_clients = len(_grouped)
-            lines.append(f"🔍 <b>{unique_clients}</b> ta mijoz '{html_escape(arg)}' bo'yicha:\n")
-            lines.append("<b>📋 Ro'yxatdagi mijozlar:</b>")
-
-            for key, group in _grouped.items():
-                # Sum up balance months across all sibling records
-                total_bal = sum(m['bal_count'] for m in group)
-                first = group[0]
-                name_1c = html_escape(first['client_id_1c'] or '—')
-
-                if len(group) == 1:
-                    # Single record — show as before
-                    m = first
-                    name_app = html_escape(m['name'] or '—')
-                    if m['client_id_1c'] and m['name'] and m['client_id_1c'].strip() != m['name'].strip():
-                        display = f"{name_1c}\n      📱 {name_app}"
-                    else:
-                        display = name_1c if m['client_id_1c'] else name_app
-                    lines.append(
-                        f"  <code>/testclient #{m['id']}</code> — {display}"
-                        f"  [{total_bal} oy]"
-                    )
-                else:
-                    # Multi-phone client — show grouped with phone sub-entries
-                    lines.append(f"  📍 <b>{name_1c}</b>  [{total_bal} oy]  ({len(group)} tel.)")
-                    for m in group:
-                        name_app = html_escape(m['name'] or '—')
-                        bal_info = f" ({m['bal_count']} oy)" if m['bal_count'] > 0 else ""
-                        lines.append(
-                            f"      <code>/testclient #{m['id']}</code> — {name_app}{bal_info}"
-                        )
-
+        # Build a caption + an inline keyboard so each match is a single-tap
+        # link button. Buttons look like blue actionable links in Telegram.
+        header = f"🔍 '{html_escape(arg)}' — {len(matches) + len(cb_only)} ta natija"
         if cb_only:
-            lines.append("")
-            lines.append("<b>📒 Faqat 1C'da (ro'yxatda yo'q):</b>")
-            for c in cb_only:
-                name = html_escape(c['client_name_1c'])
-                lines.append(f"  🟡 <b>{name}</b>")
-                lines.append(f"     📊 {c['bal_count']} yozuv | oxirgi: {c['latest_period'] or '?'}")
-                lines.append(f"     ➕ <code>/testclient addclient {c['client_name_1c']}</code>")
-
-        if matches:
-            lines.append(f"\n👆 Kerakli mijozni tanlang — <code>/testclient #ID</code>")
-        elif cb_only:
-            lines.append(f"\n💡 Avval <code>/testclient addclient ...</code> bilan ro'yxatga qo'shing")
-
+            header += (
+                "\n\n🟡 = 1C da bor, ilova ro'yxatiga qo'shilmagan "
+                "(tugmani bossangiz avtomatik qo'shiladi va bog'lanasiz)."
+            )
         conn.close()
-        await message.reply("\n".join(lines), parse_mode="HTML")
+
+        kb_rows: list[list[InlineKeyboardButton]] = []
+
+        # Group matches by client_id_1c so multi-phone siblings roll up
+        from collections import OrderedDict
+        _grouped = OrderedDict()
+        for m in matches:
+            cid = (m['client_id_1c'] or '').strip()
+            key = cid if cid else f"__no1c_{m['id']}"
+            _grouped.setdefault(key, []).append(m)
+
+        for key, group in _grouped.items():
+            first = group[0]
+            name = first['client_id_1c'] or first['name'] or f"#{first['id']}"
+            total_bal = sum(m['bal_count'] for m in group)
+            suffix = f" · {total_bal} oy" if total_bal else ""
+            if len(group) == 1:
+                label = f"🔗 {name}{suffix}"[:60]
+                kb_rows.append([InlineKeyboardButton(
+                    text=label, callback_data=f"tc:link:{first['id']}",
+                )])
+            else:
+                # One row per sibling so the agent picks the specific phone link
+                kb_rows.append([InlineKeyboardButton(
+                    text=f"🔗 {name}{suffix} ({len(group)} tel.)"[:60],
+                    callback_data="tc:noop",
+                )])
+                for m in group:
+                    sub = m['name'] or f"#{m['id']}"
+                    sub_bal = f" · {m['bal_count']} oy" if m['bal_count'] else ""
+                    kb_rows.append([InlineKeyboardButton(
+                        text=f"   └ {sub}{sub_bal}"[:60],
+                        callback_data=f"tc:link:{m['id']}",
+                    )])
+
+        for c in cb_only:
+            cname = c['client_name_1c']
+            kb_rows.append([InlineKeyboardButton(
+                text=f"🟡 {cname} · {c['bal_count']} oy"[:60],
+                callback_data=f"tc:add:{cname[:40]}",
+            )])
+
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
+        await message.reply(header, parse_mode="HTML", reply_markup=kb)
         return
 
     # /testclient (no args) — show current state + usage hints
