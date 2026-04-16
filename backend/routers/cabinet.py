@@ -29,8 +29,8 @@ def list_orders(telegram_id: int = Query(...)):
 
     if client_id:
         rows = conn.execute(
-            """SELECT id, telegram_id, client_name, total_usd, total_uzs,
-                      item_count, status, created_at
+            """SELECT id, telegram_id, client_name, client_phone,
+                      total_usd, total_uzs, item_count, status, created_at
                FROM orders
                WHERE client_id = ?
                ORDER BY created_at DESC""",
@@ -38,8 +38,8 @@ def list_orders(telegram_id: int = Query(...)):
         ).fetchall()
     else:
         rows = conn.execute(
-            """SELECT id, telegram_id, client_name, total_usd, total_uzs,
-                      item_count, status, created_at
+            """SELECT id, telegram_id, client_name, client_phone,
+                      total_usd, total_uzs, item_count, status, created_at
                FROM orders
                WHERE telegram_id = ? AND client_id IS NULL
                ORDER BY created_at DESC""",
@@ -51,7 +51,9 @@ def list_orders(telegram_id: int = Query(...)):
     for r in rows:
         orders.append({
             "id": r["id"],
+            "telegram_id": r["telegram_id"],
             "client_name": r["client_name"],
+            "client_phone": r["client_phone"],
             "total_usd": r["total_usd"],
             "total_uzs": r["total_uzs"],
             "item_count": r["item_count"],
