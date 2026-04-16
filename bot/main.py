@@ -1304,12 +1304,12 @@ async def on_testclient_callback(cb: types.CallbackQuery):
     data = cb.data or ""
     parts = data.split(":", 2)
     if len(parts) < 2:
-        await cb.answer()
+        await cb.answer("Noma'lum amal", show_alert=False)
         return
     action = parts[1]
     telegram_id = cb.from_user.id if cb.from_user else 0
     if not telegram_id:
-        await cb.answer()
+        await cb.answer("Foydalanuvchi aniqlanmadi", show_alert=False)
         return
     conn = get_db()
     try:
@@ -1319,10 +1319,6 @@ async def on_testclient_callback(cb: types.CallbackQuery):
             "VALUES (?, ?, 1)",
             (telegram_id, (cb.from_user.first_name or "Admin")),
         )
-
-        if action == "noop":
-            await cb.answer()
-            return
 
         if action == "link" and len(parts) == 3 and parts[2].isdigit():
             target_id = int(parts[2])
@@ -1389,7 +1385,8 @@ async def on_testclient_callback(cb: types.CallbackQuery):
                 pass
             return
 
-        await cb.answer()
+        # Unknown action (defensive; no UI path currently reaches this)
+        await cb.answer("Noma'lum tugma", show_alert=False)
     finally:
         conn.close()
 
