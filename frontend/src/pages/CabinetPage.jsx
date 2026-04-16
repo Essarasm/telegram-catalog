@@ -181,6 +181,12 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const [expandedRealItems, setExpandedRealItems] = useState([]);
   const [loadingRealDetail, setLoadingRealDetail] = useState(false);
 
+  // Акт сверки state
+  const [aktUzs, setAktUzs] = useState(null);
+  const [aktUsd, setAktUsd] = useState(null);
+  const [aktCurrency, setAktCurrency] = useState('UZS');
+  const [aktSheet, setAktSheet] = useState(null);  // payment or order detail
+
   // Rassvet Plus — business intelligence state
   const [spendTrend, setSpendTrend] = useState(null);
   const [topProducts, setTopProducts] = useState(null);
@@ -237,6 +243,19 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         if (data.ok) setPayments(data.payments || []);
       })
       .catch(() => {});
+
+    // Акт сверки — both currencies in parallel
+    Promise.all([
+      fetch(`${API}/akt-sverki?telegram_id=${userId}&currency=UZS&limit=80`).then(r => r.json()),
+      fetch(`${API}/akt-sverki?telegram_id=${userId}&currency=USD&limit=80`).then(r => r.json()),
+    ]).then(([uzs, usd]) => {
+      if (uzs?.ok) setAktUzs(uzs);
+      if (usd?.ok) setAktUsd(usd);
+      // Pick the currency with more events as default visible
+      const uzsEvents = (uzs?.events || []).length;
+      const usdEvents = (usd?.events || []).length;
+      setAktCurrency(usdEvents > uzsEvents ? 'USD' : 'UZS');
+    }).catch(() => {});
 
     // Rassvet Plus — fetch business intelligence data
     Promise.all([
@@ -594,6 +613,128 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
               ))}
             </div>
           )}
+        </div>
+      </div>
+    );
+  };
+
+  // ── Акт сверки (unified orders + payments timeline with FIFO) ──
+  const aktCur = aktCurrency === 'USD' ? aktUsd : aktUzs;
+  const fmtAmount = (v, cur) =>
+    cur === 'USD' ? formatUsd(v) : `${formatUzs(v)} ${t.balance_currency || "so'm"}`;
+
+  const AktSverkiHero = () => {
+    if (!aktCur || !aktCur.linked) return null;
+    const s = aktCur.state || {};
+    const cur = aktCur.currency;
+    let bg, icon, title, sub;
+    if (s.code === 'clean') {
+      bg = 'bg-green-50 border-green-200 text-green-800';
+      icon = '✅';
+      title = t.akt_clean_title;
+      sub = t.akt_clean_sub;
+    } else if (s.code === 'advance') {
+      bg = 'bg-emerald-50 border-emerald-200 text-emerald-800';
+      icon = '💚';
+      title = `${t.akt_advance_title}: ${fmtAmount(s.advance, cur)}`;
+      sub = t.akt_advance_sub;
+    } else if (s.code === 'debt_0_14') {
+      bg = 'bg-amber-50 border-amber-200 text-amber-800';
+      icon = '🟡';
+      title = `${t.akt_debt_title}: ${fmtAmount(s.debt, cur)}`;
+      sub = `${s.days_overdue} ${t.akt_days}. ${t.akt_days_to_call.replace('{n}', Math.max(0, 15 - s.days_overdue))}`;
+    } else if (s.code === 'debt_15_29') {
+      bg = 'bg-orange-50 border-orange-300 text-orange-900';
+      icon = '⚠️';
+      title = `${t.akt_debt_title}: ${fmtAmount(s.debt, cur)}`;
+      sub = `${s.days_overdue} ${t.akt_days}. ${t.akt_will_call_soon}`;
+    } else if (s.code === 'debt_30_plus') {
+      bg = 'bg-red-50 border-red-300 text-red-900';
+      icon = '🔴';
+      title = `${t.akt_debt_overdue}: ${fmtAmount(s.debt, cur)}`;
+      sub = `${t.akt_overdue_by} ${s.days_overdue} ${t.akt_days}. ${t.akt_contact_today}`;
+    } else return null;
+    return (
+      <div className={`rounded-xl p-3.5 mb-3 border ${bg}`}>
+        <div className="flex items-start gap-2.5">
+          <span className="text-xl flex-shrink-0 leading-none mt-0.5">{icon}</span>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold">{title}</div>
+            <div className="text-[11px] mt-0.5 opacity-80">{sub}</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const AktSverkiSection = () => {
+    if (!aktCur || !aktCur.linked) return null;
+    const hasUzs = (aktUzs?.events || []).length > 0;
+    const hasUsd = (aktUsd?.events || []).length > 0;
+    if (!hasUzs && !hasUsd) return null;
+    const events = [...(aktCur.events || [])].reverse();  // newest first
+
+    return (
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm text-tg-hint">
+            📒 {t.akt_title}
+          </div>
+          {hasUzs && hasUsd && (
+            <div className="flex rounded-lg bg-tg-secondary p-0.5 text-[11px] font-medium">
+              <button
+                onClick={() => setAktCurrency('UZS')}
+                className={`px-2.5 py-1 rounded-md ${aktCurrency === 'UZS' ? 'bg-tg-bg shadow-sm' : 'text-tg-hint'}`}
+              >UZS</button>
+              <button
+                onClick={() => setAktCurrency('USD')}
+                className={`px-2.5 py-1 rounded-md ${aktCurrency === 'USD' ? 'bg-tg-bg shadow-sm' : 'text-tg-hint'}`}
+              >USD</button>
+            </div>
+          )}
+        </div>
+
+        <AktSverkiHero />
+
+        <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
+          {events.map((e) => {
+            const isOrder = e.type === 'order';
+            const amount = (isOrder ? -1 : 1) * e.amount;
+            const running = e.running_balance || 0;
+            const paidFully = isOrder && (e.remaining || 0) <= 0.01;
+            const partial = isOrder && (e.remaining || 0) > 0.01 && (e.remaining || 0) < e.amount;
+            const sign = isOrder ? '−' : '+';
+            const rowIcon = isOrder ? '🚚' : '💳';
+            return (
+              <button
+                key={`${e.type}-${e.id}`}
+                onClick={() => setAktSheet({ ...e, currency: aktCur.currency })}
+                className="w-full px-4 py-2.5 flex items-center gap-3 text-left active:bg-tg-bg/30"
+              >
+                <span className="text-base flex-shrink-0">{rowIcon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium">
+                    {formatDocDate(e.date)}{e.time ? ` · ${e.time}` : ''}
+                    {isOrder && paidFully && <span className="text-[10px] text-green-600 ml-1.5">✓ {t.akt_order_paid}</span>}
+                    {isOrder && partial && <span className="text-[10px] text-amber-600 ml-1.5">● {t.akt_order_partial}</span>}
+                    {isOrder && !paidFully && !partial && <span className="text-[10px] text-tg-hint ml-1.5">○ {t.akt_order_unpaid}</span>}
+                    {!isOrder && (e.advance_created || 0) > 0.01 && <span className="text-[10px] text-emerald-600 ml-1.5">+ {t.akt_created_advance}</span>}
+                  </div>
+                  <div className="text-[11px] text-tg-hint">
+                    {isOrder ? `${t.akt_order_doc} ${e.doc_number || ''}` : t.akt_payment}
+                  </div>
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <div className={`text-sm font-semibold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
+                    {sign}{fmtAmount(e.amount, e.currency)}
+                  </div>
+                  <div className={`text-[10px] ${running < 0 ? 'text-red-500' : running > 0 ? 'text-emerald-600' : 'text-tg-hint'}`}>
+                    {t.akt_balance}: {running < 0 ? '−' : running > 0 ? '+' : ''}{fmtAmount(Math.abs(running), e.currency)}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
     );
@@ -964,32 +1105,11 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         </>
       )}
 
-      {/* ── Last 10 payments (credit side of акт сверки — date + amount only) ── */}
-      {payments.length > 0 && (
-        <div className="mb-4">
-          <div className="text-sm text-tg-hint mb-2">
-            💳 {t.payments_title}
-            <span className="text-[10px] ml-1 opacity-60">· {t.payments_subtitle}</span>
-          </div>
-          <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
-            {payments.map((p) => (
-              <div key={p.id} className="px-4 py-2.5 flex items-center gap-3">
-                <div className="flex-1 min-w-0 text-sm font-medium">
-                  {formatDocDate(p.date)}
-                </div>
-                <div className="text-sm font-semibold whitespace-nowrap">
-                  {p.currency === 'USD'
-                    ? formatUsd(p.amount)
-                    : `${formatUzs(p.amount)} ${t.balance_currency || "so'm"}`}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* ── Акт сверки (unified timeline + hero status + FIFO links) ── */}
+      <AktSverkiSection />
 
-      {/* ── Real orders (1C shipments) — placed right before the score card ── */}
-      {realOrders.length > 0 && (
+      {/* ── Legacy: Real orders 1C drill-down list (still shown under akt-sverki for the items view) ── */}
+      {false && realOrders.length > 0 && (
         <div className="mb-4">
           <div className="text-sm text-tg-hint mb-2">
             🚚 {t.real_orders_title}
@@ -1110,6 +1230,117 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
           /api/finance/credit-score; the card shows only the arc + number +
           improvement hints per product-owner call. */}
       <CreditScoreCard />
+
+      {/* Акт сверки — tap sheet (shows FIFO links for the tapped row) */}
+      {aktSheet && (
+        <>
+          <div className="fixed inset-0 bg-black/40 z-[100]" onClick={() => setAktSheet(null)} />
+          <div className="fixed bottom-0 left-0 right-0 z-[101] bg-tg-bg rounded-t-2xl p-5 pb-8 shadow-2xl max-h-[80vh] overflow-y-auto">
+            <div className="w-10 h-1 bg-tg-hint/30 rounded-full mx-auto mb-4" />
+            {aktSheet.type === 'payment' ? (
+              <>
+                <div className="text-center mb-4">
+                  <div className="text-[11px] text-tg-hint uppercase tracking-wide">{t.akt_payment}</div>
+                  <div className="text-2xl font-bold text-emerald-600 mt-1">
+                    +{fmtAmount(aktSheet.amount, aktSheet.currency)}
+                  </div>
+                  <div className="text-xs text-tg-hint mt-0.5">
+                    {formatDocDate(aktSheet.date)}{aktSheet.time ? ` · ${aktSheet.time}` : ''}
+                  </div>
+                </div>
+                {(aktSheet.covers || []).length > 0 ? (
+                  <>
+                    <div className="text-xs text-tg-hint mb-2">{t.akt_covers_fifo}:</div>
+                    <div className="space-y-1.5">
+                      {aktSheet.covers.map((c, i) => (
+                        <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
+                          <span className="text-xs">{c.fully_closed ? '✅' : '🟡'}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium">
+                              {t.akt_order_doc} {c.order_doc || `#${c.order_id}`}
+                            </div>
+                            <div className="text-[11px] text-tg-hint">
+                              {formatDocDate(c.order_date)} · {c.fully_closed ? t.akt_fully_closed : t.akt_partially_closed}
+                            </div>
+                          </div>
+                          <div className="text-sm font-semibold">
+                            {fmtAmount(c.amount, aktSheet.currency)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {(aktSheet.advance_created || 0) > 0.01 && (
+                      <div className="mt-3 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800">
+                        💚 {t.akt_created_advance_full}: <b>{fmtAmount(aktSheet.advance_created, aktSheet.currency)}</b>
+                      </div>
+                    )}
+                    <div className="mt-3 text-[10px] text-tg-hint opacity-70">
+                      {t.akt_fifo_disclaimer}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-sm text-tg-hint text-center py-4">
+                    {(aktSheet.advance_created || 0) > 0.01
+                      ? `💚 ${t.akt_created_advance_full}: ${fmtAmount(aktSheet.advance_created, aktSheet.currency)}`
+                      : t.akt_no_links}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="text-center mb-4">
+                  <div className="text-[11px] text-tg-hint uppercase tracking-wide">{t.akt_order_doc} {aktSheet.doc_number}</div>
+                  <div className="text-2xl font-bold text-red-500 mt-1">
+                    −{fmtAmount(aktSheet.amount, aktSheet.currency)}
+                  </div>
+                  <div className="text-xs text-tg-hint mt-0.5">
+                    {formatDocDate(aktSheet.date)}{aktSheet.time ? ` · ${aktSheet.time}` : ''}
+                  </div>
+                </div>
+                {(aktSheet.paid_by || []).length > 0 && (
+                  <>
+                    <div className="text-xs text-tg-hint mb-2">{t.akt_paid_by}:</div>
+                    <div className="space-y-1.5">
+                      {aktSheet.paid_by.map((p, i) => (
+                        <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
+                          <span className="text-xs">{p.kind === 'advance' ? '💚' : '💳'}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium">
+                              {p.kind === 'advance' ? t.akt_from_advance : t.akt_payment}
+                            </div>
+                            <div className="text-[11px] text-tg-hint">
+                              {formatDocDate(p.date)}
+                            </div>
+                          </div>
+                          <div className="text-sm font-semibold">
+                            {fmtAmount(p.amount, aktSheet.currency)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+                {(aktSheet.remaining || 0) > 0.01 && (
+                  <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-900">
+                    {t.akt_remaining}: <b>{fmtAmount(aktSheet.remaining, aktSheet.currency)}</b>
+                  </div>
+                )}
+                {(aktSheet.paid_by || []).length === 0 && (aktSheet.remaining || 0) > 0.01 && (
+                  <div className="text-sm text-tg-hint text-center py-4">
+                    {t.akt_order_unpaid_full}
+                  </div>
+                )}
+              </>
+            )}
+            <button
+              onClick={() => setAktSheet(null)}
+              className="mt-5 w-full py-2.5 rounded-xl bg-tg-secondary text-sm font-medium"
+            >
+              {t.reorder_cancel}
+            </button>
+          </div>
+        </>
+      )}
 
       {/* Reorder confirmation dialog */}
       {reorderDialog && (

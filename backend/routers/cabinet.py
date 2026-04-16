@@ -562,6 +562,29 @@ def activity_summary(telegram_id: int = Query(...)):
     }
 
 
+@router.get("/akt-sverki")
+def akt_sverki(
+    telegram_id: int = Query(...),
+    currency: str = Query("UZS", regex="^(UZS|USD)$"),
+    limit: int = Query(60, ge=10, le=500),
+):
+    """Unified timeline of orders + payments with FIFO allocation + state.
+
+    One currency at a time. Returns:
+      - state: {code, days_overdue, debt/advance}  — drives hero card
+      - events: chronological orders + payments, each with running balance,
+                and FIFO links (orders have paid_by[], payments have covers[])
+      - total_debt / advance / current_balance
+    """
+    from backend.services.akt_sverki import build as build_akt_sverki
+    client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    if conn:
+        conn.close()
+    if not client_ids:
+        return build_akt_sverki([], currency=currency)
+    return build_akt_sverki(client_ids, currency=currency, events_limit=limit)
+
+
 @router.get("/payments")
 def list_client_payments(
     telegram_id: int = Query(...),
