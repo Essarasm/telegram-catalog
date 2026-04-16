@@ -329,14 +329,11 @@ def apply_price_updates(file_bytes: bytes) -> dict:
                     change_record["new_weight"] = new_weight
                 updated.append(change_record)
 
-            # Restore in-stock status for matched products
-            old_status = product["stock_status"]
-            if old_status != 'in_stock':
-                now = datetime.utcnow().isoformat()
-                conn.execute(
-                    "UPDATE products SET stock_status = 'in_stock', stock_updated_at = ? WHERE id = ?",
-                    (now, product["id"])
-                )
+            # /prices should ONLY touch price fields. Stock is owned by
+            # /stock (update_stock.py). Previously this block forced
+            # stock_status = 'in_stock' on every product found in the
+            # prices file, which silently erased whatever inventory the
+            # most recent /stock upload had set. Removed.
 
     conn.commit()
 
@@ -381,23 +378,11 @@ def apply_price_updates(file_bytes: bytes) -> dict:
         conn.commit()
         logger.info(f"Auto-added {len(new_products)} new products to '{NEW_ARRIVALS_CATEGORY}'")
 
-    # ── Mark out-of-stock (in DB but not in Excel) ──────────────────
-    now = datetime.utcnow().isoformat()
-    out_of_stock_ids = []
-    for p in db_products:
-        if p["id"] not in matched_db_ids:
-            out_of_stock_ids.append(p["id"])
-
-    if out_of_stock_ids:
-        for pid in out_of_stock_ids:
-            conn.execute(
-                """UPDATE products
-                   SET stock_status = 'out_of_stock', stock_quantity = 0, stock_updated_at = ?
-                   WHERE id = ?""",
-                (now, pid)
-            )
-        conn.commit()
-        logger.info(f"Marked {len(out_of_stock_ids)} products as out-of-stock")
+    # NOTE: previous versions of this importer marked every DB product
+    # absent from the prices file as out_of_stock with qty=0. That was
+    # wrong — stock is owned by /stock, not /prices. Removed.
+    # Tracking unmatched_db for the return summary only, no side effects.
+    unmatched_db = [p["id"] for p in db_products if p["id"] not in matched_db_ids]
 
     conn.close()
 
@@ -412,15 +397,11 @@ def apply_price_updates(file_bytes: bytes) -> dict:
         # New products auto-added
         "new_products": new_products[:30],
         "new_products_total": len(new_products),
-        # Out-of-stock tracking
-        "out_of_stock_count": len(out_of_stock_ids),
-        # Restored in-stock (matched products that were previously out-of-stock)
-        "restored_in_stock": sum(
-            1 for p in db_products
-            if p["id"] in matched_db_ids and p["stock_status"] != 'in_stock'
-        ),
-        # Legacy fields (kept for backwards compat, but now empty since we auto-add)
+        # Products in the DB that were not in this prices file. No longer
+        # marked out_of_stock — /stock owns that status.
+        "out_of_stock_count": 0,
+        "restored_in_stock": 0,
         "unmatched_excel": [],
         "unmatched_excel_total": 0,
-        "unmatched_db_count": len(out_of_stock_ids),
+        "unmatched_db_count": len(unmatched_db),
     }
