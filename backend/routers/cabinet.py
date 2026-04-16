@@ -569,17 +569,33 @@ def akt_sverki(
 ):
     """Unified dual-currency акт сверки with FIFO allocation.
 
-    Returns {events: [...], uzs_state, usd_state, ...}. Each event has
-    both uzs_amount and usd_amount; orders are one row per real_orders.id;
-    payments are grouped per (date, client_id). FIFO runs per currency.
+    Returns {events: [...], uzs_state, usd_state, client_1c_name, ...}.
+    Each event has both uzs_amount and usd_amount; orders are one row per
+    real_orders.id; payments are grouped per (date, client_id). FIFO runs
+    per currency.
     """
     from backend.services.akt_sverki import build as build_akt_sverki
     client_ids, conn = _get_all_client_ids_for_user(telegram_id)
+    client_1c_name = None
+    if conn and client_ids:
+        # Fetch the 1C client name for the header. Prefer the first sibling's
+        # client_id_1c (which stores the Cyrillic 1C name).
+        row = conn.execute(
+            "SELECT client_id_1c FROM allowed_clients "
+            "WHERE id IN ({}) AND client_id_1c IS NOT NULL AND client_id_1c != '' "
+            "LIMIT 1".format(",".join("?" * len(client_ids))),
+            tuple(client_ids),
+        ).fetchone()
+        if row:
+            client_1c_name = row["client_id_1c"]
     if conn:
         conn.close()
     if not client_ids:
-        return build_akt_sverki([])
-    return build_akt_sverki(client_ids, events_limit=limit)
+        result = build_akt_sverki([])
+    else:
+        result = build_akt_sverki(client_ids, events_limit=limit)
+    result["client_1c_name"] = client_1c_name
+    return result
 
 
 @router.get("/payments")

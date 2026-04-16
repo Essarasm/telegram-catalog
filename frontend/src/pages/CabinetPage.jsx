@@ -679,8 +679,12 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
     const events = akt.events || [];
     if (events.length === 0) return null;
 
-    // newest first
-    const rows = [...events].reverse();
+    // newest first, capped at 8 orders + 8 payments, interleaved chronologically
+    const reversed = [...events].reverse();
+    const orderRows = reversed.filter(e => e.type === 'order').slice(0, 8);
+    const payRows = reversed.filter(e => e.type === 'payment').slice(0, 8);
+    const rowsSet = new Set([...orderRows, ...payRows]);
+    const rows = reversed.filter(e => rowsSet.has(e));
 
     return (
       <div className="mb-4">
@@ -699,23 +703,18 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
               <button
                 key={`${e.type}-${e.id}`}
                 onClick={() => { setAktSheet({ ...e }); setAktSheetItems(null); }}
-                className="w-full px-4 py-2.5 flex items-start gap-3 text-left active:bg-tg-bg/30"
+                className="w-full px-4 py-2.5 flex items-center gap-3 text-left active:bg-tg-bg/30"
               >
-                <span className="text-base flex-shrink-0 mt-0.5">{rowIcon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium">
+                <span className="text-base flex-shrink-0">{rowIcon}</span>
+                <div className="flex-1 min-w-0 flex items-center gap-2">
+                  <div className="text-sm font-medium whitespace-nowrap">
                     {formatDocDate(e.date)}
                   </div>
-                  <div className="text-[11px] text-tg-hint">
-                    {isOrder ? (
-                      <>
-                        {t.akt_order_doc} {e.doc_number || ''}
-                        <span className="ml-1.5 text-tg-link">· {t.akt_tap_to_view_items} →</span>
-                      </>
-                    ) : (
-                      t.akt_payment
-                    )}
-                  </div>
+                  {isOrder && (
+                    <span className="px-2 py-0.5 rounded-md bg-tg-link/10 text-tg-link text-[10px] font-semibold">
+                      {t.akt_details_pill}
+                    </span>
+                  )}
                 </div>
                 <div className="text-right flex-shrink-0">
                   {uzsAmt > 0 && (
@@ -972,6 +971,18 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
 
   return (
     <div>
+      {/* Client 1C name — identifies which 1C account the Telegram user is linked to */}
+      {akt?.client_1c_name && (
+        <div className="mb-3 text-center">
+          <div className="text-[10px] text-tg-hint uppercase tracking-wide">
+            {t.akt_client_header}
+          </div>
+          <div className="text-base font-semibold mt-0.5">
+            {akt.client_1c_name}
+          </div>
+        </div>
+      )}
+
       {/* Location card */}
       {userLocation ? (
         <div className="bg-tg-secondary rounded-xl p-3 mb-3 flex items-center gap-2">
