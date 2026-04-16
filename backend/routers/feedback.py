@@ -77,7 +77,7 @@ async def submit_order_issue(
     comment: str = Form(""),
     order_doc_number: str = Form(""),
     order_date: str = Form(""),
-    files: List[UploadFile] = File(default_factory=list),
+    files: Optional[List[UploadFile]] = File(None),
 ):
     """Client complaint about a real order: wrong items, missing items, etc.
 
@@ -88,13 +88,24 @@ async def submit_order_issue(
     text = (comment or "").strip()[:800]
 
     conn = get_db()
+    row = None
     try:
-        conn.execute(
-            """INSERT INTO order_feedback (order_id, user_id, feedback_text)
-               VALUES (?, ?, ?)""",
-            (order_id, telegram_id, text or "(photo only)"),
-        )
-        # Resolve the client's 1C name + phone for the notification
+        # order_feedback.order_id has an FK to the wishlist `orders` table.
+        # Real-order complaints won't match; store with NULL order_id in that
+        # case and prefix the comment so admins can still find the real order.
+        try:
+            conn.execute(
+                """INSERT INTO order_feedback (order_id, user_id, feedback_text)
+                   VALUES (?, ?, ?)""",
+                (order_id, telegram_id, text or "(photo only)"),
+            )
+        except Exception:
+            prefixed = f"[real_order #{order_id}] {text or '(photo only)'}"[:800]
+            conn.execute(
+                """INSERT INTO order_feedback (order_id, user_id, feedback_text)
+                   VALUES (NULL, ?, ?)""",
+                (telegram_id, prefixed),
+            )
         row = conn.execute(
             """SELECT u.first_name, u.last_name, u.phone, ac.client_id_1c
                FROM users u
@@ -116,35 +127,42 @@ async def submit_order_issue(
         phone = row["phone"] or ""
         client_1c = row["client_id_1c"] or ""
 
-    # Compose the caption / message
-    header = "⚠️ <b>Buyurtma bo'yicha shikoyat</b>\n"
-    lines = [header]
+    def esc(s: str) -> str:
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # Compose the caption / message (all user-controlled values HTML-escaped)
+    lines = ["⚠️ <b>Buyurtma bo'yicha shikoyat</b>\n"]
     if client_1c:
-        lines.append(f"🧾 1C: {client_1c}")
+        lines.append(f"🧾 1C: {esc(client_1c)}")
     if name_parts:
-        lines.append(f"👤 Telegram: {name_parts[0]}")
+        lines.append(f"👤 Telegram: {esc(name_parts[0])}")
     if phone:
-        lines.append(f"📞 {phone}")
+        lines.append(f"📞 {esc(phone)}")
     lines.append(f"🆔 Telegram ID: <code>{telegram_id}</code>")
     lines.append(f"🚚 Buyurtma #{order_id}" +
-                 (f" ({order_doc_number})" if order_doc_number else "") +
-                 (f" · {order_date}" if order_date else ""))
+                 (f" ({esc(order_doc_number)})" if order_doc_number else "") +
+                 (f" · {esc(order_date)}" if order_date else ""))
     if text:
         lines.append("")
-        lines.append(f"💬 {text}")
+        lines.append(f"💬 {esc(text)}")
     caption = "\n".join(lines)
+    # Telegram caption limit is 1024 chars
+    if len(caption) > 1000:
+        caption = caption[:1000] + "…"
 
     if not BOT_TOKEN or not ERRORS_GROUP_CHAT_ID:
         logger.warning("ERRORS_GROUP_CHAT_ID or BOT_TOKEN missing; skipping forward")
         return {"ok": True, "forwarded": False}
 
+    # Drop any placeholder upload (Starlette sends a phantom entry when the
+    # multipart field exists but no file was chosen).
+    real_files = [f for f in (files or []) if f and (f.filename or "").strip()]
+
     try:
-        # If there are photos, send first as sendPhoto with full caption;
-        # additional photos follow with short captions.
-        if files:
+        if real_files:
             first = True
             async with httpx.AsyncClient(timeout=30) as client:
-                for idx, f in enumerate(files):
+                for idx, f in enumerate(real_files):
                     data = await f.read()
                     content_type = f.content_type or "image/jpeg"
                     payload_caption = caption if first else f"(rasm {idx + 1})"

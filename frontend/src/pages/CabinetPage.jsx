@@ -185,8 +185,9 @@ function OrderIssueForm({ order, onDone, t }) {
       fd.append('order_date', order.date || '');
       files.forEach(f => fd.append('files', f));
       const res = await fetch('/api/feedback/order-issue', { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.ok) {
+      let data = {};
+      try { data = await res.json(); } catch { data = {}; }
+      if (res.ok && data.ok) {
         setSent(true);
         setTimeout(onDone, 900);
       } else {
@@ -194,7 +195,7 @@ function OrderIssueForm({ order, onDone, t }) {
         setSubmitting(false);
       }
     } catch (e) {
-      alert(String(e).slice(0, 200));
+      alert((t && t.akt_issue_error) || 'Xatolik');
       setSubmitting(false);
     }
   };
