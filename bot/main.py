@@ -1657,31 +1657,17 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
             key = cid if cid else f"__no1c_{m['id']}"
             _grouped.setdefault(key, []).append(m)
 
-        # Telegram caps button text at 64 chars and always centers it.
-        # Strip decorative prefixes/suffixes so the name uses the full width
-        # without trailing ellipsis.
+        # One button per unique 1C client. Siblings (multi-phone) all lead
+        # to the same Cabinet via the server-side sibling resolver, so
+        # showing each phone separately is just clutter. We link to the
+        # first sibling row as the canonical whitelist anchor.
         for key, group in _grouped.items():
             first = group[0]
             name = (first['client_id_1c'] or first['name'] or f"#{first['id']}").strip()
-            if len(group) == 1:
-                kb_rows.append([InlineKeyboardButton(
-                    text=name[:64], callback_data=f"tc:link:{first['id']}",
-                )])
-            else:
-                # Group header — tappable (links to the first sibling). On
-                # Android, non-actionable buttons look broken, so we link it
-                # to the first phone as a sensible default. Sibling rows
-                # below let the agent pick a specific phone if needed.
-                kb_rows.append([InlineKeyboardButton(
-                    text=f"{name} ({len(group)} tel.)"[:64],
-                    callback_data=f"tc:link:{first['id']}",
-                )])
-                for m in group:
-                    sub = (m['name'] or f"#{m['id']}").strip()
-                    kb_rows.append([InlineKeyboardButton(
-                        text=f"└ {sub}"[:64],
-                        callback_data=f"tc:link:{m['id']}",
-                    )])
+            kb_rows.append([InlineKeyboardButton(
+                text=name[:64],
+                callback_data=f"tc:link:{first['id']}",
+            )])
 
         kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
         await message.reply(header, parse_mode="HTML", reply_markup=kb)
