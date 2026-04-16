@@ -1648,10 +1648,13 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
                     text=name[:64], callback_data=f"tc:link:{first['id']}",
                 )])
             else:
-                # Header row (non-actionable) + one row per phone sibling.
+                # Group header — tappable (links to the first sibling). On
+                # Android, non-actionable buttons look broken, so we link it
+                # to the first phone as a sensible default. Sibling rows
+                # below let the agent pick a specific phone if needed.
                 kb_rows.append([InlineKeyboardButton(
                     text=f"{name} ({len(group)} tel.)"[:64],
-                    callback_data="tc:noop",
+                    callback_data=f"tc:link:{first['id']}",
                 )])
                 for m in group:
                     sub = (m['name'] or f"#{m['id']}").strip()
