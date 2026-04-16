@@ -133,22 +133,25 @@ def _save_order_to_db(req: ExportRequest, order_items, client_label):
         # Validate delivery_type
         delivery_type = req.delivery_type if req.delivery_type in ('delivery', 'pickup') else 'delivery'
 
-        # Fetch GPS coordinates from user profile (if available)
+        # Fetch GPS coordinates + client_id from user profile
         user_lat, user_lng, user_addr = None, None, None
+        user_client_id = None
         if req.telegram_id:
             geo_row = conn.execute(
-                "SELECT latitude, longitude, location_address FROM users WHERE telegram_id = ?",
+                "SELECT latitude, longitude, location_address, client_id FROM users WHERE telegram_id = ?",
                 (req.telegram_id,),
             ).fetchone()
-            if geo_row and geo_row["latitude"] and geo_row["longitude"]:
-                user_lat = geo_row["latitude"]
-                user_lng = geo_row["longitude"]
-                user_addr = geo_row["location_address"] or ""
+            if geo_row:
+                if geo_row["latitude"] and geo_row["longitude"]:
+                    user_lat = geo_row["latitude"]
+                    user_lng = geo_row["longitude"]
+                    user_addr = geo_row["location_address"] or ""
+                user_client_id = geo_row["client_id"]
 
         cursor = conn.execute(
-            """INSERT INTO orders (telegram_id, client_name, client_phone, total_usd, total_uzs, item_count, status, delivery_type, location_district_id, location_moljal_id, latitude, longitude, location_address)
-               VALUES (?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?, ?)""",
-            (req.telegram_id or 0, client_label, client_phone, usd_total, uzs_total, len(order_items), delivery_type,
+            """INSERT INTO orders (telegram_id, client_id, client_name, client_phone, total_usd, total_uzs, item_count, status, delivery_type, location_district_id, location_moljal_id, latitude, longitude, location_address)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?, ?)""",
+            (req.telegram_id or 0, user_client_id, client_label, client_phone, usd_total, uzs_total, len(order_items), delivery_type,
              req.location_district_id, req.location_moljal_id, user_lat, user_lng, user_addr),
         )
         order_id = cursor.lastrowid

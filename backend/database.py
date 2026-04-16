@@ -624,6 +624,18 @@ def init_db():
             "WHERE upload_type = 'cash'"
         )
 
+    # Migration: add client_id to orders so wish-list orders are scoped
+    # to the correct client (fixes /testclient cross-contamination).
+    order_cols2 = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    if "client_id" not in order_cols2:
+        conn.execute("ALTER TABLE orders ADD COLUMN client_id INTEGER")
+        # Backfill: set client_id from users.client_id for each order's telegram_id
+        conn.execute("""
+            UPDATE orders SET client_id = (
+                SELECT u.client_id FROM users u WHERE u.telegram_id = orders.telegram_id
+            ) WHERE client_id IS NULL
+        """)
+
     conn.commit()
     conn.close()
 

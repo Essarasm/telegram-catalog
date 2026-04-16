@@ -14,16 +14,37 @@ router = APIRouter(prefix="/api/cabinet", tags=["cabinet"])
 
 @router.get("/orders")
 def list_orders(telegram_id: int = Query(...)):
-    """List all orders for a client, newest first."""
+    """List all wish-list orders for the client linked to this telegram_id.
+
+    Uses client_id (from users.client_id) rather than telegram_id alone,
+    so /testclient switches show only the currently-linked client's orders.
+    Falls back to telegram_id for legacy orders without a client_id.
+    """
     conn = get_db()
-    rows = conn.execute(
-        """SELECT id, telegram_id, client_name, total_usd, total_uzs,
-                  item_count, status, created_at
-           FROM orders
-           WHERE telegram_id = ?
-           ORDER BY created_at DESC""",
+    user = conn.execute(
+        "SELECT client_id FROM users WHERE telegram_id = ?",
         (telegram_id,),
-    ).fetchall()
+    ).fetchone()
+    client_id = user["client_id"] if user else None
+
+    if client_id:
+        rows = conn.execute(
+            """SELECT id, telegram_id, client_name, total_usd, total_uzs,
+                      item_count, status, created_at
+               FROM orders
+               WHERE client_id = ?
+               ORDER BY created_at DESC""",
+            (client_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT id, telegram_id, client_name, total_usd, total_uzs,
+                      item_count, status, created_at
+               FROM orders
+               WHERE telegram_id = ? AND client_id IS NULL
+               ORDER BY created_at DESC""",
+            (telegram_id,),
+        ).fetchall()
     conn.close()
 
     orders = []
