@@ -26,6 +26,7 @@ _BASE_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.rail
 WEBAPP_URL = f"{_BASE_URL}?v=15"
 ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
 ADMIN_GROUP_CHAT_ID = int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))
+AGENTS_GROUP_CHAT_ID = int(os.getenv("AGENTS_GROUP_CHAT_ID", "-5298187790"))
 
 # Admin user IDs who can use /add, /approve, /list commands
 # Add Alisher's ID and other manager IDs via env var or hardcode below
@@ -1137,6 +1138,15 @@ async def cmd_balances(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
 
 
+def _is_agent_or_admin(message: types.Message) -> bool:
+    """Allow from admin group, agents group, or listed admin IDs."""
+    if is_admin(message):
+        return True
+    if message.chat.id == AGENTS_GROUP_CHAT_ID:
+        return True
+    return False
+
+
 @dp.message(Command("testclient"))
 async def cmd_testclient(message: types.Message):
     """Link admin's account to a 1C client for testing the Cabinet balance view.
@@ -1147,7 +1157,7 @@ async def cmd_testclient(message: types.Message):
         /testclient #123         — link to allowed_clients.id directly
         /testclient clear        — remove the test link
     """
-    if not is_admin(message):
+    if not _is_agent_or_admin(message):
         return
 
     telegram_id = message.from_user.id
