@@ -165,7 +165,7 @@ function SpendChart({ data, valueKey, color, label, formatValue, header, compari
 
 function AktSheetItemsLoader({ orderId, onLoaded }) {
   useEffect(() => {
-    const userId = getUserId();
+    const userId = getTelegramUserId();
     if (!orderId || !userId) { onLoaded([]); return; }
     let cancelled = false;
     fetch(`${API}/real-orders/${orderId}?telegram_id=${userId}`)
