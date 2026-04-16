@@ -127,52 +127,72 @@ def import_clients():
         print(f"[import_clients] Retroactively approved {approved_count} existing users.")
 
 
-def _iter_rows_from_xlsx(file_bytes: bytes) -> Iterable[dict]:
-    """Yield row dicts from an xlsx file by column header."""
+_HEADER_ALIAS = {
+    # phone variants
+    "phone": "phone", "tel": "phone", "tel.": "phone",
+    "telefon": "phone", "telefon raqam": "phone",
+    "телефон": "phone", "тел": "phone", "тел.": "phone",
+    "phone number": "phone", "телефон номер": "phone",
+    "mobile": "phone", "мобильный": "phone", "nomer": "phone", "номер": "phone",
+    # name variants
+    "name": "name", "ism": "name", "имя": "name", "nom": "name",
+    "fish": "name", "fio": "name", "фио": "name",
+    "klient": "name", "клиент": "name", "mijoz": "name",
+    "ф.и.о": "name", "ф.и.о.": "name", "ф и о": "name",
+    # location
+    "location": "location", "manzil": "location", "адрес": "location",
+    "address": "location",
+    # source
+    "source": "source", "manba": "source", "источник": "source",
+    # 1c name
+    "client_id_1c": "client_id_1c", "1c": "client_id_1c",
+    "1c nomi": "client_id_1c", "1с nomi": "client_id_1c",
+    "1c ismi": "client_id_1c", "1c name": "client_id_1c",
+    "client 1c": "client_id_1c", "1c клиент": "client_id_1c",
+    "1с клиент": "client_id_1c", "контрагент": "client_id_1c",
+    "kontragent": "client_id_1c",
+    # company
+    "company": "company_name", "company_name": "company_name",
+    "kompaniya": "company_name", "компания": "company_name",
+    "firma": "company_name", "фирма": "company_name",
+}
+
+
+def _normalize_headers(raw_headers: list) -> list:
+    return [_HEADER_ALIAS.get(
+        str(h or "").strip().lower().replace("  ", " "),
+        str(h or "").strip().lower(),
+    ) for h in raw_headers]
+
+
+def _iter_rows_from_xlsx(file_bytes: bytes):
+    """Return (headers_raw, list of dicts) from an xlsx."""
     from openpyxl import load_workbook
     wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
     ws = wb.active
-    rows = ws.iter_rows(values_only=True)
-    try:
-        header = [str(c).strip().lower() if c is not None else "" for c in next(rows)]
-    except StopIteration:
-        return
-    # Normalize header variants
-    alias = {
-        "phone": "phone", "tel": "phone", "telefon": "phone", "телефон": "phone",
-        "name": "name", "ism": "name", "имя": "name", "nom": "name",
-        "location": "location", "manzil": "location", "адрес": "location",
-        "source": "source", "manba": "source", "источник": "source",
-        "client_id_1c": "client_id_1c", "1c": "client_id_1c", "client 1c": "client_id_1c",
-        "company": "company_name", "company_name": "company_name",
-        "kompaniya": "company_name", "компания": "company_name",
-    }
-    headers = [alias.get(h, h) for h in header]
-    for row in rows:
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], []
+    header_raw = [("" if c is None else str(c)) for c in rows[0]]
+    headers = _normalize_headers(header_raw)
+    out = []
+    for row in rows[1:]:
         data = {headers[i]: (row[i] if i < len(row) else None)
                 for i in range(len(headers))}
-        yield data
+        out.append(data)
+    return header_raw, out
 
 
-def _iter_rows_from_xls(file_bytes: bytes) -> Iterable[dict]:
-    """Yield row dicts from a legacy .xls file via xlrd (cp1251 1C export)."""
+def _iter_rows_from_xls(file_bytes: bytes):
+    """Return (headers_raw, list of dicts) from a legacy .xls."""
     import xlrd
     wb = xlrd.open_workbook(file_contents=file_bytes, encoding_override="cp1251")
     sh = wb.sheet_by_index(0)
-    if sh.nrows < 2:
-        return
-    header = [str(sh.cell_value(0, c) or "").strip().lower()
-              for c in range(sh.ncols)]
-    alias = {
-        "phone": "phone", "tel": "phone", "telefon": "phone", "телефон": "phone",
-        "name": "name", "ism": "name", "имя": "name", "nom": "name",
-        "location": "location", "manzil": "location", "адрес": "location",
-        "source": "source", "manba": "source", "источник": "source",
-        "client_id_1c": "client_id_1c", "1c": "client_id_1c", "client 1c": "client_id_1c",
-        "company": "company_name", "company_name": "company_name",
-        "kompaniya": "company_name", "компания": "company_name",
-    }
-    headers = [alias.get(h, h) for h in header]
+    if sh.nrows < 1:
+        return [], []
+    header_raw = [str(sh.cell_value(0, c) or "") for c in range(sh.ncols)]
+    headers = _normalize_headers(header_raw)
+    out = []
     for r in range(1, sh.nrows):
         row = {}
         for c in range(sh.ncols):
@@ -180,7 +200,8 @@ def _iter_rows_from_xls(file_bytes: bytes) -> Iterable[dict]:
             if isinstance(v, float) and v.is_integer():
                 v = str(int(v))
             row[headers[c]] = v
-        yield row
+        out.append(row)
+    return header_raw, out
 
 
 def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
@@ -192,14 +213,19 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
     name = (filename_hint or "").lower()
     try:
         if name.endswith(".xlsx"):
-            rows = list(_iter_rows_from_xlsx(file_bytes))
+            header_raw, rows = _iter_rows_from_xlsx(file_bytes)
         else:
-            rows = list(_iter_rows_from_xls(file_bytes))
+            header_raw, rows = _iter_rows_from_xls(file_bytes)
     except Exception as e:
         return {"ok": False, "error": f"Fayl o'qib bo'lmadi: {e}"}
 
     if not rows:
         return {"ok": False, "error": "Faylda ma'lumot topilmadi"}
+
+    # If no row produced a valid phone, surface the header list so the operator
+    # (and we) can see which columns the file actually has. Aliases can then
+    # be added to _HEADER_ALIAS without guessing.
+    any_phone = any(normalize_phone(str(r.get("phone") or "")) for r in rows)
 
     conn = sqlite3.connect(DATABASE_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -269,6 +295,8 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
         "updated": updated,
         "skipped": skipped,
         "total_clients": total,
+        "headers_seen": header_raw,
+        "phone_column_detected": any_phone,
     }
 
 

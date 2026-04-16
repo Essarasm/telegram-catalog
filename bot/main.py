@@ -2187,21 +2187,36 @@ async def cmd_clients(message: types.Message):
             await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
             return
 
-        _track_daily_upload(
-            "clients",
-            message,
-            file_name=doc.file_name,
-            row_count=int(result.get("inserted", 0) + result.get("updated", 0)),
-        )
+        inserted = int(result.get("inserted") or 0)
+        updated = int(result.get("updated") or 0)
+        skipped = int(result.get("skipped") or 0)
 
-        await status_msg.edit_text(
-            f"✅ <b>Mijozlar ro'yxati yangilandi!</b>\n\n"
-            f"➕ Yangi: {result.get('inserted', 0)}\n"
-            f"🔄 Yangilangan: {result.get('updated', 0)}\n"
-            f"⏭ O'tkazib yuborildi: {result.get('skipped', 0)}\n"
-            f"📊 Jami ro'yxatda: {result.get('total_clients', 0)}",
-            parse_mode="HTML",
-        )
+        if inserted or updated:
+            _track_daily_upload(
+                "clients", message,
+                file_name=doc.file_name, row_count=inserted + updated,
+            )
+
+        lines = [f"✅ <b>Mijozlar ro'yxati yangilandi!</b>", ""]
+        lines.append(f"➕ Yangi: {inserted}")
+        lines.append(f"🔄 Yangilangan: {updated}")
+        lines.append(f"⏭ O'tkazib yuborildi: {skipped}")
+        lines.append(f"📊 Jami ro'yxatda: {result.get('total_clients', 0)}")
+
+        # If zero rows matched a phone column, surface the headers so we
+        # can tell which column names your Excel actually uses.
+        if not result.get("phone_column_detected") and not (inserted or updated):
+            headers = result.get("headers_seen") or []
+            header_preview = ", ".join([h for h in headers if str(h).strip()][:15])
+            lines.append("")
+            lines.append("⚠️ <b>Telefon ustuni topilmadi.</b>")
+            lines.append(f"Fayldagi sarlavhalar: <code>{html_escape(header_preview)}</code>")
+            lines.append(
+                "Kerakli ustunlar: <code>phone, name, client_id_1c, company_name</code>. "
+                "Sarlavhalarni ushbu xabarga javob qilib yuboring — kerakli moslashtirishlarni qo'shamiz."
+            )
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
     except Exception as e:
         logger.error(f"/clients error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
