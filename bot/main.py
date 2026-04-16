@@ -1631,34 +1631,34 @@ async def cmd_testclient(message: types.Message):
             key = cid if cid else f"__no1c_{m['id']}"
             _grouped.setdefault(key, []).append(m)
 
+        # Telegram caps button text at 64 chars and always centers it.
+        # Strip decorative prefixes/suffixes so the name uses the full width
+        # without trailing ellipsis.
         for key, group in _grouped.items():
             first = group[0]
-            name = first['client_id_1c'] or first['name'] or f"#{first['id']}"
-            total_bal = sum(m['bal_count'] for m in group)
-            suffix = f" · {total_bal} oy" if total_bal else ""
+            name = (first['client_id_1c'] or first['name'] or f"#{first['id']}").strip()
             if len(group) == 1:
-                label = f"🔗 {name}{suffix}"[:60]
                 kb_rows.append([InlineKeyboardButton(
-                    text=label, callback_data=f"tc:link:{first['id']}",
+                    text=name[:64], callback_data=f"tc:link:{first['id']}",
                 )])
             else:
-                # One row per sibling so the agent picks the specific phone link
+                # Header row (non-actionable) + one row per phone sibling.
                 kb_rows.append([InlineKeyboardButton(
-                    text=f"🔗 {name}{suffix} ({len(group)} tel.)"[:60],
+                    text=f"{name} ({len(group)} tel.)"[:64],
                     callback_data="tc:noop",
                 )])
                 for m in group:
-                    sub = m['name'] or f"#{m['id']}"
-                    sub_bal = f" · {m['bal_count']} oy" if m['bal_count'] else ""
+                    sub = (m['name'] or f"#{m['id']}").strip()
                     kb_rows.append([InlineKeyboardButton(
-                        text=f"   └ {sub}{sub_bal}"[:60],
+                        text=f"└ {sub}"[:64],
                         callback_data=f"tc:link:{m['id']}",
                     )])
 
         for c in cb_only:
-            cname = c['client_name_1c']
+            cname = (c['client_name_1c'] or "").strip()
+            # 🟡 marker stays — it's the signal that this is not-yet-whitelisted.
             kb_rows.append([InlineKeyboardButton(
-                text=f"🟡 {cname} · {c['bal_count']} oy"[:60],
+                text=f"🟡 {cname}"[:64],
                 callback_data=f"tc:add:{cname[:40]}",
             )])
 
