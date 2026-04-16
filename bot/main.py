@@ -26,7 +26,7 @@ _BASE_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.rail
 WEBAPP_URL = f"{_BASE_URL}?v=15"
 ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
 ADMIN_GROUP_CHAT_ID = int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))
-AGENTS_GROUP_CHAT_ID = int(os.getenv("AGENTS_GROUP_CHAT_ID", "-5298187790"))
+AGENTS_GROUP_CHAT_ID = int(os.getenv("AGENTS_GROUP_CHAT_ID", "-1003922400481"))
 
 # Admin user IDs who can use /add, /approve, /list commands
 # Add Alisher's ID and other manager IDs via env var or hardcode below
