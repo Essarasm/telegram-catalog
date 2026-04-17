@@ -733,6 +733,7 @@ async def cmd_syncimages(message: types.Message):
         return
 
     import zipfile, tempfile, shutil
+    from pathlib import Path
 
     images_dir = Path(os.getenv("IMAGES_DIR", "./images"))
     images_dir.mkdir(parents=True, exist_ok=True)
