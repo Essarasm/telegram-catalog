@@ -132,8 +132,19 @@ def check_user(telegram_id: int = Query(...)):
         except Exception:
             pass
 
+    # Check agent flag (agents see stock quantities in the catalog)
+    is_agent = False
+    try:
+        agent_row = conn.execute(
+            "SELECT is_agent FROM users WHERE telegram_id = ?", (telegram_id,)
+        ).fetchone()
+        is_agent = bool(agent_row and agent_row["is_agent"])
+    except Exception:
+        pass
+
     if is_approved:
-        return {"registered": True, "approved": True, "phone": row["phone"], "first_name": row["first_name"]}
+        return {"registered": True, "approved": True, "phone": row["phone"],
+                "first_name": row["first_name"], "is_agent": is_agent}
     else:
         return {"registered": True, "approved": False, "phone": row["phone"]}
 

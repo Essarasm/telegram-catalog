@@ -44,6 +44,7 @@ export default function App() {
   const [appError, setAppError] = useState(null);
   const [registered, setRegistered] = useState(null);
   const [approved, setApproved] = useState(false);
+  const [isAgent, setIsAgent] = useState(false);
   const cart = useCart();
   const goBackRef = useRef(null);
   const scrollPositions = useRef({});  // page key → scrollY
@@ -56,6 +57,7 @@ export default function App() {
       .then(data => {
         setRegistered(data.registered);
         setApproved(data.approved || false);
+        setIsAgent(data.is_agent || false);
       })
       .catch(() => {});
   }, []);
@@ -415,6 +417,7 @@ export default function App() {
             searchQuery={searchQuery}
             cart={cart}
             approved={approved}
+            isAgent={isAgent}
             onSelectProduct={(product) => navigateTo('product_detail', product)}
             onSearch={(q) => navigateTo('search', q)}
           />

@@ -139,7 +139,7 @@ function QtyControls({ product, cart, inCart }) {
   );
 }
 
-export default function ProductsPage({ category, producer, searchQuery, cart, approved, onSelectProduct, onSearch }) {
+export default function ProductsPage({ category, producer, searchQuery, cart, approved, isAgent, onSelectProduct, onSearch }) {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -289,12 +289,21 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                         {t.stock_out_of_stock}
                       </span>
                     )}
-                    {product.stock_status === 'low_stock' && (
+                    {product.stock_status === 'low_stock' && !isAgent && (
                       <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 whitespace-nowrap">
                         {t.stock_low_stock}
                       </span>
                     )}
                   </div>
+                  {/* Agent-only: exact stock quantity */}
+                  {isAgent && product.stock_quantity != null && product.stock_status !== 'out_of_stock' && (
+                    <div className={`text-[10px] font-semibold mt-0.5 ${
+                      product.stock_quantity > 10 ? 'text-green-600' :
+                      product.stock_quantity > 0 ? 'text-amber-600' : 'text-red-500'
+                    }`}>
+                      {product.stock_status === 'in_stock' ? '🟢' : '🟡'} {Math.round(product.stock_quantity)} {product.unit || 'шт'}
+                    </div>
+                  )}
                 </div>
               </div>
 
