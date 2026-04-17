@@ -638,7 +638,10 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
   const lastOrder = orders.length > 0 ? orders[0] : null;
   const isExpanded = lastOrder && expandedId === lastOrder.id;
 
-  if (!lastOrder && !balance && realOrders.length === 0) {
+  // Agents should always see the Cabinet (agent paneli card at the top),
+  // even when not /testclient-linked to a client. Only show the "no data"
+  // screen for regular clients who truly have nothing.
+  if (!lastOrder && !balance && realOrders.length === 0 && !agentStats) {
     return (
       <div className="text-center py-16">
         <div className="text-5xl mb-4">🏛️</div>
