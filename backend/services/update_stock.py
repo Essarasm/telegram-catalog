@@ -26,11 +26,28 @@ THRESHOLD_LOW = 10   # <= this = "low_stock"
 
 
 def normalize_name(name: str) -> str:
-    """Normalize a product name for matching."""
+    """Normalize a product name for matching.
+
+    Handles the common 1C discrepancies: trailing dots (грунт. vs грунт),
+    extra weight suffixes (5кг appended), spacing around slashes, and
+    punctuation differences that cause phantom out-of-stock entries when
+    the stock file's name doesn't exactly match the catalog.
+    """
     if not name:
         return ""
     n = name.strip().lower()
+    # Collapse whitespace
     n = re.sub(r'\s+', ' ', n)
+    # Remove trailing dots that 1C sometimes adds (грунт. → грунт)
+    n = re.sub(r'\.(\s|$)', r'\1', n)
+    # Normalize spaces around slashes and parens: / 20 кг / → /20кг/
+    n = re.sub(r'\s*/\s*', '/', n)
+    # Remove trailing weight suffix outside the last /.../ group
+    # e.g. "Дюбель гвоздь 8х60 /500 шт/ 5кг" → "дюбель гвоздь 8х60 /500 шт/"
+    n = re.sub(r'/\s*\d+[\.,]?\d*\s*(кг|гр|л|мл|шт)\s*$', '/', n)
+    # Normalize Cyrillic х ↔ Latin x for size codes (8х60 vs 8x60)
+    n = n.replace('х', 'x')
+    # Strip leading/trailing punctuation
     n = re.sub(r'^[\s\-\u2013\u2014/\\:,.«»"]+', '', n)
     n = re.sub(r'[\s\-\u2013\u2014/\\:,.«»"]+$', '', n)
     return n
@@ -228,15 +245,27 @@ def apply_stock_updates(file_bytes: bytes) -> dict:
     matched_count = 0
     status_counts = {"in_stock": 0, "low_stock": 0, "out_of_stock": 0}
 
+    # Pre-build list of normalized DB names for fuzzy fallback
+    from difflib import get_close_matches as _gcm
+    _norm_keys = list(db_by_normalized.keys())
+
     for excel_name, stock_data in excel_stocks.items():
         product = None
 
+        # 1. Exact match
         if excel_name in db_by_exact:
             product = db_by_exact[excel_name]
         else:
             norm = normalize_name(excel_name)
+            # 2. Normalized match (dots, spaces, weight suffixes stripped)
             if norm in db_by_normalized:
                 product = db_by_normalized[norm]
+            else:
+                # 3. Fuzzy fallback (>90% similarity) — catches remaining
+                #    spelling variants like "Сатин 53" vs "Сатин-53"
+                close = _gcm(norm, _norm_keys, n=1, cutoff=0.92)
+                if close:
+                    product = db_by_normalized[close[0]]
 
         if product:
             matched_count += 1
