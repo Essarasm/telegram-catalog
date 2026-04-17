@@ -86,12 +86,14 @@ export default function App() {
           }
           setRegistered(true);
           setApproved(data.approved || false);
+          setIsAgent(data.is_agent || false);
         } else {
           // Server lost user data — try silent re-registration from cache
           const result = await silentReRegister(uid);
           if (result && result.ok) {
             setRegistered(true);
             setApproved(result.approved || false);
+            setIsAgent(result.is_agent || false);
           } else {
             // No cache or re-register failed — show RegisterPage
             setRegistered(false);
