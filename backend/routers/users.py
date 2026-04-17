@@ -70,7 +70,7 @@ def check_user(telegram_id: int = Query(...)):
     """Check if user is registered AND approved."""
     conn = get_db()
     row = conn.execute(
-        "SELECT telegram_id, phone, first_name, latitude, longitude, is_approved, client_id FROM users WHERE telegram_id = ?",
+        "SELECT telegram_id, phone, first_name, latitude, longitude, is_approved, client_id, is_agent FROM users WHERE telegram_id = ?",
         (telegram_id,),
     ).fetchone()
     conn.close()
@@ -132,15 +132,7 @@ def check_user(telegram_id: int = Query(...)):
         except Exception:
             pass
 
-    # Check agent flag (agents see stock quantities in the catalog)
-    is_agent = False
-    try:
-        agent_row = conn.execute(
-            "SELECT is_agent FROM users WHERE telegram_id = ?", (telegram_id,)
-        ).fetchone()
-        is_agent = bool(agent_row and agent_row["is_agent"])
-    except Exception:
-        pass
+    is_agent = bool(row["is_agent"]) if row["is_agent"] else False
 
     if is_approved:
         return {"registered": True, "approved": True, "phone": row["phone"],
