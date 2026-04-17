@@ -853,6 +853,14 @@ async def cmd_syncimages(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+@dp.message(F.document & F.caption.startswith("/syncimages"))
+async def handle_syncimages_document(message: types.Message):
+    """Handle ZIP/image file sent with /syncimages as caption."""
+    if not is_admin(message):
+        return
+    await cmd_syncimages(message)
+
+
 @dp.message(Command("stock"))
 async def cmd_stock(message: types.Message):
     """Update stock/inventory levels from an Excel file. Reply to a document with /stock."""
