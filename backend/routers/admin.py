@@ -6,7 +6,7 @@ Phase 2: Supplier auto-detection, clean revenue, client segmentation,
 All financial endpoints exclude auto-detected suppliers/accounting entries
 unless ?include_suppliers=true is passed.
 """
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, UploadFile, File, Form
 from backend.database import get_db
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -1180,3 +1180,63 @@ def platform_health(admin_key: str = Query(...)):
             "registrations_7d": recent_registrations,
         },
     }
+
+
+@router.post("/upload-images")
+async def upload_images(
+    file: UploadFile = File(...),
+    admin_key: str = Form(""),
+):
+    """Upload a ZIP of {product_id}.png files to /data/images/. Runs sync_images after."""
+    if admin_key != ADMIN_KEY:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
+    import zipfile, tempfile, shutil, os
+    from pathlib import Path
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+
+    images_dir = Path(os.getenv("IMAGES_DIR", "./images"))
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    added = replaced = skipped = 0
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        with zipfile.ZipFile(tmp_path, "r") as zf:
+            for name in zf.namelist():
+                base = Path(name).name
+                if not base or base.startswith(".") or base.startswith("__"):
+                    continue
+                if Path(base).suffix.lower() not in ('.png', '.jpg', '.jpeg', '.webp'):
+                    continue
+                stem = Path(base).stem
+                try:
+                    int(stem)
+                except ValueError:
+                    skipped += 1
+                    continue
+                dest = images_dir / base
+                existed = dest.exists()
+                with zf.open(name) as src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                if existed:
+                    replaced += 1
+                else:
+                    added += 1
+    finally:
+        os.unlink(tmp_path)
+
+    from backend.services.sync_images import sync
+    sync()
+
+    total = sum(1 for f in images_dir.iterdir()
+                if f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'))
+
+    return {"ok": True, "added": added, "replaced": replaced,
+            "skipped": skipped, "total": total}
