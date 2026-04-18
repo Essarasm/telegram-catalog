@@ -224,10 +224,10 @@ async def _run_daily_client_sync(bot, chat_id: int) -> None:
 
 
 async def _send_weekly_unlinked(bot, chat_id: int) -> None:
-    """Monday 10:00 — remind about unregistered/unlinked users."""
+    """Tuesday 17:00 — remind about unregistered/unlinked users."""
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone(timedelta(hours=5)))
-    if now.weekday() != 0:  # 0 = Monday
+    if now.weekday() != 1:  # 1 = Tuesday
         return
     try:
         import sqlite3
@@ -259,8 +259,8 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
     tasks = [
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 10, 0, _send_morning_nudge),
-            name="daily-upload-morning-nudge",
+            run_daily_reminder(bot, chat_id, 17, 0, _send_morning_nudge),
+            name="daily-upload-reminder",
         ),
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 17, 0, _send_eod_check),
@@ -271,7 +271,7 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             name="daily-client-sync",
         ),
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 10, 0, _send_weekly_unlinked),
+            run_daily_reminder(bot, chat_id, 17, 0, _send_weekly_unlinked),
             name="weekly-unlinked-reminder",
         ),
     ]
