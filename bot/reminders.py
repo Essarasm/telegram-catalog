@@ -223,6 +223,37 @@ async def _run_daily_client_sync(bot, chat_id: int) -> None:
         logger.error(f"Daily client sync error: {e}")
 
 
+async def _send_weekly_unlinked(bot, chat_id: int) -> None:
+    """Monday 10:00 — remind about unregistered/unlinked users."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone(timedelta(hours=5)))
+    if now.weekday() != 0:  # 0 = Monday
+        return
+    try:
+        import sqlite3
+        DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.row_factory = sqlite3.Row
+        count = conn.execute(
+            "SELECT COUNT(*) FROM users "
+            "WHERE client_id IS NULL AND (dismiss_status IS NULL OR dismiss_status = '') "
+            "AND phone IS NOT NULL AND phone != ''"
+        ).fetchone()[0]
+        conn.close()
+        if count == 0:
+            return
+        await bot.send_message(
+            chat_id,
+            f"📋 <b>Haftalik eslatma:</b> {count} ta foydalanuvchi hali "
+            f"1C mijozga bog'lanmagan.\n\n"
+            f"Ko'rish: /unlinked",
+            parse_mode="HTML",
+        )
+        logger.info(f"Weekly unlinked reminder sent: {count} users")
+    except Exception as e:
+        logger.error(f"Weekly unlinked reminder failed: {e}")
+
+
 def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     """Launch the reminder and sync background tasks. Returns the task handles."""
     ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
@@ -238,6 +269,10 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 6, 0, _run_daily_client_sync),
             name="daily-client-sync",
+        ),
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 10, 0, _send_weekly_unlinked),
+            name="weekly-unlinked-reminder",
         ),
     ]
     logger.info(f"Started {len(tasks)} background tasks (reminders chat={chat_id}, sync chat={ORDER_GROUP_CHAT_ID})")

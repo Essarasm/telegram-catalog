@@ -1477,6 +1477,129 @@ async def on_testclient_callback(cb: types.CallbackQuery):
         conn.close()
 
 
+@dp.message(Command("unlinked"))
+async def cmd_unlinked(message: types.Message):
+    """Show registered users who haven't been linked to a 1C client.
+
+    Lists users with client_id=NULL and dismiss_status IS NULL (not
+    tagged as demo/employee). Each row has inline buttons to link or
+    dismiss.
+    """
+    if not is_admin(message):
+        return
+
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT telegram_id, first_name, last_name, phone, registered_at,
+                  username
+           FROM users
+           WHERE client_id IS NULL
+             AND (dismiss_status IS NULL OR dismiss_status = '')
+             AND phone IS NOT NULL AND phone != ''
+           ORDER BY registered_at DESC
+           LIMIT 20""",
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        await message.reply("✅ Barcha foydalanuvchilar bog'langan yoki belgilangan.")
+        return
+
+    lines = [f"👥 <b>Bog'lanmagan foydalanuvchilar ({len(rows)})</b>", ""]
+    kb_rows: list[list[InlineKeyboardButton]] = []
+
+    for i, r in enumerate(rows, 1):
+        name = " ".join(filter(None, [r["first_name"], r["last_name"]])) or "—"
+        phone = r["phone"] or "—"
+        uname = f"@{r['username']}" if r.get("username") else ""
+        reg_date = (r["registered_at"] or "")[:10]
+        lines.append(f"{i}. <b>{html_escape(name)}</b> · {phone} {uname}")
+        if reg_date:
+            lines.append(f"   📅 {reg_date}")
+
+        tg_id = r["telegram_id"]
+        kb_rows.append([
+            InlineKeyboardButton(
+                text=f"🔗 {name[:20]} → bog'lash",
+                callback_data=f"ul:link:{tg_id}",
+            ),
+            InlineKeyboardButton(
+                text="❌ Demo/Xodim",
+                callback_data=f"ul:dismiss:{tg_id}",
+            ),
+        ])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
+    await message.reply("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("ul:"))
+async def on_unlinked_callback(cb: types.CallbackQuery):
+    """Handle /unlinked inline buttons — link or dismiss."""
+    if not is_admin(cb.message):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+
+    data = (cb.data or "").split(":")
+    if len(data) < 3:
+        await cb.answer()
+        return
+
+    action = data[1]
+    target_tg = data[2]
+
+    if action == "dismiss":
+        conn = get_db()
+        conn.execute(
+            "UPDATE users SET dismiss_status = 'demo_or_employee' WHERE telegram_id = ?",
+            (int(target_tg),),
+        )
+        conn.commit()
+        # Get name for confirmation
+        row = conn.execute(
+            "SELECT first_name FROM users WHERE telegram_id = ?", (int(target_tg),)
+        ).fetchone()
+        conn.close()
+        name = row["first_name"] if row else target_tg
+        await cb.answer(f"❌ {name} — demo/xodim deb belgilandi", show_alert=False)
+        try:
+            await cb.message.reply(
+                f"❌ <b>{html_escape(str(name))}</b> (ID: <code>{target_tg}</code>) "
+                f"— demo/xodim deb belgilandi. Keyingi /unlinked da ko'rinmaydi.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+
+    if action == "link":
+        # Trigger the testclient search for this user's name
+        conn = get_db()
+        row = conn.execute(
+            "SELECT first_name, phone FROM users WHERE telegram_id = ?", (int(target_tg),)
+        ).fetchone()
+        conn.close()
+        if not row:
+            await cb.answer("Foydalanuvchi topilmadi", show_alert=True)
+            return
+        name = row["first_name"] or ""
+        await cb.answer(f"🔗 {name} uchun qidirish...", show_alert=False)
+        # Send the testclient search prompt with the user's name
+        try:
+            await cb.message.reply(
+                f"🔗 <b>{html_escape(name)}</b> (ID: <code>{target_tg}</code>) "
+                f"uchun mijoz topish:\n\n"
+                f"<code>/testclient link {target_tg} CLIENT_ID</code>\n\n"
+                f"Yoki qidiring: <code>/testclient {html_escape(name)}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+
+    await cb.answer("Noma'lum amal", show_alert=False)
+
+
 @dp.message(Command("makeagent"))
 async def cmd_makeagent(message: types.Message):
     """Toggle users.is_agent for a given Telegram ID.

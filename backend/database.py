@@ -570,7 +570,8 @@ def init_db():
                           ("location_district", "TEXT"),
                           ("location_set_by_tg_id", "INTEGER"),
                           ("location_set_by_name", "TEXT"),
-                          ("location_set_by_role", "TEXT")]:
+                          ("location_set_by_role", "TEXT"),
+                          ("dismiss_status", "TEXT")]:
         if col not in existing_cols:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {coltype}")
 

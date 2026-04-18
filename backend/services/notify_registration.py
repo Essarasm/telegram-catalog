@@ -76,6 +76,42 @@ def send_registration_notification(
         lines.append("")
         lines.append("<i>\U0001f4dd Javob bering: 1C mijoz nomi yoki 'new'</i>")
 
+    # Fuzzy-match suggestions: find top 3 1C client names that resemble
+    # the registering user's name or phone, so the admin can one-tap link.
+    suggestions = []
+    try:
+        conn_s = sqlite3.connect(DATABASE_PATH)
+        conn_s.row_factory = sqlite3.Row
+        conn_s.create_function("LOWER", 1, lambda s: s.lower() if s else s)
+        search_name = (first_name or "").strip().lower()
+        if search_name and len(search_name) >= 3:
+            from difflib import get_close_matches
+            all_1c = [r[0] for r in conn_s.execute(
+                "SELECT DISTINCT client_id_1c FROM allowed_clients "
+                "WHERE client_id_1c IS NOT NULL AND client_id_1c != ''"
+            ).fetchall()]
+            close = get_close_matches(search_name, [n.lower() for n in all_1c], n=3, cutoff=0.4)
+            for c in close:
+                orig = next((n for n in all_1c if n.lower() == c), c)
+                ac = conn_s.execute(
+                    "SELECT id FROM allowed_clients WHERE client_id_1c = ? LIMIT 1",
+                    (orig,),
+                ).fetchone()
+                if ac:
+                    suggestions.append({"name": orig, "id": ac["id"]})
+        conn_s.close()
+    except Exception as e:
+        logger.error(f"Fuzzy match for registration failed: {e}")
+
+    if suggestions:
+        lines.append("")
+        lines.append("<b>Ehtimol:</b>")
+        for s in suggestions:
+            lines.append(
+                f"  \u2022 {s['name']} — "
+                f"<code>/testclient link {telegram_id} {s['id']}</code>"
+            )
+
     message_text = "\n".join(lines)
     message_id = None
 
