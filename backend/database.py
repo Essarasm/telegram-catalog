@@ -7,9 +7,15 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 os.makedirs(os.path.dirname(DATABASE_PATH) or ".", exist_ok=True)
 
 
+def _dict_factory(cursor, row):
+    """Row factory that returns dicts instead of sqlite3.Row.
+    Eliminates the SQLITE_ROW_NO_GET bug class permanently."""
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
 def get_db():
     conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = _dict_factory
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn

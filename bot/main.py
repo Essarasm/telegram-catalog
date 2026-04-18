@@ -60,11 +60,18 @@ dp = Dispatcher()
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 
 
+def _dict_factory(cursor, row):
+    """Row factory that returns dicts instead of sqlite3.Row.
+    Eliminates the SQLITE_ROW_NO_GET bug class: dicts support .get(),
+    bracket access, iteration, and JSON serialization natively."""
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+
 def get_db():
     """Get database connection (same as backend)."""
     import sqlite3
     conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = _dict_factory
     # Register Unicode-aware LOWER for Cyrillic search (SQLite built-in only handles ASCII)
     conn.create_function("LOWER", 1, lambda s: s.lower() if s else s)
     return conn
