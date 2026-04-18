@@ -439,11 +439,9 @@ async def cmd_list(message: types.Message):
 # Fallback — private chats only (MUST BE LAST)
 # ───────────────────────────────────────────
 
-@dp.message()
+@dp.message(F.chat.type == "private")
 async def fallback(message: types.Message):
     """Handle unrecognized messages in private chats."""
-    if message.chat.type != "private":
-        return
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
