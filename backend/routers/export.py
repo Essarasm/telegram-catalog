@@ -224,8 +224,16 @@ def export_order(req: ExportRequest):
     # Save order to database for history
     order_id = _save_order_to_db(req, order_items, client_label)
 
+    # Build the label that appears on PDF/Excel header
+    # When an agent places for a client, show both names
+    doc_label = client_label
+    if agent_name and client_name_1c:
+        doc_label = f"Mijoz (1C): {client_name_1c} | Agent: {agent_name}"
+    elif client_name_1c:
+        doc_label = f"{client_name_1c} ({client_label})"
+
     # Always generate Excel for group notification
-    excel_data = generate_excel(order_items, client_label)
+    excel_data = generate_excel(order_items, doc_label)
 
     # Generate the file in user's chosen format
     if req.format == "xlsx":
@@ -233,7 +241,7 @@ def export_order(req: ExportRequest):
         media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         filename = "buyurtma.xlsx"
     else:
-        data = generate_pdf(order_items, client_label)
+        data = generate_pdf(order_items, doc_label)
         media_type = "application/pdf"
         filename = "buyurtma.pdf"
 
