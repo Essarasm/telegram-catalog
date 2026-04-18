@@ -166,7 +166,7 @@ def get_stock_alerts(conn=None) -> dict:
 
             if qty <= 0 or p["stock_status"] == "out_of_stock":
                 out_of_stock.append(info)
-            elif qty <= 10 or p["stock_status"] == "low_stock":
+            elif qty <= 3:
                 running_low.append(info)
             else:
                 healthy += 1
