@@ -126,7 +126,7 @@ def get_stock_alerts(conn=None) -> dict:
         for p in products:
             pid = p["id"]
             qty = p["stock_quantity"] or 0
-            name = p["name_display"] or p["name"]
+            name = p["name"] or p["name_display"]
             info = {
                 "id": pid,
                 "name": name[:50],
