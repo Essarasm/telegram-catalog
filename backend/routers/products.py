@@ -2,7 +2,7 @@ import threading
 from fastapi import APIRouter, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from typing import Optional, List
-from backend.database import get_db, transliterate_to_latin, normalize_uzbek
+from backend.database import get_db, transliterate_to_latin, transliterate_to_cyrillic, normalize_uzbek
 from backend.services.update_prices import apply_price_updates
 from backend.services.update_stock import apply_stock_updates
 from backend.services.refresh_catalog import refresh_catalog_from_excel
@@ -42,33 +42,32 @@ def _trigram_similarity(s1, s2):
     return len(t1 & t2) / len(t1 | t2)
 
 
-def _score_match(search_term, search_latin, search_norm, product):
+def _score_match(search_term, search_latin, search_norm, product, search_cyrillic=None):
     """Score a product match: higher = better.
-    4 = exact name match, 3 = starts with, 2 = contains, 1 = fuzzy match, 0 = no match.
-    Returns (score, product_dict).
+    4 = exact name match, 3 = starts with, 2 = contains, 0 = no match.
     """
     st = (product["search_text"] or "").lower()
     name_disp = (product["name_display"] or "").lower()
     name_cyr = (product["name"] or "").lower()
 
-    # Check all query variants against searchable text
-    for term in {search_term, search_latin, search_norm}:
+    variants = {search_term, search_latin, search_norm}
+    if search_cyrillic:
+        variants.add(search_cyrillic)
+
+    for term in variants:
         if not term:
             continue
-        # Exact match on display name or Cyrillic name
         if term == name_disp or term == name_cyr:
             return 4
-        # Starts with
         if name_disp.startswith(term) or name_cyr.startswith(term):
             return 3
-        # Contains in search_text
         if term in st:
             return 2
 
     return 0
 
 
-def _fuzzy_match_products(conn, search_term, search_latin, search_norm, category_id=None, producer_id=None, max_results=30):
+def _fuzzy_match_products(conn, search_term, search_latin, search_norm, category_id=None, producer_id=None, max_results=30, search_cyrillic=None):
     """Find products using fuzzy matching when exact search yields few results.
     Uses trigram similarity on product names.
     """
@@ -88,24 +87,26 @@ def _fuzzy_match_products(conn, search_term, search_latin, search_norm, category
         params,
     ).fetchall()
 
+    variants = {search_term, search_latin, search_norm}
+    if search_cyrillic:
+        variants.add(search_cyrillic)
+
     scored = []
     for r in rows:
         name_disp = (r["name_display"] or "").lower()
         name_cyr = (r["name"] or "").lower()
-        # Check trigram similarity against both display and Cyrillic names
         best_sim = 0.0
-        for term in {search_term, search_latin, search_norm}:
+        for term in variants:
             if not term or len(term) < 2:
                 continue
             for name in (name_disp, name_cyr):
-                # Check against full name and individual words
                 sim = _trigram_similarity(term, name)
                 best_sim = max(best_sim, sim)
                 for word in name.split():
                     if len(word) >= 3:
                         wsim = _trigram_similarity(term, word)
                         best_sim = max(best_sim, wsim)
-        if best_sim >= 0.25:  # threshold for fuzzy match
+        if best_sim >= 0.25:
             scored.append((best_sim, r["id"]))
 
     scored.sort(key=lambda x: -x[0])
@@ -163,6 +164,7 @@ def list_products(
         search_term = search.strip().lower()
         search_latin = transliterate_to_latin(search_term)
         search_norm = normalize_uzbek(search_term)
+        search_cyrillic = transliterate_to_cyrillic(search_term)
 
         # Build LIKE conditions for all query variants
         like_terms = set()
@@ -171,6 +173,8 @@ def list_products(
             like_terms.add(search_latin)
         if search_norm != search_term and search_norm != search_latin:
             like_terms.add(search_norm)
+        if search_cyrillic != search_term and search_cyrillic != search_latin:
+            like_terms.add(search_cyrillic)
 
         like_conditions = " OR ".join(["p.search_text LIKE ?" for _ in like_terms])
         conditions.append(f"({like_conditions})")
@@ -187,7 +191,7 @@ def list_products(
     if search and total == 0:
         fuzzy_ids = _fuzzy_match_products(
             conn, search_term, search_latin, search_norm,
-            category_id, producer_id
+            category_id, producer_id, search_cyrillic=search_cyrillic
         )
         if fuzzy_ids:
             total = len(fuzzy_ids)
@@ -234,7 +238,7 @@ def list_products(
         # Score and sort by relevance
         scored = []
         for r in rows:
-            score = _score_match(search_term, search_latin, search_norm, r)
+            score = _score_match(search_term, search_latin, search_norm, r, search_cyrillic)
             scored.append((score, dict(r)))
         scored.sort(key=lambda x: (-x[0], x[1].get("name_display", "")))
 
@@ -258,6 +262,42 @@ def list_products(
                 LIMIT ? OFFSET ?""",
             params + [limit, offset],
         ).fetchall()
+    # Build filter chips data on first page of search results (no category/producer pre-selected)
+    filters = None
+    if search and page == 1 and not category_id and not producer_id:
+        try:
+            filter_rows = conn.execute(
+                """SELECT c.id as cid, c.name as cname, pr.id as pid, pr.name as pname,
+                          COUNT(*) as cnt
+                   FROM products p
+                   JOIN categories c ON c.id = p.category_id
+                   JOIN producers pr ON pr.id = p.producer_id
+                   WHERE p.is_active = 1 AND p.id IN (
+                       SELECT p2.id FROM products p2 WHERE p2.is_active = 1
+                       AND ({like_cond})
+                   )
+                   GROUP BY c.id, pr.id
+                   ORDER BY cnt DESC""".format(
+                    like_cond=" OR ".join(["p2.search_text LIKE ?" for _ in like_terms])
+                ),
+                [f"%{t}%" for t in like_terms],
+            ).fetchall()
+            cats = {}
+            prods = {}
+            for fr in filter_rows:
+                if fr["cid"] not in cats:
+                    cats[fr["cid"]] = {"id": fr["cid"], "name": fr["cname"], "count": 0}
+                cats[fr["cid"]]["count"] += fr["cnt"]
+                if fr["pid"] not in prods:
+                    prods[fr["pid"]] = {"id": fr["pid"], "name": fr["pname"], "count": 0}
+                prods[fr["pid"]]["count"] += fr["cnt"]
+            filters = {
+                "categories": sorted(cats.values(), key=lambda x: -x["count"]),
+                "producers": sorted(prods.values(), key=lambda x: -x["count"]),
+            }
+        except Exception:
+            pass
+
     conn.close()
 
     # Log search in background (only on first page to avoid duplicates from pagination)
@@ -273,13 +313,16 @@ def list_products(
     for item in items:
         item.pop("search_text", None)
 
-    return {
+    result = {
         "items": items,
         "total": total,
         "page": page,
         "pages": (total + limit - 1) // limit,
         "fuzzy": fuzzy_ids is not None and len(fuzzy_ids) > 0 if fuzzy_ids is not None else False,
     }
+    if filters:
+        result["filters"] = filters
+    return result
 
 
 @router.get("/by-ids")

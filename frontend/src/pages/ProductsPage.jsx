@@ -146,14 +146,17 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [isFuzzy, setIsFuzzy] = useState(false);
+  const [filters, setFilters] = useState(null);
+  const [activeFilter, setActiveFilter] = useState(null);
   const observer = useRef();
 
-  const loadProducts = useCallback(async (pageNum, reset = false) => {
+  const loadProducts = useCallback(async (pageNum, reset = false, filterOverride = null) => {
     try {
       setLoading(true);
+      const f = filterOverride !== undefined ? filterOverride : activeFilter;
       const data = await fetchProducts({
-        categoryId: category?.id,
-        producerId: producer?.id,
+        categoryId: f?.type === 'category' ? f.id : category?.id,
+        producerId: f?.type === 'producer' ? f.id : producer?.id,
         search: searchQuery,
         page: pageNum,
         limit: 30,
@@ -167,6 +170,9 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
         } else if (reset) {
           setIsFuzzy(false);
         }
+        if (reset && data.filters && !filterOverride) {
+          setFilters(data.filters);
+        }
       } else {
         setError('Products API unexpected: ' + JSON.stringify(data).slice(0, 100));
       }
@@ -175,15 +181,32 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
       setError('Fetch error: ' + (err.message || String(err)));
       setLoading(false);
     }
-  }, [category?.id, producer?.id, searchQuery]);
+  }, [category?.id, producer?.id, searchQuery, activeFilter]);
 
   useEffect(() => {
     setPage(1);
     setProducts([]);
     setError(null);
     setIsFuzzy(false);
-    loadProducts(1, true);
-  }, [category?.id, producer?.id, searchQuery, loadProducts]);
+    setFilters(null);
+    setActiveFilter(null);
+    loadProducts(1, true, null);
+  }, [category?.id, producer?.id, searchQuery]);
+
+  const handleFilterClick = (type, id, name) => {
+    if (activeFilter?.type === type && activeFilter?.id === id) {
+      setActiveFilter(null);
+      setPage(1);
+      setProducts([]);
+      loadProducts(1, true, null);
+    } else {
+      const f = { type, id, name };
+      setActiveFilter(f);
+      setPage(1);
+      setProducts([]);
+      loadProducts(1, true, f);
+    }
+  };
 
   const lastRef = useCallback(node => {
     if (loading) return;
@@ -229,6 +252,40 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
           <span className="text-xs text-tg-hint">
             O'xshash natijalar: <span className="font-medium text-tg-text">"{searchQuery}"</span>
           </span>
+        </div>
+      )}
+
+      {/* Filter chips for search results */}
+      {searchQuery && filters && !category && !producer && (
+        <div className="mb-3 overflow-x-auto scrollbar-hide">
+          <div className="flex gap-2 pb-1">
+            {filters.categories?.length > 1 && filters.categories.slice(0, 6).map(c => (
+              <button
+                key={`c-${c.id}`}
+                onClick={() => handleFilterClick('category', c.id, c.name)}
+                className={`shrink-0 text-xs font-medium rounded-lg px-3 py-1.5 transition-all ${
+                  activeFilter?.type === 'category' && activeFilter?.id === c.id
+                    ? 'bg-tg-button text-tg-button-text'
+                    : 'bg-tg-secondary text-tg-text active:scale-95'
+                }`}
+              >
+                {c.name} <span className="text-tg-hint ml-0.5">{c.count}</span>
+              </button>
+            ))}
+            {filters.producers?.length > 1 && filters.producers.slice(0, 6).map(p => (
+              <button
+                key={`p-${p.id}`}
+                onClick={() => handleFilterClick('producer', p.id, p.name)}
+                className={`shrink-0 text-xs font-medium rounded-lg px-3 py-1.5 transition-all ${
+                  activeFilter?.type === 'producer' && activeFilter?.id === p.id
+                    ? 'bg-tg-button text-tg-button-text'
+                    : 'bg-tg-secondary text-tg-text active:scale-95'
+                }`}
+              >
+                {p.name} <span className="text-tg-hint ml-0.5">{p.count}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 

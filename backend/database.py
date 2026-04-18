@@ -721,6 +721,34 @@ _CYR2LAT = {
     'э': 'e', 'ю': 'yu', 'я': 'ya',
 }
 
+# Latin → Cyrillic (reverse transliteration for search)
+_LAT2CYR_MULTI = [
+    ('shch', 'щ'), ('sh', 'ш'), ('ch', 'ч'), ('zh', 'ж'),
+    ('ts', 'ц'), ('kh', 'х'), ('yo', 'ё'), ('yu', 'ю'), ('ya', 'я'),
+]
+_LAT2CYR_SINGLE = {
+    'a': 'а', 'b': 'б', 'v': 'в', 'g': 'г', 'd': 'д', 'e': 'е',
+    'z': 'з', 'i': 'и', 'y': 'й', 'k': 'к', 'l': 'л', 'm': 'м',
+    'n': 'н', 'o': 'о', 'p': 'п', 'r': 'р', 's': 'с', 't': 'т',
+    'u': 'у', 'f': 'ф', 'x': 'х', 'c': 'ц', 'w': 'в', 'h': 'х',
+}
+
+# Common phonetic misspellings in construction materials search
+_PHONETIC_ALIASES = {
+    'siment': 'цемент', 'cement': 'цемент', 'tsement': 'цемент',
+    'simplex': 'симплекс', 'emal': 'эмаль', 'gruntofka': 'грунтовка',
+    'gruntovka': 'грунтовка', 'grunt': 'грунт', 'linolium': 'линолеум',
+    'linoleum': 'линолеум', 'yelim': 'елим', 'plintus': 'плинтус',
+    'samorez': 'саморез', 'dyubel': 'дюбель', 'dubel': 'дюбель',
+    'germetik': 'герметик', 'koler': 'колер', 'koller': 'коллер',
+    'pena': 'пена', 'penoplast': 'пенопласт',
+    'gips': 'гипс', 'gipso': 'гипсо', 'gipsokarton': 'гипсокартон',
+    'lak': 'лак', 'olifa': 'олифа', 'kraska': 'краска',
+    'shpatel': 'шпатель', 'shpatlevka': 'шпатлевка',
+    'mix': 'микс', 'sim': 'сим', 'profil': 'профиль',
+    'burchak': 'бурчак', 'elektrod': 'электрод',
+}
+
 # Uzbek Latin special characters → ASCII equivalents for search normalization
 _UZ_NORMALIZE = {
     "o'": "o", "g'": "g", "sh": "sh",
@@ -746,12 +774,29 @@ def transliterate_to_latin(text):
     return ''.join(result)
 
 
+def transliterate_to_cyrillic(text):
+    """Transliterate Latin text to Cyrillic (lowercase).
+    Handles multi-char digraphs first (sh→ш, ch→ч, etc)."""
+    t = text.lower()
+    # Check phonetic alias table first (exact word match)
+    if t in _PHONETIC_ALIASES:
+        return _PHONETIC_ALIASES[t]
+    # Multi-char replacements (longest first)
+    for lat, cyr in _LAT2CYR_MULTI:
+        t = t.replace(lat, cyr)
+    # Single-char replacements
+    result = []
+    for ch in t:
+        result.append(_LAT2CYR_SINGLE.get(ch, ch))
+    return ''.join(result)
+
+
 def build_search_text(name_cyrillic, name_display, producer_name, unit=None, category_name=None):
     """Build a combined search index string for a product.
 
     Combines: original 1C name (Cyrillic) + display name (Latin) +
-    transliterated version of Cyrillic + producer name + unit + category.
-    Also includes Uzbek-normalized variants (o'→o, g'→g).
+    transliterated versions (Cyrillic→Latin AND Latin→Cyrillic) +
+    producer name + unit + category + Uzbek-normalized variants.
     All lowercased for case-insensitive LIKE matching.
     """
     parts = []
@@ -762,10 +807,13 @@ def build_search_text(name_cyrillic, name_display, producer_name, unit=None, cat
     if name_display:
         disp = name_display.strip().lower()
         parts.append(disp)
-        # Add Uzbek-normalized version if different
         norm = normalize_uzbek(disp)
         if norm != disp:
             parts.append(norm)
+        # Reverse transliterate Latin display name → Cyrillic
+        cyr_rev = transliterate_to_cyrillic(disp)
+        if cyr_rev != disp:
+            parts.append(cyr_rev)
     if producer_name:
         prod = producer_name.strip().lower()
         parts.append(prod)
