@@ -51,31 +51,45 @@ def _build_order_items(req: ExportRequest):
 
     client_label = req.client_name or ""
     client_name_1c = ""
+    agent_name = ""
     if req.telegram_id:
         user_row = conn.execute(
-            "SELECT phone, first_name, last_name FROM users WHERE telegram_id = ?",
+            "SELECT phone, first_name, last_name, client_id, is_agent FROM users WHERE telegram_id = ?",
             (req.telegram_id,),
         ).fetchone()
         if user_row and user_row["phone"]:
             name_part = client_label or " ".join(filter(None, [user_row["first_name"], user_row["last_name"]]))
             client_label = f"{name_part} ({user_row['phone']})" if name_part else user_row["phone"]
 
-        # Look up original 1C client name from allowed_clients
-        # Try matched_telegram_id first, then fall back to phone match
-        ac_row = conn.execute(
-            "SELECT name FROM allowed_clients WHERE matched_telegram_id = ? AND name != '' LIMIT 1",
-            (req.telegram_id,),
-        ).fetchone()
-        if not ac_row and user_row and user_row["phone"]:
-            import re
-            digits = re.sub(r"\D", "", user_row["phone"] or "")
-            phone_norm = digits[-9:] if len(digits) >= 9 else digits
+        # If the user is an agent using /testclient, resolve the CLIENT's
+        # 1C name from users.client_id (the /testclient link), and record
+        # the agent's own Telegram name separately so the sales group sees
+        # both "who placed" and "for whom".
+        if user_row and user_row["is_agent"] and user_row["client_id"]:
+            agent_name = " ".join(filter(None, [user_row["first_name"], user_row["last_name"]])) or ""
             ac_row = conn.execute(
-                "SELECT name FROM allowed_clients WHERE phone_normalized = ? AND name != '' LIMIT 1",
-                (phone_norm,),
+                "SELECT client_id_1c FROM allowed_clients WHERE id = ? AND client_id_1c != '' LIMIT 1",
+                (user_row["client_id"],),
             ).fetchone()
-        if ac_row and ac_row["name"]:
-            client_name_1c = ac_row["name"]
+            if ac_row:
+                client_name_1c = ac_row["client_id_1c"]
+
+        # Fallback: try matched_telegram_id, then phone match (for regular clients)
+        if not client_name_1c:
+            ac_row = conn.execute(
+                "SELECT name FROM allowed_clients WHERE matched_telegram_id = ? AND name != '' LIMIT 1",
+                (req.telegram_id,),
+            ).fetchone()
+            if not ac_row and user_row and user_row["phone"]:
+                import re
+                digits = re.sub(r"\D", "", user_row["phone"] or "")
+                phone_norm = digits[-9:] if len(digits) >= 9 else digits
+                ac_row = conn.execute(
+                    "SELECT name FROM allowed_clients WHERE phone_normalized = ? AND name != '' LIMIT 1",
+                    (phone_norm,),
+                ).fetchone()
+            if ac_row and ac_row["name"]:
+                client_name_1c = ac_row["name"]
 
     order_items = []
     for cart_item in req.items:
@@ -273,7 +287,7 @@ def export_order(req: ExportRequest):
             order_items, excel_data, client_label,
             delivery_type=delivery_type, client_name_1c=client_name_1c,
             location_text=location_text, maps_link=maps_link,
-            order_id=order_id,
+            order_id=order_id, agent_name=agent_name,
         )
         if not group_result or not group_result.get("ok"):
             logger.error(f"send_order_to_group failed: {group_result}")

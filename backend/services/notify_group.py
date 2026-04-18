@@ -11,7 +11,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ORDER_GROUP_CHAT_ID = os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463")
 
 
-def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = "", order_id: int = 0):
+def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = "", order_id: int = 0, agent_name: str = ""):
     """Send order summary + Excel file to the sales managers' Telegram group.
 
     Returns a dict {ok, text_message_id, doc_message_id} so the caller can
@@ -36,6 +36,8 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
         lines.append(f"\U0001f464 Mijoz (1C): <b>{client_name_1c}</b>")
     else:
         lines.append(f"\U0001f464 Mijoz (1C): <i>1C nomi topilmadi</i>")
+    if agent_name:
+        lines.append(f"\U0001f4bc Agent: <b>{agent_name}</b>")
     if client_name:
         lines.append(f"\U0001f4f1 Telegram: {client_name}")
     lines.append(f"\U0001f4e6 Mahsulotlar: {unique_products} ta nomi, {total_quantity} ta dona")
