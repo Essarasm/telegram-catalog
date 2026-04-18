@@ -979,6 +979,104 @@ async def cmd_backfillrealordertotals(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+# ── /seedaliases — one-time alias table seeding from production data ──
+
+@router.message(Command("seedaliases"))
+async def cmd_seedaliases(message: types.Message):
+    """Seed product_aliases from DB products + supply history. Run once."""
+    if not is_admin(message):
+        return
+
+    import unicodedata
+
+    status_msg = await message.reply("⏳ Alias jadvalni to'ldirmoqda...")
+    conn = get_db()
+    try:
+        existing = conn.execute("SELECT COUNT(*) FROM product_aliases").fetchone()[0]
+
+        # Source 1: every product's 1C name
+        products = conn.execute(
+            "SELECT id, name, name_display FROM products WHERE is_active = 1 AND name IS NOT NULL"
+        ).fetchall()
+        s1 = 0
+        for p in products:
+            alias = unicodedata.normalize("NFC", p["name"].strip().lower())
+            if not alias:
+                continue
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO product_aliases (alias_name, alias_name_lower, product_id, source) "
+                    "VALUES (?, ?, ?, 'db_product')",
+                    (p["name"].strip(), alias, p["id"]),
+                )
+                s1 += 1
+            except Exception:
+                pass
+            # Also add display name if different
+            if p["name_display"]:
+                disp = unicodedata.normalize("NFC", p["name_display"].strip().lower())
+                if disp and disp != alias:
+                    try:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO product_aliases (alias_name, alias_name_lower, product_id, source) "
+                            "VALUES (?, ?, ?, 'db_display')",
+                            (p["name_display"].strip(), disp, p["id"]),
+                        )
+                        s1 += 1
+                    except Exception:
+                        pass
+
+        # Source 2: supply history
+        s2 = 0
+        try:
+            supply_rows = conn.execute(
+                """SELECT DISTINCT soi.product_name_1c, p.id as product_id
+                   FROM supply_order_items soi
+                   JOIN products p ON p.id = soi.product_id
+                   WHERE soi.product_name_1c IS NOT NULL AND soi.product_id IS NOT NULL"""
+            ).fetchall()
+            for r in supply_rows:
+                alias = unicodedata.normalize("NFC", r["product_name_1c"].strip().lower())
+                if not alias:
+                    continue
+                try:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO product_aliases (alias_name, alias_name_lower, product_id, source) "
+                        "VALUES (?, ?, ?, 'supply_history')",
+                        (r["product_name_1c"].strip(), alias, r["product_id"]),
+                    )
+                    s2 += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        conn.commit()
+        final = conn.execute("SELECT COUNT(*) FROM product_aliases").fetchone()[0]
+        products_covered = conn.execute("SELECT COUNT(DISTINCT product_id) FROM product_aliases").fetchone()[0]
+        total_products = conn.execute("SELECT COUNT(*) FROM products WHERE is_active = 1").fetchone()[0]
+
+        by_source = conn.execute(
+            "SELECT source, COUNT(*) as c FROM product_aliases GROUP BY source ORDER BY c DESC"
+        ).fetchall()
+
+        lines = [
+            f"✅ <b>Alias jadvali to'ldirildi</b>\n",
+            f"Avval: {existing} → Hozir: <b>{final}</b> ta alias",
+            f"Qoplangan: {products_covered} / {total_products} ta mahsulot\n",
+        ]
+        for r in by_source:
+            lines.append(f"  {r['source']}: {r['c']}")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"/seedaliases error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+    finally:
+        conn.close()
+
+
 # ── /aliases — product alias table management ────────────────────
 
 @router.message(Command("aliases"))
