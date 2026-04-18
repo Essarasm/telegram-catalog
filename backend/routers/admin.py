@@ -990,6 +990,14 @@ def stock_status(admin_key: str = Query(...)):
         LIMIT 30
     """).fetchall()
 
+    # Smart alerts: only ACTIVE products (sold in 3mo or supplied 2+ in 6mo)
+    try:
+        from backend.services.stock_alerts import get_stock_alerts
+        active_alerts = get_stock_alerts(conn)
+    except Exception as e:
+        logger.warning(f"stock_alerts failed: {e}")
+        active_alerts = {"active_count": 0, "out_of_stock": [], "running_low": [], "healthy_count": 0}
+
     conn.close()
 
     return {
@@ -1004,6 +1012,7 @@ def stock_status(admin_key: str = Query(...)):
             "with_photos": with_photos,
             "stale": stale_count,
         },
+        "active_alerts": active_alerts,
         "low_stock_items": [dict(r) for r in low_stock_items],
         "out_of_stock_items": [dict(r) for r in out_of_stock_items],
         "no_data_items": [dict(r) for r in no_data_items],

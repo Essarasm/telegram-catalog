@@ -985,6 +985,72 @@
                         </div>
                     </div>
 
+                    <!-- Active Product Alerts (smart filtered) -->
+                    <div id="activeAlertsSection">
+                        <div class="section-title" style="display: flex; align-items: center; gap: 8px;">
+                            ⚡ Active Product Alerts
+                            <span id="activeAlertsCount" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        </div>
+                        <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr);">
+                            <div class="kpi-card">
+                                <div class="kpi-label">Active Products</div>
+                                <div class="kpi-value" id="kpi-active-total">-</div>
+                                <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">Sold 3mo or supplied 2+ in 6mo</div>
+                            </div>
+                            <div class="kpi-card" style="border-left: 3px solid #22c55e;">
+                                <div class="kpi-label">Healthy</div>
+                                <div class="kpi-value" id="kpi-active-healthy" style="color: #22c55e;">-</div>
+                            </div>
+                            <div class="kpi-card" style="border-left: 3px solid #f59e0b;">
+                                <div class="kpi-label">Running Low</div>
+                                <div class="kpi-value" id="kpi-active-low" style="color: #f59e0b;">-</div>
+                            </div>
+                            <div class="kpi-card" style="border-left: 3px solid #ef4444;">
+                                <div class="kpi-label">Out of Stock</div>
+                                <div class="kpi-value" id="kpi-active-oos" style="color: #ef4444;">-</div>
+                            </div>
+                        </div>
+                        <div id="activeAlertsOOS" class="hidden" style="margin-top: 8px;">
+                            <div class="table-container">
+                                <div class="table-title">🔴 Out of Stock — Active Products (order needed)</div>
+                                <div class="table-wrapper">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th class="table-number">#</th>
+                                                <th>Product (1C)</th>
+                                                <th>Producer</th>
+                                                <th>Last Sold</th>
+                                                <th>Last Supplied</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="activeOOSBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="activeAlertsLow" class="hidden" style="margin-top: 8px;">
+                            <div class="table-container">
+                                <div class="table-title">🟡 Running Low — Active Products</div>
+                                <div class="table-wrapper">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th class="table-number">#</th>
+                                                <th>Product (1C)</th>
+                                                <th>Producer</th>
+                                                <th>Qty</th>
+                                                <th>Unit</th>
+                                                <th>Last Sold</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="activeLowBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div id="inventoryDetailPanel" class="hidden">
                         <div class="table-container">
                             <div class="table-title" style="display: flex; justify-content: space-between; align-items: center;">
@@ -1230,6 +1296,11 @@
         function fmtFull(n) {
             if (!n) return '0';
             return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        }
+
+        function esc(s) {
+            if (!s) return '';
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
         }
 
         function periodLabel(p) {
@@ -1909,11 +1980,58 @@
                 });
             });
 
+            // Active product alerts
+            populateActiveAlerts(stock.active_alerts);
+
             // Populate other sections
             populateTopOrderedApp();
             populateProductRequests();
             populateSuppliers();
             populateTopClicked();
+        }
+
+        function populateActiveAlerts(alerts) {
+            if (!alerts || alerts.active_count === 0) {
+                document.getElementById('activeAlertsSection').style.display = 'none';
+                return;
+            }
+            document.getElementById('kpi-active-total').textContent = fmt(alerts.active_count);
+            document.getElementById('kpi-active-healthy').textContent = fmt(alerts.healthy_count);
+            document.getElementById('kpi-active-low').textContent = fmt(alerts.running_low?.length || 0);
+            document.getElementById('kpi-active-oos').textContent = fmt(alerts.out_of_stock?.length || 0);
+            document.getElementById('activeAlertsCount').textContent =
+                `(${alerts.out_of_stock?.length || 0} OOS + ${alerts.running_low?.length || 0} low)`;
+
+            const oosBody = document.getElementById('activeOOSBody');
+            const oosList = alerts.out_of_stock || [];
+            if (oosList.length > 0) {
+                document.getElementById('activeAlertsOOS').classList.remove('hidden');
+                oosBody.innerHTML = oosList.map((item, i) =>
+                    `<tr>
+                        <td class="table-number">${i + 1}</td>
+                        <td>${esc(item.name)}</td>
+                        <td>${esc(item.producer)}</td>
+                        <td>${item.last_sold || '—'}</td>
+                        <td>${item.last_supplied || '—'}</td>
+                    </tr>`
+                ).join('');
+            }
+
+            const lowBody = document.getElementById('activeLowBody');
+            const lowList = alerts.running_low || [];
+            if (lowList.length > 0) {
+                document.getElementById('activeAlertsLow').classList.remove('hidden');
+                lowBody.innerHTML = lowList.map((item, i) =>
+                    `<tr>
+                        <td class="table-number">${i + 1}</td>
+                        <td>${esc(item.name)}</td>
+                        <td>${esc(item.producer)}</td>
+                        <td style="font-weight:600; color: ${item.qty <= 3 ? '#ef4444' : '#f59e0b'}">${Math.round(item.qty)}</td>
+                        <td>${esc(item.unit)}</td>
+                        <td>${item.last_sold || '—'}</td>
+                    </tr>`
+                ).join('');
+            }
         }
 
         function drawStockDistributionChart(summary) {
