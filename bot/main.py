@@ -1719,7 +1719,7 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
         # Case-insensitive search using our custom Unicode LOWER function.
         # Both sides (DB value + query) are NFC-normalized + lowercased.
         matches = conn.execute(
-            """SELECT ac.id, ac.name, ac.client_id_1c,
+            """SELECT ac.id, ac.name, ac.client_id_1c, ac.phone_normalized,
                       (SELECT COUNT(*) FROM client_balances WHERE client_id = ac.id) as bal_count
                FROM allowed_clients ac
                WHERE (LOWER(ac.client_id_1c) LIKE ? OR LOWER(ac.name) LIKE ?
@@ -1728,6 +1728,7 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
                       WHERE LOWER(client_name_1c) LIKE ? AND client_id IS NOT NULL
                   ))
                  AND COALESCE(ac.status, 'active') != 'merged'
+                 AND ac.client_id_1c IS NOT NULL AND ac.client_id_1c != ''
                ORDER BY bal_count DESC
                LIMIT 15""",
             (search, search, search),
