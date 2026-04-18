@@ -1293,6 +1293,17 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
                             >
                               {reordering ? t.loading : `🔄 ${t.reorder}`}
                             </button>
+                            {ord.status === 'submitted' && !ord.has_confirmed && onSupplementOrder && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onSupplementOrder(ord.id);
+                                }}
+                                className="bg-blue-50 border border-blue-200 text-blue-700 rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
+                              >
+                                ➕ {t.wishlist_supplement || "Qo'shimcha"}
+                              </button>
+                            )}
                           </div>
                           {ord.has_confirmed && (
                             <button
@@ -1312,17 +1323,6 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
                               className="w-full mt-2 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
                             >
                               ✅ {t.wishlist_show_confirmed_diff}
-                            </button>
-                          )}
-                          {ord.status === 'submitted' && !ord.has_confirmed && onSupplementOrder && (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                onSupplementOrder(ord.id);
-                              }}
-                              className="w-full mt-2 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
-                            >
-                              ➕ {t.wishlist_supplement || "Qo'shimcha buyurtma"}
                             </button>
                           )}
                         </>

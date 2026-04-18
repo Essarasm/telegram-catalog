@@ -72,14 +72,28 @@ def list_orders(telegram_id: int = Query(...)):
 
 @router.get("/orders/{order_id}")
 def get_order_detail(order_id: int, telegram_id: int = Query(...)):
-    """Get full order detail with items. Only owner can view."""
+    """Get full order detail with items. Uses client_id for access check
+    so /testclient-linked agents and sibling phones can view."""
     conn = get_db()
-    order = conn.execute(
-        """SELECT id, telegram_id, client_name, total_usd, total_uzs,
-                  item_count, status, created_at
-           FROM orders WHERE id = ? AND telegram_id = ?""",
-        (order_id, telegram_id),
+    user = conn.execute(
+        "SELECT client_id FROM users WHERE telegram_id = ?", (telegram_id,)
     ).fetchone()
+    client_id = user["client_id"] if user else None
+
+    if client_id:
+        order = conn.execute(
+            """SELECT id, telegram_id, client_name, total_usd, total_uzs,
+                      item_count, status, created_at
+               FROM orders WHERE id = ? AND client_id = ?""",
+            (order_id, client_id),
+        ).fetchone()
+    else:
+        order = conn.execute(
+            """SELECT id, telegram_id, client_name, total_usd, total_uzs,
+                      item_count, status, created_at
+               FROM orders WHERE id = ? AND telegram_id = ?""",
+            (order_id, telegram_id),
+        ).fetchone()
 
     if not order:
         conn.close()
