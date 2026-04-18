@@ -1366,13 +1366,11 @@ async def on_testclient_callback(cb: types.CallbackQuery):
             agent_username = f"@{cb.from_user.username}" if cb.from_user.username else ""
 
             # Look up client's phone from allowed_clients
-            client_phone = target.get("phone_normalized") or ""
-            if not client_phone:
-                ph_row = conn.execute(
-                    "SELECT phone_normalized FROM allowed_clients WHERE id = ? AND phone_normalized != '' LIMIT 1",
-                    (target_id,),
-                ).fetchone()
-                client_phone = ph_row[0] if ph_row else ""
+            ph_row = conn.execute(
+                "SELECT phone_normalized FROM allowed_clients WHERE id = ? AND phone_normalized != '' LIMIT 1",
+                (target_id,),
+            ).fetchone()
+            client_phone = ph_row["phone_normalized"] if ph_row else ""
 
             await cb.answer(f"Bog'landi: {client_1c}"[:200])
             try:
@@ -1564,7 +1562,7 @@ async def cmd_unlinked(message: types.Message):
     for i, r in enumerate(rows, 1):
         name = " ".join(filter(None, [r["first_name"], r["last_name"]])) or "—"
         phone = r["phone"] or "—"
-        uname = f"@{r['username']}" if r.get("username") else ""
+        uname = f"@{r['username']}" if r["username"] else ""
         reg_date = (r["registered_at"] or "")[:10]
         lines.append(f"{i}. <b>{html_escape(name)}</b> · {phone} {uname}")
         if reg_date:
