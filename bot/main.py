@@ -1372,11 +1372,23 @@ async def on_testclient_callback(cb: types.CallbackQuery):
             return
 
         if action == "add" and len(parts) == 3:
-            client_name_1c = parts[2]
+            client_name_prefix = parts[2]
+            # callback_data is truncated to fit 64-byte limit; match by
+            # prefix (LIKE) first, fall back to exact match, then to
+            # client_balances name lookup.
             existing = conn.execute(
-                "SELECT id FROM allowed_clients WHERE client_id_1c = ? LIMIT 1",
-                (client_name_1c,),
+                "SELECT id, client_id_1c FROM allowed_clients WHERE client_id_1c LIKE ? LIMIT 1",
+                (client_name_prefix + "%",),
             ).fetchone()
+            # Resolve the full name from allowed_clients or client_balances
+            if existing:
+                client_name_1c = existing["client_id_1c"]
+            else:
+                cb_row = conn.execute(
+                    "SELECT client_name_1c FROM client_balances WHERE client_name_1c LIKE ? LIMIT 1",
+                    (client_name_prefix + "%",),
+                ).fetchone()
+                client_name_1c = cb_row[0] if cb_row else client_name_prefix
             if existing:
                 new_id = existing["id"]
             else:
@@ -1728,7 +1740,7 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
             cname = (c['client_name_1c'] or "").strip()
             kb_rows.append([InlineKeyboardButton(
                 text=f"🟡 {cname}"[:64],
-                callback_data=f"tc:add:{cname[:40]}",
+                callback_data=f"tc:add:{cname[:25]}",
             )])
 
         # Group whitelisted matches by client_id_1c so multi-phone siblings roll up
