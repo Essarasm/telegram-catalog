@@ -640,10 +640,9 @@ def init_db():
             ) WHERE client_id IS NULL
         """)
 
-    # Migration: track sales-group message ids per order so we can link
-    # manager replies (Excel file) back to the original wishlist order.
+    # Migration: track sales-group message ids + supplementary order link
     order_cols3 = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
-    for col in ("sales_group_message_id", "sales_group_doc_message_id"):
+    for col in ("sales_group_message_id", "sales_group_doc_message_id", "parent_order_id"):
         if col not in order_cols3:
             conn.execute(f"ALTER TABLE orders ADD COLUMN {col} INTEGER")
 

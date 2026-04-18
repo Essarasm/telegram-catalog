@@ -44,6 +44,7 @@ class ExportRequest(BaseModel):
     delivery_type: Optional[str] = "delivery"  # 'delivery' or 'pickup'
     location_district_id: Optional[int] = None  # Session M: delivery location
     location_moljal_id: Optional[int] = None
+    parent_order_id: Optional[int] = None  # supplementary order link
 
 
 def _build_order_items(req: ExportRequest):
@@ -169,11 +170,12 @@ def _save_order_to_db(req: ExportRequest, order_items, client_label):
             """INSERT INTO orders (telegram_id, client_id, placed_by_telegram_id,
                 client_name, client_phone, total_usd, total_uzs, item_count, status,
                 delivery_type, location_district_id, location_moljal_id,
-                latitude, longitude, location_address)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?, ?)""",
+                latitude, longitude, location_address, parent_order_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?, ?, ?, ?, ?, ?)""",
             (req.telegram_id or 0, user_client_id, req.telegram_id or 0,
              client_label, client_phone, usd_total, uzs_total, len(order_items), delivery_type,
-             req.location_district_id, req.location_moljal_id, user_lat, user_lng, user_addr),
+             req.location_district_id, req.location_moljal_id, user_lat, user_lng, user_addr,
+             req.parent_order_id),
         )
         order_id = cursor.lastrowid
 
@@ -299,6 +301,7 @@ def export_order(req: ExportRequest):
             delivery_type=delivery_type, client_name_1c=client_name_1c,
             location_text=location_text, maps_link=maps_link,
             order_id=order_id, agent_name=agent_name,
+            parent_order_id=req.parent_order_id,
         )
         if not group_result or not group_result.get("ok"):
             logger.error(f"send_order_to_group failed: {group_result}")

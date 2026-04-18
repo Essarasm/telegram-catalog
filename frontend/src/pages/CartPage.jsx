@@ -329,7 +329,7 @@ function CartQtyControls({ item, cart }) {
 
 const UNDO_WINDOW_MS = 4000;
 
-export default function CartPage({ cart, onNavigate }) {
+export default function CartPage({ cart, onNavigate, supplementingOrderId, onOrderPlaced }) {
   const [exporting, setExporting] = useState(false);
   const [exported, setExported] = useState(false);
   const [previewFormat, setPreviewFormat] = useState(null); // 'pdf' | 'xlsx' | null
@@ -417,18 +417,22 @@ export default function CartPage({ cart, onNavigate }) {
 
       const itemsPayload = cart.items.map(i => ({ product_id: i.id, quantity: i.quantity }));
 
+      const exportBody = {
+        items: itemsPayload,
+        format,
+        client_name: clientName,
+        telegram_id: telegramId,
+        delivery_type: deliveryType,
+        location_district_id: deliveryType === 'delivery' ? locationData.district_id : null,
+        location_moljal_id: deliveryType === 'delivery' ? locationData.moljal_id : null,
+      };
+      if (supplementingOrderId) {
+        exportBody.parent_order_id = supplementingOrderId;
+      }
       const res = await fetch(`${API_BASE}/export`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: itemsPayload,
-          format,
-          client_name: clientName,
-          telegram_id: telegramId,
-          delivery_type: deliveryType,
-          location_district_id: deliveryType === 'delivery' ? locationData.district_id : null,
-          location_moljal_id: deliveryType === 'delivery' ? locationData.moljal_id : null,
-        }),
+        body: JSON.stringify(exportBody),
       });
 
       // Check if the backend sent the file via Telegram DM (JSON response)
@@ -442,6 +446,7 @@ export default function CartPage({ cart, onNavigate }) {
           setJustOrdered(true);
           setLastOrderId(json.order_id || null);
           cart.clearCart();
+          if (onOrderPlaced) onOrderPlaced();
           setExporting(false);
           return;
         }
@@ -502,6 +507,27 @@ export default function CartPage({ cart, onNavigate }) {
     );
   }
 
+  // ─── Supplementary order banner ───
+  const supplementBanner = supplementingOrderId ? (
+    <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-3 flex items-center gap-2">
+      <span className="text-lg">📦</span>
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-semibold text-blue-800">
+          Qo'shimcha buyurtma #{supplementingOrderId}
+        </div>
+        <div className="text-[10px] text-blue-600">
+          Bu tovarlar asl buyurtmaga qo'shiladi
+        </div>
+      </div>
+      <button
+        onClick={() => onOrderPlaced && onOrderPlaced()}
+        className="text-[10px] px-2 py-1 rounded-lg bg-blue-100 text-blue-700"
+      >
+        Bekor qilish
+      </button>
+    </div>
+  ) : null;
+
   // ─── Preview mode: show order table before sending ───
   if (previewFormat) {
     return (
@@ -550,6 +576,7 @@ export default function CartPage({ cart, onNavigate }) {
 
   return (
     <div>
+      {supplementBanner}
       {/* Cart items */}
       <div className="space-y-2 mb-6">
         {cart.items.map(item => (

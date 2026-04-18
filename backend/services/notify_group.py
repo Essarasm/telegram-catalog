@@ -11,7 +11,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ORDER_GROUP_CHAT_ID = os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463")
 
 
-def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = "", order_id: int = 0, agent_name: str = ""):
+def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = "", order_id: int = 0, agent_name: str = "", parent_order_id: int = None):
     """Send order summary + Excel file to the sales managers' Telegram group.
 
     Returns a dict {ok, text_message_id, doc_message_id} so the caller can
@@ -29,9 +29,12 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
     total_quantity = sum(it["quantity"] for it in items)
     unique_products = len(items)
 
-    lines = ["\U0001f4cb <b>Yangi buyurtma!</b>", ""]
-    if order_id:
-        lines[0] = f"\U0001f4cb <b>Yangi buyurtma #{order_id}</b>"
+    if parent_order_id:
+        lines = [f"\U0001f4e6 <b>Qo'shimcha buyurtma #{order_id}</b> (asl: #{parent_order_id})", ""]
+    else:
+        lines = ["\U0001f4cb <b>Yangi buyurtma!</b>", ""]
+        if order_id:
+            lines[0] = f"\U0001f4cb <b>Yangi buyurtma #{order_id}</b>"
     if client_name_1c:
         lines.append(f"\U0001f464 Mijoz (1C): <b>{client_name_1c}</b>")
     else:

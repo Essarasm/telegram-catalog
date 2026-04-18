@@ -45,6 +45,7 @@ export default function App() {
   const [registered, setRegistered] = useState(null);
   const [approved, setApproved] = useState(false);
   const [isAgent, setIsAgent] = useState(false);
+  const [supplementingOrderId, setSupplementingOrderId] = useState(null);
   const cart = useCart();
   const goBackRef = useRef(null);
   const scrollPositions = useRef({});  // page key → scrollY
@@ -425,10 +426,13 @@ export default function App() {
           />
         )}
         {page === 'cart' && (
-          <CartPage cart={cart} approved={approved} onNavigate={(p) => navigateTo(p)} />
+          <CartPage cart={cart} approved={approved} onNavigate={(p) => navigateTo(p)}
+            supplementingOrderId={supplementingOrderId}
+            onOrderPlaced={() => setSupplementingOrderId(null)} />
         )}
         {page === 'cabinet' && (
-          <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')} />
+          <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')}
+            onSupplementOrder={(orderId) => { setSupplementingOrderId(orderId); navigateTo('catalog'); }} />
         )}
       </main>
 

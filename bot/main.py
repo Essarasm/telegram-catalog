@@ -1477,6 +1477,59 @@ async def on_testclient_callback(cb: types.CallbackQuery):
         conn.close()
 
 
+@dp.message(Command("lastorders"))
+async def cmd_lastorders(message: types.Message):
+    """Show recent app-placed orders. Usage: /lastorders [N] (default 10)"""
+    if not is_admin(message):
+        return
+    parts = (message.text or "").split()
+    limit = 10
+    if len(parts) > 1 and parts[1].isdigit():
+        limit = min(int(parts[1]), 30)
+
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT o.id, o.created_at, o.total_uzs, o.total_usd,
+                  o.item_count, o.status, o.parent_order_id,
+                  ac.client_id_1c, o.placed_by_telegram_id,
+                  u.first_name AS placer_name, u.is_agent
+           FROM orders o
+           LEFT JOIN allowed_clients ac ON ac.id = o.client_id
+           LEFT JOIN users u ON u.telegram_id = o.placed_by_telegram_id
+           ORDER BY o.id DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        await message.reply("Hali buyurtmalar yo'q.")
+        return
+
+    lines = [f"📋 <b>Oxirgi {len(rows)} buyurtma</b>", ""]
+    for r in rows:
+        oid = r["id"]
+        time_part = (r["created_at"] or "")[:16].replace("T", " ")
+        client = r["client_id_1c"] or "—"
+        totals = []
+        if r["total_usd"] and r["total_usd"] > 0:
+            totals.append(f"${r['total_usd']:,.2f}")
+        if r["total_uzs"] and r["total_uzs"] > 0:
+            totals.append(f"{int(r['total_uzs']):,} so'm".replace(",", " "))
+        total_str = " + ".join(totals) or "—"
+        items = r["item_count"] or 0
+        parent = f" (asl: #{r['parent_order_id']})" if r["parent_order_id"] else ""
+        prefix = "📦" if r["parent_order_id"] else "📋"
+        status_icon = {"submitted": "🟡", "confirmed": "✅"}.get(r["status"] or "", "⚪")
+
+        lines.append(f"{prefix} <b>#{oid}</b>{parent} {status_icon} {time_part}")
+        lines.append(f"   {html_escape(client)} · {total_str} · {items} ta")
+        if r["is_agent"] and r["placer_name"]:
+            lines.append(f"   💼 Agent: {html_escape(r['placer_name'])}")
+        lines.append("")
+
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
 @dp.message(Command("unlinked"))
 async def cmd_unlinked(message: types.Message):
     """Show registered users who haven't been linked to a 1C client.

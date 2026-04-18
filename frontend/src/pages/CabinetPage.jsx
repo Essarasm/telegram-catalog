@@ -269,7 +269,7 @@ function AktSheetItemsLoader({ orderId, onLoaded }) {
   return <div className="text-[11px] text-tg-hint py-1">…</div>;
 }
 
-export default function CabinetPage({ cart, onNavigateToCart }) {
+export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
@@ -1324,6 +1324,17 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
                               className="w-full mt-2 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
                             >
                               ✅ {t.wishlist_show_confirmed_diff}
+                            </button>
+                          )}
+                          {ord.status === 'submitted' && !ord.has_confirmed && onSupplementOrder && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onSupplementOrder(ord.id);
+                              }}
+                              className="w-full mt-2 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
+                            >
+                              ➕ {t.wishlist_supplement || "Qo'shimcha buyurtma"}
                             </button>
                           )}
                         </>
