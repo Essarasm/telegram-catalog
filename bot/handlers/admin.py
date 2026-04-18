@@ -979,6 +979,25 @@ async def cmd_backfillrealordertotals(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+# ── /stockalert — smart stock alerts for active products ─────────
+
+@router.message(Command("stockalert"))
+async def cmd_stockalert(message: types.Message):
+    """Show out-of-stock and running-low alerts for active products."""
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Faol mahsulotlarni tekshirmoqda...")
+    try:
+        from backend.services.stock_alerts import get_stock_alerts, format_stock_alert_message
+        alerts = get_stock_alerts()
+        text = format_stock_alert_message(alerts)
+        await status_msg.edit_text(text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/stockalert error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
 # ── /seedaliases — one-time alias table seeding from production data ──
 
 @router.message(Command("seedaliases"))

@@ -254,6 +254,33 @@ async def _send_weekly_unlinked(bot, chat_id: int) -> None:
         logger.error(f"Weekly unlinked reminder failed: {e}")
 
 
+async def _send_stock_alert(bot, chat_id: int) -> None:
+    """08:00 daily — smart stock alert for active products."""
+    today = datetime.now(TASHKENT)
+    ok, reason = _should_send(today)
+    if not ok:
+        logger.info(f"Stock alert skipped: {reason}")
+        return
+
+    try:
+        from backend.services.stock_alerts import get_stock_alerts, format_stock_alert_message
+        alerts = get_stock_alerts()
+        if alerts["active_count"] == 0:
+            logger.info("Stock alert skipped — no active products detected")
+            return
+        if not alerts["out_of_stock"] and not alerts["running_low"]:
+            logger.info("Stock alert skipped — all active products healthy")
+            return
+        text = format_stock_alert_message(alerts)
+        await bot.send_message(chat_id, text, parse_mode="HTML")
+        logger.info(
+            f"Stock alert sent: {len(alerts['out_of_stock'])} OOS, "
+            f"{len(alerts['running_low'])} low"
+        )
+    except Exception as e:
+        logger.error(f"Stock alert failed: {e}")
+
+
 def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     """Launch the reminder and sync background tasks. Returns the task handles."""
     ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
@@ -273,6 +300,10 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 17, 0, _send_weekly_unlinked),
             name="weekly-unlinked-reminder",
+        ),
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 8, 0, _send_stock_alert),
+            name="daily-stock-alert",
         ),
     ]
     logger.info(f"Started {len(tasks)} background tasks (reminders chat={chat_id}, sync chat={ORDER_GROUP_CHAT_ID})")
