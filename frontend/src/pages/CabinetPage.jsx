@@ -1209,7 +1209,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
           </div>
 
           <div className="space-y-2">
-            {orders.slice(0, 3).map((ord) => {
+            {orders.slice(0, 10).map((ord) => {
               const expanded = expandedId === ord.id;
               return (
                 <div key={ord.id} className="bg-tg-secondary rounded-xl overflow-hidden">
@@ -1292,18 +1292,6 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
                               className="bg-tg-button text-tg-button-text rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform disabled:opacity-50"
                             >
                               {reordering ? t.loading : `🔄 ${t.reorder}`}
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openCompare({
-                                  wishlistOrderId: ord.id,
-                                  sourceLabel: `#${ord.id}`,
-                                });
-                              }}
-                              className="bg-tg-secondary border border-tg-button text-tg-button rounded-xl py-2.5 font-semibold text-sm active:scale-95 transition-transform"
-                            >
-                              🔀 {t.compare_button}
                             </button>
                           </div>
                           {ord.has_confirmed && (
