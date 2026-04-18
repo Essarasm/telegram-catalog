@@ -201,20 +201,21 @@ def format_stock_alert_message(alerts: dict) -> str:
     ]
 
     if alerts["out_of_stock"]:
-        lines.append(f"\n🔴 <b>TUGAGAN — buyurtma kerak:</b>")
-        for item in alerts["out_of_stock"][:20]:
-            sold = f" (oxirgi sotilgan: {item['last_sold']})" if item["last_sold"] != "—" else ""
+        lines.append(f"\n🔴 <b>TUGAGAN — buyurtma kerak ({len(alerts['out_of_stock'])}):</b>")
+        for item in alerts["out_of_stock"][:25]:
+            sold = f" (sotilgan: {item['last_sold']})" if item["last_sold"] != "—" else ""
             lines.append(f"  • {item['name']}{sold}")
-        if len(alerts["out_of_stock"]) > 20:
-            lines.append(f"  ... va yana {len(alerts['out_of_stock']) - 20} ta")
+        if len(alerts["out_of_stock"]) > 25:
+            lines.append(f"  ... va yana {len(alerts['out_of_stock']) - 25} ta")
 
     if alerts["running_low"]:
-        lines.append(f"\n🟡 <b>KAM QOLDI — diqqat:</b>")
-        for item in alerts["running_low"][:20]:
+        lines.append(f"\n🟡 <b>KAM QOLDI ({len(alerts['running_low'])}):</b>")
+        shown = alerts["running_low"][:30]
+        for item in shown:
             q = item['qty']
             qty_str = str(int(q)) if q == int(q) else f"{q:.1f}"
-            lines.append(f"  • {item['name']} — <b>{qty_str}</b> {item['unit']} qoldi")
-        if len(alerts["running_low"]) > 20:
-            lines.append(f"  ... va yana {len(alerts['running_low']) - 20} ta")
+            lines.append(f"  • {item['name']} — <b>{qty_str}</b> {item['unit']}")
+        if len(alerts["running_low"]) > 30:
+            lines.append(f"  ... va yana {len(alerts['running_low']) - 30} ta (to'liq ro'yxat: /stockalert full)")
 
     return "\n".join(lines)
