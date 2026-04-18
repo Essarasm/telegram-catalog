@@ -55,7 +55,7 @@ async def cmd_prices(message: types.Message):
         import httpx
 
         # Download file from Telegram
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
         async with httpx.AsyncClient() as client:
@@ -196,7 +196,7 @@ async def cmd_syncimages(message: types.Message):
 
     try:
         import httpx
-        file_info = await bot.get_file(doc.file_id)
+        file_info = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
         async with httpx.AsyncClient() as client:
             resp = await client.get(file_url)
@@ -320,7 +320,7 @@ async def cmd_stock(message: types.Message):
         import httpx
 
         # Download file from Telegram
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
         async with httpx.AsyncClient() as client:
@@ -441,7 +441,7 @@ async def cmd_catalog(message: types.Message):
         import httpx
 
         # Download file from Telegram
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
         async with httpx.AsyncClient() as client:
@@ -558,7 +558,7 @@ async def _download_and_import(doc) -> dict:
     """
     import httpx
 
-    file = await bot.get_file(doc.file_id)
+    file = await message.bot.get_file(doc.file_id)
     file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
     async with httpx.AsyncClient() as client:
@@ -815,7 +815,7 @@ async def cmd_clients(message: types.Message):
 
     try:
         import httpx
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
         async with httpx.AsyncClient() as client:
             resp = await client.get(file_url)
@@ -911,7 +911,7 @@ async def cmd_debtors(message: types.Message):
     try:
         import httpx
 
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
         async with httpx.AsyncClient() as client:
@@ -1254,7 +1254,7 @@ async def cmd_realorders(message: types.Message):
     try:
         import httpx
 
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
         async with httpx.AsyncClient(timeout=120) as client:
@@ -1385,7 +1385,7 @@ async def cmd_cash(message: types.Message):
     try:
         import httpx
 
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
         async with httpx.AsyncClient(timeout=120) as client:
@@ -1677,8 +1677,8 @@ async def cmd_supply(message: types.Message):
     status_msg = await message.reply(f"⏳ {fname} tahlil qilinmoqda...")
     try:
         import aiohttp
-        tg_file = await bot.get_file(doc.file_id)
-        file_url = f"https://api.telegram.org/file/bot{bot.token}/{tg_file.file_path}"
+        tg_file = await message.bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{tg_file.file_path}"
         async with aiohttp.ClientSession() as sess:
             async with sess.get(file_url) as resp:
                 file_bytes = await resp.read()
@@ -2493,7 +2493,7 @@ async def cmd_clientmaster(message: types.Message):
     try:
         import httpx
 
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
         async with httpx.AsyncClient(timeout=120) as client:

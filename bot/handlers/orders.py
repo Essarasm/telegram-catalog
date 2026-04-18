@@ -164,9 +164,7 @@ async def handle_order_confirmation_reply(message: Message):
         from backend.services.import_real_orders import parse_real_orders_xls
         from backend.database import get_db as _get_db
 
-        from aiogram import Bot
-        bot = Bot.get_current() or message.bot
-        file = await bot.get_file(doc.file_id)
+        file = await message.bot.get_file(doc.file_id)
         file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
         async with httpx.AsyncClient() as client:
             resp = await client.get(file_url)
