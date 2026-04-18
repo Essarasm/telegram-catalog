@@ -152,7 +152,8 @@ def get_stock_alerts(conn=None) -> dict:
 
         for p in products:
             pid = p["id"]
-            qty = p["stock_quantity"] or 0
+            raw_qty = p["stock_quantity"]
+            qty = float(raw_qty) if raw_qty is not None else 0
             name = p["name"] or p["name_display"]
             info = {
                 "id": pid,
@@ -164,7 +165,7 @@ def get_stock_alerts(conn=None) -> dict:
                 "last_supplied": last_supplied.get(pid, "—"),
             }
 
-            if qty <= 0 or p["stock_status"] == "out_of_stock":
+            if qty < 0.5:
                 out_of_stock.append(info)
             elif qty <= 3:
                 running_low.append(info)
