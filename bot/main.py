@@ -1358,15 +1358,40 @@ async def on_testclient_callback(cb: types.CallbackQuery):
                 (target_id, telegram_id),
             )
             conn.commit()
-            name_html = html_escape(target["client_id_1c"] or target["name"] or f"#{target_id}")
-            await cb.answer(f"Bog'landi: {target['client_id_1c'] or target['name']}"[:200])
+            client_1c = target["client_id_1c"] or target["name"] or f"#{target_id}"
+            name_html = html_escape(client_1c)
+            agent_first = cb.from_user.first_name or ""
+            agent_last = cb.from_user.last_name or ""
+            agent_display = " ".join(filter(None, [agent_first, agent_last])) or str(telegram_id)
+            agent_username = f"@{cb.from_user.username}" if cb.from_user.username else ""
+
+            # Look up client's phone from allowed_clients
+            client_phone = target.get("phone_normalized") or ""
+            if not client_phone:
+                ph_row = conn.execute(
+                    "SELECT phone_normalized FROM allowed_clients WHERE id = ? AND phone_normalized != '' LIMIT 1",
+                    (target_id,),
+                ).fetchone()
+                client_phone = ph_row[0] if ph_row else ""
+
+            await cb.answer(f"Bog'landi: {client_1c}"[:200])
             try:
-                await cb.message.reply(
-                    f"✅ <b>Bog'landi:</b> {name_html}\n"
-                    f"🆔 allowed_clients #{target_id}\n\n"
-                    f"Kabinetni oching — mijoz ma'lumotlarini ko'ring.",
-                    parse_mode="HTML",
-                )
+                lines = [
+                    f"✅ <b>Bog'landi</b>",
+                    "",
+                    f"🧾 Mijoz (1C): <b>{name_html}</b>",
+                ]
+                if client_phone:
+                    lines.append(f"📞 Telefon: {client_phone}")
+                lines.append(f"🆔 ID: #{target_id}")
+                lines.append("")
+                lines.append(f"👤 Agent: <b>{html_escape(agent_display)}</b>")
+                if agent_username:
+                    lines.append(f"   {agent_username}")
+                lines.append(f"🆔 Agent TG: <code>{telegram_id}</code>")
+                lines.append("")
+                lines.append("Kabinetni oching — mijoz ma'lumotlarini ko'ring.")
+                await cb.message.reply("\n".join(lines), parse_mode="HTML")
             except Exception:
                 pass
             return
@@ -1418,19 +1443,30 @@ async def on_testclient_callback(cb: types.CallbackQuery):
                 (new_id, telegram_id),
             )
             conn.commit()
+            agent_first = cb.from_user.first_name or ""
+            agent_last = cb.from_user.last_name or ""
+            agent_display = " ".join(filter(None, [agent_first, agent_last])) or str(telegram_id)
+            agent_username = f"@{cb.from_user.username}" if cb.from_user.username else ""
+
             await cb.answer(f"Ro'yxatga qo'shildi va bog'landi", show_alert=False)
             try:
                 linked_summary = " · ".join(
                     f"{k.replace('client_', '').replace('_', '.')}={v}"
                     for k, v in linked_counts.items() if v
                 ) or "yo'q"
-                await cb.message.reply(
-                    f"✅ <b>Ro'yxatga qo'shildi va bog'landi:</b> "
-                    f"{html_escape(client_name_1c)}\n"
-                    f"🆔 allowed_clients #{new_id}\n"
-                    f"🔗 Bog'landi: {linked_summary}",
-                    parse_mode="HTML",
-                )
+                lines = [
+                    f"✅ <b>Ro'yxatga qo'shildi va bog'landi</b>",
+                    "",
+                    f"🧾 Mijoz (1C): <b>{html_escape(client_name_1c)}</b>",
+                    f"🆔 ID: #{new_id}",
+                    f"🔗 Bog'langan jadvallar: {linked_summary}",
+                    "",
+                    f"👤 Agent: <b>{html_escape(agent_display)}</b>",
+                ]
+                if agent_username:
+                    lines.append(f"   {agent_username}")
+                lines.append(f"🆔 Agent TG: <code>{telegram_id}</code>")
+                await cb.message.reply("\n".join(lines), parse_mode="HTML")
             except Exception:
                 pass
             return
