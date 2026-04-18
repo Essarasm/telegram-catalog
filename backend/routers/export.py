@@ -74,10 +74,12 @@ def _build_order_items(req: ExportRequest):
             if ac_row:
                 client_name_1c = ac_row["client_id_1c"]
 
-        # Fallback: try matched_telegram_id, then phone match (for regular clients)
+        # Fallback: try matched_telegram_id, then phone match (for regular clients).
+        # Prefer client_id_1c (Cyrillic 1C name) over name (Latin app name).
         if not client_name_1c:
             ac_row = conn.execute(
-                "SELECT name FROM allowed_clients WHERE matched_telegram_id = ? AND name != '' LIMIT 1",
+                "SELECT client_id_1c, name FROM allowed_clients "
+                "WHERE matched_telegram_id = ? AND (client_id_1c != '' OR name != '') LIMIT 1",
                 (req.telegram_id,),
             ).fetchone()
             if not ac_row and user_row and user_row["phone"]:
@@ -85,11 +87,12 @@ def _build_order_items(req: ExportRequest):
                 digits = re.sub(r"\D", "", user_row["phone"] or "")
                 phone_norm = digits[-9:] if len(digits) >= 9 else digits
                 ac_row = conn.execute(
-                    "SELECT name FROM allowed_clients WHERE phone_normalized = ? AND name != '' LIMIT 1",
+                    "SELECT client_id_1c, name FROM allowed_clients "
+                    "WHERE phone_normalized = ? AND (client_id_1c != '' OR name != '') LIMIT 1",
                     (phone_norm,),
                 ).fetchone()
-            if ac_row and ac_row["name"]:
-                client_name_1c = ac_row["name"]
+            if ac_row:
+                client_name_1c = ac_row["client_id_1c"] or ac_row["name"] or ""
 
     order_items = []
     for cart_item in req.items:
