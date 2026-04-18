@@ -165,7 +165,7 @@ def get_stock_alerts(conn=None) -> dict:
                 "last_supplied": last_supplied.get(pid, "—"),
             }
 
-            if qty < 0.5:
+            if qty < 1:
                 out_of_stock.append(info)
             elif qty <= 3:
                 running_low.append(info)
@@ -211,7 +211,9 @@ def format_stock_alert_message(alerts: dict) -> str:
     if alerts["running_low"]:
         lines.append(f"\n🟡 <b>KAM QOLDI — diqqat:</b>")
         for item in alerts["running_low"][:20]:
-            lines.append(f"  • {item['name']} — <b>{int(item['qty'])}</b> {item['unit']} qoldi")
+            q = item['qty']
+            qty_str = str(int(q)) if q == int(q) else f"{q:.1f}"
+            lines.append(f"  • {item['name']} — <b>{qty_str}</b> {item['unit']} qoldi")
         if len(alerts["running_low"]) > 20:
             lines.append(f"  ... va yana {len(alerts['running_low']) - 20} ta")
 
