@@ -979,4 +979,92 @@ async def cmd_backfillrealordertotals(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+# ── /aliases — product alias table management ────────────────────
+
+@router.message(Command("aliases"))
+async def cmd_aliases(message: types.Message):
+    """Show alias table stats and unmatched import names.
+
+    Usage:
+        /aliases           — show stats + top unmatched names
+        /aliases link NAME PRODUCT_ID — manually link an unmatched name
+    """
+    if not is_admin(message):
+        return
+
+    args = (message.text or "").split(maxsplit=3)
+    conn = get_db()
+
+    try:
+        if len(args) >= 4 and args[1].lower() == "link":
+            # /aliases link NAME PRODUCT_ID
+            link_name = args[2]
+            try:
+                link_pid = int(args[3])
+            except ValueError:
+                await message.reply("❌ Product ID raqam bo'lishi kerak")
+                conn.close()
+                return
+
+            product = conn.execute(
+                "SELECT id, name FROM products WHERE id = ?", (link_pid,)
+            ).fetchone()
+            if not product:
+                await message.reply(f"❌ Product #{link_pid} topilmadi")
+                conn.close()
+                return
+
+            conn.execute(
+                "INSERT OR REPLACE INTO product_aliases (alias_name, alias_name_lower, product_id, source) "
+                "VALUES (?, ?, ?, 'manual')",
+                (link_name.strip(), link_name.strip().lower(), link_pid),
+            )
+            conn.execute(
+                "UPDATE unmatched_import_names SET resolved = 1, resolved_product_id = ?, resolved_at = datetime('now') "
+                "WHERE name_lower = ?",
+                (link_pid, link_name.strip().lower()),
+            )
+            conn.commit()
+            await message.reply(
+                f"✅ Alias qo'shildi:\n"
+                f"  <b>{html_escape(link_name)}</b> → #{link_pid} ({html_escape(product['name'][:40])})",
+                parse_mode="HTML",
+            )
+            conn.close()
+            return
+
+        # Default: show stats
+        total_aliases = conn.execute("SELECT COUNT(*) FROM product_aliases").fetchone()[0]
+        by_source = conn.execute(
+            "SELECT source, COUNT(*) as c FROM product_aliases GROUP BY source ORDER BY c DESC"
+        ).fetchall()
+
+        unmatched = conn.execute(
+            "SELECT name, occurrences, source FROM unmatched_import_names "
+            "WHERE resolved = 0 ORDER BY occurrences DESC LIMIT 15"
+        ).fetchall()
+        unmatched_total = conn.execute(
+            "SELECT COUNT(*) FROM unmatched_import_names WHERE resolved = 0"
+        ).fetchone()[0]
+
+        lines = [f"🔗 <b>Product Aliases</b>\n"]
+        lines.append(f"Jami: <b>{total_aliases}</b> ta alias\n")
+        for r in by_source:
+            lines.append(f"  {r['source']}: {r['c']}")
+
+        if unmatched_total > 0:
+            lines.append(f"\n❓ <b>Topilmagan nomlar</b> ({unmatched_total} ta):\n")
+            for u in unmatched:
+                lines.append(f"  [{u['occurrences']}x] {html_escape(u['name'][:45])}")
+            lines.append(f"\nBog'lash: <code>/aliases link NOM PRODUCT_ID</code>")
+        else:
+            lines.append("\n✅ Barcha nomlar bog'langan!")
+
+        await message.reply("\n".join(lines), parse_mode="HTML")
+
+    except Exception as e:
+        logger.error(f"/aliases error: {e}")
+        await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+    finally:
+        conn.close()
 

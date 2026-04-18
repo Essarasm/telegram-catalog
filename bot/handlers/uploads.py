@@ -374,9 +374,20 @@ async def cmd_stock(message: types.Message):
             if len(changes) > 15:
                 lines.append(f"  ... va yana {len(changes) - 15} ta")
 
+        alias_hits = result.get('alias_hits', 0)
+        auto_learned = result.get('auto_learned', 0)
+        if alias_hits > 0 or auto_learned > 0:
+            lines.append(f"\n🔗 Alias: {alias_hits} ta tezkor topildi, {auto_learned} ta yangi o'rganildi")
+
         unmatched = result.get('unmatched_count', 0)
         if unmatched > 0:
             lines.append(f"\n⚠️ {unmatched} ta Excel mahsulot bazada topilmadi")
+            unmatched_names = result.get('unmatched_names', [])
+            if unmatched_names:
+                for un in unmatched_names[:5]:
+                    lines.append(f"  ❓ {html_escape(un)}")
+                if len(unmatched_names) > 5:
+                    lines.append(f"  ... va yana {len(unmatched_names) - 5} ta")
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
 

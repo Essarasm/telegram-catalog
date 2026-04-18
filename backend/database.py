@@ -706,6 +706,50 @@ def init_db():
         "ON orders(placed_by_telegram_id)"
     )
 
+    # Product alias table: maps 1C name variants to canonical product IDs.
+    # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
+    # each successful fuzzy match in /stock or /prices auto-adds an alias.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS product_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alias_name TEXT NOT NULL,
+            alias_name_lower TEXT NOT NULL,
+            product_id INTEGER NOT NULL,
+            source TEXT DEFAULT 'manual',
+            confirmed INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_product_aliases_name
+        ON product_aliases(alias_name_lower)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_product_aliases_product
+        ON product_aliases(product_id)
+    """)
+
+    # Unmatched import names: logged when /stock or /prices can't match a name.
+    # Admin reviews via /aliases command and links them manually.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS unmatched_import_names (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            name_lower TEXT NOT NULL,
+            source TEXT DEFAULT 'stock',
+            occurrences INTEGER DEFAULT 1,
+            resolved INTEGER DEFAULT 0,
+            resolved_product_id INTEGER,
+            created_at TEXT DEFAULT (datetime('now')),
+            resolved_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_unmatched_names_lower
+        ON unmatched_import_names(name_lower)
+    """)
+
     conn.commit()
     conn.close()
 

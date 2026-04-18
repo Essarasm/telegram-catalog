@@ -220,6 +220,52 @@ def parse_stock_excel(file_bytes: bytes) -> Dict[str, dict]:
     return stocks
 
 
+def _load_alias_lookup(conn) -> dict:
+    """Build alias_name_lower → product_id lookup from product_aliases table."""
+    try:
+        rows = conn.execute(
+            "SELECT alias_name_lower, product_id FROM product_aliases WHERE confirmed = 1"
+        ).fetchall()
+        return {r["alias_name_lower"]: r["product_id"] for r in rows}
+    except Exception:
+        return {}
+
+
+def _auto_learn_alias(conn, excel_name: str, product_id: int, source: str = "auto_stock"):
+    """Auto-add a newly discovered name variant to product_aliases."""
+    try:
+        alias_lower = excel_name.strip().lower()
+        conn.execute(
+            "INSERT OR IGNORE INTO product_aliases (alias_name, alias_name_lower, product_id, source) "
+            "VALUES (?, ?, ?, ?)",
+            (excel_name.strip(), alias_lower, product_id, source),
+        )
+    except Exception:
+        pass
+
+
+def _log_unmatched(conn, name: str, source: str = "stock"):
+    """Log an unmatched import name for admin review."""
+    try:
+        name_lower = name.strip().lower()
+        existing = conn.execute(
+            "SELECT id, occurrences FROM unmatched_import_names WHERE name_lower = ?",
+            (name_lower,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE unmatched_import_names SET occurrences = occurrences + 1 WHERE id = ?",
+                (existing["id"],),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO unmatched_import_names (name, name_lower, source) VALUES (?, ?, ?)",
+                (name.strip(), name_lower, source),
+            )
+    except Exception:
+        pass
+
+
 def apply_stock_updates(file_bytes: bytes) -> dict:
     """Apply stock updates from Excel to the database. Returns summary."""
     excel_stocks = parse_stock_excel(file_bytes)
@@ -231,44 +277,70 @@ def apply_stock_updates(file_bytes: bytes) -> dict:
         "SELECT id, name, name_display, stock_quantity, stock_status FROM products WHERE is_active = 1"
     ).fetchall()
 
-    # Build lookup
+    # Build lookups
     db_by_exact = {}
     db_by_normalized = {}
+    db_by_id = {}
     for p in db_products:
         db_name = p["name"].strip()
         db_by_exact[db_name] = p
+        db_by_id[p["id"]] = p
         norm = normalize_name(db_name)
         if norm not in db_by_normalized:
             db_by_normalized[norm] = p
 
+    # Step 0: Load alias table
+    alias_lookup = _load_alias_lookup(conn)
+    alias_hits = 0
+
     updated = []
     matched_count = 0
+    auto_learned = 0
+    unmatched_names = []
     status_counts = {"in_stock": 0, "low_stock": 0, "out_of_stock": 0}
 
-    # Pre-build list of normalized DB names for fuzzy fallback
     from difflib import get_close_matches as _gcm
     _norm_keys = list(db_by_normalized.keys())
 
     for excel_name, stock_data in excel_stocks.items():
         product = None
+        match_method = None
+
+        # 0. Alias table lookup (instant, no fuzzy)
+        alias_key = excel_name.strip().lower()
+        if alias_key in alias_lookup:
+            pid = alias_lookup[alias_key]
+            if pid in db_by_id:
+                product = db_by_id[pid]
+                match_method = "alias"
+                alias_hits += 1
 
         # 1. Exact match
-        if excel_name in db_by_exact:
+        if not product and excel_name in db_by_exact:
             product = db_by_exact[excel_name]
-        else:
+            match_method = "exact"
+
+        if not product:
             norm = normalize_name(excel_name)
-            # 2. Normalized match (dots, spaces, weight suffixes stripped)
+            # 2. Normalized match
             if norm in db_by_normalized:
                 product = db_by_normalized[norm]
+                match_method = "normalized"
             else:
-                # 3. Fuzzy fallback (>90% similarity) — catches remaining
-                #    spelling variants like "Сатин 53" vs "Сатин-53"
+                # 3. Fuzzy fallback (>92% similarity)
                 close = _gcm(norm, _norm_keys, n=1, cutoff=0.92)
                 if close:
                     product = db_by_normalized[close[0]]
+                    match_method = "fuzzy"
 
         if product:
             matched_count += 1
+
+            # Auto-learn: if matched via normalized/fuzzy, save as alias for next time
+            if match_method in ("normalized", "fuzzy"):
+                _auto_learn_alias(conn, excel_name, product["id"], f"auto_{match_method}")
+                auto_learned += 1
+
             new_qty = stock_data['quantity']
             new_status = stock_data['status']
             old_qty = product["stock_quantity"]
@@ -295,6 +367,9 @@ def apply_stock_updates(file_bytes: bytes) -> dict:
                         "new_status": new_status,
                         "quantity": new_qty,
                     })
+        else:
+            _log_unmatched(conn, excel_name, "stock")
+            unmatched_names.append(excel_name[:60])
 
     conn.commit()
     conn.close()
@@ -306,8 +381,11 @@ def apply_stock_updates(file_bytes: bytes) -> dict:
         "excel_products": len(excel_stocks),
         "db_products": len(db_products),
         "matched": matched_count,
+        "alias_hits": alias_hits,
+        "auto_learned": auto_learned,
         "updated": len(updated),
         "status_changes": updated[:30],
         "status_counts": status_counts,
         "unmatched_count": unmatched_count,
+        "unmatched_names": unmatched_names[:15],
     }
