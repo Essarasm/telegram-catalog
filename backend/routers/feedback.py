@@ -41,27 +41,42 @@ def submit_feedback(req: FeedbackRequest):
     finally:
         conn.close()
 
-    # Look up client name for the notification
+    # Look up full client identity for the notification
     client_name = ""
+    phone = ""
+    client_1c = ""
     if req.telegram_id:
         conn2 = get_db()
         row = conn2.execute(
-            "SELECT first_name, last_name FROM users WHERE telegram_id = ?",
+            "SELECT u.first_name, u.last_name, u.phone, u.client_id, "
+            "ac.client_id_1c "
+            "FROM users u "
+            "LEFT JOIN allowed_clients ac ON ac.id = u.client_id "
+            "WHERE u.telegram_id = ?",
             (req.telegram_id,),
         ).fetchone()
         conn2.close()
         if row:
             client_name = " ".join(filter(None, [row["first_name"], row["last_name"]]))
+            phone = row["phone"] or ""
+            client_1c = row["client_id_1c"] or ""
 
-    # Notify admin group
+    # Notify admin group with full context
     if BOT_TOKEN and ADMIN_GROUP_CHAT_ID:
         preview = text[:100] + ("..." if len(text) > 100 else "")
-        name_part = client_name or f"ID {req.telegram_id}"
-        message = f"\U0001f4ac Yangi fikr-mulohaza: {name_part} \u2014 {preview}"
+        lines = ["\U0001f4ac <b>Yangi fikr-mulohaza</b>", ""]
+        if client_1c:
+            lines.append(f"\U0001f464 Mijoz (1C): <b>{client_1c}</b>")
+        lines.append(f"\U0001f4f1 Telegram: {client_name or '—'}")
+        if phone:
+            lines.append(f"\U0001f4de Telefon: {phone}")
+        lines.append(f"\U0001f194 ID: <code>{req.telegram_id}</code>")
+        lines.append(f"\n\U0001f4ac {preview}")
+        message = "\n".join(lines)
         try:
             httpx.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": ADMIN_GROUP_CHAT_ID, "text": message},
+                json={"chat_id": ADMIN_GROUP_CHAT_ID, "text": message, "parse_mode": "HTML"},
                 timeout=10,
             )
         except Exception as e:
