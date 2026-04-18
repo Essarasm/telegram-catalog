@@ -5673,6 +5673,12 @@ async def fallback(message: types.Message):
 
 async def main():
     logger.info("Bot started in polling mode...")
+
+    # Include modular handler routers (split from monolith for isolation)
+    from bot.handlers.testclient import router as testclient_router
+    dp.include_router(testclient_router)
+    logger.info("Loaded handler module: testclient")
+
     try:
         await bot.set_chat_menu_button(
             menu_button=MenuButtonWebApp(
