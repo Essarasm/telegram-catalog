@@ -4253,8 +4253,10 @@ async def main():
 
     # Include modular handler routers (split from monolith for isolation)
     from bot.handlers.testclient import router as testclient_router
+    from bot.handlers.admin import router as admin_router
     dp.include_router(testclient_router)
-    logger.info("Loaded handler module: testclient")
+    dp.include_router(admin_router)
+    logger.info("Loaded handler modules: testclient, admin")
 
     try:
         await bot.set_chat_menu_button(
