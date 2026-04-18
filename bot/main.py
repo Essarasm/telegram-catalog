@@ -5245,13 +5245,19 @@ def _reverse_geocode(lat: float, lng: float) -> dict:
 
 @dp.message(F.location)
 async def handle_location_before_fallback(message: types.Message):
-    """Handle shared location from user — save coordinates + reverse geocode."""
+    """Handle shared location from user — save coordinates + reverse geocode.
+
+    When an agent is /testclient-linked to a client, the GPS is saved on
+    the CLIENT's profile (not the agent's own), so agents can tag client
+    shop locations on the spot.
+    """
     loc = message.location
     telegram_id = message.from_user.id
 
     conn = get_db()
     user = conn.execute(
-        "SELECT telegram_id, first_name, is_approved FROM users WHERE telegram_id = ?",
+        "SELECT telegram_id, first_name, is_approved, is_agent, client_id "
+        "FROM users WHERE telegram_id = ?",
         (telegram_id,),
     ).fetchone()
 
@@ -5265,15 +5271,53 @@ async def handle_location_before_fallback(message: types.Message):
 
     geo = _reverse_geocode(loc.latitude, loc.longitude)
 
-    conn.execute(
-        "UPDATE users SET latitude = ?, longitude = ?, location_address = ?, location_region = ?, location_district = ?, location_updated = datetime('now') WHERE telegram_id = ?",
-        (loc.latitude, loc.longitude, geo["address"], geo["region"], geo["district"], telegram_id),
-    )
+    # Agent mode: save GPS to the linked CLIENT's profile
+    is_agent_linked = user["is_agent"] and user["client_id"]
+    client_1c_name = ""
+    if is_agent_linked:
+        ac = conn.execute(
+            "SELECT client_id_1c FROM allowed_clients WHERE id = ?",
+            (user["client_id"],),
+        ).fetchone()
+        client_1c_name = ac["client_id_1c"] if ac else ""
+        # Save to the agent's user row (used for order GPS)
+        conn.execute(
+            "UPDATE users SET latitude = ?, longitude = ?, location_address = ?, "
+            "location_region = ?, location_district = ?, location_updated = datetime('now') "
+            "WHERE telegram_id = ?",
+            (loc.latitude, loc.longitude, geo["address"], geo["region"],
+             geo["district"], telegram_id),
+        )
+        # ALSO save to the client's allowed_clients row so any future
+        # agent/user linked to this client inherits the GPS.
+        conn.execute(
+            "UPDATE allowed_clients SET location = ? WHERE id = ?",
+            (f"{loc.latitude},{loc.longitude}|{geo['address'] or ''}", user["client_id"]),
+        )
+        # Save to ALL users linked to this client (siblings) so their
+        # orders also carry the GPS.
+        from backend.database import get_sibling_client_ids
+        siblings = get_sibling_client_ids(conn, user["client_id"])
+        for sid in siblings:
+            conn.execute(
+                "UPDATE users SET latitude = ?, longitude = ?, location_address = ? "
+                "WHERE client_id = ? AND telegram_id != ?",
+                (loc.latitude, loc.longitude, geo["address"] or "", sid, telegram_id),
+            )
+    else:
+        # Regular user: save to their own profile
+        conn.execute(
+            "UPDATE users SET latitude = ?, longitude = ?, location_address = ?, "
+            "location_region = ?, location_district = ?, location_updated = datetime('now') "
+            "WHERE telegram_id = ?",
+            (loc.latitude, loc.longitude, geo["address"], geo["region"],
+             geo["district"], telegram_id),
+        )
+
     conn.commit()
     conn.close()
 
     maps_url = f"https://maps.google.com/?q={loc.latitude},{loc.longitude}"
-    # Build display: region + district + address detail
     display_parts = []
     if geo["region"]:
         display_parts.append(geo["region"])
@@ -5281,19 +5325,29 @@ async def handle_location_before_fallback(message: types.Message):
         display_parts.append(geo["address"])
     address_display = ", ".join(display_parts) if display_parts else "manzil aniqlandi"
 
-    # First remove any reply keyboard
+    if is_agent_linked and client_1c_name:
+        confirm_text = (
+            f"✅ <b>{client_1c_name}</b> joylashuvi saqlandi!\n\n"
+            f"📍 <b>{address_display}</b>\n"
+            f"🗺 <a href=\"{maps_url}\">Xaritada ko'rish</a>\n\n"
+            f"💡 Buyurtma berishda ushbu manzil ishlatiladi."
+        )
+    else:
+        confirm_text = (
+            f"✅ Joylashuvingiz saqlandi!\n\n"
+            f"📍 <b>{address_display}</b>\n"
+            f"🗺 <a href=\"{maps_url}\">Xaritada ko'rish</a>\n\n"
+            f"💡 Buyurtma berishda ushbu manzil ishlatiladi.\n"
+            f"Yangilash uchun yangi joylashuv yuboring."
+        )
+
     await message.answer(
-        f"✅ Joylashuvingiz saqlandi!\n\n"
-        f"📍 <b>{address_display}</b>\n"
-        f"🗺 <a href=\"{maps_url}\">Xaritada ko'rish</a>\n\n"
-        f"💡 Buyurtma berishda ushbu manzil ishlatiladi.\n"
-        f"Yangilash uchun yangi joylashuv yuboring.",
+        confirm_text,
         parse_mode="HTML",
         disable_web_page_preview=True,
         reply_markup=ReplyKeyboardRemove(),
     )
 
-    # Then send the catalog button separately
     back_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📋 Katalogga qaytish", web_app=WebAppInfo(url=WEBAPP_URL))]

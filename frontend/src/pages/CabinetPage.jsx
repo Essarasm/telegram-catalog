@@ -1154,18 +1154,30 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         </div>
       )}
 
-      {/* Location card */}
+      {/* Location card — agents see client's GPS (tappable Maps link) + can update;
+           regular clients see their own location or a "share" prompt. */}
       {userLocation ? (
         <div className="bg-tg-secondary rounded-xl p-3 mb-3 flex items-center gap-2">
           <span className="text-base">📍</span>
           <div className="flex-1 min-w-0">
-            <div className="text-xs font-medium truncate">{userLocation.address || "Joylashuv saqlangan"}</div>
+            {userLocation.gps ? (
+              <a
+                href={`https://maps.google.com/?q=${userLocation.gps.lat},${userLocation.gps.lng}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-medium text-tg-link underline truncate block"
+              >
+                {userLocation.address || "Xaritada ko'rish →"}
+              </a>
+            ) : (
+              <div className="text-xs font-medium truncate">{userLocation.address || "Joylashuv saqlangan"}</div>
+            )}
           </div>
           <button
             onClick={handleShareLocation}
             className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-bg text-tg-link whitespace-nowrap"
           >
-            Yangilash
+            {agentStats ? "Yangilash 📍" : "Yangilash"}
           </button>
         </div>
       ) : (
@@ -1175,8 +1187,12 @@ export default function CabinetPage({ cart, onNavigateToCart }) {
         >
           <span className="text-base">📍</span>
           <div className="flex-1 text-left">
-            <div className="text-xs font-medium">Joylashuvni saqlash</div>
-            <div className="text-[10px] text-tg-hint">Telegram orqali joylashuvingizni yuboring</div>
+            <div className="text-xs font-medium">
+              {agentStats ? "Mijoz joylashuvini saqlash" : "Joylashuvni saqlash"}
+            </div>
+            <div className="text-[10px] text-tg-hint">
+              {agentStats ? "Telegram orqali mijoz manzilini yuboring" : "Telegram orqali joylashuvingizni yuboring"}
+            </div>
           </div>
           <span className="text-tg-link text-xs">→</span>
         </button>
