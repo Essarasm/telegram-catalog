@@ -1,28 +1,57 @@
 """Stock alert service — identifies active products that are out of stock or running low.
 
-"Active" = sold in last 3 months OR supplied 2+ times in last 6 months.
-This filters out dead weight (one-off assortment, renamed items, dropped suppliers).
+"Active" = had positive stock within the last 30 days (was in uncle's /stock
+upload with qty > 0). This uses the stock file as source of truth — uncle only
+uploads products he actively stocks. Fallback criteria for products without
+stock_last_positive_at: sold in last 3 months or supplied recently.
 """
 import logging
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
 
+ACTIVE_STOCK_DAYS = 30
 SOLD_MONTHS = 3
 SUPPLY_MONTHS = 6
-SUPPLY_MIN_COUNT = 2
 
 
 def get_active_product_ids(conn) -> set:
     """Find products that are genuinely active (not dead catalog weight).
 
-    Active = at least one of:
+    Primary criterion: had positive stock within last 30 days
+    (stock_last_positive_at). This means uncle included it in a recent
+    /stock upload with qty > 0 — his own curation of active inventory.
+
+    Fallback criteria (for products without stock history):
     1. Had a sale (real_order_item) in the last 3 months
-    2. Had 2+ supply deliveries in the last 6 months
+    2. Had a supply delivery in the last 6 months
     """
     active_ids = set()
 
-    # Criterion 1: sold recently
+    # Primary: had positive stock within last 30 days
+    try:
+        stocked = conn.execute(
+            f"""SELECT id FROM products
+                WHERE is_active = 1
+                  AND stock_last_positive_at IS NOT NULL
+                  AND datetime(stock_last_positive_at) >= datetime('now', '-{ACTIVE_STOCK_DAYS} days')"""
+        ).fetchall()
+        for r in stocked:
+            active_ids.add(r["id"])
+    except Exception as e:
+        logger.warning(f"Could not query stock_last_positive_at: {e}")
+
+    # Also include products currently in stock (even without the timestamp)
+    try:
+        in_stock = conn.execute(
+            "SELECT id FROM products WHERE is_active = 1 AND stock_quantity > 0"
+        ).fetchall()
+        for r in in_stock:
+            active_ids.add(r["id"])
+    except Exception:
+        pass
+
+    # Fallback: sold recently
     try:
         sold = conn.execute(
             f"""SELECT DISTINCT roi.product_id
@@ -36,16 +65,14 @@ def get_active_product_ids(conn) -> set:
     except Exception as e:
         logger.warning(f"Could not query real_order_items: {e}")
 
-    # Criterion 2: supplied multiple times recently
+    # Fallback: supplied recently
     try:
         supplied = conn.execute(
-            f"""SELECT soi.matched_product_id as pid, COUNT(DISTINCT soi.supply_order_id) as cnt
+            f"""SELECT DISTINCT soi.matched_product_id as pid
                 FROM supply_order_items soi
                 JOIN supply_orders so ON so.id = soi.supply_order_id
                 WHERE so.doc_date >= date('now', '-{SUPPLY_MONTHS} months')
-                  AND soi.matched_product_id IS NOT NULL
-                GROUP BY soi.matched_product_id
-                HAVING cnt >= {SUPPLY_MIN_COUNT}"""
+                  AND soi.matched_product_id IS NOT NULL"""
         ).fetchall()
         for r in supplied:
             active_ids.add(r["pid"])

@@ -706,6 +706,15 @@ def init_db():
         "ON orders(placed_by_telegram_id)"
     )
 
+    # Track when a product last had positive stock (for active product detection)
+    prod_cols = {row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
+    if "stock_last_positive_at" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN stock_last_positive_at TEXT")
+        conn.execute(
+            "UPDATE products SET stock_last_positive_at = stock_updated_at "
+            "WHERE stock_quantity > 0 AND stock_updated_at IS NOT NULL"
+        )
+
     # Product alias table: maps 1C name variants to canonical product IDs.
     # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
     # each successful fuzzy match in /stock or /prices auto-adds an alias.
