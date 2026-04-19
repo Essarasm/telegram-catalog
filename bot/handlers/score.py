@@ -334,6 +334,70 @@ async def cmd_scoreanomalies(message: Message):
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
+# ── Session L: Points Simulation ─────────────────────────────────
+
+@router.message(Command("simpoints"))
+async def cmd_simpoints(message: Message):
+    """Simulate per-producer tiered points for Jan 2025 – Mar 2026."""
+    if not is_admin(message):
+        return
+
+    status_msg = await message.answer("⏳ 15 oy uchun ball simulyatsiyasi...")
+    try:
+        from backend.services.points_simulation import simulate_all_months
+        result = simulate_all_months()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ {result.get('error', 'Xatolik')}")
+            return
+
+        months = result.get("months", [])
+        if not months:
+            await status_msg.edit_text("Ma'lumot topilmadi.")
+            return
+
+        lines = [
+            "📊 <b>Ball simulyatsiyasi: Flat vs Tiered</b>\n",
+            "<b>Oy      | Mijoz | Flat      | Tiered    | Farq</b>",
+        ]
+
+        total_flat = 0
+        total_tiered = 0
+        for m in months:
+            total_flat += m["flat_total"]
+            total_tiered += m["tiered_total"]
+            diff_sign = "+" if m["difference"] >= 0 else ""
+            lines.append(
+                f"{m['month']} | {m['clients']:>4}  | {m['flat_total']:>9,} | {m['tiered_total']:>9,} | {diff_sign}{m['diff_pct']}%"
+            )
+
+        diff_total = total_tiered - total_flat
+        diff_pct = round((total_tiered / total_flat - 1) * 100, 1) if total_flat > 0 else 0
+        lines.append(f"\n<b>JAMI:</b>")
+        lines.append(f"  Flat:   {total_flat:>12,}")
+        lines.append(f"  Tiered: {total_tiered:>12,}")
+        lines.append(f"  Farq:   {'+' if diff_total >= 0 else ''}{diff_total:,} ({'+' if diff_pct >= 0 else ''}{diff_pct}%)")
+
+        # Top 10 for latest month
+        top10 = result.get("latest_top_10", [])
+        if top10:
+            lines.append(f"\n🏆 <b>Top 10 — {result['latest_month']} (tiered):</b>")
+            for i, c in enumerate(top10[:10]):
+                flat = c["flat_effective"]
+                tiered = c["tiered_effective"]
+                diff = tiered - flat
+                lines.append(
+                    f"  {i+1}. {html_escape(c['client_name'][:22])} — "
+                    f"{tiered:,} ({c['discipline_grade']}) "
+                    f"[flat: {flat:,}, {'+' if diff >= 0 else ''}{diff:,}]"
+                )
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/simpoints error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
 # ── Session L: Loyalty Points Commands ───────────────────────────
 
 @router.message(Command("calcpoints"))
