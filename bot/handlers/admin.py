@@ -998,6 +998,56 @@ async def cmd_stockalert(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+# ── /addmissing — add unmatched stock names as new catalog products ──
+
+@router.message(Command("addmissing"))
+async def cmd_addmissing(message: types.Message):
+    """Add all unmatched stock import names as new products in the catalog."""
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Topilmagan nomlarni katalogga qo'shmoqda...")
+    try:
+        from backend.services.add_missing_products import add_missing_from_unmatched
+        result = add_missing_from_unmatched()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ {result.get('message', 'Xatolik')}")
+            return
+
+        added = result.get("added", 0)
+        if added == 0:
+            await status_msg.edit_text("✅ Topilmagan nomlar yo'q — barchasi allaqachon katalogda!")
+            return
+
+        products = result.get("products", [])
+        lines = [
+            f"✅ <b>{added} ta yangi mahsulot qo'shildi</b>\n",
+        ]
+
+        cat_counts = {}
+        for p in products:
+            cat_counts[p["category"]] = cat_counts.get(p["category"], 0) + 1
+
+        lines.append("Kategoriyalar bo'yicha:")
+        for cat, cnt in sorted(cat_counts.items(), key=lambda x: -x[1]):
+            lines.append(f"  {cat}: {cnt}")
+
+        lines.append(f"\nNamunalar:")
+        for p in products[:10]:
+            lines.append(f"  • {html_escape(p['name_1c'])}")
+            lines.append(f"    → {html_escape(p['name_latin'])}")
+        if len(products) > 10:
+            lines.append(f"  ... va yana {len(products) - 10} ta")
+
+        lines.append(f"\n💡 Narxlar keyingi /prices yuklashda avtomatik to'ldiriladi.")
+
+        await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/addmissing error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
 # ── /seedaliases — one-time alias table seeding from production data ──
 
 @router.message(Command("seedaliases"))
