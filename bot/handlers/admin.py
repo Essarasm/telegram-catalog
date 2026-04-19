@@ -998,6 +998,28 @@ async def cmd_stockalert(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+# ── /rebuildsearch — rebuild search_text index for all products ───
+
+@router.message(Command("rebuildsearch"))
+async def cmd_rebuildsearch(message: types.Message):
+    """Rebuild search_text index for all products."""
+    if not is_admin(message):
+        return
+
+    status_msg = await message.reply("⏳ Search index qayta qurilmoqda...")
+    try:
+        from backend.database import rebuild_all_search_text
+        count = rebuild_all_search_text()
+        await status_msg.edit_text(
+            f"✅ Search index yangilandi!\n"
+            f"📊 {count} ta mahsulot qayta indekslandi.\n\n"
+            f"Yangi: Latin→Cyrillic reverse transliteration + phonetic aliases.",
+        )
+    except Exception as e:
+        logger.error(f"/rebuildsearch error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
 # ── /addmissing — add unmatched stock names as new catalog products ──
 
 @router.message(Command("addmissing"))
