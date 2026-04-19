@@ -1113,6 +1113,74 @@ async def cmd_aliases(message: types.Message):
     conn = get_db()
 
     try:
+        if len(args) >= 2 and args[1].lower() == "resolve":
+            # /aliases resolve — auto-match unmatched names using fuzzy + keyword
+            import re as _re
+            from difflib import get_close_matches as _gcm
+
+            unmatched_rows = conn.execute(
+                "SELECT id, name FROM unmatched_import_names WHERE resolved = 0"
+            ).fetchall()
+            if not unmatched_rows:
+                await message.reply("✅ Topilmagan nomlar yo'q!")
+                conn.close()
+                return
+
+            products = conn.execute(
+                "SELECT id, name FROM products WHERE is_active = 1 AND name IS NOT NULL"
+            ).fetchall()
+
+            def _norm(s):
+                n = (s or "").strip().lower()
+                n = _re.sub(r'\s+', ' ', n)
+                n = _re.sub(r'\.(\s|$)', r'\1', n)
+                return n
+
+            norm_index = {}
+            for p in products:
+                norm_index[_norm(p["name"])] = p
+
+            norm_keys = list(norm_index.keys())
+            resolved = 0
+            suggested = []
+
+            for row in unmatched_rows:
+                nm = _norm(row["name"])
+                close = _gcm(nm, norm_keys, n=1, cutoff=0.82)
+                if close:
+                    match = norm_index[close[0]]
+                    conn.execute(
+                        "INSERT OR IGNORE INTO product_aliases (alias_name, alias_name_lower, product_id, source) "
+                        "VALUES (?, ?, ?, 'auto_resolve')",
+                        (row["name"].strip(), nm, match["id"]),
+                    )
+                    conn.execute(
+                        "UPDATE unmatched_import_names SET resolved = 1, resolved_product_id = ?, resolved_at = datetime('now') WHERE id = ?",
+                        (match["id"], row["id"]),
+                    )
+                    resolved += 1
+                else:
+                    close2 = _gcm(nm, norm_keys, n=1, cutoff=0.65)
+                    if close2:
+                        match = norm_index[close2[0]]
+                        suggested.append((row["name"][:40], match["id"], match["name"][:40]))
+
+            conn.commit()
+
+            lines = [f"🔍 <b>Auto-resolve natijasi</b>\n"]
+            lines.append(f"✅ Auto-resolved: <b>{resolved}</b>")
+            lines.append(f"Qolgan: <b>{len(unmatched_rows) - resolved}</b>\n")
+
+            if suggested:
+                lines.append(f"💡 <b>Taklif ({len(suggested[:10])}):</b>")
+                for uname, pid, pname in suggested[:10]:
+                    lines.append(f"  {html_escape(uname)}")
+                    lines.append(f"  <code>/aliases link {html_escape(uname)} {pid}</code>\n")
+
+            await message.reply("\n".join(lines), parse_mode="HTML")
+            conn.close()
+            return
+
         if len(args) >= 4 and args[1].lower() == "link":
             # /aliases link NAME PRODUCT_ID
             link_name = args[2]
