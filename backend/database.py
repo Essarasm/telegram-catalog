@@ -61,8 +61,22 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
+SCHEMA_VERSION = 2
+
+
 def init_db():
     conn = get_db()
+
+    # Schema version tracking
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL,
+            applied_at TEXT DEFAULT (datetime('now')),
+            description TEXT
+        )
+    """)
+    current = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 0
+
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS categories (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -758,6 +772,13 @@ def init_db():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_unmatched_names_lower
         ON unmatched_import_names(name_lower)
     """)
+
+    # Stamp schema version if newer
+    if current < SCHEMA_VERSION:
+        conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (?, ?)",
+            (SCHEMA_VERSION, "product_aliases + stock_last_positive_at + unmatched_import_names"),
+        )
 
     conn.commit()
     conn.close()
