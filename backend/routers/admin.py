@@ -1249,3 +1249,17 @@ async def upload_images(
 
     return {"ok": True, "added": added, "replaced": replaced,
             "skipped": skipped, "total": total}
+
+
+@router.get("/unmatched-names")
+def get_unmatched_names(admin_key: str = Query(...)):
+    """List unresolved unmatched import names."""
+    _check_admin(admin_key)
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, name, occurrences, source, created_at "
+        "FROM unmatched_import_names WHERE resolved = 0 "
+        "ORDER BY name"
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "count": len(rows), "names": [dict(r) for r in rows]}
