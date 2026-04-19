@@ -36,13 +36,13 @@ GRADE_THRESHOLDS = [
 def _get_fx_rate(conn, month_str):
     """Get average FX rate for a month (UZS per USD)."""
     row = conn.execute(
-        "SELECT AVG(rate) as avg_rate FROM daily_fx_rates WHERE date LIKE ?",
+        "SELECT AVG(rate) as avg_rate FROM daily_fx_rates WHERE rate_date LIKE ?",
         (f"{month_str}%",),
     ).fetchone()
     if row and row["avg_rate"]:
         return float(row["avg_rate"])
     row = conn.execute(
-        "SELECT rate FROM daily_fx_rates ORDER BY date DESC LIMIT 1"
+        "SELECT rate FROM daily_fx_rates ORDER BY rate_date DESC LIMIT 1"
     ).fetchone()
     return float(row["rate"]) if row else 13000.0
 
