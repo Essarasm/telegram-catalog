@@ -783,3 +783,20 @@ def list_client_payments(
         })
 
     return {"ok": True, "payments": payments, "linked": True}
+
+
+@router.get("/points")
+def get_points(telegram_id: int = Query(...)):
+    """Get loyalty points for a client."""
+    conn = get_db()
+    user = conn.execute(
+        "SELECT client_id FROM users WHERE telegram_id = ?", (telegram_id,)
+    ).fetchone()
+    if not user or not user["client_id"]:
+        conn.close()
+        return {"ok": True, "linked": False, "total_points": 0, "months": []}
+    conn.close()
+
+    from backend.services.loyalty_points import get_client_points
+    client_id = user["client_id"]
+    return get_client_points(client_id)

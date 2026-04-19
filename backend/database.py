@@ -720,6 +720,36 @@ def init_db():
         "ON orders(placed_by_telegram_id)"
     )
 
+    # Session L: loyalty points system
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS client_points_monthly (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            client_name TEXT NOT NULL,
+            month TEXT NOT NULL,
+            purchase_uzs REAL DEFAULT 0,
+            purchase_usd REAL DEFAULT 0,
+            purchase_points INTEGER DEFAULT 0,
+            discipline_grade TEXT DEFAULT 'C',
+            multiplier REAL DEFAULT 1.0,
+            clean_sheet_bonus INTEGER DEFAULT 0,
+            effective_points INTEGER DEFAULT 0,
+            volume_bucket TEXT DEFAULT 'Micro',
+            bucket_rank INTEGER,
+            bucket_total INTEGER,
+            calculated_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(client_id, month)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_client_points_month
+        ON client_points_monthly(month)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_client_points_client
+        ON client_points_monthly(client_id)
+    """)
+
     # Track when a product last had positive stock (for active product detection)
     prod_cols = {row[1] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
     if "stock_last_positive_at" not in prod_cols:

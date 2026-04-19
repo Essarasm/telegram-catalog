@@ -332,3 +332,143 @@ async def cmd_scoreanomalies(message: Message):
     lines.append("\nДействие: проверьте, не забыли ли сотрудники внести платежи в Кассу.")
 
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+# ── Session L: Loyalty Points Commands ───────────────────────────
+
+@router.message(Command("calcpoints"))
+async def cmd_calcpoints(message: Message):
+    """Calculate loyalty points for a month. Usage: /calcpoints [YYYY-MM]"""
+    if not is_admin(message):
+        return
+
+    args = (message.text or "").split(maxsplit=1)
+    month_str = args[1].strip() if len(args) > 1 else None
+
+    status_msg = await message.answer("⏳ Ball hisoblanyapti...")
+    try:
+        from backend.services.loyalty_points import calculate_monthly_points
+        result = calculate_monthly_points(month_str)
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ {result.get('error', 'Xatolik')}")
+            return
+
+        grades = result.get("grades", {})
+        grade_lines = "\n".join(f"  {g}: {c}" for g, c in sorted(grades.items()) if c)
+
+        text = (
+            f"✅ <b>Ball hisoblandi</b>\n\n"
+            f"Oy: <b>{result['month']}</b>\n"
+            f"Mijozlar: <b>{result['scored']}</b>\n"
+            f"Jami ball: <b>{result['total_points']:,}</b>\n\n"
+            f"<b>Intizom darajalari:</b>\n{grade_lines}"
+        )
+        await status_msg.edit_text(text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/calcpoints error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@router.message(Command("clientpoints"))
+async def cmd_clientpoints(message: Message):
+    """Look up loyalty points for a client. Usage: /clientpoints <name>"""
+    if not is_admin(message):
+        return
+
+    args = (message.text or "").split(maxsplit=1)
+    if len(args) < 2 or not args[1].strip():
+        await message.answer("Foydalanish: /clientpoints <mijoz nomi>")
+        return
+
+    query = args[1].strip()
+    conn = get_db()
+    try:
+        pattern = f"%{query}%"
+        rows = conn.execute(
+            """SELECT client_id, client_name, month, purchase_points,
+                      discipline_grade, multiplier, clean_sheet_bonus,
+                      effective_points, volume_bucket, bucket_rank, bucket_total
+               FROM client_points_monthly
+               WHERE client_name LIKE ?
+               ORDER BY month DESC
+               LIMIT 12""",
+            (pattern,),
+        ).fetchall()
+
+        if not rows:
+            await message.answer(f"'{html_escape(query)}' uchun ball topilmadi.\n/calcpoints bilan hisoblang.")
+            return
+
+        total = conn.execute(
+            "SELECT SUM(effective_points) as t FROM client_points_monthly WHERE client_id = ?",
+            (rows[0]["client_id"],),
+        ).fetchone()
+
+        client_name = rows[0]["client_name"]
+        lines = [f"⭐ <b>{html_escape(client_name)}</b>\n"]
+        lines.append(f"Jami ball: <b>{int(total['t'] or 0):,}</b>\n")
+
+        for r in rows[:6]:
+            rank_str = f" #{r['bucket_rank']}/{r['bucket_total']}" if r["bucket_rank"] else ""
+            lines.append(
+                f"  {r['month']} — <b>{r['effective_points']}</b> ball "
+                f"({r['discipline_grade']} x{r['multiplier']:.1f}"
+                f"{' +50' if r['clean_sheet_bonus'] else ''})"
+                f" [{r['volume_bucket']}{rank_str}]"
+            )
+
+        await message.answer("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/clientpoints error: {e}")
+        await message.answer(f"Xatolik: {str(e)[:200]}")
+    finally:
+        conn.close()
+
+
+@router.message(Command("leaderboard"))
+async def cmd_leaderboard(message: Message):
+    """Show points leaderboard. Usage: /leaderboard [bucket] [YYYY-MM]"""
+    if not is_admin(message):
+        return
+
+    args = (message.text or "").split()
+    bucket = None
+    month = None
+    for a in args[1:]:
+        if a in ("Micro", "Small", "Medium", "Large", "Heavy"):
+            bucket = a
+        elif len(a) == 7 and a[4] == "-":
+            month = a
+
+    try:
+        from backend.services.loyalty_points import get_leaderboard
+        result = get_leaderboard(month, bucket)
+
+        if not result.get("month"):
+            await message.answer("Ball hali hisoblanmagan. /calcpoints buyrug'ini ishga tushiring.")
+            return
+
+        leaders = result["leaders"]
+        if not leaders:
+            await message.answer("Bu oy uchun natijalar yo'q.")
+            return
+
+        bucket_label = f" ({bucket})" if bucket else ""
+        lines = [f"🏆 <b>Reyting — {result['month']}{bucket_label}</b>\n"]
+
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        for i, r in enumerate(leaders[:10]):
+            medal = medals[i] if i < 5 else f"{i+1}."
+            grade = r["discipline_grade"]
+            bonus = " +50" if r["clean_sheet_bonus"] else ""
+            lines.append(
+                f"{medal} <b>{html_escape(r['client_name'][:25])}</b> — "
+                f"{r['effective_points']:,} ball "
+                f"({grade}{bonus}) [{r['volume_bucket']}]"
+            )
+
+        await message.answer("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/leaderboard error: {e}")
+        await message.answer(f"Xatolik: {str(e)[:200]}")

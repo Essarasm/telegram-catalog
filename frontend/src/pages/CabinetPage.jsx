@@ -308,6 +308,9 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
   const [creditScore, setCreditScore] = useState(null);
   const [scoreLoading, setScoreLoading] = useState(true);
 
+  // Loyalty Points state (Session L)
+  const [loyaltyPoints, setLoyaltyPoints] = useState(null);
+
   // Location state
   const [userLocation, setUserLocation] = useState(null);
 
@@ -389,6 +392,12 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
         setScoreLoading(false);
       })
       .catch(() => setScoreLoading(false));
+
+    // Loyalty Points
+    fetch(`/api/cabinet/points?telegram_id=${userId}`)
+      .then(r => r.json())
+      .then(data => { if (data.ok && data.total_points > 0) setLoyaltyPoints(data); })
+      .catch(() => {});
 
     // Fetch saved location
     fetch(`/api/client-location?telegram_id=${userId}`)
@@ -1456,10 +1465,35 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
         </div>
       )}
 
-      {/* Financial behaviour score — pinned to the bottom of the Cabinet,
-          directly below real orders. Backend continues to compute via
-          /api/finance/credit-score; the card shows only the arc + number +
-          improvement hints per product-owner call. */}
+      {/* Loyalty Points card */}
+      {loyaltyPoints && loyaltyPoints.months?.length > 0 && (
+        <div className="bg-tg-secondary rounded-xl p-4 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-semibold">⭐ Mening ballarim</div>
+            <div className="text-xl font-bold text-tg-link">{loyaltyPoints.total_points?.toLocaleString()}</div>
+          </div>
+          <div className="space-y-2">
+            {loyaltyPoints.months.slice(0, 3).map((m, i) => (
+              <div key={i} className="flex items-center justify-between text-xs">
+                <span className="text-tg-hint">{m.month}</span>
+                <div className="flex items-center gap-2">
+                  <span className={`font-semibold px-1.5 py-0.5 rounded ${
+                    m.discipline_grade?.startsWith('A') ? 'bg-green-500/15 text-green-600' :
+                    m.discipline_grade === 'B' ? 'bg-amber-500/15 text-amber-600' :
+                    'bg-red-500/15 text-red-500'
+                  }`}>{m.discipline_grade} x{m.multiplier?.toFixed(1)}</span>
+                  <span className="font-bold">{m.effective_points} ball</span>
+                  {m.bucket_rank && (
+                    <span className="text-tg-hint">#{m.bucket_rank}/{m.bucket_total}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Financial behaviour score */}
       <CreditScoreCard />
 
       {/* Акт сверки — tap sheet (shows FIFO links for the tapped row) */}
