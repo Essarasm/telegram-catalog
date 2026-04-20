@@ -1,11 +1,17 @@
 __pycache__/
 *.pyc
 .env
+.credentials
 data/catalog.db
 data/catalog.db-wal
 data/catalog.db-shm
+data/master_archive/
+data/db_backups/
 node_modules/
 # frontend/dist/ — included for Railway deployment
 *.egg-info/
 .vite/
+# Classifier report artifacts at project root (output of tools/classify_lifecycle.py)
+/Catalog_Cleanup_*.xlsx
+/Product_Lifecycle_*.xlsx
 # Product images are committed to git for Railway persistence
