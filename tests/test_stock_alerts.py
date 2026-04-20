@@ -73,11 +73,15 @@ class TestStockAlerts:
 
 
 class TestFormatMessage:
+    """As of 2026-04-20, format_stock_alert_message returns list[str] (chunked
+    for Telegram's 4096-char limit)."""
+
     def test_no_alerts_message(self):
         alerts = {"active_count": 100, "out_of_stock": [], "running_low": [], "healthy_count": 100}
-        msg = format_stock_alert_message(alerts)
-        assert "100" in msg
-        assert "TUGAGAN" not in msg or "0" in msg
+        msgs = format_stock_alert_message(alerts)
+        combined = "\n".join(msgs)
+        assert "100" in combined
+        assert "TUGAGAN" not in combined or "0" in combined
 
     def test_oos_in_message(self):
         alerts = {
@@ -86,9 +90,10 @@ class TestFormatMessage:
             "running_low": [],
             "healthy_count": 9,
         }
-        msg = format_stock_alert_message(alerts)
-        assert "ЦЕМЕНТ М500" in msg
-        assert "🔴" in msg
+        msgs = format_stock_alert_message(alerts)
+        combined = "\n".join(msgs)
+        assert "ЦЕМЕНТ М500" in combined
+        assert "🔴" in combined
 
     def test_running_low_in_message(self):
         alerts = {
@@ -97,11 +102,13 @@ class TestFormatMessage:
             "running_low": [{"name": "КРАСКА", "qty": 2, "unit": "шт"}],
             "healthy_count": 9,
         }
-        msg = format_stock_alert_message(alerts)
-        assert "КРАСКА" in msg
-        assert "🟡" in msg
+        msgs = format_stock_alert_message(alerts)
+        combined = "\n".join(msgs)
+        assert "КРАСКА" in combined
+        assert "🟡" in combined
 
     def test_zero_active(self):
         alerts = {"active_count": 0, "out_of_stock": [], "running_low": [], "healthy_count": 0}
-        msg = format_stock_alert_message(alerts)
-        assert "Faol mahsulotlar topilmadi" in msg
+        msgs = format_stock_alert_message(alerts)
+        assert len(msgs) == 1
+        assert "Faol mahsulotlar topilmadi" in msgs[0]

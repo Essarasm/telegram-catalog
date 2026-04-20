@@ -4,7 +4,13 @@
  */
 export default function NotApprovedPage() {
   const openTelegram = () => {
-    window.open('https://t.me/axmatov0902', '_blank');
+    // Route to bot support forwarder — the admin group receives the message.
+    const link = 'https://t.me/samrassvetbot?start=support';
+    if (window.Telegram?.WebApp?.openTelegramLink) {
+      window.Telegram.WebApp.openTelegramLink(link);
+    } else {
+      window.open(link, '_blank');
+    }
   };
 
   return (

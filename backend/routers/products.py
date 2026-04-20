@@ -44,32 +44,42 @@ def _trigram_similarity(s1, s2):
 
 def _score_match(search_term, search_latin, search_norm, product, search_cyrillic=None):
     """Score a product match: higher = better.
-    4 = exact name match, 3 = starts with, 2 = contains, 0 = no match.
+    4 = exact name match,
+    3 = ANY word in either name starts with the term (covers "Грунтовка…" and "ХАЯТ грунт…"),
+    2 = term appears anywhere in the search_text blob (producer / unit / category / mid-word),
+    0 = no match.
     """
     st = (product["search_text"] or "").lower()
     name_disp = (product["name_display"] or "").lower()
     name_cyr = (product["name"] or "").lower()
+    words = set(name_disp.split()) | set(name_cyr.split())
 
     variants = {search_term, search_latin, search_norm}
     if search_cyrillic:
         variants.add(search_cyrillic)
 
+    best = 0
     for term in variants:
         if not term:
             continue
         if term == name_disp or term == name_cyr:
             return 4
-        if name_disp.startswith(term) or name_cyr.startswith(term):
-            return 3
+        # Tier 3: any word in either name starts with the term
+        if any(w.startswith(term) for w in words):
+            best = max(best, 3)
+            continue  # can't improve past 3 from this variant without hitting 4
+        # Tier 2: fallback — term anywhere in combined search_text blob
         if term in st:
-            return 2
+            best = max(best, 2)
 
-    return 0
+    return best
 
 
-def _fuzzy_match_products(conn, search_term, search_latin, search_norm, category_id=None, producer_id=None, max_results=30, search_cyrillic=None):
-    """Find products using fuzzy matching when exact search yields few results.
+def _fuzzy_match_products(conn, search_term, search_latin, search_norm, category_id=None, producer_id=None, max_results=30, search_cyrillic=None, lifecycle_filter=None, min_score=0.25):
+    """Find products using fuzzy matching.
     Uses trigram similarity on product names.
+    lifecycle_filter: tuple/list of lifecycle values to include (e.g. ('stale','never') for hidden-only).
+    Returns list of (product_id, similarity_score) tuples, sorted by score desc.
     """
     conditions = ["p.is_active = 1"]
     params = []
@@ -79,6 +89,10 @@ def _fuzzy_match_products(conn, search_term, search_latin, search_norm, category
     if producer_id:
         conditions.append("p.producer_id = ?")
         params.append(producer_id)
+    if lifecycle_filter:
+        placeholders = ",".join("?" for _ in lifecycle_filter)
+        conditions.append(f"p.lifecycle IN ({placeholders})")
+        params.extend(lifecycle_filter)
 
     where = " AND ".join(conditions)
     rows = conn.execute(
@@ -106,11 +120,11 @@ def _fuzzy_match_products(conn, search_term, search_latin, search_norm, category
                     if len(word) >= 3:
                         wsim = _trigram_similarity(term, word)
                         best_sim = max(best_sim, wsim)
-        if best_sim >= 0.25:
+        if best_sim >= min_score:
             scored.append((best_sim, r["id"]))
 
     scored.sort(key=lambda x: -x[0])
-    return [pid for _, pid in scored[:max_results]]
+    return [(pid, score) for score, pid in scored[:max_results]]
 
 
 def _log_search_bg(telegram_id, query, results_count, category_id, producer_id):
@@ -136,6 +150,7 @@ def list_products(
     telegram_id: Optional[int] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    lifecycle_strict: bool = Query(False, description="Session X / uncle's dashboard: filter to lifecycle='active' only (hide aging)"),
 ):
     """List products with filtering by category, producer, and/or search term.
 
@@ -144,9 +159,16 @@ def list_products(
     """
     conn = get_db()
     offset = (page - 1) * limit
-    conditions = ["p.is_active = 1"]
+    # Catalog browse is limited to active+aging lifecycle.
+    # Stale+never products are surfaced only via fuzzy search (see below) for demand-signal tracking.
+    # lifecycle_strict (Session X dashboard): drop 'aging' so uncle sees only truly-active SKUs.
+    if lifecycle_strict:
+        conditions = ["p.is_active = 1", "p.lifecycle = 'active'"]
+    else:
+        conditions = ["p.is_active = 1", "p.lifecycle IN ('active','aging')"]
     params = []
     fuzzy_ids = None  # Will be set if we need fuzzy fallback
+    hidden_matches = []  # (product_id, match_score) from stale/never, populated on search
 
     if category_id:
         conditions.append("p.category_id = ?")
@@ -189,10 +211,12 @@ def list_products(
 
     # If exact search yielded 0 results, try fuzzy matching
     if search and total == 0:
-        fuzzy_ids = _fuzzy_match_products(
+        fuzzy_results = _fuzzy_match_products(
             conn, search_term, search_latin, search_norm,
-            category_id, producer_id, search_cyrillic=search_cyrillic
+            category_id, producer_id, search_cyrillic=search_cyrillic,
+            lifecycle_filter=('active', 'aging'),
         )
+        fuzzy_ids = [pid for pid, _ in fuzzy_results]
         if fuzzy_ids:
             total = len(fuzzy_ids)
             # Get paginated slice of fuzzy results
@@ -204,7 +228,8 @@ def list_products(
                     f"WHEN {pid} THEN {i}" for i, pid in enumerate(page_ids)
                 ) + " END"
                 rows = conn.execute(
-                    f"""SELECT p.id, p.name, p.name_display, p.category_id, c.name as category_name,
+                    f"""SELECT p.id, p.name, p.name_display, p.lifecycle, p.popularity_score,
+                               p.category_id, c.name as category_name,
                                p.producer_id, pr.name as producer_name,
                                p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path,
                                p.stock_quantity, p.stock_status
@@ -222,7 +247,7 @@ def list_products(
     elif search and total > 0:
         # Weighted ranking: fetch all matching products for this page and sort by relevance
         rows = conn.execute(
-            f"""SELECT p.id, p.name, p.name_display, p.search_text,
+            f"""SELECT p.id, p.name, p.name_display, p.lifecycle, p.search_text, p.popularity_score,
                        p.category_id, c.name as category_name,
                        p.producer_id, pr.name as producer_name,
                        p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path,
@@ -235,12 +260,12 @@ def list_products(
             params,
         ).fetchall()
 
-        # Score and sort by relevance
+        # Score and sort by relevance tier, then by popularity (most-sold first), then by name.
         scored = []
         for r in rows:
             score = _score_match(search_term, search_latin, search_norm, r, search_cyrillic)
             scored.append((score, dict(r)))
-        scored.sort(key=lambda x: (-x[0], x[1].get("name_display", "")))
+        scored.sort(key=lambda x: (-x[0], -(x[1].get("popularity_score") or 0), x[1].get("name_display", "")))
 
         # Paginate
         page_items = scored[offset:offset + limit]
@@ -250,7 +275,7 @@ def list_products(
             item.pop("search_text", None)
     else:
         rows = conn.execute(
-            f"""SELECT p.id, p.name, p.name_display, p.category_id, c.name as category_name,
+            f"""SELECT p.id, p.name, p.name_display, p.lifecycle, p.category_id, c.name as category_name,
                        p.producer_id, pr.name as producer_name,
                        p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path,
                        p.stock_quantity, p.stock_status
@@ -298,8 +323,6 @@ def list_products(
         except Exception:
             pass
 
-    conn.close()
-
     # Log search in background (only on first page to avoid duplicates from pagination)
     if search and page == 1:
         threading.Thread(
@@ -313,12 +336,54 @@ def list_products(
     for item in items:
         item.pop("search_text", None)
 
+    # Hidden products (stale/never lifecycle): surface on page 1 of search via loose fuzzy match (≥0.5)
+    # to signal demand for discontinued SKUs. Appended AFTER visible items, marked with match_score.
+    hidden_items = []
+    if search and page == 1:
+        hidden_matches = _fuzzy_match_products(
+            conn, search_term, search_latin, search_norm,
+            category_id, producer_id, max_results=10,
+            search_cyrillic=search_cyrillic,
+            lifecycle_filter=('stale', 'never'),
+            min_score=0.5,
+        )
+        if hidden_matches:
+            # Avoid duplicates if a hidden product somehow showed up in visible (shouldn't, but safe)
+            visible_ids = {it['id'] for it in items}
+            hidden_ids = [pid for pid, _ in hidden_matches if pid not in visible_ids]
+            score_by_id = {pid: score for pid, score in hidden_matches}
+            if hidden_ids:
+                placeholders = ",".join("?" for _ in hidden_ids)
+                hidden_rows = conn.execute(
+                    f"""SELECT p.id, p.name, p.name_display, p.lifecycle,
+                               p.category_id, c.name as category_name,
+                               p.producer_id, pr.name as producer_name,
+                               p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path,
+                               p.stock_quantity, p.stock_status
+                        FROM products p
+                        JOIN categories c ON c.id = p.category_id
+                        JOIN producers pr ON pr.id = p.producer_id
+                        WHERE p.id IN ({placeholders})""",
+                    hidden_ids,
+                ).fetchall()
+                rows_by_id = {r["id"]: dict(r) for r in hidden_rows}
+                # Preserve ranking order from hidden_matches
+                for pid, _ in hidden_matches:
+                    if pid in rows_by_id:
+                        item = rows_by_id[pid]
+                        item['match_score'] = round(score_by_id[pid], 3)
+                        item['hidden'] = True  # frontend flag: disable cart, log interest click
+                        hidden_items.append(item)
+
+    conn.close()
+
     result = {
-        "items": items,
+        "items": items + hidden_items,
         "total": total,
         "page": page,
         "pages": (total + limit - 1) // limit,
         "fuzzy": fuzzy_ids is not None and len(fuzzy_ids) > 0 if fuzzy_ids is not None else False,
+        "hidden_count": len(hidden_items),
     }
     if filters:
         result["filters"] = filters

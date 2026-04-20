@@ -291,6 +291,30 @@ def api_ingest_unmatched_skus(
     return ingest_unmatched_skus()
 
 
+@router.post("/import-client-master-v2")
+async def import_client_master_v2(
+    file: UploadFile = File(...),
+    admin_key: str = Form(""),
+    uploaded_by_user_id: int = Form(0),
+    uploaded_by_name: str = Form(""),
+):
+    """v2 importer — reads full-mirror xlsx produced by /exportmaster.
+
+    Only editable ✏️ columns are consumed; 🔒 columns are ignored. Handles
+    conflict detection, phone edits with audit trail + collision check,
+    status transitions (active/inactive/merged), and chunked commits.
+    """
+    if admin_key != "rassvet2026":
+        return {"ok": False, "error": "bad admin key"}
+    file_bytes = await file.read()
+    from backend.services.import_client_master_v2 import apply_client_master_v2
+    return apply_client_master_v2(
+        file_bytes,
+        uploaded_by_user_id=uploaded_by_user_id or None,
+        uploaded_by_name=uploaded_by_name or None,
+    )
+
+
 @router.post("/import-client-master")
 async def import_client_master(
     file: UploadFile = File(...),

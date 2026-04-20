@@ -130,7 +130,7 @@ def _build_order_items(req: ExportRequest):
                 "quantity": cart_item.quantity,
             })
     conn.close()
-    return order_items, client_label, client_name_1c
+    return order_items, client_label, client_name_1c, agent_name
 
 
 def _save_order_to_db(req: ExportRequest, order_items, client_label):
@@ -221,7 +221,7 @@ def _save_order_to_db(req: ExportRequest, order_items, client_label):
 
 @router.post("")
 def export_order(req: ExportRequest):
-    order_items, client_label, client_name_1c = _build_order_items(req)
+    order_items, client_label, client_name_1c, agent_name = _build_order_items(req)
 
     if not order_items:
         return JSONResponse({"ok": False, "error": "No valid products in order"}, status_code=400)

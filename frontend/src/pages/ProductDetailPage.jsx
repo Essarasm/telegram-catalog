@@ -268,8 +268,20 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
           )}
         </div>
 
-        {/* Price + add-to-cart in a single row */}
-        {approved ? (
+        {/* Hidden (stale/never) banner — visible but not orderable */}
+        {product.hidden && (
+          <div className="bg-gray-500/10 border border-gray-500/30 rounded-xl p-3 my-2 text-center">
+            <div className="text-sm font-semibold text-gray-500 mb-1">
+              {t.lifecycle_unavailable || 'Mavjud emas'}
+            </div>
+            <div className="text-xs text-tg-hint leading-snug">
+              {t.lifecycle_unavailable_detail || 'Bu mahsulot hozirda katalogda mavjud emas. Qiziqishingizni hisobga olamiz.'}
+            </div>
+          </div>
+        )}
+
+        {/* Price + add-to-cart in a single row — hidden if product.hidden (banner above replaces it) */}
+        {product.hidden ? null : approved ? (
           <div className="flex items-center gap-3 pt-1">
             <div className="text-xl font-bold text-tg-link shrink-0">
               {priceStr}
@@ -316,7 +328,7 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
               Narxlarni ko'rish uchun ro'yxatdan o'ting
             </div>
             <a
-              href="https://t.me/axmatov0902"
+              href="https://t.me/samrassvetbot?start=support"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-block mt-1 text-tg-link text-xs font-medium"

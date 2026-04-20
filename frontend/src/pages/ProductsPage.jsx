@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest, logSearchClick, fetchDidYouMean } from '../utils/api';
+import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest, logSearchClick, logInterestClick, fetchDidYouMean } from '../utils/api';
 import { useLongPress } from '../hooks/useLongPress';
 import t from '../i18n/uz.json';
 
@@ -306,10 +306,19 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
             >
               {/* Clickable card area */}
               <div
-                className="cursor-pointer active:opacity-80 transition-opacity"
+                className={`cursor-pointer active:opacity-80 transition-opacity ${product.hidden ? 'opacity-80' : ''}`}
                 onClick={() => {
                   if (searchQuery) {
-                    logSearchClick({ telegramId: getTelegramUserId(), productId: product.id, action: 'click' });
+                    if (product.hidden) {
+                      logInterestClick({
+                        telegramId: getTelegramUserId(),
+                        productId: product.id,
+                        searchQuery,
+                        matchScore: product.match_score || 0,
+                      });
+                    } else {
+                      logSearchClick({ telegramId: getTelegramUserId(), productId: product.id, action: 'click' });
+                    }
                   }
                   onSelectProduct && onSelectProduct(product);
                 }}
@@ -341,12 +350,17 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                         Narxni bilish uchun bog'laning
                       </div>
                     )}
-                    {product.stock_status === 'out_of_stock' && (
+                    {product.hidden && (
+                      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-500/15 text-gray-500 whitespace-nowrap">
+                        {t.lifecycle_unavailable || 'Mavjud emas'}
+                      </span>
+                    )}
+                    {!product.hidden && product.stock_status === 'out_of_stock' && (
                       <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-red-500/15 text-red-500 whitespace-nowrap">
                         {t.stock_out_of_stock}
                       </span>
                     )}
-                    {product.stock_status === 'low_stock' && !isAgent && (
+                    {!product.hidden && product.stock_status === 'low_stock' && !isAgent && (
                       <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-600 whitespace-nowrap">
                         {t.stock_low_stock}
                       </span>
@@ -367,7 +381,14 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
               {/* Add to cart / quantity controls */}
               {approved && (
                 <div className="px-3 pb-3 mt-auto">
-                  {inCart ? (
+                  {product.hidden ? (
+                    <button
+                      disabled
+                      className="w-full bg-tg-secondary text-tg-hint text-xs font-medium rounded-lg py-2.5 cursor-not-allowed border border-tg-hint/20"
+                    >
+                      {t.lifecycle_unavailable_cart || 'Hozirda mavjud emas'}
+                    </button>
+                  ) : inCart ? (
                     <QtyControls product={product} cart={cart} inCart={inCart} />
                   ) : (
                     <button

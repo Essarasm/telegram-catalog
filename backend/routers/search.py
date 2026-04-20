@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 from typing import Optional
-from backend.database import get_db, transliterate_to_latin, normalize_uzbek
+from backend.database import get_db, transliterate_to_latin, transliterate_to_cyrillic, normalize_uzbek
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -49,6 +49,110 @@ def log_click(
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+# Interest-click tracking for hidden (stale/never) products — drives demand signal
+# to the Inventory Telegram group.
+INTEREST_THRESHOLD_USERS = 5       # distinct clients
+INTEREST_WINDOW_DAYS = 30          # rolling window
+INTEREST_COOLDOWN_DAYS = 60        # per-product cooldown between alerts
+
+
+@router.post("/interest-click")
+def interest_click(
+    product_id: int = 0,
+    telegram_id: int = 0,
+    search_query: str = "",
+    match_score: float = 0.0,
+):
+    """Log a click on a hidden product (lifecycle='stale' or 'never').
+
+    Fires a demand-signal alert to the Inventory group if the product has
+    ≥5 distinct clients clicking within the last 30 days AND it's been
+    >60 days since the last alert (or never alerted).
+    """
+    if not product_id or not telegram_id:
+        return {"ok": False, "reason": "missing_ids"}
+
+    conn = get_db()
+
+    # Verify product is actually hidden before logging — prevents abuse
+    row = conn.execute(
+        "SELECT id, name, name_display, lifecycle, last_interest_alert_at, "
+        "       category_id, producer_id "
+        "FROM products WHERE id = ?",
+        (product_id,),
+    ).fetchone()
+    if not row or row["lifecycle"] not in ("stale", "never"):
+        conn.close()
+        return {"ok": False, "reason": "not_hidden"}
+
+    conn.execute(
+        """INSERT INTO product_interest_clicks
+           (product_id, telegram_id, search_query, match_score)
+           VALUES (?, ?, ?, ?)""",
+        (product_id, telegram_id, (search_query or "")[:200], match_score or 0.0),
+    )
+    conn.commit()
+
+    # Count distinct users in window
+    distinct_users = conn.execute(
+        """SELECT COUNT(DISTINCT telegram_id) FROM product_interest_clicks
+           WHERE product_id = ? AND clicked_at >= datetime('now', ?)""",
+        (product_id, f"-{INTEREST_WINDOW_DAYS} days"),
+    ).fetchone()[0]
+
+    alert_sent = False
+    if distinct_users >= INTEREST_THRESHOLD_USERS:
+        # Respect 60-day cooldown
+        can_alert = row["last_interest_alert_at"] is None
+        if not can_alert:
+            still_in_cooldown = conn.execute(
+                "SELECT ? < datetime('now', ?)",
+                (row["last_interest_alert_at"], f"-{INTEREST_COOLDOWN_DAYS} days"),
+            ).fetchone()[0]
+            can_alert = bool(still_in_cooldown)
+
+        if can_alert:
+            # Fetch category + producer names for the alert
+            meta = conn.execute(
+                """SELECT c.name as category, pr.name as producer
+                   FROM products p
+                   LEFT JOIN categories c ON c.id = p.category_id
+                   LEFT JOIN producers pr ON pr.id = p.producer_id
+                   WHERE p.id = ?""",
+                (product_id,),
+            ).fetchone()
+
+            # Send alert (synchronous, but has httpx timeout=10)
+            try:
+                from backend.services.notify_interest import send_interest_alert
+                ok = send_interest_alert(
+                    product_name=row["name"] or row["name_display"] or f"#{product_id}",
+                    lifecycle=row["lifecycle"],
+                    distinct_users=distinct_users,
+                    window_days=INTEREST_WINDOW_DAYS,
+                    category=meta["category"] if meta else "",
+                    producer=meta["producer"] if meta else "",
+                    last_supplied="",
+                )
+            except Exception:
+                ok = False
+
+            if ok:
+                conn.execute(
+                    "UPDATE products SET last_interest_alert_at = datetime('now') WHERE id = ?",
+                    (product_id,),
+                )
+                conn.commit()
+                alert_sent = True
+
+    conn.close()
+    return {
+        "ok": True,
+        "distinct_users": distinct_users,
+        "alert_sent": alert_sent,
+    }
 
 
 # ── Analytics endpoints ──────────────────────────────────────────
@@ -229,60 +333,140 @@ def search_summary(days: int = Query(7, ge=1, le=365)):
 @router.get("/suggestions")
 def search_suggestions(
     q: str = Query("", min_length=1),
-    limit: int = Query(8, ge=1, le=20),
+    limit: int = Query(6, ge=1, le=20),
 ):
-    """Return search suggestions based on:
-    1. Popular past queries matching the prefix
-    2. Product names matching the prefix
-    Designed for autocomplete dropdown as user types.
+    """Rich dropdown suggestions, single list using the 1C Cyrillic name as display.
+
+    The Cyrillic `products.name` field (raw 1C data from daily /stock + /prices uploads)
+    is the primary source for both the displayed text AND the matching engine.
+    Latin-typed queries are matched via transliteration variants so users can search
+    in either script but see the 1C name.
+
+    Matches full-search behaviour:
+      - Filters to catalog-visible products (is_active=1, lifecycle IN (active, aging))
+      - Multi-term AND: every word in the query must match the candidate
+      - Per-term tiering: exact (4) > any-word-starts (3) > contains (2);
+        product tier = min across all terms
+      - Ordering: tier DESC, popularity DESC, name length ASC
+      - Variants per term: raw, Latin-transliterated, Uzbek-normalized, Cyrillic-transliterated
+      - Producer name folded into searchable text (many display names drop the brand)
+
+    Response:
+      {suggestions: [{id, text, producer, price_uzs, price_usd, unit,
+                      stock_status, stock_quantity, image_path, popularity}],
+       total_matches}
     """
     if not q or len(q.strip()) < 1:
-        return {"suggestions": []}
+        return {"suggestions": [], "total_matches": 0}
 
-    query = q.strip().lower()
-    query_latin = transliterate_to_latin(query)
-    query_norm = normalize_uzbek(query)
+    raw = q.strip().lower()
+    # Split into individual terms (whitespace-separated). Empty query handled above.
+    terms = [t for t in raw.split() if t]
+    if not terms:
+        return {"suggestions": [], "total_matches": 0}
+
+    # For each term, build variants: raw / latin-transliterated / uzbek-normalized / cyrillic-transliterated
+    term_variants = []
+    for t in terms:
+        v = {t}
+        v.add(transliterate_to_latin(t))
+        v.add(normalize_uzbek(t))
+        try:
+            v.add(transliterate_to_cyrillic(t))
+        except Exception:
+            pass  # some input can't be round-tripped
+        term_variants.append({x for x in v if x})
+
+    # Candidate set: products where every term (some variant) appears in search_text.
+    # This gives a broad superset; precise per-field tiering happens in Python.
     conn = get_db()
-    suggestions = []
-    seen = set()
+    conditions = ["p.is_active = 1", "p.lifecycle IN ('active','aging')"]
+    params = []
+    for variants in term_variants:
+        any_variant_likes = " OR ".join(["LOWER(p.search_text) LIKE ?" for _ in variants])
+        conditions.append(f"({any_variant_likes})")
+        params.extend([f"%{v}%" for v in variants])
+    where = " AND ".join(conditions)
 
-    # 1. Popular queries that start with or contain the prefix
     rows = conn.execute(
-        """SELECT query, COUNT(*) as cnt
-           FROM search_logs
-           WHERE results_count > 0
-             AND (query LIKE ? OR query LIKE ? OR query LIKE ?)
-           GROUP BY query
-           ORDER BY cnt DESC
-           LIMIT ?""",
-        (f"{query}%", f"{query_latin}%", f"{query_norm}%", limit),
+        f"""SELECT p.id, p.name, p.name_display, p.popularity_score,
+                   p.price_uzs, p.price_usd, p.unit, p.stock_status, p.stock_quantity,
+                   p.image_path,
+                   pr.name as producer_name
+            FROM products p
+            LEFT JOIN producers pr ON pr.id = p.producer_id
+            WHERE {where}
+            LIMIT 100""",
+        params,
     ).fetchall()
-    for r in rows:
-        q_text = r["query"]
-        if q_text not in seen:
-            suggestions.append({"text": q_text, "type": "query", "count": r["cnt"]})
-            seen.add(q_text)
 
-    # 2. Product names matching the prefix (fill remaining slots)
-    remaining = limit - len(suggestions)
-    if remaining > 0:
-        rows = conn.execute(
-            """SELECT DISTINCT COALESCE(p.name_display, p.name) as display_name
-               FROM products p
-               WHERE p.is_active = 1
-                 AND (p.search_text LIKE ? OR p.search_text LIKE ? OR p.search_text LIKE ?)
-               LIMIT ?""",
-            (f"%{query}%", f"%{query_latin}%", f"%{query_norm}%", remaining * 2),
-        ).fetchall()
-        for r in rows:
-            name = r["display_name"]
-            name_lower = name.lower()
-            if name_lower not in seen and len(suggestions) < limit:
-                suggestions.append({"text": name, "type": "product"})
-                seen.add(name_lower)
+    total_matches = len(rows)
+
+    def score_against(name_lower, producer_lower=""):
+        """Returns the min-tier across all terms for this (name + producer) text.
+        0 means at least one term doesn't match — exclude product.
+        Producer name is folded in because many display names drop the brand
+        (e.g. Weber → name_display='PF-115 Oq', producer='Weber')."""
+        if not name_lower:
+            return 0
+        searchable = f"{name_lower} {producer_lower}".strip()
+        words = set(searchable.split())
+        min_tier = 4
+        for variants in term_variants:
+            best = 0
+            for term in variants:
+                if term == name_lower:
+                    best = max(best, 4)
+                elif any(w.startswith(term) for w in words):
+                    best = max(best, 3)
+                elif term in searchable:
+                    best = max(best, 2)
+            if best == 0:
+                return 0
+            min_tier = min(min_tier, best)
+        return min_tier
+
+    # Score every candidate against the Cyrillic name + producer (the 1C primary source).
+    # The Latin display field is intentionally NOT scored separately — the old two-section
+    # dropdown produced near-duplicate entries; single-list ranking is cleaner.
+    scored = []
+    for r in rows:
+        name_cyr = (r["name"] or "").lower()
+        name_lat = (r["name_display"] or "").lower()
+        producer = (r["producer_name"] or "").lower()
+        # Combine Cyrillic name + Latin display + producer — covers all scripts in one pass.
+        combined = f"{name_cyr} {name_lat}".strip()
+        tier = score_against(combined, producer)
+        if tier > 0:
+            pop = r["popularity_score"] or 0
+            scored.append((tier, pop, len(name_cyr), r))
+
+    scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
+
+    def to_item(row):
+        # Always display the 1C Cyrillic name as the dropdown label.
+        return {
+            "id": row["id"],
+            "text": row["name"],
+            "name_cyrillic": row["name"],
+            "name_display": row["name_display"],
+            "producer": row["producer_name"],
+            "price_uzs": row["price_uzs"],
+            "price_usd": row["price_usd"],
+            "unit": row["unit"],
+            "stock_status": row["stock_status"],
+            "stock_quantity": row["stock_quantity"] if "stock_quantity" in row.keys() else None,
+            "image_path": row["image_path"],
+            "popularity": row["popularity_score"] or 0,
+        }
+
+    suggestions = [to_item(r) for _, _, _, r in scored[:limit]]
 
     conn.close()
-    return {"suggestions": suggestions}
+    return {
+        "suggestions": suggestions,
+        "total_matches": total_matches,
+    }
 
 
 @router.get("/did-you-mean")

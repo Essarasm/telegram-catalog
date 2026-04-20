@@ -89,8 +89,16 @@ class TestScoreMatch:
         p = self._product("цемент м500", "Cement M500")
         assert _score_match("цемент", "tsement", "цемент", p) == 3
 
-    def test_contains_score_2(self):
+    def test_any_word_starts_score_3(self):
+        # As of 2026-04-20 (Session S Part 10) ANY word in the name starting
+        # with the term scores 3, not just the first word.
         p = self._product("портланд цемент м500", "Portland Cement M500")
+        assert _score_match("цемент", "tsement", "цемент", p) == 3
+
+    def test_contains_score_2(self):
+        # Score 2 now only fires for truly-embedded matches (term appears
+        # inside a word, not at a word-boundary).
+        p = self._product("суперцемент м500", "SuperCement M500")
         assert _score_match("цемент", "tsement", "цемент", p) == 2
 
     def test_no_match_score_0(self):

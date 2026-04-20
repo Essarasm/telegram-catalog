@@ -354,67 +354,381 @@ async def cmd_demand(message: types.Message):
 
 
 
+from bot.help_spec import render_help_for_context, render_onboarding_for_group
+from bot.shared import (
+    DAILY_GROUP_CHAT_ID, ADMIN_GROUP_CHAT_ID,
+    ORDER_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID, chat_context,
+)
+
+
 @router.message(Command("help"))
 async def cmd_help(message: types.Message):
-    """Show available admin commands."""
+    """Show available commands — filtered by the current chat's role."""
+    ctx = chat_context(message)
+    text = render_help_for_context(ctx)
+    await message.reply(text, parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.message(Command("reviewclients"))
+async def cmd_reviewclients(message: types.Message):
+    """Paginated review queue for allowed_clients flagged by the sync pipeline.
+
+    Shows rows where needs_review=1 or needs_verification=1, with one-tap
+    callbacks to clear each flag or skip. Usage: /reviewclients [page]
+    """
+    if not is_admin(message):
+        return
+
+    parts = (message.text or "").split()
+    page = 1
+    if len(parts) > 1 and parts[1].isdigit():
+        page = max(1, int(parts[1]))
+    per_page = 5
+    offset = (page - 1) * per_page
+
+    conn = get_db()
+    try:
+        total = conn.execute(
+            """SELECT COUNT(*) FROM allowed_clients
+               WHERE needs_review = 1 OR needs_verification = 1"""
+        ).fetchone()[0]
+        rows = conn.execute(
+            """SELECT id, name, client_id_1c, phone_normalized,
+                      viloyat, tuman, moljal, needs_review, needs_verification
+               FROM allowed_clients
+               WHERE needs_review = 1 OR needs_verification = 1
+               ORDER BY id
+               LIMIT ? OFFSET ?""",
+            (per_page, offset),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if total == 0:
+        await message.reply("✅ Hech qanday ko'rib chiqish zarur bo'lgan mijoz yo'q.")
+        return
+
+    pages = (total + per_page - 1) // per_page
+    lines = [
+        f"🚩 <b>Ko'rib chiqish navbati — {total} ta mijoz</b>  "
+        f"(sahifa {page}/{pages})\n"
+    ]
+    kb_rows: list[list[InlineKeyboardButton]] = []
+    for r in rows:
+        flags = []
+        if r["needs_review"]:
+            flags.append("🔴 konflikt")
+        if r["needs_verification"]:
+            flags.append("⚠️ joyni tasdiqlash")
+        flag_str = " · ".join(flags)
+        display_name = (r["client_id_1c"] or r["name"] or f"#{r['id']}")[:40]
+        geo_parts = [p for p in (r["viloyat"], r["tuman"], r["moljal"]) if p]
+        geo = " → ".join(geo_parts) if geo_parts else "(joy yo'q)"
+        phone = r["phone_normalized"] or "—"
+        lines.append(f"<b>#{r['id']}</b> {html_escape(display_name)}")
+        lines.append(f"   📞 {phone}  |  📍 {html_escape(geo)}")
+        lines.append(f"   {flag_str}")
+        lines.append("")
+        kb_rows.append([
+            InlineKeyboardButton(text=f"✅ #{r['id']} OK", callback_data=f"rv:ok:{r['id']}"),
+            InlineKeyboardButton(text=f"⏭ #{r['id']} kech.", callback_data=f"rv:defer:{r['id']}"),
+        ])
+
+    # Pagination buttons
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️ Oldingi", callback_data=f"rv:page:{page-1}"))
+    if page < pages:
+        nav.append(InlineKeyboardButton(text="Keyingi ▶️", callback_data=f"rv:page:{page+1}"))
+    if nav:
+        kb_rows.append(nav)
+
     await message.reply(
-        "📋 <b>Admin buyruqlar:</b>\n\n"
-        "<b>/add</b> <code>telefon ism joylashuv</code>\n"
-        "Yangi mijozni qo'shish\n\n"
-        "<b>/approve</b> <code>telegram_id</code>\n"
-        "Foydalanuvchini tasdiqlash\n\n"
-        "<b>/link</b> <code>telegram_id 1C_nomi_yoki_telefon</code>\n"
-        "Foydalanuvchini mavjud 1C mijozga bog'lash\n\n"
-        "<b>/list</b>\n"
-        "Tasdiqlanmaganlar ro'yxati\n\n"
-        "<b>/prices</b> (reply to Excel file)\n"
-        "Narxlarni yangilash\n\n"
-        "<b>/stock</b> (reply to Excel file)\n"
-        "Inventarizatsiya (qoldiq) yangilash\n\n"
-        "<b>/catalog</b> (reply to Excel file)\n"
-        "Katalogni yangilash (yangi/o'chirilgan mahsulotlar)\n\n"
-        "<b>/debtors</b> (reply to XLS file)\n"
-        "Дебиторка yuklash (1C дебиторская задолженность)\n\n"
-        "<b>/balances</b> (reply to XLS file)\n"
-        "Оборотка yuklash (1C оборотно-сальдовая)\n\n"
-        "<b>/demand</b> <code>[kunlar]</code>\n"
-        "Tugagan mahsulotlarga talab signallari (default: 30 kun)\n\n"
-        "<b>/realorders</b> (reply to XLS/XLSX file)\n"
-        "Реализация yuklash (1C \"Реализация товаров\" — haqiqiy buyurtmalar)\n\n"
-        "<b>/unmatchedclients</b>\n"
-        "Haqiqiy buyurtmalardagi bog'lanmagan mijozlar ro'yxati (ko'p hujjatdan kam tomonga)\n\n"
-        "<b>/unmatchedproducts</b>\n"
-        "Haqiqiy buyurtmalardagi bog'lanmagan mahsulotlar ro'yxati (ko'p qatordan kam tomonga)\n\n"
-        "<b>/relinkrealorders</b>\n"
-        "Bog'lanmagan haqiqiy buyurtmalarni qayta bog'lash (allowed_clients yangilagandan keyin)\n\n"
-        "<b>/ingestskus</b>\n"
-        "Bog'lanmagan mahsulotlarni products jadvaliga qo'shish + real_order_items qayta bog'lash\n\n"
-        "<b>/clientmaster</b> (reply to XLSX file)\n"
-        "Client Master jadvalini allowed_clients ga import qilish (1C cyrillic nomlari + telefonlar)\n\n"
-        "<b>/realordersample</b> <code>&lt;mijoz parchasi&gt;</code>\n"
-        "Diagnostika: bitta haqiqiy buyurtmaning xom narx ustunlari (DB dump)\n\n"
-        "<b>/backfillrealordertotals</b>\n"
-        "Mavjud haqiqiy buyurtmalarda yo'qolgan jami narxlarni qayta hisoblash (1 marta ishlatiladi)\n\n"
-        "<b>/backfillordernames</b>\n"
-        "Eski wish-list buyurtmalaridagi nomlarni 1C Kirillcha variantiga o'tkazish (1 marta ishlatiladi)\n\n"
-        "<b>/testclient</b> <code>[имя или #ID]</code>\n"
-        "Test: link your account to a client's balance data\n\n"
-        "<b>/duplicateclients</b> <code>[qidiruv]</code>\n"
-        "Ko'p telefonli mijozlar auditi (bir 1C nom — bir nechta telefon)\n\n"
-        "<b>/chatid</b>\n"
-        "Chat va User ID ko'rish\n\n"
-        "<b>/reports</b>\n"
-        "Oxirgi xatolik xabarlari va mahsulot so'rovlari\n\n"
-        "<b>/wrongphotos</b>\n"
-        "Noto'g'ri rasm xabarlari (mahsulot bo'yicha)\n\n"
-        "<b>/searches</b> <code>[kunlar]</code>\n"
-        "Qidiruv statistikasi (default: 7 kun)\n\n"
-        "<b>/datacoverage</b> <code>[valyuta]</code>\n"
-        "Yuklangan ma'lumotlar qamrovi (oylik tekshiruv)\n\n"
-        "<b>/realordersstats</b>\n"
-        "Real orders sifat tahlili (match rates, agents, wish-list gap)\n\n"
-        "<b>/wipewishlists</b> <code>[CONFIRM]</code>\n"
-        "Demo wish-list ma'lumotlarini tozalash (launch oldidan)",
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+    )
+
+
+@router.callback_query(lambda cb: cb.data and cb.data.startswith("rv:"))
+async def cb_reviewclients(cb: types.CallbackQuery):
+    if not cb.data:
+        return
+    parts = cb.data.split(":", 2)
+    if len(parts) < 3:
+        await cb.answer()
+        return
+    _, action, arg = parts
+
+    if action == "page":
+        try:
+            page_n = int(arg)
+        except ValueError:
+            await cb.answer()
+            return
+        # Simulate /reviewclients <page> by replaying on the existing message
+        class _M:
+            text = f"/reviewclients {page_n}"
+            chat = cb.message.chat
+            from_user = cb.from_user
+            reply_to_message = None
+            message_id = cb.message.message_id
+            async def reply(self, text, parse_mode=None, reply_markup=None):
+                await cb.message.edit_text(
+                    text, parse_mode=parse_mode, reply_markup=reply_markup,
+                    disable_web_page_preview=True,
+                )
+        # Run the handler body inline — build fake message, call core
+        # Simple re-implementation:
+        page = max(1, page_n)
+        per_page = 5
+        offset = (page - 1) * per_page
+        conn = get_db()
+        try:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM allowed_clients WHERE needs_review = 1 OR needs_verification = 1"
+            ).fetchone()[0]
+            rows = conn.execute(
+                """SELECT id, name, client_id_1c, phone_normalized, viloyat, tuman, moljal,
+                          needs_review, needs_verification
+                   FROM allowed_clients
+                   WHERE needs_review = 1 OR needs_verification = 1
+                   ORDER BY id LIMIT ? OFFSET ?""",
+                (per_page, offset),
+            ).fetchall()
+        finally:
+            conn.close()
+        pages = max(1, (total + per_page - 1) // per_page)
+        lines = [f"🚩 <b>Ko'rib chiqish navbati — {total}</b> (sahifa {page}/{pages})\n"]
+        kb_rows: list[list[InlineKeyboardButton]] = []
+        for r in rows:
+            flags = []
+            if r["needs_review"]:
+                flags.append("🔴 konflikt")
+            if r["needs_verification"]:
+                flags.append("⚠️ joyni tasdiqlash")
+            name = (r["client_id_1c"] or r["name"] or f"#{r['id']}")[:40]
+            geo = " → ".join([p for p in (r["viloyat"], r["tuman"], r["moljal"]) if p]) or "(joy yo'q)"
+            lines.append(f"<b>#{r['id']}</b> {html_escape(name)}")
+            lines.append(f"   📞 {r['phone_normalized'] or '—'}  |  📍 {html_escape(geo)}")
+            lines.append(f"   {' · '.join(flags)}")
+            lines.append("")
+            kb_rows.append([
+                InlineKeyboardButton(text=f"✅ #{r['id']} OK", callback_data=f"rv:ok:{r['id']}"),
+                InlineKeyboardButton(text=f"⏭ #{r['id']} kech.", callback_data=f"rv:defer:{r['id']}"),
+            ])
+        nav = []
+        if page > 1:
+            nav.append(InlineKeyboardButton(text="◀️ Oldingi", callback_data=f"rv:page:{page-1}"))
+        if page < pages:
+            nav.append(InlineKeyboardButton(text="Keyingi ▶️", callback_data=f"rv:page:{page+1}"))
+        if nav:
+            kb_rows.append(nav)
+        await cb.message.edit_text(
+            "\n".join(lines), parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+            disable_web_page_preview=True,
+        )
+        await cb.answer()
+        return
+
+    if action not in ("ok", "defer"):
+        await cb.answer()
+        return
+
+    try:
+        ac_id = int(arg)
+    except ValueError:
+        await cb.answer()
+        return
+
+    conn = get_db()
+    try:
+        if action == "ok":
+            conn.execute(
+                "UPDATE allowed_clients SET needs_review = 0, needs_verification = 0 WHERE id = ?",
+                (ac_id,),
+            )
+            conn.commit()
+            await cb.answer(f"✅ #{ac_id} — bayroqlar olib tashlandi", show_alert=False)
+        else:  # defer = leave flag but mark as seen (no schema change, just UI ack)
+            await cb.answer(f"⏭ #{ac_id} — keyinroq ko'rib chiqasiz", show_alert=False)
+    finally:
+        conn.close()
+
+
+@router.message(Command("resendmissed"))
+async def cmd_resendmissed(message: types.Message):
+    """Re-send any orders whose Sales-group notification never landed
+    (sales_group_message_id IS NULL) in the last 3 days. Usage: /resendmissed [days].
+    Guards against accidentally re-blasting old orders by default-limiting to 3 days.
+    """
+    if not is_admin(message):
+        return
+
+    parts = (message.text or "").split()
+    days = 3
+    if len(parts) > 1 and parts[1].isdigit():
+        days = max(1, min(int(parts[1]), 14))
+
+    status = await message.reply(f"⏳ Oxirgi {days} kunda yuborilmagan buyurtmalar qidirilmoqda...")
+
+    conn = get_db()
+    try:
+        orders = conn.execute(
+            """SELECT id, telegram_id, client_name, client_phone, created_at, parent_order_id
+               FROM orders
+               WHERE sales_group_message_id IS NULL
+                 AND created_at >= datetime('now', ?)
+                 AND status != 'cancelled'
+               ORDER BY id""",
+            (f"-{days} days",),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not orders:
+        await status.edit_text(f"✅ Oxirgi {days} kunda yuborilmagan buyurtma topilmadi.")
+        return
+
+    await status.edit_text(
+        f"🔁 {len(orders)} ta buyurtma qayta yuborilmoqda...", parse_mode="HTML"
+    )
+
+    from backend.routers.export import generate_excel
+    from backend.services.notify_group import send_order_to_group
+
+    results = []
+    for o in orders:
+        try:
+            conn = get_db()
+            items_rows = conn.execute(
+                """SELECT product_name, producer_name, quantity, unit, price, currency
+                   FROM order_items WHERE order_id = ?""",
+                (o["id"],),
+            ).fetchall()
+            conn.close()
+            if not items_rows:
+                results.append(f"❌ #{o['id']} — qatorlari topilmadi")
+                continue
+
+            order_items = [{
+                "product_id": 0,
+                "name": (f"{r['producer_name']} — {r['product_name']}"
+                         if r["producer_name"] else r["product_name"]),
+                "unit": r["unit"] or "",
+                "price": r["price"] or 0,
+                "currency": r["currency"] or "USD",
+                "producer": r["producer_name"] or "",
+                "quantity": r["quantity"] or 0,
+            } for r in items_rows]
+
+            client_label = o["client_name"] or ""
+            if o["client_phone"]:
+                client_label = f"{client_label} ({o['client_phone']})" if client_label else o["client_phone"]
+
+            excel_data = generate_excel(order_items, client_label)
+            group_result = send_order_to_group(
+                order_items, excel_data, client_label,
+                delivery_type="delivery",
+                client_name_1c="", location_text="", maps_link="",
+                order_id=o["id"], agent_name="",
+                parent_order_id=o["parent_order_id"],
+            )
+            if group_result and group_result.get("ok"):
+                text_mid = group_result.get("text_message_id")
+                doc_mid = group_result.get("doc_message_id")
+                conn_u = get_db()
+                try:
+                    conn_u.execute(
+                        "UPDATE orders SET sales_group_message_id = ?, "
+                        "sales_group_doc_message_id = ? WHERE id = ?",
+                        (text_mid, doc_mid, o["id"]),
+                    )
+                    conn_u.commit()
+                finally:
+                    conn_u.close()
+                results.append(f"✅ #{o['id']}")
+            else:
+                results.append(f"❌ #{o['id']} — {group_result}")
+        except Exception as e:
+            logger.exception(f"/resendmissed order {o['id']} failed: {e}")
+            results.append(f"❌ #{o['id']} — {str(e)[:80]}")
+
+    await message.answer(
+        "📦 <b>Qayta yuborish natijasi:</b>\n" + "\n".join(results),
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("exportmaster"))
+async def cmd_exportmaster(message: types.Message):
+    """Generate a fresh full-mirror Client Master xlsx and send as document.
+    Every ✏️ editable column preserved from DB; every 🔒 mirror column
+    re-pulled from the authoritative source at export time.
+    """
+    if not is_admin(message):
+        return
+    status = await message.reply("⏳ Client Master snapshot tayyorlanmoqda...")
+    try:
+        from aiogram.types import BufferedInputFile
+        from backend.services.export_client_master import build_xlsx_bytes, write_xlsx_to_archive
+        from datetime import datetime, timezone, timedelta
+        TASHKENT = timezone(timedelta(hours=5))
+        # Build once, archive + send the same bytes
+        data = build_xlsx_bytes()
+        try:
+            archive_path = write_xlsx_to_archive()
+        except Exception as e:
+            logger.warning(f"/exportmaster archive write failed: {e}")
+            archive_path = "(archive skipped)"
+        ts = datetime.now(TASHKENT).strftime("%Y-%m-%d_%H%M")
+        filename = f"Client_Master_{ts}.xlsx"
+        caption = (
+            f"📋 <b>Client Master — to'liq snapshot</b>\n\n"
+            f"Sana: {ts}\n"
+            f"Barcha mijozlar bir faylda. ✏️ sariq ustunlarni tahrirlab, "
+            f"keyin <code>/clientmaster</code> caption bilan qayta yuboring."
+        )
+        await message.answer_document(
+            BufferedInputFile(data, filename=filename),
+            caption=caption,
+            parse_mode="HTML",
+        )
+        await status.delete()
+        logger.info(f"/exportmaster: {len(data)} bytes, archived to {archive_path}")
+    except Exception as e:
+        logger.exception(f"/exportmaster error: {e}")
+        await status.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@router.message(Command("announce"))
+async def cmd_announce(message: types.Message):
+    """Post the group objective + command list into each of the 4 role-groups.
+    Run once after onboarding — admin-only, one of each (Daily, Admin, Sales, Inventory).
+    """
+    if not is_admin(message):
+        return
+
+    targets = [
+        ('daily', DAILY_GROUP_CHAT_ID, "Daily"),
+        ('admin', ADMIN_GROUP_CHAT_ID, "Admin"),
+        ('sales', ORDER_GROUP_CHAT_ID, "Sales"),
+        ('inventory', INVENTORY_GROUP_CHAT_ID, "Inventory"),
+    ]
+    results = []
+    for role, chat_id, label in targets:
+        text = render_onboarding_for_group(role)
+        try:
+            await message.bot.send_message(
+                chat_id, text, parse_mode="HTML", disable_web_page_preview=True
+            )
+            results.append(f"✅ {label} ({chat_id})")
+        except Exception as e:
+            results.append(f"❌ {label} ({chat_id}): {str(e)[:120]}")
+
+    await message.reply(
+        "📣 <b>Announcement posted</b>\n\n" + "\n".join(results),
         parse_mode="HTML",
     )
 
@@ -983,16 +1297,44 @@ async def cmd_backfillrealordertotals(message: types.Message):
 
 @router.message(Command("stockalert"))
 async def cmd_stockalert(message: types.Message):
-    """Show out-of-stock and running-low alerts for active products."""
+    """Stock alert with optional filters.
+
+    Usage:
+      /stockalert                — summary (top 25 tugagan + top 30 kam)
+      /stockalert tugagan        — full out-of-stock list
+      /stockalert kam            — full running-low list
+      /stockalert full           — full list of both
+    """
     if not is_admin(message):
         return
+
+    raw_args = (message.text or "").split()[1:]
+    args = {a.lower() for a in raw_args}
+    show_out_only = bool(args & {"tugagan", "out", "zero"})
+    show_low_only = bool(args & {"kam", "low"})
+    full_flag = "full" in args
+    # Explicit category arg implies full-for-that-category
+    include_out = show_out_only or (not show_low_only)
+    include_low = show_low_only or (not show_out_only)
+    full = full_flag or show_out_only or show_low_only
 
     status_msg = await message.reply("⏳ Faol mahsulotlarni tekshirmoqda...")
     try:
         from backend.services.stock_alerts import get_stock_alerts, format_stock_alert_message
         alerts = get_stock_alerts()
-        text = format_stock_alert_message(alerts)
-        await status_msg.edit_text(text, parse_mode="HTML")
+        messages = format_stock_alert_message(
+            alerts,
+            include_out=include_out,
+            include_low=include_low,
+            full=full,
+        )
+        if not messages:
+            await status_msg.edit_text("📦 Hech narsa topilmadi.")
+            return
+        # First one replaces the "tekshirmoqda" status; rest are fresh messages.
+        await status_msg.edit_text(messages[0], parse_mode="HTML")
+        for extra in messages[1:]:
+            await message.answer(extra, parse_mode="HTML")
     except Exception as e:
         logger.error(f"/stockalert error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")

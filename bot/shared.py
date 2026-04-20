@@ -25,6 +25,31 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
 ADMIN_GROUP_CHAT_ID = int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))
 AGENTS_GROUP_CHAT_ID = int(os.getenv("AGENTS_GROUP_CHAT_ID", "-1003922400481"))
+DAILY_GROUP_CHAT_ID = int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))
+INVENTORY_GROUP_CHAT_ID = int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))
+
+
+def chat_context(message) -> str:
+    """Classify chat for /help filtering and context-aware routing.
+    Returns one of: 'daily', 'admin', 'sales', 'inventory', 'agents',
+    'dm_admin', 'dm_user', 'unknown'."""
+    cid = message.chat.id if getattr(message, 'chat', None) else None
+    if cid == DAILY_GROUP_CHAT_ID:
+        return 'daily'
+    if cid == ADMIN_GROUP_CHAT_ID:
+        return 'admin'
+    if cid == ORDER_GROUP_CHAT_ID:
+        return 'sales'
+    if cid == INVENTORY_GROUP_CHAT_ID:
+        return 'inventory'
+    if cid == AGENTS_GROUP_CHAT_ID:
+        return 'agents'
+    if getattr(message, 'chat', None) and message.chat.type == 'private':
+        uid = message.from_user.id if getattr(message, 'from_user', None) else None
+        if uid and ADMIN_IDS and uid in ADMIN_IDS:
+            return 'dm_admin'
+        return 'dm_user'
+    return 'unknown'
 
 ADMIN_IDS: set[int] = set()
 _admin_env = os.getenv("ADMIN_IDS", "")
@@ -75,12 +100,15 @@ def normalize_phone(raw: str) -> str:
 
 def is_admin(message) -> bool:
     """Check if the sender may run admin commands in this chat.
-    Sotuv bo'lim is silenced — admin commands only in Admin group or DM."""
-    if hasattr(message, 'chat') and message.chat.id == ORDER_GROUP_CHAT_ID:
+    Sotuv bo'lim (Sales) is silenced — admin commands only in Admin group,
+    Daily group (for the daily-upload commands), or DM of an admin user."""
+    cid = message.chat.id if hasattr(message, 'chat') else None
+    if cid == ORDER_GROUP_CHAT_ID:
         return False
-    if ADMIN_IDS and hasattr(message, 'from_user') and message.from_user and message.from_user.id in ADMIN_IDS:
+    uid = message.from_user.id if getattr(message, 'from_user', None) else None
+    if ADMIN_IDS and uid and uid in ADMIN_IDS:
         return True
-    if hasattr(message, 'chat') and message.chat.id == ADMIN_GROUP_CHAT_ID:
+    if cid in (ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID):
         return True
     return False
 

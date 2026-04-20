@@ -187,35 +187,88 @@ def get_stock_alerts(conn=None) -> dict:
             conn.close()
 
 
-def format_stock_alert_message(alerts: dict) -> str:
-    """Format alerts into a Telegram-ready HTML message."""
-    if alerts["active_count"] == 0:
-        return "📦 Faol mahsulotlar topilmadi. /stock faylni yuklang."
+def format_stock_alert_message(alerts: dict,
+                                include_out: bool = True,
+                                include_low: bool = True,
+                                full: bool = False) -> list[str]:
+    """Format alerts into one or more Telegram-ready HTML messages.
 
-    lines = [
+    Returns a list of message strings. The first message is always the
+    summary; subsequent messages contain the item lists (chunked to fit
+    inside Telegram's ~4096-char limit). Callers send each message
+    separately in order.
+
+    Args:
+      include_out: include TUGAGAN (out-of-stock) section
+      include_low: include KAM QOLDI (running-low) section
+      full: show full lists (vs. top-25/top-30 preview)
+    """
+    if alerts["active_count"] == 0:
+        return ["📦 Faol mahsulotlar topilmadi. /stock faylni yuklang."]
+
+    # ── 1) Summary message ──────────────────────────────────────────
+    summary_parts = [
         f"📦 <b>Kunlik inventarizatsiya xabari</b>\n",
         f"Faol mahsulotlar: <b>{alerts['active_count']}</b>",
         f"🟢 Yetarli: {alerts['healthy_count']}",
         f"🟡 Kam qoldi: {len(alerts['running_low'])}",
         f"🔴 Tugagan: {len(alerts['out_of_stock'])}",
     ]
+    if not full:
+        hints = []
+        if alerts["out_of_stock"]:
+            hints.append("<code>/stockalert tugagan</code>")
+        if alerts["running_low"]:
+            hints.append("<code>/stockalert kam</code>")
+        if hints:
+            summary_parts.append("")
+            summary_parts.append("🔍 To'liq ro'yxat: " + " yoki ".join(hints))
+            summary_parts.append("Yoki <code>/stockalert full</code> — ikkalasi ham.")
+    messages = ["\n".join(summary_parts)]
 
-    if alerts["out_of_stock"]:
-        lines.append(f"\n🔴 <b>TUGAGAN — buyurtma kerak ({len(alerts['out_of_stock'])}):</b>")
-        for item in alerts["out_of_stock"][:25]:
+    # ── Helpers ────────────────────────────────────────────────────
+    def _chunk_lines(header: str, items_lines: list[str], max_chars: int = 3800) -> list[str]:
+        """Break a long list into Telegram-safe chunks, each with a header."""
+        chunks = []
+        current = [header]
+        current_len = len(header)
+        for ln in items_lines:
+            # +1 for newline
+            if current_len + len(ln) + 1 > max_chars and len(current) > 1:
+                chunks.append("\n".join(current))
+                current = [f"{header} (davom)"]
+                current_len = len(current[0])
+            current.append(ln)
+            current_len += len(ln) + 1
+        if len(current) > 1:
+            chunks.append("\n".join(current))
+        return chunks
+
+    # ── 2) TUGAGAN section ────────────────────────────────────────
+    if include_out and alerts["out_of_stock"]:
+        out_items = alerts["out_of_stock"] if full else alerts["out_of_stock"][:25]
+        header = f"🔴 <b>TUGAGAN — buyurtma kerak ({len(out_items)}/{len(alerts['out_of_stock'])}):</b>"
+        item_lines = []
+        for item in out_items:
             sold = f" (sotilgan: {item['last_sold']})" if item["last_sold"] != "—" else ""
-            lines.append(f"  • {item['name']}{sold}")
-        if len(alerts["out_of_stock"]) > 25:
-            lines.append(f"  ... va yana {len(alerts['out_of_stock']) - 25} ta")
+            item_lines.append(f"  • {item['name']}{sold}")
+        if not full and len(alerts["out_of_stock"]) > 25:
+            item_lines.append(f"  ... va yana {len(alerts['out_of_stock']) - 25} ta "
+                              f"(to'liq: <code>/stockalert tugagan</code>)")
+        messages.extend(_chunk_lines(header, item_lines))
 
-    if alerts["running_low"]:
-        lines.append(f"\n🟡 <b>KAM QOLDI ({len(alerts['running_low'])}):</b>")
-        shown = alerts["running_low"][:30]
-        for item in shown:
+    # ── 3) KAM QOLDI section ──────────────────────────────────────
+    if include_low and alerts["running_low"]:
+        low_items = alerts["running_low"] if full else alerts["running_low"][:30]
+        header = f"🟡 <b>KAM QOLDI ({len(low_items)}/{len(alerts['running_low'])}):</b>"
+        item_lines = []
+        for item in low_items:
             q = item['qty']
             qty_str = str(int(q)) if q == int(q) else f"{q:.1f}"
-            lines.append(f"  • {item['name']} — <b>{qty_str}</b> {item['unit']}")
-        if len(alerts["running_low"]) > 30:
-            lines.append(f"  ... va yana {len(alerts['running_low']) - 30} ta (to'liq ro'yxat: /stockalert full)")
+            item_lines.append(f"  • {item['name']} — <b>{qty_str}</b> {item['unit']}")
+        if not full and len(alerts["running_low"]) > 30:
+            item_lines.append(f"  ... va yana {len(alerts['running_low']) - 30} ta "
+                              f"(to'liq: <code>/stockalert kam</code>)")
+        messages.extend(_chunk_lines(header, item_lines))
 
-    return "\n".join(lines)
+    return messages

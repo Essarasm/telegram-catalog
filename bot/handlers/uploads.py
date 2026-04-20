@@ -552,7 +552,7 @@ async def cmd_catalog(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
 
 
-async def _download_and_import(doc) -> dict:
+async def _download_and_import(doc, message: types.Message) -> dict:
     """Download a Telegram document and import it as a balance file.
     Returns the API result dict.
     """
@@ -672,7 +672,7 @@ async def cmd_balances(message: types.Message):
         all_lines = [f"✅ <b>Moliyaviy ma'lumotlar yuklandi!</b>\n"]
 
         for i, doc in enumerate(docs):
-            result = await _download_and_import(doc)
+            result = await _download_and_import(doc, message)
             if not result.get("ok"):
                 all_lines.append(f"❌ {html_escape(doc.file_name)}: {result.get('error', 'Unknown')}")
                 continue
@@ -838,11 +838,17 @@ async def cmd_clients(message: types.Message):
         inserted = int(result.get("inserted") or 0)
         updated = int(result.get("updated") or 0)
         skipped = int(result.get("skipped") or 0)
+        phone_ok = bool(result.get("phone_column_detected"))
 
-        if inserted or updated:
+        # Mark the daily task done when the file was actually understood by the parser
+        # (phone column detected) — even if no rows changed since the last upload.
+        # If the phone column wasn't detected the file is structurally invalid, so don't
+        # mark done: operator needs to fix headers first.
+        if phone_ok:
             track_daily_upload(
                 "clients", message,
-                file_name=doc.file_name, row_count=inserted + updated,
+                file_name=doc.file_name,
+                row_count=(inserted + updated) if (inserted + updated) else skipped,
             )
 
         lines = [f"✅ <b>Mijozlar ro'yxati yangilandi!</b>", ""]
@@ -2500,6 +2506,60 @@ async def cmd_clientmaster(message: types.Message):
             resp = await client.get(file_url)
             file_bytes = resp.content
 
+        # Auto-detect format: v2 xlsx from /exportmaster has an
+        # "allowed_clients.id" header and a sheet called "Client Master".
+        is_v2 = False
+        try:
+            from openpyxl import load_workbook
+            import io as _io
+            _wb = load_workbook(_io.BytesIO(file_bytes), read_only=True, data_only=True)
+            ws_name = "Client Master" if "Client Master" in _wb.sheetnames else _wb.sheetnames[0]
+            _ws = _wb[ws_name]
+            _hdr = next(_ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            _hdr_set = {(str(h) if h else "").strip() for h in _hdr}
+            is_v2 = "allowed_clients.id" in _hdr_set
+        except Exception as _det_e:
+            logger.warning(f"clientmaster format detect failed: {_det_e}")
+
+        if is_v2:
+            from_name = sender_display_name(message)
+            api_url = f"{_BASE_URL}/api/finance/import-client-master-v2"
+            async with httpx.AsyncClient(timeout=300) as client:
+                resp = await client.post(
+                    api_url,
+                    files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                    data={
+                        "admin_key": "rassvet2026",
+                        "uploaded_by_user_id": str(message.from_user.id if message.from_user else 0),
+                        "uploaded_by_name": from_name,
+                    },
+                )
+                result = resp.json()
+
+            if not result.get("ok"):
+                await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+                return
+
+            t = result.get("totals", {})
+            lines = [
+                "✅ <b>Client Master v2 sinxronlandi!</b>\n",
+                f"📄 Qatorlar: {t.get('rows_seen', 0)}",
+                f"♻️ Yangilandi: {t.get('updated', 0)}  (o'zgarishsiz: {t.get('unchanged', 0)})",
+                f"📞 Telefon o'zgarishi: {t.get('phone_edits', 0)}",
+                f"⚠️ Telefon konflikti (ko'rib chiqing): {t.get('phone_collisions', 0)}",
+                f"🔄 Status o'zgarishi: {t.get('status_changes', 0)}",
+                f"🚩 needs_review: {t.get('conflicts', 0)}",
+                f"⏭ O'tkazib yuborildi: {t.get('skipped', 0)}",
+                f"💾 Commitlar: {t.get('commits', 0)}",
+                "",
+                f"📦 Arxiv: <code>{result.get('archive_path', '—')[:60]}</code>",
+            ]
+            if t.get("conflicts", 0) or t.get("phone_collisions", 0):
+                lines.append("\n💡 <code>/reviewclients</code> — konfliktlarni ko'rib chiqish.")
+            await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+            return
+
+        # v1 legacy path
         api_url = f"{_BASE_URL}/api/finance/import-client-master"
         async with httpx.AsyncClient(timeout=300) as client:
             resp = await client.post(
@@ -2515,7 +2575,7 @@ async def cmd_clientmaster(message: types.Message):
             )
             return
 
-        # Persist file for daily auto-sync
+        # Persist file for daily auto-sync (legacy path only — v2 archives via service)
         try:
             with open("/data/client_master_latest.xlsx", "wb") as _cm_f:
                 _cm_f.write(file_bytes)

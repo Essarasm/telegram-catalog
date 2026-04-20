@@ -131,30 +131,43 @@ _HEADER_ALIAS = {
     # phone variants
     "phone": "phone", "tel": "phone", "tel.": "phone",
     "telefon": "phone", "telefon raqam": "phone",
-    "телефон": "phone", "тел": "phone", "тел.": "phone",
+    "телефон": "phone", "телефоны": "phone",
+    "телефон контрагента": "phone", "телефоны контрагента": "phone",
+    "тел": "phone", "тел.": "phone",
+    "тел. номер": "phone", "тел.номер": "phone", "тел номер": "phone",
+    "контактный телефон": "phone", "контакт": "phone", "контакты": "phone",
     "phone number": "phone", "телефон номер": "phone",
     "mobile": "phone", "мобильный": "phone", "nomer": "phone", "номер": "phone",
-    # name variants
+    # name variants (1C "Наименование" is the short client name on Контрагенты)
     "name": "name", "ism": "name", "имя": "name", "nom": "name",
     "fish": "name", "fio": "name", "фио": "name",
     "klient": "name", "клиент": "name", "mijoz": "name",
     "ф.и.о": "name", "ф.и.о.": "name", "ф и о": "name",
+    "наименование": "name", "название": "name", "наим.": "name",
     # location
     "location": "location", "manzil": "location", "адрес": "location",
-    "address": "location",
+    "address": "location", "город": "location",
+    "юридический адрес": "location", "юр.адрес": "location", "юр адрес": "location",
+    "почтовый адрес": "location", "фактический адрес": "location",
     # source
     "source": "source", "manba": "source", "источник": "source",
-    # 1c name
+    # 1c id (Контрагент in 1C is the client row itself; keep it mapping to client_id_1c
+    # because we use the 1C NAME (string) as the link key — NOT the numeric Код.
+    # The "Код" column is a numeric internal 1C id (e.g. 1701) — don't alias it here,
+    # otherwise it overwrites the human-readable 1C name.
     "client_id_1c": "client_id_1c", "1c": "client_id_1c",
     "1c nomi": "client_id_1c", "1с nomi": "client_id_1c",
     "1c ismi": "client_id_1c", "1c name": "client_id_1c",
     "client 1c": "client_id_1c", "1c клиент": "client_id_1c",
     "1с клиент": "client_id_1c", "контрагент": "client_id_1c",
     "kontragent": "client_id_1c",
-    # company
+    # company (1C "Полное наименование" = legal entity form)
     "company": "company_name", "company_name": "company_name",
     "kompaniya": "company_name", "компания": "company_name",
     "firma": "company_name", "фирма": "company_name",
+    "полное наименование": "company_name", "полн. наименование": "company_name",
+    "юр.лицо": "company_name", "юрлицо": "company_name",
+    "организация": "company_name",
 }
 
 
@@ -171,10 +184,11 @@ def _score_header_row(raw_row) -> int:
     return sum(1 for h in _normalize_headers(raw_row) if h in known)
 
 
-def _find_header_row(table_rows, max_scan: int = 10) -> int:
-    """1C exports often put the sheet title / metadata on rows 1-3 and the
-    real header on row 2-5. Pick the earliest row with the most alias hits,
-    preferring the first row that scores >= 2."""
+def _find_header_row(table_rows, max_scan: int = 15) -> int:
+    """1C exports often put the sheet title + blank rows + meta on rows 1-5 and
+    the real header row below. Pick the earliest row with ≥ 2 alias hits;
+    fall back to the single best-scoring row; if nothing scores return -1 so
+    the caller knows no header was found (better than silently using row 0)."""
     best_idx, best_score = 0, -1
     for i, row in enumerate(table_rows[:max_scan]):
         s = _score_header_row(row)
@@ -183,6 +197,8 @@ def _find_header_row(table_rows, max_scan: int = 10) -> int:
             best_idx = i
         if s >= 2:
             return i
+    if best_score <= 0:
+        return -1
     return best_idx
 
 
@@ -196,6 +212,12 @@ def _iter_rows_from_xlsx(file_bytes: bytes):
     if not rows:
         return [], []
     hdr_idx = _find_header_row(rows)
+    if hdr_idx < 0:
+        # No alias-matching header row found — return raw preview so operator
+        # can see what's in the file.
+        preview = rows[0] if rows else tuple()
+        header_raw = [("" if c is None else str(c)) for c in preview]
+        return header_raw, []
     header_row = rows[hdr_idx]
     header_raw = [("" if c is None else str(c)) for c in header_row]
     headers = _normalize_headers(header_raw)
@@ -217,9 +239,13 @@ def _iter_rows_from_xls(file_bytes: bytes):
         return [], []
     all_rows = [
         [sh.cell_value(r, c) for c in range(sh.ncols)]
-        for r in range(min(sh.nrows, 10))
+        for r in range(min(sh.nrows, 15))
     ]
     hdr_idx = _find_header_row(all_rows)
+    if hdr_idx < 0:
+        # No alias-matching header row — surface raw row 0 to operator.
+        preview = [str(sh.cell_value(0, c) or "") for c in range(sh.ncols)] if sh.nrows else []
+        return preview, []
     header_raw = [str(sh.cell_value(hdr_idx, c) or "") for c in range(sh.ncols)]
     headers = _normalize_headers(header_raw)
     out = []
@@ -275,6 +301,15 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
         cid_1c = str(raw.get("client_id_1c") or "").strip()
         company = str(raw.get("company_name") or "").strip()
 
+        # client_id_1c must be a human-readable 1C NAME, never a numeric code.
+        # If the uploaded value is purely numeric (e.g. "1701" from a "Код"
+        # column that slipped through), discard it. Fall back to `name` when
+        # that's a proper string.
+        if cid_1c and cid_1c.isdigit():
+            cid_1c = ""
+        if not cid_1c and client_name and not client_name.isdigit():
+            cid_1c = client_name
+
         existing = conn.execute(
             "SELECT id, COALESCE(status, 'active') FROM allowed_clients "
             "WHERE phone_normalized = ? LIMIT 1",
@@ -287,6 +322,7 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
 
         if existing:
             updates, params = [], []
+            flag_needs_review = False
             if client_name:
                 updates.append("name = ?"); params.append(client_name)
             if location:
@@ -294,9 +330,46 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
             if source:
                 updates.append("source_sheet = ?"); params.append(source)
             if cid_1c:
+                # 1C ambiguity tiebreaker: if an existing name already has
+                # recent activity (real_orders / payments in last 180d) and
+                # the incoming Контрагент name differs, don't silently
+                # overwrite — flag needs_review so an operator can pick.
+                existing_cid = conn.execute(
+                    "SELECT client_id_1c FROM allowed_clients WHERE id = ?",
+                    (existing[0],),
+                ).fetchone()
+                prev_cid = (existing_cid[0] if existing_cid else None) or ""
+                if prev_cid and prev_cid != cid_1c:
+                    try:
+                        prev_recent = conn.execute(
+                            "SELECT MAX(doc_date) FROM real_orders "
+                            "WHERE client_name_1c = ? "
+                            "AND doc_date >= date('now','-180 days')",
+                            (prev_cid,),
+                        ).fetchone()[0]
+                        new_recent = conn.execute(
+                            "SELECT MAX(doc_date) FROM real_orders "
+                            "WHERE client_name_1c = ? "
+                            "AND doc_date >= date('now','-180 days')",
+                            (cid_1c,),
+                        ).fetchone()[0]
+                        # Rule: prefer the name with the more recent activity.
+                        # If both have activity within 180d, flag ambiguity.
+                        if prev_recent and new_recent:
+                            flag_needs_review = True
+                            # Keep whichever is more recent (string ISO date)
+                            if prev_recent >= new_recent:
+                                cid_1c = prev_cid  # revert to existing
+                        elif prev_recent and not new_recent:
+                            cid_1c = prev_cid  # existing wins on activity
+                        # else: no prev activity — the new cid_1c overwrites normally
+                    except Exception:
+                        pass  # activity check is best-effort
                 updates.append("client_id_1c = ?"); params.append(cid_1c)
             if company:
                 updates.append("company_name = ?"); params.append(company)
+            if flag_needs_review:
+                updates.append("needs_review = 1")
             if updates:
                 params.append(existing[0])
                 conn.execute(

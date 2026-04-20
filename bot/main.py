@@ -49,6 +49,11 @@ async def cmd_start(message: types.Message):
         )
         return
 
+    if deep_link == "support":
+        from bot.handlers.support import start_support_prompt
+        await start_support_prompt(message)
+        return
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -469,6 +474,7 @@ async def main():
     from bot.handlers.location import router as location_router
     from bot.handlers.orders import router as orders_router
     from bot.handlers.registration import router as registration_router
+    from bot.handlers.support import router as support_router
 
     dp.include_router(testclient_router)
     dp.include_router(admin_router)
@@ -477,7 +483,18 @@ async def main():
     dp.include_router(orders_router)
     dp.include_router(location_router)
     dp.include_router(registration_router)
-    logger.info("Loaded handler modules: testclient, admin, uploads, score, orders, location, registration")
+    dp.include_router(support_router)
+    logger.info("Loaded handler modules: testclient, admin, uploads, score, orders, location, registration, support")
+
+    # Error alerter: any uncaught exception inside a bot handler now posts
+    # to Admin group with full traceback (same infrastructure as the
+    # FastAPI side). 5-min suppression per error signature.
+    try:
+        from backend.services.error_alert import install_aiogram_handler
+        install_aiogram_handler(dp)
+        logger.info("Bot error alerter installed")
+    except Exception as _e:
+        logger.warning(f"Bot error alerter install failed: {_e}")
 
     try:
         await bot.set_chat_menu_button(

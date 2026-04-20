@@ -382,7 +382,7 @@ export default function App() {
           </div>
           <div className="flex gap-2 justify-center">
             <a
-              href="https://t.me/axmatov0902"
+              href="https://t.me/samrassvetbot?start=support"
               target="_blank"
               rel="noopener noreferrer"
               className="bg-tg-button text-tg-button-text text-xs font-medium rounded-lg px-4 py-2"
@@ -405,6 +405,8 @@ export default function App() {
           <CatalogPage
             onSelectCategory={(cat) => navigateTo('producers', cat)}
             onSearch={(q) => navigateTo('search', q)}
+            onSelectProduct={(product) => navigateTo('product_detail', product)}
+            approved={approved}
           />
         )}
         {page === 'producers' && (

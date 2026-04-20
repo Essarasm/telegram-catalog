@@ -36,15 +36,30 @@ export async function logSearchClick({ searchLogId, telegramId, productId, actio
   } catch (e) { /* silent — analytics should never break UX */ }
 }
 
+export async function logInterestClick({ telegramId, productId, searchQuery = '', matchScore = 0 }) {
+  try {
+    const params = new URLSearchParams({
+      telegram_id: telegramId || 0,
+      product_id: productId,
+      search_query: searchQuery,
+      match_score: matchScore,
+    });
+    fetch(`${API_BASE}/search/interest-click?${params}`, { method: 'POST' });
+  } catch (e) { /* silent */ }
+}
+
 // ── Search suggestions & "Did you mean?" ────────────────────────
 
 export async function fetchSearchSuggestions(query) {
-  if (!query || query.length < 1) return [];
+  if (!query || query.length < 1) return { suggestions: [], total_matches: 0 };
   try {
     const res = await fetch(`${API_BASE}/search/suggestions?q=${encodeURIComponent(query)}&limit=6`);
     const data = await res.json();
-    return data.suggestions || [];
-  } catch (e) { return []; }
+    return {
+      suggestions: Array.isArray(data.suggestions) ? data.suggestions : [],
+      total_matches: data.total_matches || 0,
+    };
+  } catch (e) { return { suggestions: [], total_matches: 0 }; }
 }
 
 export async function fetchDidYouMean(query) {

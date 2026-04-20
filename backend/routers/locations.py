@@ -314,7 +314,13 @@ def save_client_location(data: ClientLocationSave):
 
 @client_router.post("/gps")
 def save_gps_location(data: GpsLocationSave):
-    """Save GPS coordinates + address from the in-app map picker."""
+    """Save GPS coordinates + address from the in-app map picker.
+
+    Also propagates the reverse-geocoded region/district back into the
+    matched allowed_clients row (viloyat/tuman), but only when those
+    fields are currently empty — never overrides operator-curated values.
+    This is the Phase 1f "Mini App → Client Master backward flow" hook.
+    """
     conn = get_db()
     user = conn.execute(
         "SELECT telegram_id FROM users WHERE telegram_id = ?", (data.telegram_id,)
@@ -324,9 +330,40 @@ def save_gps_location(data: GpsLocationSave):
         raise HTTPException(status_code=404, detail="User not found")
 
     conn.execute(
-        "UPDATE users SET latitude = ?, longitude = ?, location_address = ?, location_region = ?, location_district = ?, location_updated = datetime('now') WHERE telegram_id = ?",
+        "UPDATE users SET latitude = ?, longitude = ?, location_address = ?, "
+        "location_region = ?, location_district = ?, "
+        "location_updated = datetime('now') WHERE telegram_id = ?",
         (data.latitude, data.longitude, data.address, data.region, data.district, data.telegram_id),
     )
+
+    # Backward flow: if this Telegram user is linked to an allowed_clients row,
+    # fill in Viloyat/Tuman from the reverse-geocode when those are empty.
+    # Never overwrite operator-curated values (empty-only rule).
+    try:
+        ac_row = conn.execute(
+            "SELECT id, viloyat, tuman FROM allowed_clients "
+            "WHERE matched_telegram_id = ? LIMIT 1",
+            (data.telegram_id,),
+        ).fetchone()
+        if ac_row:
+            updates, params = [], []
+            if data.region and not ac_row["viloyat"]:
+                updates.append("viloyat = ?")
+                params.append(data.region)
+            if data.district and not ac_row["tuman"]:
+                updates.append("tuman = ?")
+                params.append(data.district)
+            if updates:
+                params.append(ac_row["id"])
+                conn.execute(
+                    f"UPDATE allowed_clients SET {', '.join(updates)}, "
+                    f"last_master_synced_at = datetime('now') WHERE id = ?",
+                    params,
+                )
+    except Exception:
+        # Never block a user's GPS save on a backward-flow hiccup
+        pass
+
     conn.commit()
     conn.close()
     return {"ok": True}

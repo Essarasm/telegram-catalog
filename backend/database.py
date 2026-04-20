@@ -61,7 +61,9 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3  # 2026-04-20: +lifecycle, +popularity_score, +phone_history, +support_threads,
+                     #             +product_interest_clicks, +15 allowed_clients columns for Client Master v2,
+                     #             +master_upload_log
 
 
 def init_db():
@@ -610,9 +612,69 @@ def init_db():
                           ("location_district_id", "INTEGER"), ("location_moljal_id", "INTEGER")]:
         if col not in ac_cols:
             conn.execute(f"ALTER TABLE allowed_clients ADD COLUMN {col} {coltype}")
+            ac_cols.add(col)
 
     # Create index on client_id_1c (after migration ensures column exists)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_1c ON allowed_clients(client_id_1c)")
+
+    # Phase 1a of Client Data Workflow — sync-guarantee columns.
+    # All NULL by default; populated progressively as the pipeline fills them in.
+    # See obsidian-vault/Client Data Workflow — Design v0.1.md for semantics.
+    for col, coltype in [
+        ("source_1c", "TEXT"),              # last 1C Контрагенты import id that touched this row
+        ("source_master", "TEXT"),          # last Client Master upload id that touched ✏️ columns
+        ("master_row_id", "INTEGER"),        # FK to Client Master xlsx row (for round-tripping)
+        ("needs_review", "INTEGER DEFAULT 0"),       # 1 = conflict between sources, human must resolve
+        ("needs_verification", "INTEGER DEFAULT 0"), # 1 = location data looks implausible
+        ("segment", "TEXT DEFAULT 'shop'"),  # 'shop' | 'usto' | 'other'
+        ("hajm", "TEXT"),                    # client volume tag (Master-owned, e.g. 'Katta' / 'Kichik')
+        ("mijoz_holati", "TEXT"),            # client status annotation (Master-owned)
+        ("eslatmalar", "TEXT"),              # free-form operator notes (Master-owned)
+        ("ism_02", "TEXT"), ("raqam_02", "TEXT"),  # secondary contact
+        ("ism_03", "TEXT"), ("raqam_03", "TEXT"),  # tertiary contact
+        ("viloyat", "TEXT"),                 # Master-owned; mirror of location/GPS reverse-geocode
+        ("tuman", "TEXT"),
+        ("moljal", "TEXT"),
+        ("last_master_synced_at", "TEXT"),
+    ]:
+        if col not in ac_cols:
+            conn.execute(f"ALTER TABLE allowed_clients ADD COLUMN {col} {coltype}")
+            ac_cols.add(col)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_segment ON allowed_clients(segment)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_needs_review ON allowed_clients(needs_review)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_master_row ON allowed_clients(master_row_id)")
+
+    # Phone audit trail — every phone edit via Master upload or manual correction
+    # records here so replaced phones can be traced/recovered. Never pruned.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS phone_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            old_phone TEXT,
+            new_phone TEXT,
+            reason TEXT,
+            changed_by TEXT,
+            changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (client_id) REFERENCES allowed_clients(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_phone_history_client ON phone_history(client_id)")
+
+    # Client Master upload audit — one row per uploaded xlsx, links to archived file.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS master_upload_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            archived_file_path TEXT,
+            uploaded_by_user_id INTEGER,
+            uploaded_by_name TEXT,
+            row_count INTEGER,
+            inserted_count INTEGER,
+            updated_count INTEGER,
+            conflict_count INTEGER,
+            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     # Migration: add location columns to orders
     order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
@@ -639,6 +701,51 @@ def init_db():
         _rebuild_search_text(conn)
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_products_search_text ON products(search_text)")
+
+    # Migration: add lifecycle columns to products
+    # lifecycle: 'active' (supplied in 2026), 'aging' (Jul-Dec 2025), 'stale' (Jan-Jun 2025), 'never' (no supply)
+    # Catalog browse shows only active+aging; search can surface stale+never via fuzzy match.
+    # last_interest_alert_at tracks the 60-day cooldown on demand-signal alerts.
+    # popularity_score: count of distinct real_orders containing this product, last 180 days.
+    # Used to rank search results within the same match tier.
+    for col, coltype in [
+        ("lifecycle", "TEXT DEFAULT 'active'"),
+        ("last_interest_alert_at", "TEXT DEFAULT NULL"),
+        ("popularity_score", "INTEGER DEFAULT 0"),
+    ]:
+        if col not in prod_cols:
+            conn.execute(f"ALTER TABLE products ADD COLUMN {col} {coltype}")
+            prod_cols.add(col)
+
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_products_lifecycle ON products(lifecycle)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_real_order_items_name ON real_order_items(product_name_1c)")
+
+    # Interest-click tracking for hidden (stale/never) products — drives the demand-signal alert.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS product_interest_clicks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            telegram_id INTEGER NOT NULL,
+            search_query TEXT,
+            match_score REAL,
+            clicked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_interest_clicks_product_time ON product_interest_clicks(product_id, clicked_at)")
+
+    # Support thread routing: when the bot forwards a client's support-request
+    # to the Admin group, the Telegram message_id of the forwarded message is
+    # recorded so admin replies can be routed back to the original client.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS support_threads (
+            admin_message_id INTEGER PRIMARY KEY,
+            client_telegram_id INTEGER NOT NULL,
+            client_message_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_support_threads_client ON support_threads(client_telegram_id)")
 
     # Migration: add reminder_count_per_day to daily_upload_schedule.
     # Decoupled from expected_count_per_day: the checklist counts 1 upload

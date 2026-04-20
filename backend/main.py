@@ -42,6 +42,15 @@ from backend.routers import categories, products, export, cart, users, reports, 
 
 app = FastAPI(title="Katalog API", version="1.0.0")
 
+# Global error alerter — posts uncaught exceptions to Admin group so silent
+# crashes don't slip through (5-min per-signature rate limit).
+try:
+    from backend.services.error_alert import install_fastapi_handler
+    install_fastapi_handler(app)
+except Exception as _e:
+    import logging as _logging
+    _logging.getLogger(__name__).warning(f"error_alert install failed: {_e}")
+
 # GZip compression — compresses API JSON responses and text assets
 # min_size=500 avoids compressing tiny responses where overhead > savings
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -58,6 +67,103 @@ app.add_middleware(
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/health/deep")
+def health_deep():
+    """Richer health snapshot: DB size, row counts for hot tables,
+    latest daily_uploads age, last DB backup, last popularity update.
+    Safe to poll every few seconds — all queries are cheap."""
+    import glob
+    import os as _os
+    from backend.database import get_db
+    out = {"status": "ok", "checks": {}}
+
+    # DB file
+    try:
+        db_path = _os.environ.get("DATABASE_PATH", "/data/catalog.db")
+        size = _os.path.getsize(db_path) if _os.path.exists(db_path) else -1
+        out["checks"]["db_bytes"] = size
+        out["checks"]["db_exists"] = size > 0
+    except Exception as e:
+        out["checks"]["db_error"] = str(e)[:200]
+        out["status"] = "degraded"
+
+    # Row counts for hot tables (fast — uses COUNT(*) on indexed tables)
+    try:
+        conn = get_db()
+        for table in ("products", "allowed_clients", "users", "orders",
+                      "order_items", "real_orders", "real_order_items",
+                      "client_balances", "client_debts", "client_payments",
+                      "search_logs", "product_interest_clicks",
+                      "phone_history", "master_upload_log"):
+            try:
+                n = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                out["checks"][f"rows_{table}"] = n
+            except Exception:
+                out["checks"][f"rows_{table}"] = "missing"
+        # Newest daily_upload row — detects stale imports
+        try:
+            row = conn.execute(
+                "SELECT MAX(upload_date) AS d FROM daily_uploads"
+            ).fetchone()
+            out["checks"]["latest_daily_upload"] = row["d"]
+        except Exception:
+            pass
+        # Popularity freshness
+        try:
+            row = conn.execute(
+                "SELECT MAX(popularity_score) AS m, "
+                "SUM(CASE WHEN popularity_score > 0 THEN 1 ELSE 0 END) AS c "
+                "FROM products"
+            ).fetchone()
+            out["checks"]["popularity_max"] = row["m"]
+            out["checks"]["popularity_nonzero_products"] = row["c"]
+        except Exception:
+            pass
+        # needs_review backlog
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM allowed_clients "
+                "WHERE needs_review = 1 OR needs_verification = 1"
+            ).fetchone()
+            out["checks"]["clients_needs_review"] = row["c"]
+        except Exception:
+            pass
+        conn.close()
+    except Exception as e:
+        out["checks"]["row_count_error"] = str(e)[:200]
+        out["status"] = "degraded"
+
+    # Latest DB backup
+    try:
+        backup_dir = _os.environ.get("DB_BACKUP_DIR", "/data/db_backups")
+        files = sorted([f for f in _os.listdir(backup_dir)
+                        if f.startswith("catalog_") and f.endswith(".sql.gz")])
+        if files:
+            latest = files[-1]
+            path = _os.path.join(backup_dir, latest)
+            out["checks"]["latest_db_backup"] = latest
+            out["checks"]["latest_db_backup_bytes"] = _os.path.getsize(path)
+        else:
+            out["checks"]["latest_db_backup"] = None
+    except Exception as e:
+        out["checks"]["backup_error"] = str(e)[:200]
+
+    # Data volume contents (top-level only, not recursive — cheap)
+    try:
+        vol_files = []
+        for p in glob.glob("/data/*"):
+            try:
+                s = _os.path.getsize(p) if _os.path.isfile(p) else -1
+                vol_files.append({"name": _os.path.basename(p), "size": s})
+            except OSError:
+                pass
+        out["checks"]["data_volume_top_level"] = vol_files[:20]
+    except Exception:
+        pass
+
+    return out
 
 
 @app.get("/api/debug/volume")

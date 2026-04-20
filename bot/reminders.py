@@ -271,40 +271,154 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         if not alerts["out_of_stock"] and not alerts["running_low"]:
             logger.info("Stock alert skipped — all active products healthy")
             return
-        text = format_stock_alert_message(alerts)
-        await bot.send_message(chat_id, text, parse_mode="HTML")
+        # Scheduled 08:00 alert = summary (top 25/30). Ops can request full via
+        # /stockalert tugagan / kam / full from the Inventory group.
+        messages = format_stock_alert_message(alerts, full=False)
+        for text in messages:
+            await bot.send_message(chat_id, text, parse_mode="HTML")
         logger.info(
-            f"Stock alert sent: {len(alerts['out_of_stock'])} OOS, "
-            f"{len(alerts['running_low'])} low"
+            f"Stock alert sent ({len(messages)} msg): "
+            f"{len(alerts['out_of_stock'])} OOS, {len(alerts['running_low'])} low"
         )
     except Exception as e:
         logger.error(f"Stock alert failed: {e}")
 
 
+async def _send_master_auto_export(bot, chat_id: int) -> None:
+    """Monday 08:00 — auto-export Client Master xlsx to the Admin group."""
+    today = datetime.now(TASHKENT)
+    if today.weekday() != 0:  # 0 = Monday
+        return
+    try:
+        from aiogram.types import BufferedInputFile
+        from backend.services.export_client_master import build_xlsx_bytes, write_xlsx_to_archive
+        data = build_xlsx_bytes()
+        try:
+            write_xlsx_to_archive()
+        except Exception as e:
+            logger.warning(f"master auto-export archive failed: {e}")
+        ts = today.strftime("%Y-%m-%d")
+        filename = f"Client_Master_{ts}.xlsx"
+        caption = (
+            "📋 <b>Dushanba: Client Master sinxronlash</b>\n\n"
+            f"Sana: {ts}\n"
+            "Bu hafta bo'yi ✏️ sariq ustunlarni tahrirlang. "
+            "Juma kuni men sizga eslatma yuboraman — "
+            "<code>/clientmaster</code> caption bilan qayta yuboring."
+        )
+        await bot.send_document(
+            chat_id,
+            BufferedInputFile(data, filename=filename),
+            caption=caption,
+            parse_mode="HTML",
+        )
+        logger.info(f"Master auto-export sent: {len(data)} bytes to {chat_id}")
+    except Exception as e:
+        logger.error(f"Master auto-export failed: {e}")
+
+
+async def _send_master_sync_prompt(bot, chat_id: int) -> None:
+    """Friday 17:00 — prompt admins to send back edited Client Master xlsx."""
+    today = datetime.now(TASHKENT)
+    if today.weekday() != 4:  # 4 = Friday
+        return
+    try:
+        await bot.send_message(
+            chat_id,
+            "📋 <b>Haftalik Client Master sinxronlash vaqti keldi!</b>\n\n"
+            "Agar siz <code>Client_Master_...xlsx</code> faylini tahrir qilgan bo'lsangiz, "
+            "iltimos, shu xabarga javob sifatida <code>/clientmaster</code> caption bilan qayta yuboring.\n\n"
+            "Agar hech narsa o'zgartirmagan bo'lsangiz, bu xabarni e'tiborga olmang — "
+            "Dushanba kuni yangi fayl yuboriladi.",
+            parse_mode="HTML",
+        )
+        logger.info(f"Master sync prompt sent to {chat_id}")
+    except Exception as e:
+        logger.error(f"Master sync prompt failed: {e}")
+
+
+async def _send_master_sync_nudge(bot, chat_id: int) -> None:
+    """Sunday 12:00 — gentle nudge if no /clientmaster upload this week."""
+    today = datetime.now(TASHKENT)
+    if today.weekday() != 6:  # 6 = Sunday
+        return
+    try:
+        import sqlite3
+        DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """SELECT COUNT(*) AS n FROM master_upload_log
+               WHERE uploaded_at >= datetime('now', '-6 days')"""
+        ).fetchone()
+        conn.close()
+        if row and row["n"]:
+            return  # already uploaded this week
+        await bot.send_message(
+            chat_id,
+            "⏰ <b>Yakshanba nudge</b>\n\n"
+            "Bu hafta Client Masterni yuklamadingiz. "
+            "Tahrirlaringiz bor bo'lsa, <code>/clientmaster</code> caption bilan yuboring. "
+            "Yoki keyingi dushanbani kuting.",
+            parse_mode="HTML",
+        )
+        logger.info(f"Master sync nudge sent to {chat_id}")
+    except Exception as e:
+        logger.error(f"Master sync nudge failed: {e}")
+
+
 def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
-    """Launch the reminder and sync background tasks. Returns the task handles."""
+    """Launch the reminder and sync background tasks. Returns the task handles.
+
+    `chat_id` here is the Admin group (kept for admin-only reminders).
+    Daily-upload nudges (morning + EOD) go to the new Daily group.
+    Stock alert goes to Inventory group.
+    """
     ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
+    INVENTORY_GROUP_CHAT_ID = int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))
+    DAILY_GROUP_CHAT_ID = int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))
     tasks = [
+        # Daily-upload reminders → Daily group (were Admin group).
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 17, 0, _send_morning_nudge),
+            run_daily_reminder(bot, DAILY_GROUP_CHAT_ID, 17, 0, _send_morning_nudge),
             name="daily-upload-reminder",
         ),
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 17, 0, _send_eod_check),
+            run_daily_reminder(bot, DAILY_GROUP_CHAT_ID, 17, 0, _send_eod_check),
             name="daily-upload-eod-check",
         ),
+        # Client-sync runs → Order/Sales group (unchanged).
         asyncio.create_task(
             run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 6, 0, _run_daily_client_sync),
             name="daily-client-sync",
         ),
+        # Weekly unlinked users → Admin group (admin concern, not daily ops).
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 17, 0, _send_weekly_unlinked),
             name="weekly-unlinked-reminder",
         ),
+        # Daily stock alert → Inventory group.
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 8, 0, _send_stock_alert),
+            run_daily_reminder(bot, INVENTORY_GROUP_CHAT_ID, 8, 0, _send_stock_alert),
             name="daily-stock-alert",
         ),
+        # Client Master weekly sync cycle (sender checks weekday internally).
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 8, 0, _send_master_auto_export),
+            name="master-mon-auto-export",
+        ),
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 17, 0, _send_master_sync_prompt),
+            name="master-fri-sync-prompt",
+        ),
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 12, 0, _send_master_sync_nudge),
+            name="master-sun-sync-nudge",
+        ),
     ]
-    logger.info(f"Started {len(tasks)} background tasks (reminders chat={chat_id}, sync chat={ORDER_GROUP_CHAT_ID})")
+    logger.info(
+        f"Started {len(tasks)} background tasks "
+        f"(admin={chat_id}, daily={DAILY_GROUP_CHAT_ID}, "
+        f"sales={ORDER_GROUP_CHAT_ID}, inventory={INVENTORY_GROUP_CHAT_ID})"
+    )
     return tasks
