@@ -13,6 +13,7 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
+from backend.admin_auth import check_admin_key
 
 router = APIRouter(prefix="/api/locations", tags=["locations"])
 
@@ -132,7 +133,7 @@ def get_location(location_id: int):
 @router.post("")
 def create_location(loc: LocationCreate, admin_key: str = Query(...)):
     """Admin: add a new location entry."""
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         raise HTTPException(status_code=403, detail="Invalid admin key")
     if loc.type not in ("viloyat", "district", "moljal"):
         raise HTTPException(status_code=400, detail="type must be viloyat, district, or moljal")
@@ -157,7 +158,7 @@ def create_location(loc: LocationCreate, admin_key: str = Query(...)):
 @router.put("/{location_id}")
 def update_location(location_id: int, loc: LocationUpdate, admin_key: str = Query(...)):
     """Admin: update a location entry."""
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         raise HTTPException(status_code=403, detail="Invalid admin key")
 
     conn = get_db()

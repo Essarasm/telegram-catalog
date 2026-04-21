@@ -9,6 +9,7 @@ from backend.services.import_balances import (
     get_client_balance_history,
     bulk_import_balances,
 )
+from backend.admin_auth import check_admin_key
 from backend.services.import_debts import (
     apply_debtors_import,
     get_client_debt,
@@ -47,7 +48,7 @@ async def import_balances(
     Used by /balances bot command. Parses the turnover sheet and upserts
     balance snapshots per client per period.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
     file_bytes = await file.read()
@@ -68,7 +69,7 @@ async def bulk_import(
     Accepts up to 30 files (15 months × 2 currencies).
     Used for one-time historical data import.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
     if not files:
@@ -93,7 +94,7 @@ async def import_clients_upload(
     admin_key: str = Form(""),
 ):
     """Upload the allowed-clients list (XLS/XLSX). Powers the /clients bot command."""
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     file_bytes = await file.read()
     if not file_bytes:
@@ -112,7 +113,7 @@ async def import_debts(
     Used by /debtors bot command. Replaces all records in client_debts
     with the new snapshot.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
     file_bytes = await file.read()
@@ -134,7 +135,7 @@ async def import_real_orders(
     re-uploading the same period replaces existing documents instead of
     duplicating them.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
     file_bytes = await file.read()
@@ -155,7 +156,7 @@ async def import_cash(
     Used by the /cash bot command. Idempotent on doc_number_1c — morning
     and evening files have disjoint numbers so both sets persist.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
     file_bytes = await file.read()
@@ -176,7 +177,7 @@ async def import_supply(
     Used by the /supply bot command. Idempotent on (doc_number, doc_date).
     Classifies docs as supply / return / adjustment from Контрагент value.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
     file_bytes = await file.read()
@@ -203,7 +204,7 @@ def unmatched_real_clients(
     System-only 1C markers (ИСПРАВЛЕНИЕ, ИСПРАВЛЕНИЕ СКЛАД 2) are filtered out
     — they are correction documents, not real clients.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return list_unmatched_real_clients(limit=limit)
 
@@ -221,7 +222,7 @@ def unmatched_real_products(
     /unmatchedclients there is no system skip list — every unmatched product is
     a genuine catalog gap.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return list_unmatched_real_products(limit=limit)
 
@@ -236,7 +237,7 @@ def relink_real_orders_endpoint(
     uses SQLite LOWER() which is ASCII-only and misses cyrillic name matches).
     Safe to run repeatedly — already-matched rows are never touched.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return relink_real_orders()
 
@@ -253,7 +254,7 @@ def real_order_sample(
     in Cabinet" complaint is a parser bug (zeros in DB) or a render bug
     (data present, UI hiding it).
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return get_real_order_sample_for_client(client)
 
@@ -267,7 +268,7 @@ def backfill_real_order_totals_endpoint(
     on existing real_orders rows. Mirrors import-time post-processing so already-
     ingested 1C exports heal without requiring re-upload. Idempotent.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return backfill_real_order_totals()
 
@@ -286,7 +287,7 @@ def api_ingest_unmatched_skus(
 
     Idempotent: skips products that already exist in the products table.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return ingest_unmatched_skus()
 
@@ -304,7 +305,7 @@ async def import_client_master_v2(
     conflict detection, phone edits with audit trail + collision check,
     status transitions (active/inactive/merged), and chunked commits.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return {"ok": False, "error": "bad admin key"}
     file_bytes = await file.read()
     from backend.services.import_client_master_v2 import apply_client_master_v2
@@ -332,7 +333,7 @@ async def import_client_master(
     (non-empty source values do not overwrite existing populated DB fields with
     blanks). Designed to be run repeatedly as ops re-export the spreadsheet.
     """
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     file_bytes = await file.read()
     if not file_bytes:
@@ -493,9 +494,9 @@ def client_credit_score(telegram_id: int = Query(...)):
 
 
 @router.post("/run-scoring")
-def trigger_scoring(admin_key: str = Form("rassvet2026")):
+def trigger_scoring(admin_key: str = Form("")):
     """Manually trigger scoring recalculation (admin only)."""
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
     return run_nightly_scoring()
 

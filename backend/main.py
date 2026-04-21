@@ -55,6 +55,15 @@ except Exception as _e:
 # min_size=500 avoids compressing tiny responses where overhead > savings
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(CacheControlMiddleware)
+
+# Rate limiting — per-telegram_id (or per-IP) sliding windows on /api/*
+from backend.rate_limit import RateLimitMiddleware, get_stats as _rl_stats
+app.add_middleware(RateLimitMiddleware)
+
+
+@app.get("/api/rate-limit-stats")
+def rate_limit_stats():
+    return _rl_stats()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

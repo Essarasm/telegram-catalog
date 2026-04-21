@@ -19,6 +19,7 @@ from bot.shared import (
     track_daily_upload, extract_snapshot_date, sender_display_name,
     log_admin_action,
 )
+from backend.admin_auth import get_admin_key
 
 router = Router()
 
@@ -69,7 +70,7 @@ async def cmd_prices(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -334,7 +335,7 @@ async def cmd_stock(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -455,7 +456,7 @@ async def cmd_catalog(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -571,7 +572,7 @@ async def _download_and_import(doc, message: types.Message) -> dict:
         resp = await client.post(
             api_url,
             files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
-            data={"admin_key": "rassvet2026"},
+            data={"admin_key": get_admin_key()},
         )
         return resp.json()
 
@@ -719,7 +720,7 @@ async def cmd_balances(message: types.Message):
             r = await client.get(
                 f"{_BASE_URL}/api/admin/debug-query",
                 params={
-                    "admin_key": "rassvet2026",
+                    "admin_key": get_admin_key(),
                     "q": "SELECT COUNT(DISTINCT client_name_1c) as c, COUNT(DISTINCT period_start||currency) as p FROM client_balances",
                 },
             )
@@ -828,7 +829,7 @@ async def cmd_clients(message: types.Message):
                 api_url,
                 files={"file": (doc.file_name, file_bytes,
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -930,7 +931,7 @@ async def cmd_debtors(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -1273,7 +1274,7 @@ async def cmd_realorders(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -1404,7 +1405,7 @@ async def cmd_cash(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -1693,7 +1694,7 @@ async def cmd_supply(message: types.Message):
         api_url = f"{_BASE_URL}/api/finance/import-supply"
         form = aiohttp.FormData()
         form.add_field("file", file_bytes, filename=fname)
-        form.add_field("admin_key", "rassvet2026")
+        form.add_field("admin_key", get_admin_key())
 
         async with aiohttp.ClientSession() as sess:
             async with sess.post(api_url, data=form) as resp:
@@ -1882,7 +1883,7 @@ async def cmd_unmatchedclients(message: types.Message):
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(
                 api_url,
-                params={"admin_key": "rassvet2026", "limit": 30},
+                params={"admin_key": get_admin_key(), "limit": 30},
             )
             result = resp.json()
 
@@ -1968,7 +1969,7 @@ async def cmd_unmatchedproducts(message: types.Message):
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(
                 api_url,
-                params={"admin_key": "rassvet2026", "limit": 100},
+                params={"admin_key": get_admin_key(), "limit": 100},
             )
             result = resp.json()
 
@@ -2066,7 +2067,7 @@ async def cmd_relinkrealorders(message: types.Message):
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 api_url,
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -2140,7 +2141,7 @@ async def cmd_ingest_skus(message: types.Message):
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 api_url,
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 
@@ -2221,7 +2222,7 @@ async def cmd_realordersample(message: types.Message):
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(
                 api_url,
-                params={"admin_key": "rassvet2026", "client": needle},
+                params={"admin_key": get_admin_key(), "client": needle},
             )
             result = resp.json()
 
@@ -2533,7 +2534,7 @@ async def cmd_clientmaster(message: types.Message):
                     api_url,
                     files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
                     data={
-                        "admin_key": "rassvet2026",
+                        "admin_key": get_admin_key(),
                         "uploaded_by_user_id": str(message.from_user.id if message.from_user else 0),
                         "uploaded_by_name": from_name,
                     },
@@ -2569,7 +2570,7 @@ async def cmd_clientmaster(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 

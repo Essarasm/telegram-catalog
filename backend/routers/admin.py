@@ -8,14 +8,13 @@ unless ?include_suppliers=true is passed.
 """
 from fastapi import APIRouter, Query, HTTPException, UploadFile, File, Form
 from backend.database import get_db
+from backend.admin_auth import check_admin_key
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-ADMIN_KEY = "rassvet2026"
-
 
 def _check_admin(admin_key: str):
-    if admin_key != ADMIN_KEY:
+    if not check_admin_key(admin_key):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -1197,7 +1196,7 @@ async def upload_images(
     admin_key: str = Form(""),
 ):
     """Upload a ZIP of {product_id}.png files to /data/images/. Runs sync_images after."""
-    if admin_key != ADMIN_KEY:
+    if not check_admin_key(admin_key):
         from fastapi.responses import JSONResponse
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 

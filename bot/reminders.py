@@ -20,6 +20,8 @@ import os
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 
+from backend.admin_auth import get_admin_key
+
 logger = logging.getLogger(__name__)
 
 TASHKENT = ZoneInfo("Asia/Tashkent")
@@ -194,7 +196,7 @@ async def _run_daily_client_sync(bot, chat_id: int) -> None:
                 api_url,
                 files={"file": ("client_master_daily_sync.xlsx", file_bytes,
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                data={"admin_key": "rassvet2026"},
+                data={"admin_key": get_admin_key()},
             )
             result = resp.json()
 

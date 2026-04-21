@@ -6,6 +6,7 @@ from typing import Optional
 from backend.database import get_db
 from backend.services.notify_registration import send_registration_notification
 from backend.services.backup_users import save_user_to_backup
+from backend.admin_auth import check_admin_key
 import json
 import os
 import re
@@ -228,7 +229,7 @@ def register_user(user: UserRegister):
 @router.post("/approve")
 def approve_user(telegram_id: int = Query(...), admin_key: str = Query(...)):
     """Manually approve a user (for admin use)."""
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return {"error": "Invalid admin key"}
     conn = get_db()
     conn.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = ?", (telegram_id,))

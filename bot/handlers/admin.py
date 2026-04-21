@@ -4,6 +4,7 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.shared import get_db, html_escape, is_admin, logger, log_admin_action
+from backend.admin_auth import get_admin_key
 
 router = Router()
 
@@ -1349,7 +1350,7 @@ async def cmd_backfillordernames(message: types.Message):
 
         api_url = f"{_BASE_URL}/api/admin/backfill-order-item-names"
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(api_url, params={"admin_key": "rassvet2026"})
+            resp = await client.post(api_url, params={"admin_key": get_admin_key()})
             result = resp.json()
 
         if not result.get("ok"):
@@ -1388,7 +1389,7 @@ async def cmd_backfillrealordertotals(message: types.Message):
 
         api_url = f"{_BASE_URL}/api/finance/backfill-real-order-totals"
         async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(api_url, data={"admin_key": "rassvet2026"})
+            resp = await client.post(api_url, data={"admin_key": get_admin_key()})
             result = resp.json()
 
         if not result.get("ok"):

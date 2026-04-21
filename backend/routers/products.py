@@ -6,6 +6,7 @@ from backend.database import get_db, transliterate_to_latin, transliterate_to_cy
 from backend.services.update_prices import apply_price_updates
 from backend.services.update_stock import apply_stock_updates
 from backend.services.refresh_catalog import refresh_catalog_from_excel
+from backend.admin_auth import check_admin_key
 
 router = APIRouter(prefix="/api/products", tags=["products"])
 
@@ -417,7 +418,7 @@ def get_products_by_ids(ids: str = Query(..., description="Comma-separated produ
 @router.post("/update-prices")
 async def update_prices(file: UploadFile = File(...), admin_key: str = Form("")):
     """Upload Excel file to update product prices."""
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse(status_code=403, content={"error": "Invalid admin key"})
     content = await file.read()
     result = apply_price_updates(content)
@@ -427,7 +428,7 @@ async def update_prices(file: UploadFile = File(...), admin_key: str = Form(""))
 @router.post("/update-stock")
 async def update_stock(file: UploadFile = File(...), admin_key: str = Form("")):
     """Upload Excel file to update stock/inventory levels."""
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse(status_code=403, content={"error": "Invalid admin key"})
     content = await file.read()
     result = apply_stock_updates(content)
@@ -437,7 +438,7 @@ async def update_stock(file: UploadFile = File(...), admin_key: str = Form("")):
 @router.post("/refresh-catalog")
 async def refresh_catalog(file: UploadFile = File(...), admin_key: str = Form("")):
     """Upload Excel file to refresh the product catalog (add new, deactivate removed)."""
-    if admin_key != "rassvet2026":
+    if not check_admin_key(admin_key):
         return JSONResponse(status_code=403, content={"error": "Invalid admin key"})
     content = await file.read()
     result = refresh_catalog_from_excel(content)

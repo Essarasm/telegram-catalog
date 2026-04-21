@@ -6,9 +6,12 @@ Run after every deploy (manually or embedded in morning-brief / handoff):
 
 Exits 0 if all pass, 1 if any fail. Output is concise — one line per check.
 """
+import os
 import sys
 import json
 import time
+
+ADMIN_KEY = os.getenv("ADMIN_API_KEY") or "rassvet2026"
 
 try:
     import httpx
@@ -34,7 +37,7 @@ CHECKS = [
      lambda b: True),  # 200 when linked, 422 when no client — both healthy
     ("Cabinet payments", "GET", "/api/cabinet/payments?telegram_id=652836922&limit=1", 200, None),
     ("Finance balance", "GET", "/api/finance/balance?telegram_id=652836922", 200, None),
-    ("Admin receivables", "GET", "/api/admin/receivables?currency=UZS&admin_key=rassvet2026", 200, None),
+    ("Admin receivables", "GET", f"/api/admin/receivables?currency=UZS&admin_key={ADMIN_KEY}", 200, None),
 ]
 
 
