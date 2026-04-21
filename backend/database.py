@@ -432,6 +432,60 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_payments_currency ON client_payments(currency);
 
         -- ─────────────────────────────────────────────────────────────
+        -- Derived-shipment journal — built from 1C "Реализация товаров"
+        -- xls exports (Фактические заказы). One row per shipment document.
+        -- Pair with client_payments to derive clean running balances that
+        -- don't inherit the pre-2020 historical noise in client_balances.
+        -- ─────────────────────────────────────────────────────────────
+        CREATE TABLE IF NOT EXISTS derived_shipments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_number TEXT NOT NULL,
+            doc_date TEXT NOT NULL,              -- YYYY-MM-DD
+            client_name_1c TEXT NOT NULL,
+            client_id INTEGER,                    -- matched to allowed_clients
+            uzs_amount REAL DEFAULT 0,            -- Σ "Сумма" across item rows
+            usd_amount REAL DEFAULT 0,            -- Σ "СуммаВал" across item rows
+            item_count INTEGER DEFAULT 0,
+            currency_marker TEXT,                 -- 'USD' / 'UZS' from col 25
+            imported_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(doc_number, doc_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_derived_shipments_client_id ON derived_shipments(client_id);
+        CREATE INDEX IF NOT EXISTS idx_derived_shipments_client_name ON derived_shipments(client_name_1c);
+        CREATE INDEX IF NOT EXISTS idx_derived_shipments_doc_date ON derived_shipments(doc_date);
+
+        -- ─────────────────────────────────────────────────────────────
+        -- Durable audit log for EVERY inbound location message.
+        -- Insert-first (before any processing) so that even if routing,
+        -- geocoding, or DB update fails, the raw lat/lng is recoverable.
+        -- Implements Ulugbek's "no client data should ever be lost" rule.
+        -- ─────────────────────────────────────────────────────────────
+        CREATE TABLE IF NOT EXISTS location_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            received_at TEXT DEFAULT (datetime('now')),
+            telegram_id INTEGER,
+            first_name TEXT,
+            username TEXT,
+            chat_id INTEGER,
+            chat_type TEXT,             -- 'private', 'group', 'supergroup', 'channel'
+            latitude REAL,
+            longitude REAL,
+            is_forward INTEGER DEFAULT 0,
+            forward_from_id INTEGER,
+            forward_from_chat_id INTEGER,
+            is_agent INTEGER,
+            linked_client_id INTEGER,
+            linked_client_1c TEXT,
+            reverse_geocode_json TEXT,  -- JSON blob of Nominatim response
+            processed_ok INTEGER DEFAULT 0,
+            error_reason TEXT,
+            raw_message_json TEXT       -- full aiogram Message.model_dump_json()
+        );
+        CREATE INDEX IF NOT EXISTS idx_location_attempts_received_at ON location_attempts(received_at);
+        CREATE INDEX IF NOT EXISTS idx_location_attempts_telegram_id ON location_attempts(telegram_id);
+        CREATE INDEX IF NOT EXISTS idx_location_attempts_processed_ok ON location_attempts(processed_ok);
+
+        -- ─────────────────────────────────────────────────────────────
         -- Session G: Credit scoring engine
         -- ─────────────────────────────────────────────────────────────
 

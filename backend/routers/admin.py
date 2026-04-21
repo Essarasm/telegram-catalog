@@ -668,6 +668,59 @@ def receivables(
     }
 
 
+@router.get("/receivables-trend")
+def receivables_trend(
+    admin_key: str = Query(...),
+    currency: str = Query("UZS"),
+):
+    """Month-end total receivables per period — excludes suppliers.
+
+    Sums (closing_debit - closing_credit) across real-client rows for each
+    period_start. Negative closings (client overpayments / credits) are netted
+    against positive ones to give the true trade-receivable figure.
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+    rows = conn.execute(f"""
+        WITH {_ENTITY_FILTER_CTE}
+        SELECT cb.period_start,
+               SUM(cb.closing_debit - cb.closing_credit) AS net_receivable,
+               SUM(CASE WHEN (cb.closing_debit - cb.closing_credit) > 0
+                        THEN (cb.closing_debit - cb.closing_credit) ELSE 0 END) AS positive_only,
+               SUM(cb.period_debit) AS shipments,
+               SUM(cb.period_credit) AS collections,
+               COUNT(DISTINCT cb.client_name_1c) AS clients_with_row
+        FROM client_balances cb
+        JOIN entity_rates ON entity_rates.client_name_1c = cb.client_name_1c
+        WHERE cb.currency = ?
+          AND entity_rates.entity_type = 'client'
+          AND cb.period_start >= '2025-01-01'
+        GROUP BY cb.period_start
+        ORDER BY cb.period_start ASC
+    """, (currency,)).fetchall()
+    conn.close()
+
+    from datetime import date
+    today = date.today().replace(day=1).isoformat()
+    return {
+        "ok": True,
+        "currency": currency,
+        "periods": [
+            {
+                "period": r["period_start"],
+                "month": r["period_start"][:7],
+                "net_receivable": round(r["net_receivable"] or 0, 2),
+                "positive_only": round(r["positive_only"] or 0, 2),
+                "shipments": round(r["shipments"] or 0, 2),
+                "collections": round(r["collections"] or 0, 2),
+                "clients": r["clients_with_row"],
+                "partial": r["period_start"] == today,
+            }
+            for r in rows
+        ],
+    }
+
+
 # ── Client History (drill-down) ──────────────────────────────────
 
 

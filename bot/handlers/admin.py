@@ -1,4 +1,5 @@
 """Admin bot commands — extracted from bot/main.py for isolation."""
+import os
 from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -7,6 +8,46 @@ from bot.shared import get_db, html_escape, is_admin, logger, log_admin_action
 from backend.admin_auth import get_admin_key
 
 router = Router()
+
+
+@router.message(Command("grouphealth"))
+async def cmd_grouphealth(message: types.Message):
+    """Ping every forwarding group to verify the bot can post. Reports back
+    any group that's unreachable (supergroup migration, bot kicked, etc.)."""
+    if not is_admin(message):
+        return
+    log_admin_action(message, "grouphealth", "")
+    groups = [
+        ("Admin",             int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))),
+        ("Daily",             int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))),
+        ("Inventory",         int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))),
+        ("Orders/Sales",      int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))),
+        ("Agents",            int(os.getenv("AGENTS_GROUP_CHAT_ID", "-1003922400481"))),
+        ("Taklif va Xatolar", int(os.getenv("ERRORS_GROUP_CHAT_ID", "-1003896597497"))),
+    ]
+    lines = ["<b>🩺 Group health check</b>\n"]
+    import re
+    all_ok = True
+    for label, cid in groups:
+        try:
+            chat = await message.bot.get_chat(cid)
+            title = getattr(chat, "title", None) or "?"
+            lines.append(f"✅ <b>{label}</b> (<code>{cid}</code>) — {html_escape(title)}")
+        except Exception as e:
+            all_ok = False
+            msg = str(e)
+            if "migrate" in msg.lower() or "supergroup" in msg.lower():
+                m = re.search(r"migrate_to_chat_id[\"': ]+(-?\d+)", msg)
+                new_id = m.group(1) if m else "unknown"
+                lines.append(
+                    f"⚠️ <b>{label}</b> (<code>{cid}</code>) — upgraded to supergroup\n"
+                    f"   New chat_id: <code>{new_id}</code>"
+                )
+            else:
+                lines.append(f"❌ <b>{label}</b> (<code>{cid}</code>) — {html_escape(msg[:180])}")
+    if all_ok:
+        lines.append("\n<i>All groups reachable.</i>")
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @router.message(Command("lastorders"))

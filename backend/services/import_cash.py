@@ -261,9 +261,10 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
                 if client_id is not None:
                     matched_clients += 1
 
+            # Use composite (doc_number_1c, doc_date) — doc numbers cycle per year
             existing = conn.execute(
-                "SELECT id FROM client_payments WHERE doc_number_1c = ?",
-                (p["doc_number_1c"],),
+                "SELECT id FROM client_payments WHERE doc_number_1c = ? AND doc_date = ?",
+                (p["doc_number_1c"], p["doc_date"]),
             ).fetchone()
 
             if existing:

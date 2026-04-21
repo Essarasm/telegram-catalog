@@ -482,6 +482,63 @@ async def _send_master_sync_nudge(bot, chat_id: int) -> None:
         logger.error(f"Master sync nudge failed: {e}")
 
 
+async def _run_group_health_check(bot, admin_chat_id: int) -> None:
+    """Daily 09:05 — check every forwarding group is still reachable.
+
+    When a regular group is upgraded to a supergroup, its chat_id changes and
+    the bot silently fails to post there (Telegram returns 400 "group chat
+    was upgraded to a supergroup chat"). We learned this the hard way on
+    2026-04-21 when "Taklif va Xatolar" feedback was silently dropping.
+
+    For each configured group, we call getChat + dryrun a send test. If
+    Telegram reports the group was migrated, we alert Admin with the new
+    chat_id so it can be updated. If the bot was removed or the group
+    deleted, we also alert Admin.
+    """
+    groups = [
+        ("Admin",            int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))),
+        ("Daily",            int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))),
+        ("Inventory",        int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))),
+        ("Orders/Sales",     int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))),
+        ("Agents",           int(os.getenv("AGENTS_GROUP_CHAT_ID", "-1003922400481"))),
+        ("Taklif va Xatolar", int(os.getenv("ERRORS_GROUP_CHAT_ID", "-1003896597497"))),
+    ]
+    issues: list[str] = []
+    for label, cid in groups:
+        try:
+            await bot.get_chat(cid)
+        except Exception as e:
+            msg = str(e)
+            # Check for supergroup migration
+            if "migrate" in msg.lower() or "supergroup" in msg.lower():
+                # Try to extract the new chat_id Telegram returns
+                import re
+                m = re.search(r"migrate_to_chat_id[\"': ]+(-?\d+)", msg)
+                new_id = m.group(1) if m else "unknown"
+                issues.append(
+                    f"• <b>{label}</b> ({cid}) was upgraded to supergroup.\n"
+                    f"  New chat_id: <code>{new_id}</code>\n"
+                    f"  Update the env var or default and redeploy."
+                )
+            elif "not found" in msg.lower() or "bot was kicked" in msg.lower() or "chat not found" in msg.lower():
+                issues.append(f"• <b>{label}</b> ({cid}): BOT REMOVED or group deleted. {msg[:150]}")
+            else:
+                issues.append(f"• <b>{label}</b> ({cid}): {msg[:200]}")
+    if not issues:
+        logger.info(f"group_health_check: all {len(groups)} groups reachable")
+        return
+    text = (
+        "🚨 <b>Group health check — FAILURES</b>\n\n"
+        "One or more forwarding groups are unreachable. Messages sent to "
+        "these groups will be silently dropped until fixed.\n\n"
+        + "\n\n".join(issues)
+    )
+    try:
+        await bot.send_message(admin_chat_id, text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"group_health_check: failed to alert Admin: {e}")
+
+
 def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     """Launch the reminder and sync background tasks. Returns the task handles.
 
@@ -546,6 +603,12 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 9, 0, _send_pat_rotation_reminder),
             name="daily-pat-rotation-reminder",
+        ),
+        # Daily 09:05 — verify every forwarding group is still reachable.
+        # Catches supergroup migrations and bot-removal silently-drops.
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 9, 5, _run_group_health_check),
+            name="daily-group-health-check",
         ),
     ]
     logger.info(

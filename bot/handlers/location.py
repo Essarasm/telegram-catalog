@@ -22,26 +22,56 @@ router = Router(name="location")
 
 
 def _reverse_geocode(lat: float, lng: float) -> dict:
-    """Reverse geocode lat/lng using Nominatim (OpenStreetMap)."""
+    """Reverse geocode lat/lng using Nominatim (OpenStreetMap).
+
+    Priority for district: prefer MORE specific settlements (village → town →
+    city_district/suburb/county) before falling back to the broader `city`
+    which in Uzbekistan often returns the regional capital (e.g. "Samarqand
+    shaxri") even when the actual point is in a smaller town like Chelak.
+    Fix 2026-04-21 — Chelak location was mis-labeled as "Samarqand shaxri".
+    """
     result = {"address": "", "region": "", "district": ""}
     try:
         import httpx
         resp = httpx.get(
             "https://nominatim.openstreetmap.org/reverse",
-            params={"lat": lat, "lon": lng, "format": "json", "accept-language": "uz,ru", "zoom": 16},
+            params={"lat": lat, "lon": lng, "format": "json",
+                     "accept-language": "uz,ru", "zoom": 14,
+                     "addressdetails": 1},
             headers={"User-Agent": "RassvetCatalogBot/1.0"},
             timeout=5,
         )
         data = resp.json()
         addr = data.get("address", {})
 
-        result["region"] = addr.get("state", "")
-        result["district"] = addr.get("county", "") or addr.get("city", "") or addr.get("town", "") or addr.get("village", "")
+        # Region is the broad admin unit (виloyat)
+        result["region"] = (
+            addr.get("state", "")
+            or addr.get("region", "")
+            or ""
+        )
 
+        # District — MOST SPECIFIC first. Village/town are the local settlement;
+        # city_district/suburb disambiguate within a bigger city; county/city
+        # are regional fallbacks.
+        result["district"] = (
+            addr.get("village", "")
+            or addr.get("town", "")
+            or addr.get("hamlet", "")
+            or addr.get("city_district", "")
+            or addr.get("suburb", "")
+            or addr.get("municipality", "")
+            or addr.get("county", "")
+            or addr.get("city", "")
+            or ""
+        )
+
+        # Human-readable address: use the settlement name we picked as district,
+        # then add road/house/neighbourhood for precision.
         parts = []
-        city = addr.get("city", "") or addr.get("town", "") or addr.get("village", "")
-        if city:
-            parts.append(city)
+        settlement = result["district"]
+        if settlement:
+            parts.append(settlement)
         road = addr.get("road", "")
         neighbourhood = addr.get("neighbourhood", "") or addr.get("suburb", "")
         if road:
@@ -49,7 +79,7 @@ def _reverse_geocode(lat: float, lng: float) -> dict:
             if addr.get("house_number"):
                 street += " " + addr["house_number"]
             parts.append(street)
-        elif neighbourhood:
+        elif neighbourhood and neighbourhood != settlement:
             parts.append(neighbourhood)
 
         result["address"] = ", ".join(parts) if parts else data.get("display_name", "")[:100]
@@ -58,11 +88,90 @@ def _reverse_geocode(lat: float, lng: float) -> dict:
     return result
 
 
+def _audit_insert(conn, message: Message) -> int:
+    """INSERT-FIRST into location_attempts before any processing.
+
+    Implements the zero-data-loss rule: even if downstream logic crashes,
+    we have the raw lat/lng, timestamp, and full message payload on record.
+    Returns the new row id so the handler can update status later.
+    """
+    try:
+        loc = message.location
+        fu = message.from_user
+        ff = getattr(message, "forward_from", None)
+        ffc = getattr(message, "forward_from_chat", None)
+        raw_json = None
+        try:
+            raw_json = message.model_dump_json(exclude_none=True)
+        except Exception:
+            pass
+        cur = conn.execute(
+            """INSERT INTO location_attempts
+               (telegram_id, first_name, username, chat_id, chat_type,
+                latitude, longitude, is_forward, forward_from_id, forward_from_chat_id,
+                raw_message_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                fu.id, fu.first_name, fu.username,
+                message.chat.id, message.chat.type,
+                loc.latitude, loc.longitude,
+                1 if (ff or ffc) else 0,
+                ff.id if ff else None,
+                ffc.id if ffc else None,
+                raw_json,
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    except Exception as e:
+        logger.error(f"location audit insert failed (unusual!): {e}")
+        return 0
+
+
+def _audit_finalize(conn, row_id: int, *, ok: bool, error: str | None = None,
+                     geocode_dict: dict | None = None,
+                     is_agent: int | None = None, linked_client_id: int | None = None,
+                     linked_client_1c: str | None = None) -> None:
+    """Update the audit row with processing outcome."""
+    if not row_id:
+        return
+    try:
+        import json as _json
+        conn.execute(
+            """UPDATE location_attempts SET processed_ok=?, error_reason=?,
+                 reverse_geocode_json=?, is_agent=?, linked_client_id=?, linked_client_1c=?
+               WHERE id=?""",
+            (1 if ok else 0, error,
+             _json.dumps(geocode_dict) if geocode_dict else None,
+             is_agent, linked_client_id, linked_client_1c, row_id),
+        )
+        conn.commit()
+    except Exception as e:
+        logger.error(f"location audit finalize failed: {e}")
+
+
 @router.message(F.location)
 async def handle_location(message: Message):
-    """Handle shared location from user — save coordinates + reverse geocode."""
+    """Handle shared location from user — save coordinates + reverse geocode.
+
+    Accepts both user-sent locations AND forwarded locations. First action
+    is ALWAYS an audit INSERT so raw data is preserved even if processing
+    fails anywhere downstream.
+    """
     loc = message.location
     telegram_id = message.from_user.id
+
+    # Step 0 — durable audit (insert-first, pre-processing). Even if the
+    # logic below raises, the lat/lng/timestamp/user is persisted.
+    audit_conn = get_db()
+    audit_id = _audit_insert(audit_conn, message)
+    audit_conn.close()
+
+    logger.info(
+        f"[location] audit_id={audit_id} from tg={telegram_id} "
+        f"({message.from_user.first_name}) chat_type={message.chat.type} "
+        f"lat={loc.latitude} lng={loc.longitude}"
+    )
 
     conn = get_db()
     user = conn.execute(
@@ -72,6 +181,10 @@ async def handle_location(message: Message):
     ).fetchone()
 
     if not user:
+        # Audit: raw lat/lng was preserved — we know WHO sent it so admin
+        # can reach out even though we can't auto-link the location.
+        _audit_finalize(conn, audit_id, ok=False,
+                         error="user_not_registered")
         conn.close()
         await message.reply(
             "❌ Siz hali ro'yxatdan o'tmagansiz.\n"
@@ -209,3 +322,18 @@ async def handle_location(message: Message):
         "Katalogni ochish uchun quyidagi tugmani bosing:",
         reply_markup=back_keyboard,
     )
+
+    # Finalize audit row — success path
+    try:
+        fin_conn = get_db()
+        _audit_finalize(
+            fin_conn, audit_id, ok=True, geocode_dict=geo,
+            is_agent=int(bool(user["is_agent"])) if user else 0,
+            linked_client_id=user["client_id"] if user else None,
+            linked_client_1c=client_1c_name or None,
+        )
+        fin_conn.close()
+    except Exception as e:
+        logger.error(f"audit finalize (success path) failed: {e}")
+
+

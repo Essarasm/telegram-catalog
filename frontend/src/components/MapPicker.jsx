@@ -21,24 +21,36 @@ function yandexTileLayer() {
   );
 }
 
-// Reverse geocode using Nominatim
+// Reverse geocode using Nominatim. Prefer MORE SPECIFIC settlement (village
+// → town → city_district → suburb) before the broader `city`, which in
+// Uzbekistan often resolves to the regional capital (e.g. "Samarqand shaxri")
+// even when the point is in a smaller town like Chelak.
 async function reverseGeocode(lat, lng) {
   try {
     const resp = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=uz,ru&zoom=18`
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=uz,ru&zoom=14&addressdetails=1`
     );
     const data = await resp.json();
     const addr = data.address || {};
     const parts = [];
-    const city = addr.city || addr.town || addr.village || '';
-    if (city) parts.push(city);
+    const settlement =
+      addr.village ||
+      addr.town ||
+      addr.hamlet ||
+      addr.city_district ||
+      addr.suburb ||
+      addr.municipality ||
+      addr.county ||
+      addr.city ||
+      '';
+    if (settlement) parts.push(settlement);
     const road = addr.road || '';
     const neighbourhood = addr.neighbourhood || addr.suburb || '';
     if (road) {
       let street = road;
       if (addr.house_number) street += ' ' + addr.house_number;
       parts.push(street);
-    } else if (neighbourhood) {
+    } else if (neighbourhood && neighbourhood !== settlement) {
       parts.push(neighbourhood);
     }
     return parts.join(', ') || data.display_name?.slice(0, 80) || '';

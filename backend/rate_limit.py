@@ -61,14 +61,19 @@ def _classify(path: str, method: str) -> str | None:
     """Return bucket name or None for exempt paths."""
     if not path.startswith("/api/"):
         return None
-    # Exempt internal / infra endpoints
-    if path.startswith(("/api/health", "/api/debug", "/api/rate-limit-stats")):
+    # Exempt internal / infra endpoints. Also exempt /api/users/check: the
+    # Telegram Mini App polls it on every viewportChanged / visibility event,
+    # and rate-limiting it was causing approved users to flip back to the
+    # "unapproved" view when their session burned 20 polls/minute (121 users
+    # hit on 2026-04-21 — Musobek incident).
+    if path.startswith(("/api/health", "/api/debug",
+                         "/api/rate-limit-stats", "/api/users/check")):
         return None
     # Export & admin-heavy endpoints — tightest bucket
     if path.startswith("/api/export") or "/export" in path:
         return "export"
-    # User registration / check — gate brute-force enumeration
-    if path.startswith(("/api/users/register", "/api/users/check")):
+    # User registration only — legitimate brute-force concern
+    if path.startswith("/api/users/register"):
         return "auth"
     # Writes
     if method in ("POST", "PUT", "DELETE", "PATCH"):

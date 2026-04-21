@@ -1163,32 +1163,67 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
         </div>
       )}
 
-      {/* Location card — agents see client's GPS (tappable Maps link) + can update;
-           regular clients see their own location or a "share" prompt. */}
+      {/* Location card.
+           - Agents (with client linked): TWO buttons — "🗺 Navigate" (Google
+             Maps to the shop) and "📝 Yangilash" (send fresh location if
+             wrong). Separating them prevents accidental re-share when the
+             agent just wants to navigate to the shop.
+           - Regular clients: same as before (text + Yangilash button). */}
       {userLocation ? (
-        <div className="bg-tg-secondary rounded-xl p-3 mb-3 flex items-center gap-2">
-          <span className="text-base">📍</span>
-          <div className="flex-1 min-w-0">
-            {userLocation.gps ? (
-              <a
-                href={`https://maps.google.com/?q=${userLocation.gps.lat},${userLocation.gps.lng}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs font-medium text-tg-link underline truncate block"
+        (() => {
+          // API shape: userLocation = { latitude, longitude, address, region,
+          // district, updated }. The earlier buggy version referenced
+          // userLocation.gps.lat — which never existed, so the map link in
+          // production was silently broken for months.
+          const lat = userLocation.latitude;
+          const lng = userLocation.longitude;
+          const hasGps = typeof lat === "number" && typeof lng === "number";
+          const mapsUrl = hasGps ? `https://maps.google.com/?q=${lat},${lng}` : null;
+          return (
+            <div className="bg-tg-secondary rounded-xl p-3 mb-3 flex items-center gap-2">
+              <span className="text-base">📍</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium truncate">
+                  {userLocation.address || userLocation.district || "Joylashuv saqlangan"}
+                </div>
+                {hasGps && (
+                  <div className="text-[10px] text-tg-hint truncate">
+                    {lat.toFixed(5)}, {lng.toFixed(5)}
+                  </div>
+                )}
+              </div>
+              {hasGps && agentStats && (
+                // Agents: prominent Navigate button opens Google Maps for routing.
+                <a
+                  href={mapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-link text-white whitespace-nowrap font-medium"
+                  aria-label="Xaritada ko'rish"
+                >
+                  🗺 Xaritada
+                </a>
+              )}
+              {hasGps && !agentStats && (
+                <a
+                  href={mapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-bg text-tg-link whitespace-nowrap"
+                  aria-label="Xaritada ko'rish"
+                >
+                  🗺
+                </a>
+              )}
+              <button
+                onClick={handleShareLocation}
+                className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-bg text-tg-link whitespace-nowrap"
               >
-                {userLocation.address || "Xaritada ko'rish →"}
-              </a>
-            ) : (
-              <div className="text-xs font-medium truncate">{userLocation.address || "Joylashuv saqlangan"}</div>
-            )}
-          </div>
-          <button
-            onClick={handleShareLocation}
-            className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-bg text-tg-link whitespace-nowrap"
-          >
-            {agentStats ? "Yangilash 📍" : "Yangilash"}
-          </button>
-        </div>
+                {agentStats ? "📝 Yangilash" : "Yangilash"}
+              </button>
+            </div>
+          );
+        })()
       ) : (
         <button
           onClick={handleShareLocation}

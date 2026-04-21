@@ -12,7 +12,11 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051")
-ERRORS_GROUP_CHAT_ID = os.getenv("ERRORS_GROUP_CHAT_ID", "-5085083917")
+# Group "Taklif va Xatolar" was upgraded to supergroup on 2026-04 — chat ID
+# changed from -5085083917 (regular) to -1003896597497 (supergroup). Using
+# the old ID caused all feedback forwarding to silently fail (Telegram
+# returned 400 "group chat was upgraded to a supergroup chat"). Фикс 2026-04-21.
+ERRORS_GROUP_CHAT_ID = os.getenv("ERRORS_GROUP_CHAT_ID", "-1003896597497")
 
 
 class FeedbackRequest(BaseModel):
