@@ -8,7 +8,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from bot.shared import get_db, html_escape, is_admin
+from bot.shared import get_db, html_escape, is_admin, log_admin_action
 
 logger = logging.getLogger("bot")
 router = Router(name="score")
@@ -74,6 +74,7 @@ async def cmd_runscore(message: Message):
     """Manually trigger credit score recalculation for all clients."""
     if not is_admin(message):
         return
+    log_admin_action(message, "runscore")
 
     status_msg = await message.answer("⏳ Пересчёт кредитных баллов...")
 

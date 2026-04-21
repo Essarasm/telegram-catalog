@@ -13,7 +13,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 
 from bot.shared import (
-    get_db, html_escape, is_admin, sender_display_name,
+    get_db, html_escape, is_admin, sender_display_name, log_admin_action,
     BOT_TOKEN, ORDER_GROUP_CHAT_ID,
 )
 
@@ -32,6 +32,7 @@ async def cmd_wipewishlists(message: Message):
     parts = (message.text or "").strip().split(maxsplit=1)
     token = parts[1].strip().upper() if len(parts) > 1 else ""
     is_confirmed = (token == "CONFIRM")
+    log_admin_action(message, "wipewishlists", "CONFIRM" if is_confirmed else "dry-run")
 
     conn = get_db()
     try:

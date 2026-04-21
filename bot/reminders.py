@@ -284,6 +284,22 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         logger.error(f"Stock alert failed: {e}")
 
 
+async def _run_consistency_audit(bot, chat_id: int) -> None:
+    """Daily 04:00 — run the data-consistency audit and post to Admin group
+    if any issues are found. Silent if everything looks clean."""
+    try:
+        from backend.services.consistency_audit import run_audit, format_audit_message
+        findings = run_audit()
+        msg = format_audit_message(findings)
+        if not msg:
+            logger.info("consistency_audit: clean, nothing to report")
+            return
+        await bot.send_message(chat_id, msg, parse_mode="HTML")
+        logger.info(f"consistency_audit: posted report ({len(findings)} checks flagged)")
+    except Exception as e:
+        logger.error(f"consistency_audit failed: {e}")
+
+
 async def _send_offsite_db_backup(bot, chat_id: int) -> None:
     """Daily 03:00 — post the latest DB backup to Admin group as a document.
     Offsite copy beyond the Railway volume — if Railway disk corrupts/loses
@@ -517,6 +533,11 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 3, 0, _send_offsite_db_backup),
             name="daily-offsite-db-backup",
+        ),
+        # Daily 04:00 — data-consistency audit (silent when clean).
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 4, 0, _run_consistency_audit),
+            name="daily-consistency-audit",
         ),
         # Daily 09:00 — check if the GitHub PAT is 75+ days old and nudge
         # Admin group to rotate (silent if stamp missing or fresh).

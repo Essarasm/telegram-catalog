@@ -676,6 +676,22 @@ def init_db():
         )
     """)
 
+    # Generic admin-action audit log — records who ran destructive/irreversible
+    # commands so post-incident forensics can answer "who did X and when".
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS admin_action_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER,
+            user_name TEXT,
+            chat_id INTEGER,
+            command TEXT NOT NULL,
+            args TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_action_log_created ON admin_action_log(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_action_log_cmd ON admin_action_log(command)")
+
     # Migration: add location columns to orders
     order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
     for col, coltype in [("location_district_id", "INTEGER"), ("location_moljal_id", "INTEGER"),

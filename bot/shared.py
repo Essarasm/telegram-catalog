@@ -172,6 +172,29 @@ def extract_snapshot_date(message) -> str | None:
     return None
 
 
+def log_admin_action(message, command: str, args: str = "") -> None:
+    """Fire-and-forget: record an admin action into admin_action_log for
+    forensic audit. Covers destructive / irreversible commands so post-
+    incident review can answer who did what, when. Never raises."""
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO admin_action_log (telegram_id, user_name, chat_id, command, args) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                message.from_user.id if message.from_user else None,
+                sender_display_name(message),
+                message.chat.id if hasattr(message, 'chat') and message.chat else None,
+                command,
+                (args or "")[:500] or None,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"log_admin_action failed for {command}: {e}")
+
+
 def track_daily_upload(
     upload_type: str,
     message,

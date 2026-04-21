@@ -17,6 +17,7 @@ from aiogram.filters import Command
 from bot.shared import (
     get_db, html_escape, is_admin, logger, BOT_TOKEN, _BASE_URL,
     track_daily_upload, extract_snapshot_date, sender_display_name,
+    log_admin_action,
 )
 
 router = Router()
@@ -2054,6 +2055,7 @@ async def cmd_relinkrealorders(message: types.Message):
     """
     if not is_admin(message):
         return
+    log_admin_action(message, "relinkrealorders")
 
     status_msg = await message.reply("⏳ Qayta bog'lash ishlayapti...")
 
@@ -2127,6 +2129,7 @@ async def cmd_ingest_skus(message: types.Message):
     """
     if not is_admin(message):
         return
+    log_admin_action(message, "ingestskus")
 
     status_msg = await message.reply("⏳ Yangi SKU'lar qo'shilmoqda...")
 
@@ -2471,6 +2474,7 @@ async def cmd_clientmaster(message: types.Message):
     """
     if not is_admin(message):
         return
+    log_admin_action(message, "clientmaster")
 
     doc = None
     if message.reply_to_message and message.reply_to_message.document:

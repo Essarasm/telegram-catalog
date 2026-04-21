@@ -3,7 +3,7 @@ from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.shared import get_db, html_escape, is_admin, logger
+from bot.shared import get_db, html_escape, is_admin, logger, log_admin_action
 
 router = Router()
 
@@ -369,6 +369,80 @@ async def cmd_help(message: types.Message):
     await message.reply(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+@router.message(Command("consistencycheck"))
+async def cmd_consistencycheck(message: types.Message):
+    """On-demand trigger for the nightly consistency audit.
+    Usage: /consistencycheck"""
+    if not is_admin(message):
+        return
+    log_admin_action(message, "consistencycheck")
+    status = await message.reply("⏳ Consistency audit...")
+    try:
+        from backend.services.consistency_audit import run_audit, format_audit_message
+        findings = run_audit()
+        msg = format_audit_message(findings)
+        if msg:
+            await status.edit_text(msg, parse_mode="HTML")
+        else:
+            await status.edit_text("✅ Barcha tekshiruvlar toza. Ma'lumotlar to'g'ri.")
+    except Exception as e:
+        logger.error(f"/consistencycheck error: {e}")
+        await status.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+@router.message(Command("audit"))
+async def cmd_audit(message: types.Message):
+    """Show recent admin actions. Usage: /audit [days]  (default 7)
+    Forensic audit trail: who ran destructive/irreversible commands, when."""
+    if not is_admin(message):
+        return
+    parts = (message.text or "").split()
+    days = 7
+    if len(parts) > 1 and parts[1].isdigit():
+        days = max(1, min(int(parts[1]), 90))
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT created_at, command, user_name, chat_id, args
+               FROM admin_action_log
+               WHERE created_at >= datetime('now', ?)
+               ORDER BY created_at DESC
+               LIMIT 40""",
+            (f"-{days} days",),
+        ).fetchall()
+        # Also a summary of counts per command in the window
+        counts = conn.execute(
+            """SELECT command, COUNT(*) AS n
+               FROM admin_action_log
+               WHERE created_at >= datetime('now', ?)
+               GROUP BY command ORDER BY n DESC""",
+            (f"-{days} days",),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        await message.reply(f"📋 Oxirgi {days} kunda audit yozuvi yo'q.")
+        return
+    lines = [f"🔎 <b>Admin audit — oxirgi {days} kun</b>\n"]
+    if counts:
+        lines.append("<b>Buyruqlar bo'yicha:</b>")
+        for c in counts:
+            lines.append(f"  • <code>{html_escape(c['command'])}</code>: {c['n']}")
+        lines.append("")
+    lines.append("<b>Oxirgi 40 ta:</b>")
+    for r in rows:
+        ts = (r["created_at"] or "")[:19].replace("T", " ")
+        user = html_escape((r["user_name"] or "?")[:24])
+        cmd = html_escape(r["command"] or "?")
+        args = html_escape((r["args"] or "")[:40])
+        lines.append(f"  <code>{ts}</code>  {user}  <b>{cmd}</b>  {args}")
+    text = "\n".join(lines)
+    # Telegram 4096 char cap
+    if len(text) > 3900:
+        text = text[:3900] + "\n... (truncated)"
+    await message.reply(text, parse_mode="HTML")
+
+
 @router.message(Command("patrotated"))
 async def cmd_patrotated(message: types.Message):
     """Stamp today's date as the PAT rotation date. The daily 09:00 reminder
@@ -377,6 +451,7 @@ async def cmd_patrotated(message: types.Message):
     """
     if not is_admin(message):
         return
+    log_admin_action(message, "patrotated")
     try:
         import os as _os
         from datetime import date as _date
@@ -598,6 +673,7 @@ async def cmd_resendmissed(message: types.Message):
     """
     if not is_admin(message):
         return
+    log_admin_action(message, "resendmissed", (message.text or "").split(maxsplit=1)[-1] if len((message.text or "").split()) > 1 else "")
 
     parts = (message.text or "").split()
     days = 3
@@ -694,14 +770,34 @@ async def cmd_resendmissed(message: types.Message):
     )
 
 
+_EXPORTMASTER_LAST_CALL: dict[int, float] = {}
+_EXPORTMASTER_COOLDOWN_SEC = 60
+
+
 @router.message(Command("exportmaster"))
 async def cmd_exportmaster(message: types.Message):
     """Generate a fresh full-mirror Client Master xlsx and send as document.
     Every ✏️ editable column preserved from DB; every 🔒 mirror column
     re-pulled from the authoritative source at export time.
+
+    Rate-limited: 1 call per 60 seconds per user to prevent accidental
+    40K-row rebuilds (scheduled Monday auto-export handles the regular case).
     """
     if not is_admin(message):
         return
+    import time
+    uid = message.from_user.id if message.from_user else 0
+    now = time.time()
+    last = _EXPORTMASTER_LAST_CALL.get(uid, 0)
+    remaining = int(_EXPORTMASTER_COOLDOWN_SEC - (now - last))
+    if remaining > 0:
+        await message.reply(
+            f"⏳ Juda tez. Iltimos, <b>{remaining}</b> soniya kuting va qayta urinib ko'ring.",
+            parse_mode="HTML",
+        )
+        return
+    _EXPORTMASTER_LAST_CALL[uid] = now
+    log_admin_action(message, "exportmaster")
     status = await message.reply("⏳ Client Master snapshot tayyorlanmoqda...")
     try:
         from aiogram.types import BufferedInputFile
