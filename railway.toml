@@ -1,5 +1,5 @@
 [deploy]
-startCommand = "mkdir -p /data/images && python -m backend.services.backup_users backup && python tools/backup_db.py --startup && python -m backend.services.import_products && python -m backend.services.update_display_names && python -m backend.services.sync_images && python -m backend.services.import_clients && python -m backend.services.backup_users restore && python tools/classify_lifecycle.py --startup && python tools/update_popularity.py --startup && python tools/backfill_clients_history.py --startup && python tools/fix_numeric_client_id_1c.py --startup && python tools/prune_old_data.py --startup && python start_all.py"
+startCommand = "mkdir -p /data/images && python -m backend.services.backup_users backup && python tools/backup_db.py --startup && python tools/verify_backup.py --startup && python -m backend.services.import_products && python -m backend.services.update_display_names && python -m backend.services.sync_images && python -m backend.services.import_clients && python -m backend.services.backup_users restore && python tools/classify_lifecycle.py --startup && python tools/update_popularity.py --startup && python tools/backfill_clients_history.py --startup && python tools/fix_numeric_client_id_1c.py --startup && python tools/prune_old_data.py --startup && python start_all.py"
 
 [[mounts]]
 mountPath = "/data"

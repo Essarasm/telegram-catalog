@@ -369,6 +369,39 @@ async def cmd_help(message: types.Message):
     await message.reply(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+@router.message(Command("patrotated"))
+async def cmd_patrotated(message: types.Message):
+    """Stamp today's date as the PAT rotation date. The daily 09:00 reminder
+    task reads this to decide when to nudge (at 75+ days).
+    Usage: /patrotated
+    """
+    if not is_admin(message):
+        return
+    try:
+        import os as _os
+        from datetime import date as _date
+        stamp_file = _os.getenv("PAT_STAMP_FILE", "/data/.pat_rotated_at")
+        _os.makedirs(_os.path.dirname(stamp_file), exist_ok=True)
+        today = _date.today().isoformat()
+        with open(stamp_file, "w") as f:
+            f.write(today + "\n")
+        # Also clear any previous "last nudge" file so reminders start fresh
+        last_nudge = stamp_file + ".last_nudge"
+        if _os.path.exists(last_nudge):
+            try:
+                _os.remove(last_nudge)
+            except OSError:
+                pass
+        await message.reply(
+            f"✅ PAT rotation sanasi saqlandi: <b>{today}</b>\n\n"
+            f"75 kun o'tganidan keyin Admin guruhga eslatma yuboriladi.",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"/patrotated error: {e}")
+        await message.reply(f"❌ Xatolik: {str(e)[:200]}")
+
+
 @router.message(Command("reviewclients"))
 async def cmd_reviewclients(message: types.Message):
     """Paginated review queue for allowed_clients flagged by the sync pipeline.

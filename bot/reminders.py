@@ -284,6 +284,50 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         logger.error(f"Stock alert failed: {e}")
 
 
+async def _send_offsite_db_backup(bot, chat_id: int) -> None:
+    """Daily 03:00 — post the latest DB backup to Admin group as a document.
+    Offsite copy beyond the Railway volume — if Railway disk corrupts/loses
+    data, Admin group archive has a recent snapshot.
+    """
+    try:
+        from aiogram.types import BufferedInputFile
+        backup_dir = os.getenv("DB_BACKUP_DIR", "/data/db_backups")
+        if not os.path.isdir(backup_dir):
+            logger.info("offsite_db_backup: backup dir missing")
+            return
+        files = sorted([f for f in os.listdir(backup_dir)
+                        if f.startswith("catalog_") and f.endswith(".sql.gz")])
+        if not files:
+            logger.info("offsite_db_backup: no backups yet")
+            return
+        latest = files[-1]
+        path = os.path.join(backup_dir, latest)
+        size_mb = os.path.getsize(path) / 1_000_000
+        # Telegram bot API file limit is 50 MB. If gzipped dump somehow grows
+        # past that, skip with a warning rather than crashing.
+        if size_mb > 49:
+            logger.warning(f"offsite_db_backup: {latest} too large ({size_mb:.1f} MB) — skipping")
+            return
+        with open(path, "rb") as f:
+            data = f.read()
+        caption = (
+            f"💾 <b>Offsite DB backup</b>\n"
+            f"Fayl: <code>{latest}</code>\n"
+            f"Hajmi: {size_mb:.1f} MB\n\n"
+            f"<i>Railway disk yo'qolsa shu fayldan tiklanadi. "
+            f"Saqlab qo'ying.</i>"
+        )
+        await bot.send_document(
+            chat_id,
+            BufferedInputFile(data, filename=latest),
+            caption=caption,
+            parse_mode="HTML",
+        )
+        logger.info(f"offsite_db_backup: posted {latest} ({size_mb:.1f} MB)")
+    except Exception as e:
+        logger.error(f"offsite_db_backup failed: {e}")
+
+
 async def _send_master_auto_export(bot, chat_id: int) -> None:
     """Monday 08:00 — auto-export Client Master xlsx to the Admin group."""
     today = datetime.now(TASHKENT)
@@ -335,6 +379,59 @@ async def _send_master_sync_prompt(bot, chat_id: int) -> None:
         logger.info(f"Master sync prompt sent to {chat_id}")
     except Exception as e:
         logger.error(f"Master sync prompt failed: {e}")
+
+
+PAT_STAMP_FILE = os.getenv("PAT_STAMP_FILE", "/data/.pat_rotated_at")
+PAT_WARN_AT_DAYS = 75   # warn when token is 75+ days old (GitHub default expiry 90d)
+PAT_REWARN_EVERY_DAYS = 7
+
+
+async def _send_pat_rotation_reminder(bot, chat_id: int) -> None:
+    """Daily 09:00 — if the stamped PAT rotation date is ≥75 days old,
+    nudge Admin group to regenerate. Silent otherwise. Skips entirely if
+    the stamp file doesn't exist (no data yet = no reminder)."""
+    try:
+        from datetime import datetime as _dt, date as _date
+        if not os.path.exists(PAT_STAMP_FILE):
+            return
+        with open(PAT_STAMP_FILE) as f:
+            stamp_text = f.read().strip()
+        try:
+            stamped_at = _date.fromisoformat(stamp_text[:10])
+        except ValueError:
+            return
+        age_days = (_date.today() - stamped_at).days
+        if age_days < PAT_WARN_AT_DAYS:
+            return
+        # Suppress re-nudge unless it's been >= PAT_REWARN_EVERY_DAYS since
+        # the last nudge. We record the last nudge date by re-touching the
+        # stamp file's second line.
+        last_nudge_path = PAT_STAMP_FILE + ".last_nudge"
+        today = _date.today()
+        if os.path.exists(last_nudge_path):
+            try:
+                last = _date.fromisoformat(open(last_nudge_path).read().strip()[:10])
+                if (today - last).days < PAT_REWARN_EVERY_DAYS:
+                    return
+            except ValueError:
+                pass
+        await bot.send_message(
+            chat_id,
+            f"🔑 <b>GitHub PAT rotation reminder</b>\n\n"
+            f"Token <code>{stamped_at.isoformat()}</code> kuni o'rnatilgan — "
+            f"<b>{age_days} kun bo'ldi</b>.\n"
+            f"GitHub tokenlari 90 kunda tugaydi; hozir yangilasangiz yaxshi.\n\n"
+            f"1. https://github.com/settings/tokens → eski tokenni revoke qiling\n"
+            f"2. Yangi token yarating (scope: <code>repo</code>)\n"
+            f"3. <code>/patrotated NEW_TOKEN</code> buyrug'ini shu guruhda yuboring\n"
+            f"   (yoki terminalda <code>echo NEW &gt; .credentials</code>)",
+            parse_mode="HTML",
+        )
+        with open(last_nudge_path, "w") as f:
+            f.write(today.isoformat())
+        logger.info(f"pat_rotation_reminder: sent (age {age_days}d)")
+    except Exception as e:
+        logger.error(f"pat_rotation_reminder failed: {e}")
 
 
 async def _send_master_sync_nudge(bot, chat_id: int) -> None:
@@ -414,6 +511,18 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 12, 0, _send_master_sync_nudge),
             name="master-sun-sync-nudge",
+        ),
+        # Daily 03:00 — offsite DB backup to Admin group (durability beyond
+        # Railway volume).
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 3, 0, _send_offsite_db_backup),
+            name="daily-offsite-db-backup",
+        ),
+        # Daily 09:00 — check if the GitHub PAT is 75+ days old and nudge
+        # Admin group to rotate (silent if stamp missing or fresh).
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 9, 0, _send_pat_rotation_reminder),
+            name="daily-pat-rotation-reminder",
         ),
     ]
     logger.info(
