@@ -192,7 +192,15 @@ client_router = APIRouter(prefix="/api/client-location", tags=["client-location"
 
 @client_router.get("")
 def get_client_location(telegram_id: int = Query(...)):
-    """Get a client's saved delivery location (GPS + manual)."""
+    """Get a client's saved delivery location (GPS + manual).
+
+    For users linked to a 1C client (agents via /testclient, or the client
+    themselves), GPS coords come from `allowed_clients.location` — that is the
+    canonical client-level record written by the bot's location handler. The
+    requester's own `users.latitude/longitude` is only used as a fallback, so
+    an admin/agent relinking between clients via /testclient no longer sees
+    their own coords (or the previous client's) attributed to the new client.
+    """
     conn = get_db()
 
     user = conn.execute(
@@ -204,10 +212,51 @@ def get_client_location(telegram_id: int = Query(...)):
         conn.close()
         return {"has_location": False, "has_gps": False}
 
-    # GPS location from user sharing
-    has_gps = bool(user["latitude"] and user["longitude"])
+    has_gps = False
     gps_data = None
-    if has_gps:
+
+    # Prefer the client-level saved location when the requester is linked.
+    # `allowed_clients.location` is written as "lat,lng|address" by the bot;
+    # legacy rows hold free-text ("Samarqand shahar, Titova") which we ignore
+    # here and let the users-row fallback handle instead.
+    if user["client_id"]:
+        ac_row = conn.execute(
+            "SELECT location FROM allowed_clients WHERE id = ?",
+            (user["client_id"],),
+        ).fetchone()
+        raw = (ac_row["location"] if ac_row else "") or ""
+        if "|" in raw:
+            coords_part, _, addr_part = raw.partition("|")
+            try:
+                lat_str, lng_str = coords_part.split(",", 1)
+                c_lat = float(lat_str.strip())
+                c_lng = float(lng_str.strip())
+            except (ValueError, AttributeError):
+                c_lat = c_lng = None
+            if c_lat is not None and c_lng is not None:
+                # Pull richer metadata (region/district/updated) from any user
+                # row that shares this client_id and matches the saved coords.
+                meta = conn.execute(
+                    "SELECT location_address, location_region, location_district, "
+                    "location_updated FROM users WHERE client_id = ? "
+                    "AND latitude = ? AND longitude = ? "
+                    "ORDER BY location_updated DESC LIMIT 1",
+                    (user["client_id"], c_lat, c_lng),
+                ).fetchone()
+                has_gps = True
+                gps_data = {
+                    "latitude": c_lat,
+                    "longitude": c_lng,
+                    "address": (meta["location_address"] if meta else "") or addr_part or "",
+                    "region": (meta["location_region"] if meta else "") or "",
+                    "district": (meta["location_district"] if meta else "") or "",
+                    "updated": (meta["location_updated"] if meta else "") or "",
+                }
+
+    # Fallback: requester's own users row (unchanged behaviour for users with
+    # no client link, and for client-linked users whose client has no saved GPS).
+    if not has_gps and user["latitude"] and user["longitude"]:
+        has_gps = True
         gps_data = {
             "latitude": user["latitude"],
             "longitude": user["longitude"],

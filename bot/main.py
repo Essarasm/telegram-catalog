@@ -444,7 +444,12 @@ async def cmd_list(message: types.Message):
 # Fallback — private chats only (MUST BE LAST)
 # ───────────────────────────────────────────
 
-@dp.message(F.chat.type == "private")
+# The fallback lives on the dispatcher (root router), which in aiogram 3 is
+# tried BEFORE any included sub-router. Anything the fallback matches is
+# swallowed and never reaches `bot/handlers/*`. Exclude message shapes that
+# sub-routers need to handle — currently location pins (location_router) and
+# documents (uploads_router has document-caption handlers for private DMs too).
+@dp.message(F.chat.type == "private", ~F.location, ~F.document)
 async def fallback(message: types.Message):
     """Handle unrecognized messages in private chats."""
 
