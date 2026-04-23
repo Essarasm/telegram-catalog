@@ -16,7 +16,14 @@ def _normalize(q: str) -> str:
     return unicodedata.normalize("NFC", q).strip().lower()
 
 
-def search_clients(query: str, limit: int = 15, new_limit: int = 5) -> dict:
+def _register_unicode_lower(conn) -> None:
+    """SQLite's built-in LOWER() only lowercases ASCII, so Cyrillic names
+    like 'Сардор' never match a lowercased query. Register a Python LOWER
+    that handles full Unicode (mirrors bot/shared.py's pattern)."""
+    conn.create_function("LOWER", 1, lambda s: s.lower() if s else s)
+
+
+def search_clients(query: str, limit: int = 30, new_limit: int = 15) -> dict:
     """Search allowed_clients + client_balances by name / client_id_1c.
 
     Returns:
@@ -39,6 +46,7 @@ def search_clients(query: str, limit: int = 15, new_limit: int = 5) -> dict:
     search = f"%{q}%"
 
     conn = get_db()
+    _register_unicode_lower(conn)
     try:
         matches = conn.execute(
             """SELECT ac.id, ac.name, ac.client_id_1c, ac.phone_normalized,

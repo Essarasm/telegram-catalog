@@ -105,7 +105,7 @@ def agent_stats(telegram_id: int = Query(...)):
 def agent_search_clients(
     telegram_id: int = Query(...),
     q: str = Query(..., min_length=1),
-    limit: int = Query(15, ge=1, le=50),
+    limit: int = Query(30, ge=1, le=100),
 ):
     """Search allowed_clients + 1C client_balances by name / client_id_1c.
     Used by the agent panel's search bar. Gated on is_agent=1.
