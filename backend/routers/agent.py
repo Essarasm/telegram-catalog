@@ -220,7 +220,8 @@ def agent_debug_client_lookup(
     try:
         allowed = [dict(r) for r in conn.execute(
             """SELECT id, client_id_1c, name, phone_normalized, source_sheet,
-                      status, created_at, matched_telegram_id
+                      status, matched_telegram_id, source_1c, source_master,
+                      last_master_synced_at
                FROM allowed_clients
                WHERE LOWER(client_id_1c) LIKE LOWER(?)
                   OR LOWER(name) LIKE LOWER(?)
