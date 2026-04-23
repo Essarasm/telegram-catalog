@@ -27,6 +27,13 @@ def get_db():
     conn.row_factory = _DictRow
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Unicode-aware LOWER — SQLite's built-in is ASCII-only and silently
+    # fails on Cyrillic ("Сардор".lower() is a no-op in built-in LOWER).
+    # Registering Python str.lower here matches bot/shared.py's connection
+    # and closes the SQLITE_LOWER_ASCII_ONLY class of bugs (Error Log #18).
+    # Per-file registrations (e.g. in client_search.py) stay as defense in
+    # depth — calling create_function twice with the same name is harmless.
+    conn.create_function("LOWER", 1, lambda s: s.lower() if s else s)
     return conn
 
 
