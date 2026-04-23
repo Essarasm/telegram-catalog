@@ -257,7 +257,7 @@ async def _send_weekly_unlinked(bot, chat_id: int) -> None:
 
 
 async def _send_stock_alert(bot, chat_id: int) -> None:
-    """08:00 daily — smart stock alert for active products."""
+    """09:00 daily — smart stock alert for active products (TUGAGAN only)."""
     today = datetime.now(TASHKENT)
     ok, reason = _should_send(today)
     if not ok:
@@ -270,17 +270,17 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         if alerts["active_count"] == 0:
             logger.info("Stock alert skipped — no active products detected")
             return
-        if not alerts["out_of_stock"] and not alerts["running_low"]:
-            logger.info("Stock alert skipped — all active products healthy")
+        if not alerts["out_of_stock"]:
+            logger.info("Stock alert skipped — no out-of-stock active products")
             return
-        # Scheduled 08:00 alert = summary (top 25/30). Ops can request full via
-        # /stockalert tugagan / kam / full from the Inventory group.
-        messages = format_stock_alert_message(alerts, full=False)
+        # Scheduled 09:00 alert = TUGAGAN only (top 25). Ops pull kam-qoldi
+        # on-demand via /stockalert kam from the Inventory group.
+        messages = format_stock_alert_message(alerts, include_low=False, full=False)
         for text in messages:
             await bot.send_message(chat_id, text, parse_mode="HTML")
         logger.info(
             f"Stock alert sent ({len(messages)} msg): "
-            f"{len(alerts['out_of_stock'])} OOS, {len(alerts['running_low'])} low"
+            f"{len(alerts['out_of_stock'])} OOS"
         )
     except Exception as e:
         logger.error(f"Stock alert failed: {e}")
@@ -571,7 +571,7 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         ),
         # Daily stock alert → Inventory group.
         asyncio.create_task(
-            run_daily_reminder(bot, INVENTORY_GROUP_CHAT_ID, 8, 0, _send_stock_alert),
+            run_daily_reminder(bot, INVENTORY_GROUP_CHAT_ID, 9, 0, _send_stock_alert),
             name="daily-stock-alert",
         ),
         # Client Master weekly sync cycle (sender checks weekday internally).
@@ -593,9 +593,9 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             run_daily_reminder(bot, chat_id, 3, 0, _send_offsite_db_backup),
             name="daily-offsite-db-backup",
         ),
-        # Daily 04:00 — data-consistency audit (silent when clean).
+        # Daily 09:00 — data-consistency audit (silent when clean).
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 4, 0, _run_consistency_audit),
+            run_daily_reminder(bot, chat_id, 9, 0, _run_consistency_audit),
             name="daily-consistency-audit",
         ),
         # Daily 09:00 — check if the GitHub PAT is 75+ days old and nudge
