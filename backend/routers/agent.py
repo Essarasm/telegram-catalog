@@ -9,6 +9,7 @@ from datetime import date
 from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
 
+from backend.admin_auth import check_admin_key
 from backend.database import get_db
 from backend.services.client_search import (
     create_and_link_new_1c_client,
@@ -210,6 +211,129 @@ def agent_switch_client(payload: dict = Body(...)):
         }
     finally:
         conn.close()
+
+
+@router.get("/debug/client-detail")
+def agent_debug_client_detail(
+    client_id: int = Query(...),
+    admin_key: str = Query(""),
+    date_from: str = Query(""),
+    date_to: str = Query(""),
+):
+    """TEMPORARY — dump every real_order, client_payment, client_balance,
+    client_debt linked to client_id (optionally within date range) so DB
+    state can be audited against a 1C Akt Sverki report.
+    """
+    if not check_admin_key(admin_key):
+        return JSONResponse({"ok": False, "error": "bad admin_key"}, status_code=403)
+
+    date_clause_ro = ""
+    date_clause_cp = ""
+    params_common = [client_id]
+    if date_from and date_to:
+        date_clause_ro = " AND doc_date BETWEEN ? AND ?"
+        date_clause_cp = " AND doc_date BETWEEN ? AND ?"
+    params_ro = params_common + ([date_from, date_to] if date_from else [])
+    params_cp = params_common + ([date_from, date_to] if date_from else [])
+
+    conn = get_db()
+    try:
+        real_orders = [dict(r) for r in conn.execute(
+            f"""SELECT doc_number_1c, doc_date, currency, exchange_rate,
+                       total_sum, total_sum_currency, item_count
+                FROM real_orders
+                WHERE client_id = ?{date_clause_ro}
+                ORDER BY doc_date, doc_number_1c""",
+            params_ro,
+        ).fetchall()]
+
+        payments = [dict(r) for r in conn.execute(
+            f"""SELECT doc_number_1c, doc_date, currency, corr_account,
+                       amount_local, amount_currency, fx_rate, cashflow_category
+                FROM client_payments
+                WHERE client_id = ?{date_clause_cp}
+                ORDER BY doc_date, doc_number_1c""",
+            params_cp,
+        ).fetchall()]
+
+        balances = [dict(r) for r in conn.execute(
+            """SELECT currency, period_start, period_end,
+                      opening_debit, opening_credit,
+                      period_debit, period_credit,
+                      closing_debit, closing_credit
+               FROM client_balances
+               WHERE client_id = ?
+               ORDER BY period_start, currency""",
+            (client_id,),
+        ).fetchall()]
+
+        debts = [dict(r) for r in conn.execute(
+            """SELECT debt_uzs, debt_usd, last_transaction_date,
+                      last_transaction_no, report_date
+               FROM client_debts
+               WHERE client_id = ?
+               ORDER BY report_date DESC""",
+            (client_id,),
+        ).fetchall()]
+
+        # Totals over the same window
+        def _sum(tbl, cols):
+            clause = ""
+            p = [client_id]
+            if date_from and date_to:
+                clause = " AND doc_date BETWEEN ? AND ?"
+                p += [date_from, date_to]
+            q = f"SELECT {', '.join(f'COALESCE(SUM({c}),0) AS {c}' for c in cols)} FROM {tbl} WHERE client_id = ?{clause}"
+            return dict(conn.execute(q, p).fetchone())
+        ro_totals_uzs = _sum("real_orders", ["total_sum"]) if True else {}
+        ro_totals = dict(conn.execute(
+            f"""SELECT currency,
+                       COALESCE(SUM(total_sum),0) AS total_sum,
+                       COALESCE(SUM(total_sum_currency),0) AS total_sum_currency,
+                       COUNT(*) AS rows
+                FROM real_orders
+                WHERE client_id = ?{date_clause_ro}
+                GROUP BY currency""",
+            params_ro,
+        ).fetchall()[0]) if conn.execute(
+            f"SELECT 1 FROM real_orders WHERE client_id = ?{date_clause_ro} LIMIT 1",
+            params_ro,
+        ).fetchone() else {}
+        # simpler: aggregate per-currency listing
+        ro_by_ccy = [dict(r) for r in conn.execute(
+            f"""SELECT currency,
+                       COALESCE(SUM(total_sum),0) AS sum_uzs_col,
+                       COALESCE(SUM(total_sum_currency),0) AS sum_ccy_col,
+                       COUNT(*) AS rows
+                FROM real_orders
+                WHERE client_id = ?{date_clause_ro}
+                GROUP BY currency""",
+            params_ro,
+        ).fetchall()]
+        cp_by_ccy = [dict(r) for r in conn.execute(
+            f"""SELECT currency,
+                       COALESCE(SUM(amount_local),0) AS sum_uzs_col,
+                       COALESCE(SUM(amount_currency),0) AS sum_ccy_col,
+                       COUNT(*) AS rows
+                FROM client_payments
+                WHERE client_id = ?{date_clause_cp}
+                GROUP BY currency""",
+            params_cp,
+        ).fetchall()]
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "window": {"from": date_from, "to": date_to},
+        "real_orders": real_orders,
+        "real_orders_totals_by_currency": ro_by_ccy,
+        "client_payments": payments,
+        "client_payments_totals_by_currency": cp_by_ccy,
+        "client_balances": balances,
+        "client_debts": debts,
+    }
 
 
 @router.get("/recent-clients")
