@@ -105,14 +105,33 @@ def search_clients(query: str, limit: int = 30, new_limit: int = 15) -> dict:
     return {"whitelisted": list(grouped.values()), "new_1c": new_1c}
 
 
+def relink_orphan_finance_rows(conn, client_id: int, client_name_1c: str) -> dict:
+    """Set client_id on any orphan (client_id IS NULL) rows across the four
+    finance tables whose client_name_1c matches this client. Heals data that
+    1C imports left unlinked. Returns per-table row counts relinked."""
+    counts = {}
+    for table in ("client_balances", "real_orders",
+                  "client_payments", "client_debts"):
+        cur = conn.execute(
+            f"UPDATE {table} SET client_id = ? "
+            f"WHERE client_name_1c = ? AND client_id IS NULL",
+            (client_id, client_name_1c),
+        )
+        counts[table] = cur.rowcount
+    return counts
+
+
 def create_and_link_new_1c_client(
     client_name_1c: str, agent_telegram_id: int
 ) -> Optional[dict]:
-    """Insert a new allowed_clients row for a 1C-only client and link every
-    financial table to it (mirrors the `tc:add:` callback path).
+    """Resolve a 1C-only client to an allowed_clients row, creating one if
+    missing. Always relinks any orphan finance rows (client_id IS NULL) to
+    the resolved id — previously this only ran on the create-new branch,
+    leaving clients with existing allowed_clients rows but orphan imports
+    silently invisible in the cabinet (reported: Гулноза ойти ТАЙЛОК).
 
-    Returns the new {id, name, client_id_1c} or None if client_name_1c has
-    no corresponding client_balances rows.
+    Returns the {id, name, client_id_1c} or None if client_name_1c has no
+    corresponding client_balances rows.
     """
     conn = get_db()
     try:
@@ -137,13 +156,7 @@ def create_and_link_new_1c_client(
                 ("", client_name_1c, client_name_1c, "agent_panel", "active"),
             )
             new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-            for table in ("client_balances", "real_orders",
-                          "client_payments", "client_debts"):
-                conn.execute(
-                    f"UPDATE {table} SET client_id = ? "
-                    f"WHERE client_name_1c = ? AND client_id IS NULL",
-                    (new_id, client_name_1c),
-                )
+        relink_orphan_finance_rows(conn, new_id, client_name_1c)
         conn.commit()
         return {
             "id": new_id,

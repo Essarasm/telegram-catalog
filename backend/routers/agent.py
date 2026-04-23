@@ -13,6 +13,7 @@ from backend.admin_auth import check_admin_key
 from backend.database import get_db
 from backend.services.client_search import (
     create_and_link_new_1c_client,
+    relink_orphan_finance_rows,
     search_clients,
 )
 
@@ -189,6 +190,14 @@ def agent_switch_client(payload: dict = Body(...)):
             "VALUES (?, ?)",
             (telegram_id, client_id),
         )
+        # Heal orphan finance rows for this client on every switch — some
+        # 1C imports leave client_id NULL on new rows; relinking here makes
+        # the cabinet show the full picture.
+        relink_counts = {}
+        if target["client_id_1c"]:
+            relink_counts = relink_orphan_finance_rows(
+                conn, client_id, target["client_id_1c"]
+            )
         conn.commit()
         return {
             "ok": True,
@@ -198,6 +207,7 @@ def agent_switch_client(payload: dict = Body(...)):
                 "client_id_1c": target["client_id_1c"],
                 "phone": target["phone_normalized"] or "",
             },
+            "relinked": relink_counts,
         }
     finally:
         conn.close()
@@ -305,6 +315,75 @@ def agent_debug_client_lookup(
         "users_linked_to_these_clients": users_linked,
         "recent_agent_switches": recent_switches,
     }
+
+
+@router.post("/debug/relink-orphans")
+def agent_debug_relink_orphans(
+    admin_key: str = Query(""),
+    dry_run: int = Query(1, ge=0, le=1),
+):
+    """TEMPORARY admin endpoint: relink orphan finance rows to
+    allowed_clients by exact client_name_1c = client_id_1c match.
+
+    Skips structural non-client entries (Наличка/Организации/etc) per the
+    1C exclusion list. Safe: only touches rows where client_id IS NULL.
+
+    dry_run=1 (default): report what WOULD be relinked, no writes.
+    dry_run=0: actually execute the relink.
+    """
+    if not check_admin_key(admin_key):
+        return JSONResponse({"ok": False, "error": "bad admin_key"}, status_code=403)
+
+    exclude_patterns = [
+        "%Наличка%", "%НАЛИЧКА%", "%наличка%",
+        "%Организации%", "%ОРГАНИЗАЦИИ%",
+        "%Исправление%", "%ИСПРАВЛЕНИЕ%",
+        "%Стройка%", "%СТРОЙКА%",
+    ]
+    exclude_where = " AND ".join(["client_name_1c NOT LIKE ?"] * len(exclude_patterns))
+
+    conn = get_db()
+    results = {}
+    try:
+        for table in ("client_balances", "real_orders",
+                      "client_payments", "client_debts"):
+            # Find orphan rows that have an exact allowed_clients match
+            rows = conn.execute(
+                f"""SELECT t.client_name_1c, ac.id AS target_client_id,
+                           COUNT(*) AS orphan_rows
+                    FROM {table} t
+                    JOIN allowed_clients ac
+                      ON ac.client_id_1c = t.client_name_1c
+                     AND COALESCE(ac.status, 'active') != 'merged'
+                    WHERE t.client_id IS NULL
+                      AND {exclude_where}
+                    GROUP BY t.client_name_1c, ac.id
+                    ORDER BY orphan_rows DESC""",
+                tuple(exclude_patterns),
+            ).fetchall()
+
+            matched_names = len(rows)
+            matched_rows = sum(r["orphan_rows"] for r in rows)
+            top = [dict(r) for r in rows[:5]]
+
+            if not dry_run and rows:
+                for r in rows:
+                    conn.execute(
+                        f"UPDATE {table} SET client_id = ? "
+                        f"WHERE client_name_1c = ? AND client_id IS NULL",
+                        (r["target_client_id"], r["client_name_1c"]),
+                    )
+            results[table] = {
+                "unique_clients_matched": matched_names,
+                "rows_to_relink" if dry_run else "rows_relinked": matched_rows,
+                "top_samples": top,
+            }
+        if not dry_run:
+            conn.commit()
+    finally:
+        conn.close()
+
+    return {"ok": True, "dry_run": bool(dry_run), "results": results}
 
 
 @router.get("/recent-clients")
