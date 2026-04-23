@@ -914,6 +914,12 @@ async def cmd_debtors(message: types.Message):
         await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
         return
 
+    # Parse force flag — caption like "/debtors force" bypasses regression
+    # guard. Used when a legitimate drop (e.g. mass debt settlement) would
+    # otherwise be blocked.
+    caption = (message.text or message.caption or "").strip().lower()
+    force_flag = "force" in caption.split()
+
     status_msg = await message.reply("⏳ Дебиторка yuklanmoqda...")
 
     try:
@@ -931,9 +937,38 @@ async def cmd_debtors(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
-                data={"admin_key": get_admin_key()},
+                data={
+                    "admin_key": get_admin_key(),
+                    "force": "1" if force_flag else "",
+                },
             )
             result = resp.json()
+
+        if result.get("regression_blocked"):
+            prev = result.get("previous", {})
+            inc = result.get("incoming", {})
+            reasons = result.get("reasons", [])
+            lines = [
+                "⚠️ <b>Дебиторка yuklanmadi — regressiya aniqlandi</b>",
+                "",
+                "<b>Sabab:</b>",
+                *(f"• {html_escape(r)}" for r in reasons),
+                "",
+                "<b>Oldingi holat:</b>",
+                f"  UZS: {round(prev.get('total_uzs', 0)):,}".replace(',', ' '),
+                f"  USD: ${prev.get('total_usd', 0):,.2f}",
+                f"  qatorlar: {prev.get('rows', 0)}",
+                "",
+                "<b>Yangi:</b>",
+                f"  UZS: {round(inc.get('total_uzs', 0)):,}".replace(',', ' '),
+                f"  USD: ${inc.get('total_usd', 0):,.2f}",
+                f"  qatorlar: {inc.get('rows', 0)}",
+                "",
+                "Agar tushish haqiqiy bo'lsa, caption'ga <code>force</code> so'zini qo'shib qayta yuboring:",
+                "<code>/debtors force</code>",
+            ]
+            await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+            return
 
         if not result.get("ok"):
             await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")

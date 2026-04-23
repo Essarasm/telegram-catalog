@@ -107,11 +107,14 @@ async def import_clients_upload(
 async def import_debts(
     file: UploadFile = File(...),
     admin_key: str = Form(""),
+    force: str = Form(""),
 ):
     """Import client debts from 1C 'Дебиторская задолженность на дату' XLS.
 
     Used by /debtors bot command. Replaces all records in client_debts
-    with the new snapshot.
+    with the new snapshot. Runs a regression guard by default; pass
+    force=1 (or caption '/debtors force') to override when the 1C report
+    legitimately dropped a currency/dimension.
     """
     if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
@@ -120,7 +123,8 @@ async def import_debts(
     if not file_bytes:
         return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
 
-    result = apply_debtors_import(file_bytes)
+    force_flag = force.strip().lower() in ("1", "true", "yes", "force")
+    result = apply_debtors_import(file_bytes, force=force_flag)
     return result
 
 

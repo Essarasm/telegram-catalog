@@ -157,8 +157,48 @@ def parse_debtors_xls(file_bytes: bytes) -> dict:
     }
 
 
-def apply_debtors_import(file_bytes: bytes) -> dict:
-    """Parse debtors XLS and replace all records in client_debts table."""
+def _check_debtors_regression(
+    prev: dict, new_uzs: float, new_usd: float, new_rows: int
+) -> list[str]:
+    """Compare incoming debtors totals against current DB state. Returns a
+    list of human-readable regression reasons (empty if no regression).
+
+    Thresholds chosen to catch schema-drift class incidents (like the
+    "В Валюте" column vanishing from the 1C report between 15-22 Apr 2026
+    which silently zero'd out $187,991 USD debt across 140 clients) while
+    letting legitimate day-over-day fluctuations through.
+    """
+    reasons: list[str] = []
+    prev_uzs = float(prev["uzs"] or 0)
+    prev_usd = float(prev["usd"] or 0)
+    prev_rows = int(prev["rows"] or 0)
+
+    if prev_usd > 1000 and new_usd < prev_usd * 0.1:
+        reasons.append(
+            f"USD total collapsed: ${prev_usd:,.2f} → ${new_usd:,.2f} "
+            f"(≥90% drop). Verify the 1C report includes the «В Валюте» column."
+        )
+    if prev_uzs > 1_000_000 and new_uzs < prev_uzs * 0.3:
+        reasons.append(
+            f"UZS total collapsed: {prev_uzs:,.0f} → {new_uzs:,.0f} so'm "
+            f"(≥70% drop). Verify the 1C report currency filter."
+        )
+    if prev_rows > 50 and new_rows < prev_rows * 0.5:
+        reasons.append(
+            f"Row count collapsed: {prev_rows} → {new_rows} "
+            f"(≥50% drop). Verify the 1C report isn't filtered to a subset."
+        )
+    return reasons
+
+
+def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
+    """Parse debtors XLS and replace all records in client_debts table.
+
+    When force=False (default), runs a regression guard against the current
+    client_debts totals and refuses the upload if USD/UZS/row-count
+    collapse beyond safe thresholds. Pass force=True (or caption
+    '/debtors force') to bypass when the regression is known-legitimate.
+    """
     parsed = parse_debtors_xls(file_bytes)
     if not parsed.get("ok"):
         return parsed
@@ -169,7 +209,40 @@ def apply_debtors_import(file_bytes: bytes) -> dict:
     if not clients:
         return {"ok": False, "error": "No client data found"}
 
+    # Pre-compute incoming totals so we can diff vs current before DELETE
+    incoming_total_uzs = sum(c["debt_uzs"] for c in clients)
+    incoming_total_usd = sum(c["debt_usd"] for c in clients)
+
     conn = get_db()
+
+    prev = conn.execute(
+        """SELECT COALESCE(SUM(debt_uzs), 0) AS uzs,
+                  COALESCE(SUM(debt_usd), 0) AS usd,
+                  COUNT(*) AS rows
+           FROM client_debts"""
+    ).fetchone()
+
+    if not force:
+        regression_reasons = _check_debtors_regression(
+            prev, incoming_total_uzs, incoming_total_usd, len(clients)
+        )
+        if regression_reasons:
+            conn.close()
+            return {
+                "ok": False,
+                "regression_blocked": True,
+                "reasons": regression_reasons,
+                "previous": {
+                    "total_uzs": float(prev["uzs"] or 0),
+                    "total_usd": float(prev["usd"] or 0),
+                    "rows": int(prev["rows"] or 0),
+                },
+                "incoming": {
+                    "total_uzs": incoming_total_uzs,
+                    "total_usd": incoming_total_usd,
+                    "rows": len(clients),
+                },
+            }
 
     # Clear existing records — full replacement
     conn.execute("DELETE FROM client_debts")
