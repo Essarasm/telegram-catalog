@@ -483,13 +483,20 @@ def set_fx_rate(
 ) -> dict:
     """Upsert today's FX rate and bump the /fxrate tracker."""
     rate_date = rate_date or tashkent_today_str()
+    now_str = tashkent_now_str()
     conn = get_db()
     try:
         conn.execute(
             """INSERT OR REPLACE INTO daily_fx_rates
                (rate_date, currency_pair, rate, source, uploaded_by_user_id, uploaded_by_name, created_at)
                VALUES (?, ?, ?, 'manual', ?, ?, ?)""",
-            (rate_date, currency_pair, rate, user_id, user_name, tashkent_now_str()),
+            (rate_date, currency_pair, rate, user_id, user_name, now_str),
+        )
+        conn.execute(
+            """INSERT INTO daily_fx_rate_events
+               (rate_date, currency_pair, rate, set_at, set_by_user_id, set_by_name)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (rate_date, currency_pair, rate, now_str, user_id, user_name),
         )
         conn.commit()
     finally:

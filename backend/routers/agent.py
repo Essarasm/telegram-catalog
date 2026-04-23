@@ -6,10 +6,14 @@ commission math yet — once we wire the Session T 3-tier producer table
 into the DB, we'll add a /earnings endpoint that applies the rates.
 """
 from datetime import date
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
 
 from backend.database import get_db
+from backend.services.client_search import (
+    create_and_link_new_1c_client,
+    search_clients,
+)
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -89,6 +93,151 @@ def agent_stats(telegram_id: int = Query(...)):
                     "total_usd": round(float(r["total_usd"]) or 0, 2),
                 }
                 for r in recent
+            ],
+        }
+    finally:
+        conn.close()
+
+
+# ── Agent panel: client switcher ─────────────────────────────────────────
+
+@router.get("/search-clients")
+def agent_search_clients(
+    telegram_id: int = Query(...),
+    q: str = Query(..., min_length=1),
+    limit: int = Query(15, ge=1, le=50),
+):
+    """Search allowed_clients + 1C client_balances by name / client_id_1c.
+    Used by the agent panel's search bar. Gated on is_agent=1.
+    """
+    conn = get_db()
+    try:
+        if not _is_agent(conn, telegram_id):
+            return JSONResponse({"ok": False, "error": "not an agent"}, status_code=403)
+    finally:
+        conn.close()
+    results = search_clients(q, limit=limit)
+    return {"ok": True, **results}
+
+
+@router.post("/switch-client")
+def agent_switch_client(payload: dict = Body(...)):
+    """Link the agent's account to a client (acting-as). Mirrors /testclient.
+
+    Payload:
+        {telegram_id: int, client_id: int}       — link to an allowed_clients row
+        {telegram_id: int, client_name_1c: str}  — auto-create allowed_clients
+                                                    from 1C, then link
+        {telegram_id: int, clear: true}          — unlink (return to agent home)
+
+    Every successful switch writes an agent_client_switches audit row so the
+    recent-clients list on the agent home stays fresh.
+    """
+    telegram_id = payload.get("telegram_id")
+    if not isinstance(telegram_id, int):
+        return JSONResponse({"ok": False, "error": "telegram_id required"}, status_code=400)
+
+    conn = get_db()
+    try:
+        if not _is_agent(conn, telegram_id):
+            return JSONResponse({"ok": False, "error": "not an agent"}, status_code=403)
+
+        if payload.get("clear"):
+            conn.execute(
+                "UPDATE users SET client_id = NULL WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            conn.commit()
+            return {"ok": True, "cleared": True}
+
+        client_id = payload.get("client_id")
+        client_name_1c = payload.get("client_name_1c")
+
+        if client_id is None and client_name_1c:
+            created = create_and_link_new_1c_client(client_name_1c, telegram_id)
+            if not created:
+                return JSONResponse(
+                    {"ok": False, "error": f"'{client_name_1c}' not found in 1C"},
+                    status_code=404,
+                )
+            client_id = created["id"]
+
+        if not isinstance(client_id, int):
+            return JSONResponse(
+                {"ok": False, "error": "client_id or client_name_1c required"},
+                status_code=400,
+            )
+
+        target = conn.execute(
+            "SELECT id, name, client_id_1c, phone_normalized "
+            "FROM allowed_clients WHERE id = ?",
+            (client_id,),
+        ).fetchone()
+        if not target:
+            return JSONResponse(
+                {"ok": False, "error": f"client {client_id} not found"},
+                status_code=404,
+            )
+
+        conn.execute(
+            "UPDATE users SET client_id = ? WHERE telegram_id = ?",
+            (client_id, telegram_id),
+        )
+        conn.execute(
+            "INSERT INTO agent_client_switches (agent_telegram_id, client_id) "
+            "VALUES (?, ?)",
+            (telegram_id, client_id),
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "client": {
+                "id": target["id"],
+                "name": target["name"],
+                "client_id_1c": target["client_id_1c"],
+                "phone": target["phone_normalized"] or "",
+            },
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/recent-clients")
+def agent_recent_clients(
+    telegram_id: int = Query(...),
+    limit: int = Query(5, ge=1, le=20),
+):
+    """Return the agent's most-recently-switched-to distinct clients."""
+    conn = get_db()
+    try:
+        if not _is_agent(conn, telegram_id):
+            return JSONResponse({"ok": False, "error": "not an agent"}, status_code=403)
+
+        rows = conn.execute(
+            """SELECT s.client_id,
+                      MAX(s.switched_at) AS last_switch,
+                      ac.name, ac.client_id_1c, ac.phone_normalized
+               FROM agent_client_switches s
+               LEFT JOIN allowed_clients ac ON ac.id = s.client_id
+               WHERE s.agent_telegram_id = ?
+                 AND ac.id IS NOT NULL
+               GROUP BY s.client_id
+               ORDER BY last_switch DESC
+               LIMIT ?""",
+            (telegram_id, limit),
+        ).fetchall()
+
+        return {
+            "ok": True,
+            "recent": [
+                {
+                    "client_id": r["client_id"],
+                    "name": r["name"],
+                    "client_id_1c": r["client_id_1c"],
+                    "phone": r["phone_normalized"] or "",
+                    "last_switch": r["last_switch"],
+                }
+                for r in rows
             ],
         }
     finally:

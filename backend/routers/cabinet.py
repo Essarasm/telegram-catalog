@@ -12,6 +12,43 @@ from backend.services.import_real_orders import (
 router = APIRouter(prefix="/api/cabinet", tags=["cabinet"])
 
 
+@router.get("/client-info")
+def client_info(telegram_id: int = Query(...)):
+    """Return the currently-linked client's display identity.
+
+    Used by the agent panel to render the "Acting as: [Name]" bar. Phone
+    number is only returned when the caller has is_agent=1 — regular
+    clients never receive a phone field through this endpoint.
+    """
+    conn = get_db()
+    try:
+        user = conn.execute(
+            "SELECT client_id, is_agent FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        if not user or not user["client_id"]:
+            return {"ok": True, "client": None}
+
+        client = conn.execute(
+            "SELECT id, name, client_id_1c, phone_normalized "
+            "FROM allowed_clients WHERE id = ?",
+            (user["client_id"],),
+        ).fetchone()
+        if not client:
+            return {"ok": True, "client": None}
+
+        payload = {
+            "id": client["id"],
+            "name": client["name"],
+            "client_id_1c": client["client_id_1c"],
+        }
+        if user["is_agent"]:
+            payload["phone"] = client["phone_normalized"] or ""
+        return {"ok": True, "client": payload}
+    finally:
+        conn.close()
+
+
 @router.get("/orders")
 def list_orders(telegram_id: int = Query(...)):
     """List all wish-list orders for the client linked to this telegram_id.

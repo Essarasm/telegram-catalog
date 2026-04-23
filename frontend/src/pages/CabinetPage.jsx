@@ -269,7 +269,7 @@ function AktSheetItemsLoader({ orderId, onLoaded }) {
   return <div className="text-[11px] text-tg-hint py-1">…</div>;
 }
 
-export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder }) {
+export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder, actingAsClient }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
@@ -1160,6 +1160,14 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder 
           <div className="text-base font-semibold mt-0.5">
             {akt.client_1c_name}
           </div>
+          {actingAsClient?.phone && (
+            <a
+              href={`tel:${actingAsClient.phone}`}
+              className="inline-block mt-1 text-sm text-tg-link"
+            >
+              📞 {actingAsClient.phone}
+            </a>
+          )}
         </div>
       )}
 

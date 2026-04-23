@@ -12,12 +12,25 @@ from aiogram.types import (
     ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    WebAppInfo,
 )
 
 from bot.shared import (
     get_db, html_escape, is_agent_or_admin, is_agent_or_admin_cb,
-    TESTCLIENT_PROMPT, logger,
+    TESTCLIENT_PROMPT, WEBAPP_URL, logger,
 )
+
+
+def _log_agent_switch(conn, agent_tg_id: int, client_id: int) -> None:
+    """Record an agent → client switch for the mini app's recent list."""
+    try:
+        conn.execute(
+            "INSERT INTO agent_client_switches (agent_telegram_id, client_id) "
+            "VALUES (?, ?)",
+            (agent_tg_id, client_id),
+        )
+    except Exception as e:
+        logger.warning(f"agent_client_switches insert failed: {e}")
 
 router = Router()
 
@@ -59,6 +72,7 @@ async def on_testclient_callback(cb: types.CallbackQuery):
                 "UPDATE users SET client_id = ? WHERE telegram_id = ?",
                 (target_id, telegram_id),
             )
+            _log_agent_switch(conn, telegram_id, target_id)
             conn.commit()
             client_1c = target["client_id_1c"] or target["name"] or f"#{target_id}"
             name_html = html_escape(client_1c)
@@ -142,6 +156,7 @@ async def on_testclient_callback(cb: types.CallbackQuery):
                 "UPDATE users SET client_id = ? WHERE telegram_id = ?",
                 (new_id, telegram_id),
             )
+            _log_agent_switch(conn, telegram_id, new_id)
             conn.commit()
             agent_first = cb.from_user.first_name or ""
             agent_last = cb.from_user.last_name or ""
@@ -227,6 +242,7 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
             await message.reply(f"❌ allowed_clients ID {target_id} not found.")
             return
         conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?", (target_id, telegram_id))
+        _log_agent_switch(conn, telegram_id, target_id)
         conn.commit()
         # Check if this client has balance data
         bal_count = conn.execute(
@@ -460,6 +476,33 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
     )
 
 
+
+
+@router.message(Command("panel"))
+async def cmd_panel(message: types.Message):
+    """Open the agent panel mini app.
+
+    Preferred entry point for agents — replaces scattered /testclient,
+    /fxrate-read, and phone-lookup flows. The mini app handles client
+    search, FX rate display, and acting-as in one UI.
+    """
+    if not is_agent_or_admin(message):
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="🧭 Agent panelini ochish",
+                web_app=WebAppInfo(url=WEBAPP_URL),
+            )
+        ]]
+    )
+    await message.reply(
+        "Panel:\n"
+        "• Bugungi valyuta kursi\n"
+        "• Mijoz qidirish va kabinetga kirish\n"
+        "• Oxirgi mijozlar ro'yxati",
+        reply_markup=kb,
+    )
 
 
 @router.message(F.reply_to_message & F.text)

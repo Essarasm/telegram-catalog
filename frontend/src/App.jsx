@@ -7,8 +7,10 @@ import CartPage from './pages/CartPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import CabinetPage from './pages/CabinetPage';
+import AgentHomePage from './pages/AgentHomePage';
 import t from './i18n/uz.json';
 import { cloudSave, cloudLoad } from './utils/cloudStorage';
+import { fetchCabinetClientInfo, switchAgentClient } from './utils/api';
 
 const APP_VERSION = 'v17.0';
 
@@ -45,10 +47,18 @@ export default function App() {
   const [registered, setRegistered] = useState(null);
   const [approved, setApproved] = useState(false);
   const [isAgent, setIsAgent] = useState(false);
+  const [actingAsClient, setActingAsClient] = useState(null); // null when unlinked
   const [supplementingOrderId, setSupplementingOrderId] = useState(null);
   const cart = useCart();
   const goBackRef = useRef(null);
   const scrollPositions = useRef({});  // page key → scrollY
+
+  const refreshActingAs = useCallback(async () => {
+    const uid = getTelegramUserId();
+    if (!uid) return;
+    const info = await fetchCabinetClientInfo(uid);
+    setActingAsClient(info.ok ? info.client : null);
+  }, []);
 
   const checkApproval = useCallback(() => {
     const uid = getTelegramUserId();
@@ -59,9 +69,10 @@ export default function App() {
         setRegistered(data.registered);
         setApproved(data.approved || false);
         setIsAgent(data.is_agent || false);
+        if (data.is_agent) refreshActingAs();
       })
       .catch(() => {});
-  }, []);
+  }, [refreshActingAs]);
 
   useEffect(() => {
     const uid = getTelegramUserId();
@@ -88,6 +99,7 @@ export default function App() {
           setRegistered(true);
           setApproved(data.approved || false);
           setIsAgent(data.is_agent || false);
+          if (data.is_agent) refreshActingAs();
         } else {
           // Server lost user data — try silent re-registration from cache
           const result = await silentReRegister(uid);
@@ -95,6 +107,7 @@ export default function App() {
             setRegistered(true);
             setApproved(result.approved || false);
             setIsAgent(result.is_agent || false);
+            if (result.is_agent) refreshActingAs();
           } else {
             // No cache or re-register failed — show RegisterPage
             setRegistered(false);
@@ -199,7 +212,21 @@ export default function App() {
     };
   }, [page]);
 
+  const exitToAgentPanel = async () => {
+    const uid = getTelegramUserId();
+    if (!uid) return;
+    await switchAgentClient({ telegram_id: uid, clear: true });
+    setActingAsClient(null);
+    setPage('catalog');
+  };
+
+  const onAgentClientPicked = (client) => {
+    setActingAsClient(client);
+    setPage('catalog');
+  };
+
   const getTitle = () => {
+    if (isAgent && !actingAsClient) return t.agent_panel_home_title;
     if (page === 'catalog') return t.app_title;
     if (page === 'producers') return selectedCategory?.name || t.producers;
     if (page === 'products' && searchQuery) return t.search_results;
@@ -399,8 +426,33 @@ export default function App() {
         </div>
       )}
 
+      {/* Agent acting-as bar — shown on every page when linked */}
+      {isAgent && actingAsClient && (
+        <div className="mx-3 mt-2 rounded-xl bg-blue-500/10 border border-blue-500/40 px-3 py-2 flex items-center gap-2">
+          <span className="text-lg shrink-0">👤</span>
+          <div className="flex-1 min-w-0">
+            <div className="text-xs text-tg-hint leading-tight">
+              {t.agent_acting_as}
+            </div>
+            <div className="text-sm font-medium truncate leading-tight">
+              {actingAsClient.client_id_1c || actingAsClient.name || `#${actingAsClient.id}`}
+            </div>
+          </div>
+          <button
+            onClick={exitToAgentPanel}
+            className="text-xs font-medium bg-tg-bg border border-tg-hint/30 rounded-lg px-3 py-1.5 shrink-0"
+          >
+            {t.agent_switch_client}
+          </button>
+        </div>
+      )}
+
       {/* Content */}
       <main className="px-3 py-3">
+        {isAgent && !actingAsClient ? (
+          <AgentHomePage onClientSwitched={onAgentClientPicked} />
+        ) : (
+        <>
         {page === 'catalog' && (
           <CatalogPage
             onSelectCategory={(cat) => navigateTo('producers', cat)}
@@ -434,7 +486,10 @@ export default function App() {
         )}
         {page === 'cabinet' && (
           <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')}
-            onSupplementOrder={(orderId) => { setSupplementingOrderId(orderId); navigateTo('catalog'); }} />
+            onSupplementOrder={(orderId) => { setSupplementingOrderId(orderId); navigateTo('catalog'); }}
+            actingAsClient={actingAsClient} />
+        )}
+        </>
         )}
       </main>
 

@@ -507,6 +507,53 @@ def scoring_summary():
     return get_scoring_summary()
 
 
+@router.get("/fx-rate/today")
+def fx_rate_today():
+    """Return today's FX rate events (0, 1, or 2 rows, newest first) plus a
+    yesterday fallback. Consumed by the agent panel FX banner:
+      • is_stale=true  → no rate set yet today; banner shows yesterday + warning
+      • 1 event         → one rate set today; banner shows it as current
+      • 2 events        → newer rate prominent, older rate shown dimmer
+    """
+    from backend.services.daily_uploads import tashkent_today_str
+
+    today = tashkent_today_str()
+    conn = get_db()
+    try:
+        today_rows = conn.execute(
+            """SELECT rate, set_at, set_by_name
+               FROM daily_fx_rate_events
+               WHERE rate_date = ? AND currency_pair = 'USD_UZS'
+               ORDER BY set_at DESC""",
+            (today,),
+        ).fetchall()
+        today_events = [
+            {"rate": r["rate"], "set_at": r["set_at"], "set_by_name": r["set_by_name"]}
+            for r in today_rows
+        ]
+
+        yesterday = None
+        if not today_events:
+            y = conn.execute(
+                """SELECT rate_date, rate FROM daily_fx_rates
+                   WHERE currency_pair = 'USD_UZS' AND rate_date < ?
+                   ORDER BY rate_date DESC LIMIT 1""",
+                (today,),
+            ).fetchone()
+            if y:
+                yesterday = {"rate_date": y["rate_date"], "rate": y["rate"]}
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "today_date": today,
+        "today_events": today_events,
+        "yesterday": yesterday,
+        "is_stale": len(today_events) == 0,
+    }
+
+
 @router.get("/fx-rates-monthly")
 def fx_rates_monthly():
     """Return one representative USD_UZS rate per month (the last rate we have

@@ -395,6 +395,33 @@ def init_db():
             PRIMARY KEY (rate_date, currency_pair)
         );
 
+        -- Full audit trail of every /fxrate set event. daily_fx_rates keeps
+        -- one canonical row per day (latest wins for analytics); this table
+        -- preserves every individual set so the agent panel can show both
+        -- rates when the rate is updated during the day.
+        CREATE TABLE IF NOT EXISTS daily_fx_rate_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rate_date TEXT NOT NULL,
+            currency_pair TEXT NOT NULL DEFAULT 'USD_UZS',
+            rate REAL NOT NULL,
+            set_at TEXT DEFAULT (datetime('now')),
+            set_by_user_id INTEGER,
+            set_by_name TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_fx_events_date_set_at
+            ON daily_fx_rate_events(rate_date, set_at DESC);
+
+        -- Audit of every agent → client switch (bot /testclient + mini app).
+        -- Used to render the "Recent clients" list on the agent home screen.
+        CREATE TABLE IF NOT EXISTS agent_client_switches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_telegram_id INTEGER NOT NULL,
+            client_id INTEGER NOT NULL,
+            switched_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_switches_agent
+            ON agent_client_switches(agent_telegram_id, switched_at DESC);
+
         -- Holidays (manual entry only, empty seed).
         CREATE TABLE IF NOT EXISTS holidays (
             holiday_date TEXT PRIMARY KEY,
@@ -896,6 +923,21 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_orders_placed_by "
         "ON orders(placed_by_telegram_id)"
     )
+
+    # One-time backfill: seed daily_fx_rate_events from existing daily_fx_rates
+    # so the agent FX banner has history from day one. Runs only when the
+    # events table is empty; subsequent /fxrate sets append normally.
+    fx_events_count = conn.execute(
+        "SELECT COUNT(*) FROM daily_fx_rate_events"
+    ).fetchone()[0]
+    if fx_events_count == 0:
+        conn.execute(
+            """INSERT INTO daily_fx_rate_events
+               (rate_date, currency_pair, rate, set_at, set_by_user_id, set_by_name)
+               SELECT rate_date, currency_pair, rate, created_at,
+                      uploaded_by_user_id, uploaded_by_name
+               FROM daily_fx_rates"""
+        )
 
     # Session L: loyalty points system
     conn.execute("""

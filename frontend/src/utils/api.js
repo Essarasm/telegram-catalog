@@ -143,6 +143,50 @@ export async function submitProductRequest({ telegramId, requestText }) {
   return res.json();
 }
 
+// ── Agent panel ────────────────────────────────────────────────
+
+export async function fetchFxRateToday() {
+  try {
+    const res = await fetch(`${API_BASE}/finance/fx-rate/today`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, is_stale: true, today_events: [], yesterday: null };
+  }
+}
+
+export async function searchAgentClients(telegramId, q) {
+  const params = new URLSearchParams({ telegram_id: telegramId, q });
+  const res = await fetch(`${API_BASE}/agent/search-clients?${params}`);
+  return res.json();
+}
+
+export async function switchAgentClient(payload) {
+  const res = await fetch(`${API_BASE}/agent/switch-client`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function fetchRecentAgentClients(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/agent/recent-clients?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, recent: [] };
+  }
+}
+
+export async function fetchCabinetClientInfo(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/cabinet/client-info?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, client: null };
+  }
+}
+
 export function getImageUrl(product) {
   if (product.image_path) {
     return `/images/${product.image_path}`;
