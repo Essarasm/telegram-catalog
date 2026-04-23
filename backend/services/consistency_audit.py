@@ -131,6 +131,68 @@ def run_audit() -> dict:
         if size_row:
             result["_table_sizes"] = dict(size_row)
 
+        # 8. Heal-eligible orphans per finance table — rows with client_id IS
+        # NULL whose client_name_1c DOES match an allowed_clients.client_id_1c.
+        # Post-import heal (Phase 2) should drive these to 0; any non-zero
+        # count means a new class of orphan is escaping the heal path.
+        healable = {}
+        for table in ("client_balances", "real_orders",
+                      "client_payments", "client_debts"):
+            row = conn.execute(
+                f"""SELECT COUNT(*) AS n FROM {table} t
+                    WHERE t.client_id IS NULL
+                      AND t.client_name_1c IN (
+                          SELECT client_id_1c FROM allowed_clients
+                          WHERE COALESCE(status, 'active') != 'merged'
+                            AND client_id_1c IS NOT NULL
+                            AND client_id_1c != ''
+                      )"""
+            ).fetchone()
+            if row and row["n"]:
+                healable[table] = row["n"]
+        if healable:
+            result["healable_orphans"] = {"count": sum(healable.values()),
+                                          "by_table": healable}
+
+        # 9. Debt-USD coverage collapse — if client_debts has significant
+        # row count but zero USD anywhere, the 1C report probably lost its
+        # «В Валюте» column again (Error Log #20). Phase 1 blocks this at
+        # import-time; the audit is a second safety net in case someone
+        # runs `/debtors force` inadvertently.
+        debt_row = conn.execute(
+            """SELECT COUNT(*) AS rows,
+                      COALESCE(SUM(debt_usd), 0) AS usd_total,
+                      SUM(CASE WHEN debt_usd > 0 THEN 1 ELSE 0 END) AS usd_rows
+               FROM client_debts"""
+        ).fetchone()
+        if debt_row and debt_row["rows"] >= 50 and debt_row["usd_rows"] == 0:
+            result["debt_usd_coverage_zero"] = {
+                "rows": debt_row["rows"],
+                "usd_total": float(debt_row["usd_total"] or 0),
+                "usd_rows": debt_row["usd_rows"],
+            }
+
+        # 10. Fuzzy-duplicate allowed_clients — same client_id_1c modulo
+        # whitespace/case. Typically caused by manual entry drift or
+        # inconsistent 1C export spellings.
+        fuzzy_dups = conn.execute(
+            """SELECT LOWER(TRIM(client_id_1c)) AS norm,
+                      COUNT(*) AS n,
+                      GROUP_CONCAT(id || ':' || client_id_1c, ' | ') AS rows
+               FROM allowed_clients
+               WHERE COALESCE(status, 'active') != 'merged'
+                 AND client_id_1c IS NOT NULL AND client_id_1c != ''
+               GROUP BY LOWER(TRIM(client_id_1c))
+               HAVING COUNT(*) > 1
+               ORDER BY n DESC
+               LIMIT 20"""
+        ).fetchall()
+        if fuzzy_dups:
+            result["fuzzy_client_1c_dups"] = {
+                "count": len(fuzzy_dups),
+                "sample": [dict(r) for r in fuzzy_dups[:5]],
+            }
+
     finally:
         conn.close()
     return result
@@ -152,6 +214,9 @@ def format_audit_message(findings: dict) -> str | None:
         "stale_needs_review":      "🕸 Eskirgan needs_review (>30 kun)",
         "stuck_orders":            "🚫 Sales guruhga yetmagan buyurtmalar (>24s)",
         "recent_phone_changes_7d": "📱 Oxirgi 7 kunda telefon o'zgarishi",
+        "healable_orphans":        "🧩 Healable orphan qatorlar (client_id NULL, 1C nomi mavjud)",
+        "debt_usd_coverage_zero":  "💵 client_debts: USD butunlay yo'q (В Валюте column?)",
+        "fuzzy_client_1c_dups":    "👥 client_id_1c dublikat (case/whitespace)",
     }
 
     for key, label in issue_labels.items():
