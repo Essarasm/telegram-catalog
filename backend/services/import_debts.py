@@ -279,6 +279,10 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
             ),
         )
 
+    # Post-import orphan heal — see import_balances.py for rationale.
+    from backend.services.client_search import heal_finance_orphans_by_1c_name
+    orphans_healed = heal_finance_orphans_by_1c_name(conn, "client_debts")
+
     conn.commit()
     conn.close()
 
@@ -289,6 +293,7 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
         "matched_to_app": matched,
         "unmatched_count": len(unmatched_names),
         "unmatched_sample": unmatched_names[:15],
+        "orphans_healed": orphans_healed,
         "total_uzs": total_uzs,
         "total_usd": total_usd,
     }
@@ -361,4 +366,142 @@ def get_client_debt(client_id) -> Optional[dict]:
         "last_transaction_date": None,
         "aging": {"0_30": 0, "31_60": 0, "61_90": 0, "91_120": 0, "120_plus": 0},
         "imported_at": meta["imported_at"] if meta else None,
+    }
+
+
+def _latest_ob_closing(conn, ids: list) -> dict:
+    """Return the most recent оборотка closing per currency for a client.
+
+    Returns a dict keyed by currency: {UZS: {debt, period_start, imported_at}, USD: {...}}.
+    "debt" = closing_debit − closing_credit on the row with the latest period_start.
+    Used as the fallback when client_debts has structural gaps (e.g., upstream 1C
+    template dropped the В Валюте column, leaving debt_usd = 0 for every row).
+    """
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"""SELECT cb.currency, cb.period_start, cb.period_end,
+                   cb.closing_debit, cb.closing_credit, cb.imported_at
+            FROM client_balances cb
+            INNER JOIN (
+                SELECT currency, MAX(period_start) AS pmax
+                FROM client_balances
+                WHERE client_id IN ({placeholders})
+                GROUP BY currency
+            ) latest ON cb.currency = latest.currency
+                    AND cb.period_start = latest.pmax
+            WHERE cb.client_id IN ({placeholders})""",
+        (*ids, *ids),
+    ).fetchall()
+    out = {}
+    for r in rows:
+        ccy = (r["currency"] or "").upper()
+        if not ccy:
+            continue
+        out[ccy] = {
+            "debt": (r["closing_debit"] or 0) - (r["closing_credit"] or 0),
+            "period_start": r["period_start"],
+            "imported_at": r["imported_at"],
+        }
+    return out
+
+
+def get_effective_debt(client_id) -> Optional[dict]:
+    """Resolve current debt per currency, picking the best raw source per leg.
+
+    Algorithm (per currency, independently):
+        1. If client_debts has structurally-valid data for this currency
+           (≥1 row globally with a non-zero value), use client_debts.
+           Preserves "client not listed = settled" semantics.
+        2. Otherwise fall back to the most recent client_balances closing
+           (closing_debit − closing_credit on MAX(period_start)).
+
+    Self-healing: when the 1C template for Дебиторская задолженность restores
+    its В Валюте column and a good /debtors upload lands, the USD leg will
+    have non-zero rows again and this function switches USD back to debts
+    automatically. Same logic covers any currency leg going dark in the future.
+
+    Returns None when no data is available from either source.
+    """
+    conn = get_db()
+    if isinstance(client_id, (list, tuple)):
+        ids = list(client_id)
+    else:
+        ids = [client_id]
+
+    # Fetch the client's debtors row (if any) and оборотка closings
+    placeholders = ",".join("?" * len(ids))
+    debts_row = conn.execute(
+        f"""SELECT client_name_1c, debt_uzs, debt_usd, report_date,
+                   last_transaction_date,
+                   aging_0_30, aging_31_60, aging_61_90, aging_91_120, aging_120_plus,
+                   imported_at
+            FROM client_debts WHERE client_id IN ({placeholders})""",
+        tuple(ids),
+    ).fetchone()
+
+    debts_meta = conn.execute(
+        "SELECT report_date, imported_at FROM client_debts LIMIT 1"
+    ).fetchone()
+
+    # Structural column validity: is there ≥1 non-zero value globally?
+    has_debts_table = debts_meta is not None
+    uzs_valid_in_debts = has_debts_table and bool(conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM client_debts WHERE COALESCE(debt_uzs,0) != 0)"
+    ).fetchone()[0])
+    usd_valid_in_debts = has_debts_table and bool(conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM client_debts WHERE COALESCE(debt_usd,0) != 0)"
+    ).fetchone()[0])
+
+    ob_closings = _latest_ob_closing(conn, ids)
+    conn.close()
+
+    if not has_debts_table and not ob_closings:
+        return None
+
+    def pick(ccy_lower: str, column_valid: bool):
+        if has_debts_table and column_valid:
+            if debts_row:
+                return float(debts_row[f"debt_{ccy_lower}"] or 0), "debts"
+            return 0.0, "debts_settled"  # Client absent from debtors = settled
+        ob = ob_closings.get(ccy_lower.upper())
+        if ob is not None:
+            return float(ob["debt"] or 0), "ob_closing"
+        return 0.0, "empty"
+
+    uzs_val, uzs_src = pick("uzs", uzs_valid_in_debts)
+    usd_val, usd_src = pick("usd", usd_valid_in_debts)
+
+    # Prefer debtors metadata when available; else use latest оборотка snapshot
+    report_date = debts_meta["report_date"] if debts_meta else None
+    imported_at = debts_meta["imported_at"] if debts_meta else None
+    if not has_debts_table:
+        for ccy in ("USD", "UZS"):
+            ob = ob_closings.get(ccy)
+            if ob is not None:
+                imported_at = ob["imported_at"]
+                break
+
+    client_name_1c = debts_row["client_name_1c"] if debts_row else None
+    aging = None
+    last_tx_date = None
+    if debts_row:
+        aging = {
+            "0_30": debts_row["aging_0_30"],
+            "31_60": debts_row["aging_31_60"],
+            "61_90": debts_row["aging_61_90"],
+            "91_120": debts_row["aging_91_120"],
+            "120_plus": debts_row["aging_120_plus"],
+        }
+        last_tx_date = debts_row["last_transaction_date"]
+
+    return {
+        "client_name_1c": client_name_1c,
+        "debt_uzs": uzs_val,
+        "debt_usd": usd_val,
+        "debt_uzs_source": uzs_src,
+        "debt_usd_source": usd_src,
+        "report_date": report_date,
+        "last_transaction_date": last_tx_date,
+        "aging": aging or {"0_30": 0, "31_60": 0, "61_90": 0, "91_120": 0, "120_plus": 0},
+        "imported_at": imported_at,
     }

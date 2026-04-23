@@ -121,6 +121,32 @@ def relink_orphan_finance_rows(conn, client_id: int, client_name_1c: str) -> dic
     return counts
 
 
+def heal_finance_orphans_by_1c_name(conn, table: str) -> int:
+    """Resolve client_id on orphan rows in one finance table via exact
+    client_name_1c → allowed_clients.client_id_1c match. Safe: only
+    touches rows where client_id IS NULL; never overwrites an existing
+    link. Intended as a post-import cleanup pass to catch rows the
+    per-row _try_match_client missed (stale match-cache, late-added
+    allowed_clients entries, etc.)."""
+    if table not in ("client_balances", "real_orders",
+                     "client_payments", "client_debts"):
+        raise ValueError(f"not a finance table: {table}")
+    cur = conn.execute(
+        f"""UPDATE {table} SET client_id = (
+                SELECT ac.id FROM allowed_clients ac
+                WHERE ac.client_id_1c = {table}.client_name_1c
+                  AND COALESCE(ac.status, 'active') != 'merged'
+                ORDER BY ac.id LIMIT 1
+            )
+            WHERE client_id IS NULL
+              AND client_name_1c IN (
+                  SELECT client_id_1c FROM allowed_clients
+                  WHERE COALESCE(status, 'active') != 'merged'
+              )"""
+    )
+    return cur.rowcount
+
+
 def create_and_link_new_1c_client(
     client_name_1c: str, agent_telegram_id: int
 ) -> Optional[dict]:

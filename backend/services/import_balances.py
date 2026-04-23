@@ -437,6 +437,12 @@ def apply_balance_import(file_bytes: bytes) -> dict:
             "matched": sec_matched,
         })
 
+    # Post-import orphan heal — catches rows the per-row _try_match_client
+    # missed (late-added allowed_clients entries, stale caches, Cyrillic
+    # LOWER mismatches). Safe: only touches client_id IS NULL.
+    from backend.services.client_search import heal_finance_orphans_by_1c_name
+    orphans_healed = heal_finance_orphans_by_1c_name(conn, "client_balances")
+
     conn.commit()
 
     # Count total unique clients in DB
@@ -465,6 +471,7 @@ def apply_balance_import(file_bytes: bytes) -> dict:
         "skipped_zero": skipped_zero,
         "unmatched_count": len(unmatched_names),
         "unmatched_sample": unmatched_names[:20],
+        "orphans_healed": orphans_healed,
         "db_total_clients": total_clients,
         "db_total_periods": total_periods,
         "sections": section_summaries,

@@ -310,6 +310,10 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
                 )
                 inserted += 1
 
+        # Post-import orphan heal — see import_balances.py for rationale.
+        from backend.services.client_search import heal_finance_orphans_by_1c_name
+        orphans_healed = heal_finance_orphans_by_1c_name(conn, "client_payments")
+
         conn.commit()
 
         db_total = conn.execute("SELECT COUNT(*) FROM client_payments").fetchone()[0]
@@ -319,6 +323,7 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
             "inserted": inserted,
             "updated": updated,
             "matched_clients": matched_clients,
+            "orphans_healed": orphans_healed,
             "stats": stats,
             "db_total": db_total,
         }

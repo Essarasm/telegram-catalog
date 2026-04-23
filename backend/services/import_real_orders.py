@@ -673,6 +673,10 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
             )
             inserted_items += 1
 
+    # Post-import orphan heal — see import_balances.py for rationale.
+    from backend.services.client_search import heal_finance_orphans_by_1c_name
+    orphans_healed = heal_finance_orphans_by_1c_name(conn, "real_orders")
+
     conn.commit()
 
     db_total_docs = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
@@ -695,6 +699,7 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
         "unmatched_products_count": len(unique_unmatched_products),
         "unmatched_clients_sample": unique_unmatched_clients[:15],
         "unmatched_products_sample": unique_unmatched_products[:15],
+        "orphans_healed": orphans_healed,
         "db_total_docs": db_total_docs,
         "db_total_items": db_total_items,
     }
