@@ -54,6 +54,24 @@ async def cmd_start(message: types.Message):
         await start_support_prompt(message)
         return
 
+    if deep_link == "panel":
+        await message.answer(
+            "🧭 <b>Agent paneli</b>\n\n"
+            "• Bugungi valyuta kursi\n"
+            "• Mijoz qidirish va kabinetga kirish\n"
+            "• Oxirgi mijozlar ro'yxati",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[
+                    InlineKeyboardButton(
+                        text="🧭 Panelni ochish",
+                        web_app=WebAppInfo(url=WEBAPP_URL),
+                    )
+                ]]
+            ),
+        )
+        return
+
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [

@@ -485,17 +485,34 @@ async def cmd_panel(message: types.Message):
     Preferred entry point for agents — replaces scattered /testclient,
     /fxrate-read, and phone-lookup flows. The mini app handles client
     search, FX rate display, and acting-as in one UI.
+
+    Telegram forbids web_app buttons in group chats (BUTTON_TYPE_INVALID),
+    so in groups we send a URL button that deep-links to the bot DM with
+    start=panel. The /start panel handler then delivers the real web_app
+    button in the DM (where web_app buttons are allowed).
     """
     if not is_agent_or_admin(message):
         return
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(
-                text="🧭 Agent panelini ochish",
-                web_app=WebAppInfo(url=WEBAPP_URL),
-            )
-        ]]
-    )
+
+    is_group = message.chat.type in ("group", "supergroup")
+    if is_group:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🧭 Agent panelini ochish",
+                    url="https://t.me/samrassvetbot?start=panel",
+                )
+            ]]
+        )
+    else:
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="🧭 Agent panelini ochish",
+                    web_app=WebAppInfo(url=WEBAPP_URL),
+                )
+            ]]
+        )
     await message.reply(
         "Panel:\n"
         "• Bugungi valyuta kursi\n"
