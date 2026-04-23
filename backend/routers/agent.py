@@ -9,6 +9,7 @@ from datetime import date
 from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
 
+from backend.admin_auth import check_admin_key
 from backend.database import get_db
 from backend.services.client_search import (
     create_and_link_new_1c_client,
@@ -200,6 +201,109 @@ def agent_switch_client(payload: dict = Body(...)):
         }
     finally:
         conn.close()
+
+
+@router.get("/debug/client-lookup")
+def agent_debug_client_lookup(
+    q: str = Query(..., min_length=1),
+    admin_key: str = Query(""),
+):
+    """TEMPORARY diagnostic endpoint — dumps every row touching the query
+    across allowed_clients / client_balances / client_debts / real_orders
+    so the duplicate-dedup can be planned safely. Remove after repair."""
+    if not check_admin_key(admin_key):
+        return JSONResponse({"ok": False, "error": "bad admin_key"}, status_code=403)
+
+    pat = f"%{q}%"
+    conn = get_db()
+    conn.create_function("LOWER", 1, lambda s: s.lower() if s else s)
+    try:
+        allowed = [dict(r) for r in conn.execute(
+            """SELECT id, client_id_1c, name, phone_normalized, source_sheet,
+                      status, created_at, matched_telegram_id
+               FROM allowed_clients
+               WHERE LOWER(client_id_1c) LIKE LOWER(?)
+                  OR LOWER(name) LIKE LOWER(?)
+               ORDER BY id""",
+            (pat, pat),
+        ).fetchall()]
+
+        balances = [dict(r) for r in conn.execute(
+            """SELECT client_id, client_name_1c, COUNT(*) AS rows,
+                      SUM(CASE WHEN client_id IS NULL THEN 1 ELSE 0 END) AS orphan_rows,
+                      MAX(period_end) AS latest_period
+               FROM client_balances
+               WHERE LOWER(client_name_1c) LIKE LOWER(?)
+               GROUP BY client_id, client_name_1c
+               ORDER BY client_id""",
+            (pat,),
+        ).fetchall()]
+
+        debts = [dict(r) for r in conn.execute(
+            """SELECT client_id, client_name_1c, COUNT(*) AS rows,
+                      SUM(CASE WHEN client_id IS NULL THEN 1 ELSE 0 END) AS orphan_rows
+               FROM client_debts
+               WHERE LOWER(client_name_1c) LIKE LOWER(?)
+               GROUP BY client_id, client_name_1c
+               ORDER BY client_id""",
+            (pat,),
+        ).fetchall()]
+
+        real_orders = [dict(r) for r in conn.execute(
+            """SELECT client_id, client_name_1c, COUNT(*) AS rows,
+                      SUM(CASE WHEN client_id IS NULL THEN 1 ELSE 0 END) AS orphan_rows
+               FROM real_orders
+               WHERE LOWER(client_name_1c) LIKE LOWER(?)
+               GROUP BY client_id, client_name_1c
+               ORDER BY client_id""",
+            (pat,),
+        ).fetchall()]
+
+        payments = [dict(r) for r in conn.execute(
+            """SELECT client_id, client_name_1c, COUNT(*) AS rows,
+                      SUM(CASE WHEN client_id IS NULL THEN 1 ELSE 0 END) AS orphan_rows
+               FROM client_payments
+               WHERE LOWER(client_name_1c) LIKE LOWER(?)
+               GROUP BY client_id, client_name_1c
+               ORDER BY client_id""",
+            (pat,),
+        ).fetchall()]
+
+        users_linked = [dict(r) for r in conn.execute(
+            """SELECT u.telegram_id, u.phone, u.first_name, u.client_id,
+                      u.is_agent, ac.client_id_1c, ac.name
+               FROM users u
+               LEFT JOIN allowed_clients ac ON ac.id = u.client_id
+               WHERE u.client_id IN (SELECT id FROM allowed_clients
+                                     WHERE LOWER(client_id_1c) LIKE LOWER(?)
+                                        OR LOWER(name) LIKE LOWER(?))""",
+            (pat, pat),
+        ).fetchall()]
+
+        recent_switches = [dict(r) for r in conn.execute(
+            """SELECT s.*, ac.client_id_1c, ac.name
+               FROM agent_client_switches s
+               LEFT JOIN allowed_clients ac ON ac.id = s.client_id
+               WHERE s.client_id IN (SELECT id FROM allowed_clients
+                                     WHERE LOWER(client_id_1c) LIKE LOWER(?)
+                                        OR LOWER(name) LIKE LOWER(?))
+               ORDER BY s.switched_at DESC LIMIT 20""",
+            (pat, pat),
+        ).fetchall()]
+    finally:
+        conn.close()
+
+    return {
+        "ok": True,
+        "query": q,
+        "allowed_clients": allowed,
+        "client_balances_grouped": balances,
+        "client_debts_grouped": debts,
+        "real_orders_grouped": real_orders,
+        "client_payments_grouped": payments,
+        "users_linked_to_these_clients": users_linked,
+        "recent_agent_switches": recent_switches,
+    }
 
 
 @router.get("/recent-clients")
