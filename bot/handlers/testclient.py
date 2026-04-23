@@ -496,11 +496,14 @@ async def cmd_panel(message: types.Message):
 
     is_group = message.chat.type in ("group", "supergroup")
     if is_group:
+        # Mini App direct link (BotFather /newapp — short name "panel").
+        # URL buttons are allowed in groups; tapping this opens the Mini App
+        # in one step, no DM detour.
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[
                 InlineKeyboardButton(
                     text="🧭 Agent panelini ochish",
-                    url="https://t.me/samrassvetbot?start=panel",
+                    url="https://t.me/samrassvetbot/panel",
                 )
             ]]
         )
