@@ -213,6 +213,34 @@ def agent_switch_client(payload: dict = Body(...)):
         conn.close()
 
 
+@router.get("/debug/debt-audit")
+def agent_debug_debt_audit(admin_key: str = Query("")):
+    """TEMPORARY — snapshot of client_debts to diagnose the USD-debt-bug."""
+    if not check_admin_key(admin_key):
+        return JSONResponse({"ok": False, "error": "bad admin_key"}, status_code=403)
+    conn = get_db()
+    try:
+        stats = dict(conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN debt_uzs > 0 THEN 1 ELSE 0 END) AS with_uzs,
+                      SUM(CASE WHEN debt_usd > 0 THEN 1 ELSE 0 END) AS with_usd,
+                      SUM(CASE WHEN debt_uzs > 0 AND debt_usd > 0 THEN 1 ELSE 0 END) AS with_both,
+                      COALESCE(SUM(debt_uzs), 0) AS total_uzs,
+                      COALESCE(SUM(debt_usd), 0) AS total_usd,
+                      MAX(report_date) AS latest_report,
+                      MAX(imported_at) AS latest_imported
+               FROM client_debts"""
+        ).fetchone())
+        usd_samples = [dict(r) for r in conn.execute(
+            """SELECT client_name_1c, debt_uzs, debt_usd, report_date
+               FROM client_debts WHERE debt_usd > 0
+               ORDER BY debt_usd DESC LIMIT 10"""
+        ).fetchall()]
+    finally:
+        conn.close()
+    return {"ok": True, "stats": stats, "usd_samples": usd_samples}
+
+
 @router.get("/debug/client-detail")
 def agent_debug_client_detail(
     client_id: int = Query(...),
