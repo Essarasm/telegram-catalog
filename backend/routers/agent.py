@@ -231,14 +231,19 @@ def agent_debug_debt_audit(admin_key: str = Query("")):
                       MAX(imported_at) AS latest_imported
                FROM client_debts"""
         ).fetchone())
-        usd_samples = [dict(r) for r in conn.execute(
-            """SELECT client_name_1c, debt_uzs, debt_usd, report_date
-               FROM client_debts WHERE debt_usd > 0
-               ORDER BY debt_usd DESC LIMIT 10"""
+        # Raw rows including aging columns — if USD ended up in a shifted
+        # column (parser off-by-one) we'll see small decimal values there.
+        raw_rows = [dict(r) for r in conn.execute(
+            """SELECT client_name_1c, debt_uzs, debt_usd,
+                      aging_0_30, aging_31_60, aging_61_90,
+                      aging_91_120, aging_120_plus,
+                      last_transaction_no
+               FROM client_debts
+               ORDER BY debt_uzs DESC LIMIT 10"""
         ).fetchall()]
     finally:
         conn.close()
-    return {"ok": True, "stats": stats, "usd_samples": usd_samples}
+    return {"ok": True, "stats": stats, "raw_rows": raw_rows}
 
 
 @router.get("/debug/client-detail")
