@@ -867,7 +867,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
           📒 {t.akt_title}
         </div>
 
-        <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10 ring-1 ring-tg-link/20">
+        <div className="space-y-2">
           {rows.map((e) => {
             const isOrder = e.type === 'order';
             const sign = isOrder ? '−' : '+';
@@ -878,7 +878,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
               <button
                 key={`${e.type}-${e.id}`}
                 onClick={() => { setAktSheet({ ...e }); setAktSheetItems(null); }}
-                className="w-full px-4 py-4 flex items-center gap-3 text-left active:bg-tg-bg/50 transition-colors"
+                className="w-full bg-tg-secondary rounded-xl px-4 py-4 flex items-center gap-3 text-left ring-1 ring-tg-link/20 active:bg-tg-bg/50 transition-colors"
               >
                 <span className="text-2xl flex-shrink-0">{rowIcon}</span>
                 <div className="flex-1 min-w-0">
