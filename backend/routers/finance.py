@@ -13,6 +13,7 @@ from backend.admin_auth import check_admin_key
 from backend.services.import_debts import (
     apply_debtors_import,
     get_client_debt,
+    get_effective_debt,
 )
 from backend.services.import_real_orders import (
     apply_real_orders_import,
@@ -366,38 +367,29 @@ def client_balance(telegram_id: int = Query(...)):
     client_ids = get_sibling_client_ids(conn, user["client_id"])
     conn.close()
 
-    # Try debtors snapshot first (most accurate)
-    debt_data = get_client_debt(client_ids)
-    if debt_data is not None:
-        # Convert to balance-compatible format for the frontend
+    # Per-currency source resolution: prefer debtors snapshot, fall back to
+    # оборотка closing when a currency leg is structurally absent from
+    # client_debts (e.g., 1C's В Валюте column drops out). Self-healing.
+    snapshot = get_effective_debt(client_ids)
+    if snapshot is not None:
         return {
             "ok": True,
             "has_balance": True,
             "source": "debts",
             "balance": {
-                "client_name_1c": debt_data["client_name_1c"],
-                "debt_uzs": debt_data["debt_uzs"],
-                "debt_usd": debt_data["debt_usd"],
-                "report_date": debt_data["report_date"],
-                "last_transaction_date": debt_data["last_transaction_date"],
-                "aging": debt_data["aging"],
-                "imported_at": debt_data["imported_at"],
-                # Backward-compatible fields
-                "balance": debt_data["debt_uzs"],
+                **snapshot,
+                # Backward-compatible legacy fields the frontend still reads
+                "balance": snapshot["debt_uzs"],
                 "balances_by_currency": {
-                    "UZS": {
-                        "currency": "UZS",
-                        "balance": debt_data["debt_uzs"],
-                    },
-                    "USD": {
-                        "currency": "USD",
-                        "balance": debt_data["debt_usd"],
-                    },
+                    "UZS": {"currency": "UZS", "balance": snapshot["debt_uzs"]},
+                    "USD": {"currency": "USD", "balance": snapshot["debt_usd"]},
                 },
             },
         }
 
-    # Fall back to оборотка data
+    # Neither client_debts nor client_balances have any data for this client —
+    # fall back to the legacy period-activity path (covers clients with only
+    # pre-snapshot monthly оборотка rows, if any remain).
     balance_data = get_client_balance(client_ids)
 
     if not balance_data:
