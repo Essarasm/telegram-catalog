@@ -862,8 +862,8 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     const rows = reversed.filter(e => rowsSet.has(e));
 
     return (
-      <div className="mb-4">
-        <div className="text-sm text-tg-hint mb-2">
+      <div className="mb-5">
+        <div className="text-base font-semibold mb-3">
           📒 {t.akt_title}
         </div>
 
@@ -878,27 +878,27 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
               <button
                 key={`${e.type}-${e.id}`}
                 onClick={() => { setAktSheet({ ...e }); setAktSheetItems(null); }}
-                className="w-full px-4 py-2.5 flex items-center gap-3 text-left active:bg-tg-bg/30"
+                className="w-full px-5 py-5 flex items-center gap-4 text-left active:bg-tg-bg/30"
               >
-                <span className="text-base flex-shrink-0">{rowIcon}</span>
-                <div className="flex-1 min-w-0 flex items-center gap-2">
-                  <div className="text-sm font-medium whitespace-nowrap">
+                <span className="text-3xl flex-shrink-0">{rowIcon}</span>
+                <div className="flex-1 min-w-0 flex items-center gap-3 flex-wrap">
+                  <div className="text-lg font-semibold whitespace-nowrap">
                     {formatDocDate(e.date)}
                   </div>
                   {isOrder && (
-                    <span className="px-2 py-0.5 rounded-md bg-tg-link/10 text-tg-link text-[10px] font-semibold">
+                    <span className="px-3 py-1 rounded-lg bg-tg-link/10 text-tg-link text-sm font-semibold">
                       {t.akt_details_pill}
                     </span>
                   )}
                 </div>
                 <div className="text-right flex-shrink-0">
                   {uzsAmt > 0 && (
-                    <div className={`text-[13px] font-semibold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
+                    <div className={`text-base font-bold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
                       {sign}{fmtUzs(uzsAmt)}
                     </div>
                   )}
                   {usdAmt > 0 && (
-                    <div className={`text-[13px] font-semibold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
+                    <div className={`text-base font-bold ${isOrder ? 'text-red-500' : 'text-emerald-600'}`}>
                       {sign}{fmtUsd(usdAmt)}
                     </div>
                   )}
@@ -1250,8 +1250,12 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
         </button>
       )}
 
-      <MyBusinessSection />
       <BalanceCard />
+
+      {/* ── Акт сверки (unified timeline + hero status + FIFO links) ── */}
+      <AktSverkiSection />
+
+      <MyBusinessSection />
 
       {lastOrder && (
         <>
@@ -1387,9 +1391,6 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
           </div>
         </>
       )}
-
-      {/* ── Акт сверки (unified timeline + hero status + FIFO links) ── */}
-      <AktSverkiSection />
 
       {/* ── Legacy: Real orders 1C drill-down list (still shown under akt-sverki for the items view) ── */}
       {false && realOrders.length > 0 && (
