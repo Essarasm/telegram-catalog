@@ -802,6 +802,9 @@
                 <div class="nav-tab" data-tab="clients" onclick="switchTab('clients')">Client Portfolio</div>
                 <div class="nav-tab" data-tab="inventory" onclick="switchTab('inventory')">Inventory</div>
                 <div class="nav-tab" data-tab="health" onclick="switchTab('health')">Platform Health</div>
+                <!-- BEGIN Phase 3: Search Analytics tab -->
+                <div class="nav-tab" data-tab="search" onclick="switchTab('search')">Search</div>
+                <!-- END Phase 3 -->
             </div>
             <div class="nav-footer">
                 <div class="currency-toggle">
@@ -1261,6 +1264,118 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- BEGIN Phase 3: Search Analytics tab -->
+                <div id="search-tab" class="tab-content hidden">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <div style="color: #8b8fa3; font-size: 13px;">Search behaviour, unmet demand, and funnel conversion.</div>
+                        <div class="currency-toggle" id="searchRangeToggle">
+                            <button class="currency-btn" data-srange="7" onclick="setSearchRange(7)">7d</button>
+                            <button class="currency-btn active" data-srange="30" onclick="setSearchRange(30)">30d</button>
+                            <button class="currency-btn" data-srange="90" onclick="setSearchRange(90)">90d</button>
+                        </div>
+                    </div>
+
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Total Searches</div>
+                            <div class="kpi-value" id="search-kpi-total">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Unique Searchers</div>
+                            <div class="kpi-value" id="search-kpi-users">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Unique Queries</div>
+                            <div class="kpi-value" id="search-kpi-queries">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Zero-Result %</div>
+                            <div class="kpi-value" id="search-kpi-zero">-</div>
+                        </div>
+                    </div>
+
+                    <div class="section-title">Conversion Funnel</div>
+                    <div class="table-container">
+                        <div id="search-funnel" style="padding: 8px 0;"></div>
+                    </div>
+
+                    <div class="row">
+                        <div class="row-item">
+                            <div class="table-container">
+                                <div class="table-title">Top Queries</div>
+                                <div class="table-wrapper">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th class="table-number">#</th>
+                                                <th>Query</th>
+                                                <th>Count</th>
+                                                <th>Avg Results</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="searchTopQueriesBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row-item">
+                            <div class="table-container">
+                                <div class="table-title">Unmet Demand (Zero Results)</div>
+                                <div class="table-wrapper">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th class="table-number">#</th>
+                                                <th>Query</th>
+                                                <th>Count</th>
+                                                <th>Users</th>
+                                                <th>Last</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="searchZeroResultsBody"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-title">Top Searchers (by client)</div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Client</th>
+                                        <th>Searches</th>
+                                        <th>Unique Queries</th>
+                                        <th>Zero-Result</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="searchPerClientBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-title">Recent Searches (live, last 50)</div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>When</th>
+                                        <th>Client</th>
+                                        <th>Query</th>
+                                        <th>Results</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="searchRecentBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <!-- END Phase 3 -->
             </div>
         </div>
     </div>
@@ -1389,7 +1504,8 @@
                 overview: 'Business Overview',
                 clients: 'Client Portfolio',
                 inventory: 'Inventory',
-                health: 'Platform Health'
+                health: 'Platform Health',
+                search: 'Search'
             };
             document.getElementById('pageTitle').textContent = titles[tabName];
 
@@ -1416,7 +1532,8 @@
                     loadOverviewData(),
                     loadClientsData(),
                     loadInventoryData(),
-                    loadHealthData()
+                    loadHealthData(),
+                    /* BEGIN Phase 3 */ loadSearchData() /* END Phase 3 */
                 ]);
             } catch (err) {
                 console.error('Data load error:', err);
@@ -2435,6 +2552,124 @@
                 });
             }
         });
+
+        // ============================================================
+        // BEGIN Phase 3: Search Analytics tab
+        // Self-contained. To remove: delete this block, the nav tab,
+        // the #search-tab div, the titles.search key, and the
+        // loadSearchData() call in loadAllData().
+        // ============================================================
+        let SEARCH_RANGE = 30;
+
+        async function searchFetch(path) {
+            const res = await fetch('/api/search' + path);
+            if (!res.ok) throw new Error('search API ' + res.status);
+            return res.json();
+        }
+
+        function setSearchRange(days) {
+            SEARCH_RANGE = days;
+            document.querySelectorAll('#searchRangeToggle .currency-btn').forEach(b => b.classList.remove('active'));
+            const btn = document.querySelector(`#searchRangeToggle [data-srange="${days}"]`);
+            if (btn) btn.classList.add('active');
+            loadSearchData();
+        }
+
+        function fmtSearchTs(iso) {
+            if (!iso) return '-';
+            // SQLite returns "YYYY-MM-DD HH:MM:SS" in UTC
+            const d = new Date(iso.replace(' ', 'T') + 'Z');
+            if (isNaN(d.getTime())) return esc(iso);
+            const now = new Date();
+            const diffMin = Math.round((now - d) / 60000);
+            if (diffMin < 1) return 'now';
+            if (diffMin < 60) return diffMin + 'm ago';
+            if (diffMin < 1440) return Math.round(diffMin / 60) + 'h ago';
+            return Math.round(diffMin / 1440) + 'd ago';
+        }
+
+        function searchClientName(row) {
+            const parts = [];
+            if (row.company_name) parts.push(row.company_name);
+            else if (row.client_name) parts.push(row.client_name);
+            else if (row.first_name || row.last_name) parts.push(((row.first_name || '') + ' ' + (row.last_name || '')).trim());
+            parts.push('#' + row.telegram_id);
+            return esc(parts.filter(Boolean).join(' — '));
+        }
+
+        function renderSearchFunnel(f) {
+            const el = document.getElementById('search-funnel');
+            if (!el) return;
+            const steps = [
+                { label: 'Searches',       value: f.total_searches || 0, color: '#6366f1' },
+                { label: 'With results',   value: f.with_results   || 0, color: '#8b5cf6' },
+                { label: 'Clicked',        value: f.with_clicks    || 0, color: '#ec4899' },
+                { label: 'Added to cart',  value: f.with_cart_add  || 0, color: '#10b981' }
+            ];
+            const max = Math.max(1, steps[0].value);
+            const rows = steps.map(s => {
+                const pct = Math.round((s.value / max) * 100);
+                const ofTotal = steps[0].value ? Math.round((s.value / steps[0].value) * 100) : 0;
+                return `
+                  <div style="display: flex; align-items: center; gap: 12px; margin: 6px 0;">
+                    <div style="width: 130px; color: #8b8fa3; font-size: 13px;">${s.label}</div>
+                    <div style="flex: 1; background: #0f1117; border-radius: 6px; height: 28px; position: relative; overflow: hidden;">
+                      <div style="width: ${pct}%; height: 100%; background: ${s.color}; border-radius: 6px; transition: width 0.3s;"></div>
+                      <div style="position: absolute; top: 0; left: 10px; height: 28px; display: flex; align-items: center; font-size: 12px; font-weight: 600; color: #e4e4e7;">${fmtFull(s.value)}</div>
+                    </div>
+                    <div style="width: 60px; text-align: right; color: #8b8fa3; font-size: 12px;">${ofTotal}%</div>
+                  </div>`;
+            }).join('');
+            const conv = (f.conversion_rate != null) ? f.conversion_rate : 0;
+            el.innerHTML = rows +
+                `<div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2d3a; font-size: 12px; color: #8b8fa3;">
+                   End-to-end conversion (search → cart add): <span style="color: #10b981; font-weight: 600;">${conv}%</span>
+                 </div>`;
+        }
+
+        async function loadSearchData() {
+            const days = SEARCH_RANGE;
+            try {
+                const [summary, funnel, top, zero, perClient, recent] = await Promise.all([
+                    searchFetch(`/stats/summary?days=${days}`),
+                    searchFetch(`/stats/funnel?days=${days}`),
+                    searchFetch(`/stats/top-queries?days=${days}&limit=20`),
+                    searchFetch(`/stats/zero-results?days=${days}&limit=20`),
+                    searchFetch(`/stats/per-client?days=${days}&limit=20`),
+                    searchFetch(`/stats/recent?limit=50`)
+                ]);
+
+                document.getElementById('search-kpi-total').textContent = fmt(summary.total_searches);
+                document.getElementById('search-kpi-users').textContent = fmt(summary.unique_users);
+                document.getElementById('search-kpi-queries').textContent = fmt(summary.unique_queries);
+                document.getElementById('search-kpi-zero').textContent = (summary.zero_result_pct != null ? summary.zero_result_pct : 0) + '%';
+
+                renderSearchFunnel(funnel);
+
+                const topBody = document.getElementById('searchTopQueriesBody');
+                topBody.innerHTML = (top.items || []).map((r, i) =>
+                    `<tr><td class="table-number">${i + 1}</td><td>${esc(r.query)}</td><td>${fmtFull(r.search_count)}</td><td>${r.avg_results}</td></tr>`
+                ).join('') || '<tr><td colspan="4" style="text-align:center; color:#8b8fa3;">No searches in window.</td></tr>';
+
+                const zeroBody = document.getElementById('searchZeroResultsBody');
+                zeroBody.innerHTML = (zero.items || []).map((r, i) =>
+                    `<tr><td class="table-number">${i + 1}</td><td>${esc(r.query)}</td><td>${fmtFull(r.search_count)}</td><td>${fmtFull(r.unique_users)}</td><td style="color:#8b8fa3;">${fmtSearchTs(r.last_searched)}</td></tr>`
+                ).join('') || '<tr><td colspan="5" style="text-align:center; color:#8b8fa3;">No zero-result searches.</td></tr>';
+
+                const pcBody = document.getElementById('searchPerClientBody');
+                pcBody.innerHTML = (perClient.items || []).map((r, i) =>
+                    `<tr><td class="table-number">${i + 1}</td><td>${searchClientName(r)}</td><td>${fmtFull(r.search_count)}</td><td>${fmtFull(r.unique_queries)}</td><td>${fmtFull(r.zero_result_count)}</td></tr>`
+                ).join('') || '<tr><td colspan="5" style="text-align:center; color:#8b8fa3;">No client activity.</td></tr>';
+
+                const recentBody = document.getElementById('searchRecentBody');
+                recentBody.innerHTML = (recent.items || []).map(r =>
+                    `<tr><td style="color:#8b8fa3;">${fmtSearchTs(r.created_at)}</td><td>${searchClientName(r)}</td><td>${esc(r.query)}</td><td>${r.results_count === 0 ? '<span style="color:#ef4444;">0</span>' : fmtFull(r.results_count)}</td></tr>`
+                ).join('') || '<tr><td colspan="4" style="text-align:center; color:#8b8fa3;">No recent searches.</td></tr>';
+            } catch (err) {
+                console.error('Search data load error:', err);
+            }
+        }
+        // END Phase 3
     </script>
 </body>
 </html>
