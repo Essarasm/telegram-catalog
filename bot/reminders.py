@@ -482,6 +482,30 @@ async def _send_master_sync_nudge(bot, chat_id: int) -> None:
         logger.error(f"Master sync nudge failed: {e}")
 
 
+async def _run_payment_notif_sweeper(bot, admin_chat_id: int) -> None:
+    """Daily 18:00 Tashkent — sweep pending payment notifications that are
+    >24h old. Runs after 17:00 EOD uploads check, so any legitimately queued
+    notification has had a full window for /debtors to land first.
+    Posts a short summary to Admin group only if rows were actually swept."""
+    from backend.services.payment_notifications import sweep_stale
+    try:
+        result = sweep_stale()
+        swept = int(result.get("swept", 0))
+        if swept <= 0:
+            return
+        await bot.send_message(
+            admin_chat_id,
+            f"🧹 <b>Payment notifications sweep</b>\n\n"
+            f"{swept} ta pending bildirishnoma 24 soatdan ko'p kutdi — "
+            f"<code>missed_notifications</code>'ga o'tkazildi.\n\n"
+            f"Ko'rish: <code>/missed</code>",
+            parse_mode="HTML",
+        )
+        logger.info(f"payment_notif_sweeper: swept {swept} stale rows")
+    except Exception as e:
+        logger.error(f"payment_notif_sweeper failed: {e}")
+
+
 async def _run_group_health_check(bot, admin_chat_id: int) -> None:
     """Daily 09:05 — check every forwarding group is still reachable.
 
@@ -609,6 +633,12 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 9, 5, _run_group_health_check),
             name="daily-group-health-check",
+        ),
+        # Daily 18:00 — sweep stale pending payment notifications (Session N).
+        # Runs one hour after EOD check so /debtors has had its full window.
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 18, 0, _run_payment_notif_sweeper),
+            name="daily-payment-notif-sweeper",
         ),
     ]
     logger.info(

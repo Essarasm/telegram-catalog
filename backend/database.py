@@ -465,6 +465,64 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_payments_client_id ON client_payments(client_id);
         CREATE INDEX IF NOT EXISTS idx_client_payments_currency ON client_payments(currency);
 
+        -- Session N: client-facing "payment received" notifications.
+        -- Flow: /cash import queues one row per (telegram_id × currency leg);
+        -- /debtors import fires grouped messages per client for today's rows;
+        -- 18:00 sweeper demotes stale pending → missed_notifications.
+        CREATE TABLE IF NOT EXISTS pending_payment_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            client_id INTEGER NOT NULL,
+            client_name_1c TEXT,
+            kassa_doc_no TEXT NOT NULL,
+            kassa_date TEXT NOT NULL,
+            currency TEXT NOT NULL,        -- 'UZS' | 'USD'
+            amount REAL NOT NULL,
+            queued_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(telegram_id, kassa_doc_no, kassa_date, currency, amount)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_notif_client ON pending_payment_notifications(client_id);
+        CREATE INDEX IF NOT EXISTS idx_pending_notif_kassa_date ON pending_payment_notifications(kassa_date);
+        CREATE INDEX IF NOT EXISTS idx_pending_notif_telegram ON pending_payment_notifications(telegram_id);
+
+        CREATE TABLE IF NOT EXISTS sent_payment_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            client_id INTEGER NOT NULL,
+            client_name_1c TEXT,
+            kassa_doc_no TEXT NOT NULL,
+            kassa_date TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            amount REAL NOT NULL,
+            debt_uzs_after REAL,
+            debt_usd_after REAL,
+            telegram_message_id INTEGER,
+            sent_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(telegram_id, kassa_doc_no, kassa_date, currency, amount)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sent_notif_sent_at ON sent_payment_notifications(sent_at);
+        CREATE INDEX IF NOT EXISTS idx_sent_notif_client ON sent_payment_notifications(client_id);
+
+        -- reason ∈ {'unmatched_name','no_telegram_bind','bot_send_failed','balance_missing_after_24h'}
+        CREATE TABLE IF NOT EXISTS missed_notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kassa_doc_no TEXT,
+            kassa_date TEXT,
+            client_name_1c TEXT,
+            client_id INTEGER,
+            telegram_id INTEGER,
+            currency TEXT,
+            amount REAL,
+            reason TEXT NOT NULL,
+            detail TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            resolved_at TEXT,
+            resolved_by TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_missed_notif_created ON missed_notifications(created_at);
+        CREATE INDEX IF NOT EXISTS idx_missed_notif_resolved ON missed_notifications(resolved_at);
+        CREATE INDEX IF NOT EXISTS idx_missed_notif_reason ON missed_notifications(reason);
+
         -- ─────────────────────────────────────────────────────────────
         -- Derived-shipment journal — built from 1C "Реализация товаров"
         -- xls exports (Фактические заказы). One row per shipment document.

@@ -411,6 +411,63 @@ async def cmd_help(message: types.Message):
     await message.reply(text, parse_mode="HTML", disable_web_page_preview=True)
 
 
+@router.message(Command("missed"))
+async def cmd_missed(message: types.Message):
+    """List unresolved client payment-notification failures (Session N).
+
+    Reasons:
+      unmatched_name            — 1C client couldn't be linked to allowed_clients
+      no_telegram_bind          — client exists but no approved Telegram user
+      bot_send_failed           — Telegram API rejected the send (user blocked, etc.)
+      balance_missing_after_24h — pending row expired without /debtors refresh
+    """
+    if not is_admin(message):
+        return
+    log_admin_action(message, "missed", "")
+    from backend.services.payment_notifications import (
+        list_unresolved_missed, count_unresolved_missed_by_reason,
+    )
+    counts = count_unresolved_missed_by_reason()
+    rows = list_unresolved_missed(limit=30)
+
+    if not rows:
+        await message.reply(
+            "✅ <b>Missed notifications</b>\n\nHech nima yo'q — barcha to'lov "
+            "bildirishnomalari mijozlarga yetkazilgan.",
+            parse_mode="HTML",
+        )
+        return
+
+    lines = [
+        f"⚠️ <b>Missed notifications — {sum(counts.values())} ta hal qilinmagan</b>",
+        "",
+    ]
+    if counts:
+        for reason, n in sorted(counts.items(), key=lambda x: -x[1]):
+            lines.append(f"  • <code>{html_escape(reason)}</code>: {n}")
+        lines.append("")
+    lines.append(f"<b>Oxirgi {len(rows)} ta:</b>")
+    for r in rows:
+        ccy = r.get("currency") or "?"
+        amt = r.get("amount") or 0
+        if ccy == "USD":
+            amt_str = f"${float(amt):,.2f}"
+        else:
+            amt_str = f"{round(float(amt)):,}".replace(",", " ") + " so'm"
+        name = r.get("client_name_1c") or "?"
+        reason = r.get("reason") or "?"
+        date = r.get("kassa_date") or "?"
+        lines.append(
+            f"• <b>{html_escape(name[:40])}</b> — {amt_str} ({ccy})\n"
+            f"   📅 {date} · <code>{html_escape(reason)}</code>"
+        )
+
+    text = "\n".join(lines)
+    if len(text) > 3900:
+        text = text[:3900] + "\n\n<i>... (trimmed)</i>"
+    await message.reply(text, parse_mode="HTML")
+
+
 @router.message(Command("consistencycheck"))
 async def cmd_consistencycheck(message: types.Message):
     """On-demand trigger for the nightly consistency audit.

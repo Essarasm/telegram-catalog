@@ -314,6 +314,15 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
         from backend.services.client_search import heal_finance_orphans_by_1c_name
         orphans_healed = heal_finance_orphans_by_1c_name(conn, "client_payments")
 
+        # Queue "payment received" notifications (Session N). Must run after
+        # orphan-heal so late-matched rows can resolve their client_id.
+        try:
+            from backend.services.payment_notifications import queue_from_cash_payments
+            notif_counts = queue_from_cash_payments(conn, payments)
+        except Exception as e:
+            logger.error(f"payment_notifications.queue failed: {e}")
+            notif_counts = {"queued": 0, "missed_unmatched": 0, "missed_no_bind": 0}
+
         conn.commit()
 
         db_total = conn.execute("SELECT COUNT(*) FROM client_payments").fetchone()[0]
@@ -324,6 +333,9 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
             "updated": updated,
             "matched_clients": matched_clients,
             "orphans_healed": orphans_healed,
+            "notifications_queued": notif_counts.get("queued", 0),
+            "notifications_missed_unmatched": notif_counts.get("missed_unmatched", 0),
+            "notifications_missed_no_bind": notif_counts.get("missed_no_bind", 0),
             "stats": stats,
             "db_total": db_total,
         }

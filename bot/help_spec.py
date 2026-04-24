@@ -98,6 +98,9 @@ SPECS = {
             Cmd("/relinkrealorders", "Qayta bog'lash — allowed_clients yangilagandan keyin"),
             Cmd("/ingestskus", "Bog'lanmagan mahsulotlarni katalogga qo'shish"),
         ]),
+        ("🔔 To'lov bildirishnomalari", [
+            Cmd("/missed", "Mijozga yetkazilmagan to'lov bildirishnomalari (Session N)"),
+        ]),
         ("📈 Hisobotlar", [
             Cmd("/reports", "So'nggi xatolik xabarlari va mahsulot so'rovlari"),
             Cmd("/wrongphotos", "Noto'g'ri rasm xabarlari"),

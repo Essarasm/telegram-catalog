@@ -286,6 +286,15 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
     conn.commit()
     conn.close()
 
+    # Session N: fire queued "payment received" notifications now that the
+    # debtors snapshot reflects the fresh post-payment balance. Background
+    # thread so this HTTP handler returns quickly.
+    try:
+        from backend.services.payment_notifications import fire_pending_for_today_async
+        fire_pending_for_today_async()
+    except Exception as e:
+        logger.error(f"payment_notifications.fire dispatch failed: {e}")
+
     return {
         "ok": True,
         "report_date": report_date,
