@@ -172,7 +172,60 @@ def run_audit() -> dict:
                 "usd_rows": debt_row["usd_rows"],
             }
 
-        # 10. Fuzzy-duplicate allowed_clients — same client_id_1c modulo
+        # 10. Trend-coverage drift — clients who historically had BOTH UZS
+        # and USD shipments but in the last 6 months one currency series went
+        # silent. This is the 2026-04-23 regression class: the Cabinet's
+        # spend-trend chart hides the silent currency, and the client thinks
+        # their history vanished. False-positive rate: low — flagged client
+        # had real history in the missing currency, so a true zero is rare.
+        trend_drift = conn.execute(
+            """WITH recent AS (
+                 SELECT ro.client_id,
+                        COUNT(DISTINCT ro.id) AS doc_count_recent,
+                        SUM(COALESCE(ri.total_local, 0))    AS uzs_recent,
+                        SUM(COALESCE(ri.total_currency, 0)) AS usd_recent
+                   FROM real_orders ro
+                   JOIN real_order_items ri ON ri.real_order_id = ro.id
+                  WHERE ro.client_id IS NOT NULL
+                    AND ro.doc_date >= date('now', '-180 days')
+                  GROUP BY ro.client_id
+               ),
+               earlier AS (
+                 SELECT ro.client_id,
+                        SUM(COALESCE(ri.total_local, 0))    AS uzs_earlier,
+                        SUM(COALESCE(ri.total_currency, 0)) AS usd_earlier
+                   FROM real_orders ro
+                   JOIN real_order_items ri ON ri.real_order_id = ro.id
+                  WHERE ro.client_id IS NOT NULL
+                    AND ro.doc_date <  date('now', '-180 days')
+                  GROUP BY ro.client_id
+               )
+               SELECT r.client_id,
+                      ac.client_id_1c,
+                      r.doc_count_recent,
+                      CASE WHEN r.uzs_recent = 0 THEN 'UZS' ELSE 'USD' END AS missing_currency,
+                      ROUND(COALESCE(e.uzs_earlier, 0)) AS prior_uzs,
+                      ROUND(COALESCE(e.usd_earlier, 0), 2) AS prior_usd
+                 FROM recent r
+            LEFT JOIN earlier e         ON e.client_id = r.client_id
+            LEFT JOIN allowed_clients ac ON ac.id      = r.client_id
+                WHERE r.doc_count_recent >= 10
+                  AND (
+                        (r.uzs_recent = 0 AND r.usd_recent > 0
+                         AND COALESCE(e.uzs_earlier, 0) > 0)
+                     OR (r.usd_recent = 0 AND r.uzs_recent > 0
+                         AND COALESCE(e.usd_earlier, 0) > 0)
+                      )
+                ORDER BY r.doc_count_recent DESC
+                LIMIT 20"""
+        ).fetchall()
+        if trend_drift:
+            result["trend_currency_drift"] = {
+                "count": len(trend_drift),
+                "sample": [dict(r) for r in trend_drift[:5]],
+            }
+
+        # 11. Fuzzy-duplicate allowed_clients — same client_id_1c modulo
         # whitespace/case. Typically caused by manual entry drift or
         # inconsistent 1C export spellings.
         fuzzy_dups = conn.execute(
@@ -216,6 +269,7 @@ def format_audit_message(findings: dict) -> str | None:
         "recent_phone_changes_7d": "📱 Oxirgi 7 kunda telefon o'zgarishi",
         "healable_orphans":        "🧩 Healable orphan qatorlar (client_id NULL, 1C nomi mavjud)",
         "debt_usd_coverage_zero":  "💵 client_debts: USD butunlay yo'q (В Валюте column?)",
+        "trend_currency_drift":    "📉 Cabinet trend: valyuta yo'qoldi (oldin bor edi, oxirgi 6 oyda yo'q)",
         "fuzzy_client_1c_dups":    "👥 client_id_1c dublikat (case/whitespace)",
     }
 
