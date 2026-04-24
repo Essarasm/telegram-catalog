@@ -17,21 +17,27 @@ export default function CatalogPage({ onSelectCategory, onSearch, onSelectProduc
   const flatSuggestions = suggestions.suggestions || [];
   const hasAnySuggestions = flatSuggestions.length > 0;
 
-  useEffect(() => {
+  const loadCategories = useCallback(() => {
+    setError(null);
+    setLoading(true);
     fetchCategories()
       .then(data => {
         if (Array.isArray(data)) {
           setCategories(data);
         } else {
-          setError('Categories API unexpected: ' + JSON.stringify(data).slice(0, 100));
+          setError('unexpected:' + JSON.stringify(data).slice(0, 100));
         }
         setLoading(false);
       })
       .catch(err => {
-        setError('Fetch error: ' + (err.message || String(err)));
+        setError('fetch:' + (err.message || String(err)));
         setLoading(false);
       });
   }, []);
+
+  useEffect(() => {
+    loadCategories();
+  }, [loadCategories]);
 
   // Debounced suggestion fetching
   const fetchSuggestions = useCallback((query) => {
@@ -113,9 +119,14 @@ export default function CatalogPage({ onSelectCategory, onSearch, onSelectProduc
 
   if (error) {
     return (
-      <div className="text-center py-10">
-        <div className="text-red-500 text-sm font-mono mb-2">CatalogPage Error:</div>
-        <div className="text-red-400 text-xs font-mono">{error}</div>
+      <div className="text-center py-10 px-4">
+        <div className="text-tg-text text-base mb-4">{t.error_connection}</div>
+        <button
+          onClick={loadCategories}
+          className="px-6 py-2 bg-tg-button text-tg-button-text rounded-lg text-sm font-medium"
+        >
+          {t.error_retry}
+        </button>
       </div>
     );
   }

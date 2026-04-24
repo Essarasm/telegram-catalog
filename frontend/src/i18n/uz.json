@@ -146,6 +146,8 @@
   "download_excel": "Excel yuklab olish",
   "download_pdf": "PDF yuklab olish",
   "error": "Xatolik yuz berdi",
+  "error_connection": "Ulanish vaqtincha uzildi",
+  "error_retry": "Qayta urinish",
   "fuzzy_results": "O'xshash natijalar",
   "item_removed": "Mahsulot o'chirildi",
   "items_count": "ta mahsulot",
