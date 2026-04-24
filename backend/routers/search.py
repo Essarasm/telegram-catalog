@@ -392,9 +392,11 @@ def search_suggestions(
         f"""SELECT p.id, p.name, p.name_display, p.popularity_score,
                    p.price_uzs, p.price_usd, p.unit, p.stock_status, p.stock_quantity,
                    p.image_path,
-                   pr.name as producer_name
+                   p.category_id, c.name as category_name,
+                   p.producer_id, pr.name as producer_name
             FROM products p
             LEFT JOIN producers pr ON pr.id = p.producer_id
+            LEFT JOIN categories c ON c.id = p.category_id
             WHERE {where}
             LIMIT 100""",
         params,
@@ -451,6 +453,10 @@ def search_suggestions(
             "name_cyrillic": row["name"],
             "name_display": row["name_display"],
             "producer": row["producer_name"],
+            "producer_id": row["producer_id"],
+            "producer_name": row["producer_name"],
+            "category_id": row["category_id"],
+            "category_name": row["category_name"],
             "price_uzs": row["price_uzs"],
             "price_usd": row["price_usd"],
             "unit": row["unit"],

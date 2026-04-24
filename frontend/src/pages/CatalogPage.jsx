@@ -58,12 +58,17 @@ export default function CatalogPage({ onSelectCategory, onSearch, onSelectProduc
   const handleSuggestionProduct = (s) => {
     setShowSuggestions(false);
     if (onSelectProduct) {
-      // Build a product-like object the detail page can consume
+      // Build a product-like object the detail page can consume.
+      // category_id/producer_id let App.jsx set the breadcrumb + back target
+      // even though the user came straight from autocomplete (no drill-down).
       onSelectProduct({
         id: s.id,
         name: s.name_cyrillic || s.text,
         name_display: s.name_display || s.text,
-        producer_name: s.producer,
+        producer_name: s.producer_name || s.producer,
+        producer_id: s.producer_id,
+        category_name: s.category_name,
+        category_id: s.category_id,
         price_uzs: s.price_uzs,
         price_usd: s.price_usd,
         unit: s.unit,

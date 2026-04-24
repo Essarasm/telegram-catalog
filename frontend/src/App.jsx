@@ -146,6 +146,14 @@ export default function App() {
       }
       if (p === 'product_detail' && data) {
         setSelectedProduct(data);
+        // Hydrate breadcrumb + back target from the product's own taxonomy,
+        // so direct-from-autocomplete taps work the same as drill-down entries.
+        if (data.producer_id) {
+          setSelectedProducer({ id: data.producer_id, name: data.producer_name || '' });
+        }
+        if (data.category_id) {
+          setSelectedCategory({ id: data.category_id, name: data.category_name || '' });
+        }
       }
       if (p === 'search' && data) {
         setSearchQuery(data);
@@ -167,7 +175,13 @@ export default function App() {
       }
       if (prev === 'cabinet') return 'catalog';
       if (prev === 'cart') return selectedProducer ? 'products' : selectedCategory ? 'producers' : 'catalog';
-      if (prev === 'product_detail') { setSelectedProduct(null); return 'products'; }
+      if (prev === 'product_detail') {
+        // Back from product always lands on the product's producer page.
+        // searchQuery is cleared so the result isn't a search view.
+        setSelectedProduct(null);
+        if (searchQuery) setSearchQuery('');
+        return selectedProducer ? 'products' : selectedCategory ? 'producers' : 'catalog';
+      }
       if (prev === 'products' && searchQuery) { setSearchQuery(''); return 'catalog'; }
       if (prev === 'products') return 'producers';
       if (prev === 'producers') { setSelectedCategory(null); return 'catalog'; }
@@ -237,7 +251,9 @@ export default function App() {
     return t.app_title;
   };
 
-  // Breadcrumb trail — shows where the user is in the catalog hierarchy
+  // Breadcrumb trail — folder-path style, tappable at each level.
+  // On product_detail, always show Catalog › Category › Producer › Product
+  // regardless of how the user arrived (direct / search / drill-down).
   const getBreadcrumbs = () => {
     const crumbs = [];
     if (page === 'catalog') return crumbs; // no breadcrumb on home
@@ -248,22 +264,27 @@ export default function App() {
     if (page === 'producers' && selectedCategory) {
       crumbs.push({ label: selectedCategory.name });
     }
-    if ((page === 'products' || page === 'product_detail') && !searchQuery) {
+    if (page === 'products' && !searchQuery) {
       if (selectedCategory) {
         crumbs.push({ label: selectedCategory.name, action: () => { setSelectedProducer(null); setPage('producers'); } });
       }
       if (selectedProducer) {
-        crumbs.push({ label: selectedProducer.name, action: page === 'product_detail' ? () => { setSelectedProduct(null); setPage('products'); } : undefined });
-      }
-      if (page === 'product_detail' && selectedProduct) {
-        crumbs.push({ label: selectedProduct.name });
+        crumbs.push({ label: selectedProducer.name });
       }
     }
-    if ((page === 'products' || page === 'product_detail') && searchQuery) {
+    if (page === 'products' && searchQuery) {
       crumbs.push({ label: `"${searchQuery}"` });
-      if (page === 'product_detail' && selectedProduct) {
-        crumbs.push({ label: selectedProduct.name });
+    }
+    if (page === 'product_detail' && selectedProduct) {
+      // Always build the full taxonomy path from the product's own category/producer,
+      // regardless of arrival path (search, autocomplete, or drill-down).
+      if (selectedCategory) {
+        crumbs.push({ label: selectedCategory.name, action: () => { setSelectedProduct(null); setSelectedProducer(null); setSearchQuery(''); setPage('producers'); } });
       }
+      if (selectedProducer) {
+        crumbs.push({ label: selectedProducer.name, action: () => { setSelectedProduct(null); setSearchQuery(''); setPage('products'); } });
+      }
+      crumbs.push({ label: selectedProduct.name });
     }
     if (page === 'cart') {
       crumbs.push({ label: t.cart });
