@@ -209,18 +209,18 @@ function OrderIssueForm({ order, onDone, t }) {
   }
 
   return (
-    <div className="mt-4 border-t border-tg-hint/10 pt-4 space-y-2">
-      <div className="text-xs text-tg-hint">
+    <div className="mt-2 border-t border-tg-hint/10 pt-2 space-y-1.5">
+      <div className="text-[10px] text-tg-hint">
         {t.akt_issue_prompt}
       </div>
       <textarea
         value={comment}
         onChange={e => setComment(e.target.value)}
         placeholder={t.akt_issue_placeholder}
-        rows={3}
-        className="w-full text-sm bg-tg-secondary rounded-lg px-3 py-2 outline-none border border-tg-hint/10 focus:border-tg-link"
+        rows={2}
+        className="w-full text-xs bg-tg-secondary rounded-md px-2 py-1.5 outline-none border border-tg-hint/10 focus:border-tg-link"
       />
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         <label className="flex-1 cursor-pointer">
           <input
             type="file"
@@ -229,21 +229,21 @@ function OrderIssueForm({ order, onDone, t }) {
             onChange={e => setFiles(Array.from(e.target.files || []))}
             className="hidden"
           />
-          <div className="py-2.5 rounded-xl bg-tg-secondary border border-dashed border-tg-hint/30 text-center text-xs font-medium">
+          <div className="py-1.5 rounded-md bg-tg-secondary border border-dashed border-tg-hint/30 text-center text-[10px] font-medium">
             📎 {files.length > 0 ? `${files.length} ${t.akt_issue_photo_n}` : t.akt_issue_attach_photo}
           </div>
         </label>
         <button
           onClick={submit}
           disabled={submitting}
-          className="flex-1 py-2.5 rounded-xl bg-tg-link text-white text-sm font-semibold disabled:opacity-60"
+          className="flex-1 py-1.5 rounded-md bg-tg-link text-white text-[10px] font-semibold disabled:opacity-60"
         >
           {submitting ? '…' : t.akt_issue_send}
         </button>
       </div>
       <button
         onClick={onDone}
-        className="w-full py-2 rounded-xl bg-transparent text-tg-hint text-xs"
+        className="w-full py-1 rounded-md bg-transparent text-tg-hint text-[10px]"
       >
         {t.reorder_cancel}
       </button>
@@ -1614,20 +1614,20 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
                   <div className="text-xs text-tg-hint mt-1">{formatDocDate(aktSheet.date)}</div>
                 </div>
 
-                {/* Items */}
+                {/* Items — primary focus for order sheet */}
                 <div className="mb-3">
-                  <div className="text-xs text-tg-hint mb-2">{t.real_order_view_items}:</div>
+                  <div className="text-sm font-semibold mb-2">{t.real_order_view_items}:</div>
                   {aktSheetItems === null ? (
                     <AktSheetItemsLoader orderId={aktSheet.id} onLoaded={setAktSheetItems} />
                   ) : aktSheetItems.length > 0 ? (
-                    <div className="space-y-1 max-h-60 overflow-y-auto">
+                    <div className="space-y-1.5 max-h-96 overflow-y-auto">
                       {aktSheetItems.map((item, idx) => (
-                        <div key={idx} className="flex items-center gap-2 py-1 border-b border-tg-hint/10">
-                          <div className="flex-1 min-w-0 text-[12px] truncate">
+                        <div key={idx} className="flex items-center gap-2 py-1.5 border-b border-tg-hint/10">
+                          <div className="flex-1 min-w-0 text-sm font-medium truncate">
                             {item.product_name_1c || item.name_display}
                           </div>
-                          <div className="text-[11px] text-tg-hint whitespace-nowrap">{item.quantity}</div>
-                          <div className="text-[11px] font-semibold whitespace-nowrap min-w-[72px] text-right">
+                          <div className="text-xs text-tg-hint whitespace-nowrap">{item.quantity}</div>
+                          <div className="text-xs font-semibold whitespace-nowrap min-w-[72px] text-right">
                             {(item.total_local || 0) > 0
                               ? formatUzs(item.total_local)
                               : (item.total_currency || 0) > 0
@@ -1642,28 +1642,28 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
                   )}
                 </div>
 
-                {/* Paid by — per currency */}
+                {/* Paid by — per currency (compact: ~½ previous size) */}
                 {['uzs', 'usd'].map((ccy) => {
                   const paidBy = aktSheet[`${ccy}_paid_by`] || [];
                   const amt = aktSheet[`${ccy}_amount`] || 0;
                   const fmt = ccy === 'usd' ? fmtUsd : fmtUzs;
                   if (amt <= 0 || paidBy.length === 0) return null;
                   return (
-                    <div key={ccy} className="mb-3">
-                      <div className="text-[11px] text-tg-hint uppercase tracking-wide mb-1.5">
+                    <div key={ccy} className="mb-2">
+                      <div className="text-[9px] text-tg-hint uppercase tracking-wide mb-1">
                         {ccy.toUpperCase()} — {t.akt_paid_by}
                       </div>
-                      <div className="space-y-1.5">
+                      <div className="space-y-1">
                         {paidBy.map((p, i) => (
-                          <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
-                            <span className="text-xs">{p.kind === 'advance' ? '💚' : '💳'}</span>
+                          <div key={i} className="bg-tg-secondary rounded-md px-2 py-1 flex items-center gap-1.5">
+                            <span className="text-[9px]">{p.kind === 'advance' ? '💚' : '💳'}</span>
                             <div className="flex-1 min-w-0">
-                              <div className="text-sm font-medium">
+                              <div className="text-[11px] font-medium leading-tight">
                                 {p.kind === 'advance' ? t.akt_from_advance : t.akt_payment}
                               </div>
-                              <div className="text-[11px] text-tg-hint">{formatDocDate(p.date)}</div>
+                              <div className="text-[9px] text-tg-hint leading-tight">{formatDocDate(p.date)}</div>
                             </div>
-                            <div className="text-sm font-semibold">{fmt(p.amount)}</div>
+                            <div className="text-[11px] font-semibold">{fmt(p.amount)}</div>
                           </div>
                         ))}
                       </div>
