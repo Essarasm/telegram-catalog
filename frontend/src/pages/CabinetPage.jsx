@@ -862,12 +862,12 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     const rows = reversed.filter(e => rowsSet.has(e));
 
     return (
-      <div className="mb-5">
-        <div className="text-base font-semibold mb-3">
+      <div className="mb-4">
+        <div className="text-base font-semibold mb-2">
           📒 {t.akt_title}
         </div>
 
-        <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10">
+        <div className="bg-tg-secondary rounded-xl overflow-hidden divide-y divide-tg-hint/10 ring-1 ring-tg-link/20">
           {rows.map((e) => {
             const isOrder = e.type === 'order';
             const sign = isOrder ? '−' : '+';
@@ -878,18 +878,13 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
               <button
                 key={`${e.type}-${e.id}`}
                 onClick={() => { setAktSheet({ ...e }); setAktSheetItems(null); }}
-                className="w-full px-5 py-5 flex items-center gap-4 text-left active:bg-tg-bg/30"
+                className="w-full px-4 py-4 flex items-center gap-3 text-left active:bg-tg-bg/50 transition-colors"
               >
-                <span className="text-3xl flex-shrink-0">{rowIcon}</span>
-                <div className="flex-1 min-w-0 flex items-center gap-3 flex-wrap">
-                  <div className="text-lg font-semibold whitespace-nowrap">
+                <span className="text-2xl flex-shrink-0">{rowIcon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-base font-semibold whitespace-nowrap">
                     {formatDocDate(e.date)}
                   </div>
-                  {isOrder && (
-                    <span className="px-3 py-1 rounded-lg bg-tg-link/10 text-tg-link text-sm font-semibold">
-                      {t.akt_details_pill}
-                    </span>
-                  )}
                 </div>
                 <div className="text-right flex-shrink-0">
                   {uzsAmt > 0 && (
@@ -903,6 +898,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
                     </div>
                   )}
                 </div>
+                <span className="text-tg-link text-xl flex-shrink-0 ml-1" aria-hidden="true">›</span>
               </button>
             );
           })}
@@ -1062,8 +1058,8 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
           </div>
         )}
 
-        {/* Activity Summary */}
-        {activitySummary && (
+        {/* Activity Summary — hidden per 2026-04-24 UX request */}
+        {false && activitySummary && (
           <div className="bg-tg-secondary rounded-xl p-3 mb-2">
             <div className="text-xs font-semibold mb-2">{t.my_business_activity}</div>
             {activitySummary.last_active_month ? (
@@ -1255,8 +1251,6 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
       {/* ── Акт сверки (unified timeline + hero status + FIFO links) ── */}
       <AktSverkiSection />
 
-      <MyBusinessSection />
-
       {lastOrder && (
         <>
           <div className="text-sm text-tg-hint mb-2">
@@ -1391,6 +1385,8 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
           </div>
         </>
       )}
+
+      <MyBusinessSection />
 
       {/* ── Legacy: Real orders 1C drill-down list (still shown under akt-sverki for the items view) ── */}
       {false && realOrders.length > 0 && (
