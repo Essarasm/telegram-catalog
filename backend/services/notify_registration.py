@@ -50,11 +50,14 @@ def send_registration_notification(
         "",
     ]
 
-    # 1C client name — always shown
-    if client_name:
-        lines.append(f"\U0001f3e2 Mijoz (1C): <b>{client_name}</b>")
-        if client_id_1c and client_id_1c != client_name:
-            lines.append(f"   \U0001f4cb 1C ID: {client_id_1c}")
+    # 1C client name — prefer the Cyrillic 1C identifier over the
+    # allowed_clients.name column, which can hold a Latin Telegram first_name
+    # for rows inserted via the bot linking flow.
+    mijoz_1c = client_id_1c or client_name
+    if mijoz_1c:
+        lines.append(f"\U0001f3e2 Mijoz (1C): <b>{mijoz_1c}</b>")
+        if client_name and client_name != mijoz_1c:
+            lines.append(f"   \U0001f4cb Nomi: {client_name}")
     else:
         lines.append("\U0001f3e2 Mijoz (1C): <i>1C nomi topilmadi</i>")
 
