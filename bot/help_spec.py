@@ -140,6 +140,8 @@ SPECS = {
             Cmd("/stockalert tugagan", "Faqat TUGAGAN mahsulotlar (to'liq ro'yxat)"),
             Cmd("/stockalert kam", "Faqat KAM QOLDI (to'liq ro'yxat)"),
             Cmd("/stockalert full", "Ikkalasi ham, to'liq"),
+            Cmd("/cleanupinactive [N]", f"Faol bo'lmagan mahsulotlarni preview (def 60d)"),
+            Cmd("/cleanupinactive [N] confirm", "Qo'llash — is_active=0 ga o'tkazadi"),
             Cmd("/demand [kunlar]", "Tugagan mahsulotlarga mijoz talabi"),
             Cmd("/stock (reply Excel)", "Qoldiqni yangilash"),
             Cmd("/chatid", "Chat va user ID"),

@@ -68,9 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 3  # 2026-04-20: +lifecycle, +popularity_score, +phone_history, +support_threads,
-                     #             +product_interest_clicks, +15 allowed_clients columns for Client Master v2,
-                     #             +master_upload_log
+SCHEMA_VERSION = 4  # 2026-04-25: +stock_last_seen_at (rolling 60-day active set)
 
 
 def init_db():
@@ -1043,6 +1041,17 @@ def init_db():
             "WHERE stock_quantity > 0 AND stock_updated_at IS NOT NULL"
         )
 
+    # Track when a product last appeared in any /stock upload (regardless of qty).
+    # Drives the "rolling 60-day active set" rule used by /cleanupinactive.
+    if "stock_last_seen_at" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN stock_last_seen_at TEXT")
+        # Bootstrap: best available proxy is stock_last_positive_at (last time
+        # the row had qty > 0 in an upload). Imperfect but immediately usable.
+        conn.execute(
+            "UPDATE products SET stock_last_seen_at = stock_last_positive_at "
+            "WHERE stock_last_positive_at IS NOT NULL"
+        )
+
     # Product alias table: maps 1C name variants to canonical product IDs.
     # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
     # each successful fuzzy match in /stock or /prices auto-adds an alias.
@@ -1091,7 +1100,7 @@ def init_db():
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "product_aliases + stock_last_positive_at + unmatched_import_names"),
+            (SCHEMA_VERSION, "stock_last_seen_at — rolling 60-day active set"),
         )
 
     conn.commit()

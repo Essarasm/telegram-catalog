@@ -369,17 +369,26 @@ def apply_stock_updates(file_bytes: bytes, force: bool = False) -> dict:
                     conn.execute(
                         """UPDATE products
                            SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now'),
-                               stock_last_positive_at = datetime('now')
+                               stock_last_positive_at = datetime('now'),
+                               stock_last_seen_at = datetime('now')
                            WHERE id = ?""",
                         (new_qty, new_status, product["id"]),
                     )
                 else:
                     conn.execute(
                         """UPDATE products
-                           SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now')
+                           SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now'),
+                               stock_last_seen_at = datetime('now')
                            WHERE id = ?""",
                         (new_qty, new_status, product["id"]),
                     )
+            else:
+                # No qty/status change but the product was in the file —
+                # stamp stock_last_seen_at so it counts toward the active set.
+                conn.execute(
+                    "UPDATE products SET stock_last_seen_at = datetime('now') WHERE id = ?",
+                    (product["id"],),
+                )
 
                 if status_changed and old_status is not None:
                     updated.append({

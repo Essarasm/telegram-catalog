@@ -1568,6 +1568,95 @@ async def cmd_stockalert(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+# ── /cleanupinactive — deactivate stale catalog entries ──────────
+
+@router.message(Command("cleanupinactive"))
+async def cmd_cleanupinactive(message: types.Message):
+    """Deactivate products absent from /stock + sales + supplies for N days.
+
+    Usage:
+      /cleanupinactive               — preview (default 60 days)
+      /cleanupinactive 90            — preview with 90-day window
+      /cleanupinactive confirm       — apply, default 60 days
+      /cleanupinactive 90 confirm    — apply with 90-day window
+    """
+    if not is_admin(message):
+        return
+
+    raw_args = (message.text or "").split()[1:]
+    args = {a.lower() for a in raw_args}
+    confirm = "confirm" in args
+    days = 60
+    for tok in raw_args:
+        if tok.isdigit():
+            days = max(7, min(365, int(tok)))
+            break
+
+    status_msg = await message.reply(
+        f"⏳ {days} kunlik faol bo'lmagan mahsulotlar tekshirilmoqda..."
+    )
+    try:
+        from backend.services.cleanup_inactive import (
+            preview_inactive, deactivate_inactive,
+        )
+        if confirm:
+            result = deactivate_inactive(days=days)
+            n = result.get("deactivated", 0)
+            head = (
+                f"✅ <b>{n} ta mahsulot faol bo'lmagan deb belgilandi</b> "
+                f"(oxirgi {days} kun ichida na faylda, na sotuvda, na yetkazib berishda)"
+            )
+            samples = result.get("samples", [])
+        else:
+            result = preview_inactive(days=days)
+            n = result.get("would_deactivate", 0)
+            total = result.get("active_total", 0)
+            head_lines = [
+                f"🔍 <b>Preview — {days} kunlik faol bo'lmagan</b>",
+                f"Hozirgi faol: <b>{total}</b>",
+                f"O'chiriladigan: <b>{n}</b>",
+            ]
+            breakdown = result.get("producer_breakdown", {})
+            if breakdown:
+                top = sorted(breakdown.items(), key=lambda kv: -kv[1])[:8]
+                head_lines.append("\n<b>Ishlab chiqaruvchi bo'yicha (top 8):</b>")
+                for prod, c in top:
+                    head_lines.append(f"  • {html_escape(prod)}: {c}")
+            head_lines.append(
+                f"\n<i>Qo'llash uchun: </i><code>/cleanupinactive {days} confirm</code>"
+            )
+            head = "\n".join(head_lines)
+            samples = result.get("samples", [])
+
+        # First message: header
+        await status_msg.edit_text(head, parse_mode="HTML")
+
+        # Follow-up: sample list (chunked)
+        if samples:
+            lines = [f"<b>Namuna ({len(samples)} ta):</b>"]
+            for s in samples:
+                lines.append(
+                    f"  • {html_escape(s['name'])} "
+                    f"(faylda: {s['last_seen']}, sotuvda: {s['last_sold']}, "
+                    f"yetkazib: {s['last_supplied']})"
+                )
+            # Telegram ~4096 char cap — chunk if needed
+            chunk = []
+            length = 0
+            for ln in lines:
+                if length + len(ln) + 1 > 3800 and len(chunk) > 1:
+                    await message.answer("\n".join(chunk), parse_mode="HTML")
+                    chunk = ["<b>Namuna (davom):</b>"]
+                    length = len(chunk[0])
+                chunk.append(ln)
+                length += len(ln) + 1
+            if len(chunk) > 1:
+                await message.answer("\n".join(chunk), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/cleanupinactive error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
 # ── /rebuildsearch — rebuild search_text index for all products ───
 
 @router.message(Command("rebuildsearch"))
