@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 TASHKENT = timezone(timedelta(hours=5))
 DB_PATH = os.environ.get('DATABASE_PATH', '/data/catalog.db')
 BACKUP_DIR = os.environ.get('DB_BACKUP_DIR', '/data/db_backups')
-KEEP_LAST_N = int(os.environ.get('DB_BACKUP_KEEP', '14'))
+KEEP_LAST_N = int(os.environ.get('DB_BACKUP_KEEP', '7'))
 
 
 def _iterdump_bytes(conn):
@@ -49,7 +49,7 @@ def main(startup=False):
     # Stream dump to gzipped file to avoid holding the whole thing in memory
     src = sqlite3.connect(DB_PATH)
     try:
-        with gzip.open(dump_path, 'wb', compresslevel=6) as gz:
+        with gzip.open(dump_path, 'wb', compresslevel=9) as gz:
             for chunk in _iterdump_bytes(src):
                 gz.write(chunk)
     finally:
