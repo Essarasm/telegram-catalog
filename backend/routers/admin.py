@@ -1248,13 +1248,17 @@ async def upload_images(
     file: UploadFile = File(...),
     admin_key: str = Form(""),
 ):
-    """Upload a ZIP of {product_id}.png files to /data/images/. Runs sync_images after."""
+    """Upload a ZIP of {product_id}.{png,jpg,jpeg,webp} files. Converts every
+    image to WebP q=80 on intake (storage + bandwidth durable fix), removes any
+    sibling-extension stragglers for the same product_id, then runs sync_images.
+    """
     if not check_admin_key(admin_key):
         from fastapi.responses import JSONResponse
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
-    import zipfile, tempfile, shutil, os
+    import zipfile, tempfile, os
     from pathlib import Path
+    from backend.services.convert_to_webp import encode_webp_from_bytes
 
     file_bytes = await file.read()
     if not file_bytes:
@@ -1264,7 +1268,8 @@ async def upload_images(
     images_dir = Path(os.getenv("IMAGES_DIR", "./images"))
     images_dir.mkdir(parents=True, exist_ok=True)
 
-    added = replaced = skipped = 0
+    added = replaced = skipped = errors = 0
+    error_files: list[dict] = []
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
         tmp.write(file_bytes)
         tmp_path = tmp.name
@@ -1274,7 +1279,8 @@ async def upload_images(
                 base = Path(name).name
                 if not base or base.startswith(".") or base.startswith("__"):
                     continue
-                if Path(base).suffix.lower() not in ('.png', '.jpg', '.jpeg', '.webp'):
+                ext = Path(base).suffix.lower()
+                if ext not in ('.png', '.jpg', '.jpeg', '.webp'):
                     continue
                 stem = Path(base).stem
                 try:
@@ -1282,10 +1288,28 @@ async def upload_images(
                 except ValueError:
                     skipped += 1
                     continue
-                dest = images_dir / base
-                existed = dest.exists()
-                with zf.open(name) as src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                dest = images_dir / f"{stem}.webp"
+                existed = any(
+                    (images_dir / f"{stem}{e}").exists()
+                    for e in ('.webp', '.png', '.jpg', '.jpeg')
+                )
+                try:
+                    src_bytes = zf.read(name)
+                    if ext == '.webp':
+                        # Already WebP — passthrough, don't re-encode.
+                        with open(dest, 'wb') as dst:
+                            dst.write(src_bytes)
+                    else:
+                        encode_webp_from_bytes(src_bytes, dest)
+                except Exception as e:
+                    errors += 1
+                    error_files.append({"file": base, "error": repr(e)[:200]})
+                    continue
+                # Remove sibling-extension stragglers (old PNG/JPG for this product).
+                for stale_ext in ('.png', '.jpg', '.jpeg'):
+                    stale = images_dir / f"{stem}{stale_ext}"
+                    if stale.exists():
+                        stale.unlink(missing_ok=True)
                 if existed:
                     replaced += 1
                 else:
@@ -1300,7 +1324,8 @@ async def upload_images(
                 if f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp'))
 
     return {"ok": True, "added": added, "replaced": replaced,
-            "skipped": skipped, "total": total}
+            "skipped": skipped, "errors": errors, "error_files": error_files[:10],
+            "total": total}
 
 
 @router.get("/unmatched-names")

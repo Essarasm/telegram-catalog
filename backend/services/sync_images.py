@@ -19,16 +19,22 @@ def sync():
         print("sync_images: No images/ directory found — skipping.")
         return
 
-    # Find all image files named as {product_id}.jpg
-    image_files = {}
+    # Find all image files named as {product_id}.{ext}; prefer .webp when both exist
+    # so a partially-converted dir flips DB to .webp first, then PNGs can be deleted.
+    ext_priority = {'.webp': 0, '.png': 1, '.jpg': 2, '.jpeg': 2}
+    candidates: dict[int, tuple[int, str]] = {}
     for f in IMAGES_DIR.iterdir():
-        if f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.webp'):
-            stem = f.stem
-            try:
-                pid = int(stem)
-                image_files[pid] = f.name
-            except ValueError:
-                continue  # skip non-numeric filenames
+        ext = f.suffix.lower()
+        if ext not in ext_priority:
+            continue
+        try:
+            pid = int(f.stem)
+        except ValueError:
+            continue  # skip non-numeric filenames
+        prio = ext_priority[ext]
+        if pid not in candidates or prio < candidates[pid][0]:
+            candidates[pid] = (prio, f.name)
+    image_files = {pid: name for pid, (_, name) in candidates.items()}
 
     if not image_files:
         print("sync_images: No product image files found in images/.")
