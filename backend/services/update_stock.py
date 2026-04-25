@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 # Stock status thresholds
 THRESHOLD_LOW = 10   # <= this = "low_stock"
 
+# Snapshot semantics — Прайс лист is a complete list of currently-available
+# items, not a delta. If a previously-stocked product is missing from the
+# upload, treat it as out-of-stock. Guardrail below prevents a partial or
+# malformed upload from zeroing the warehouse.
+MIN_MATCHED_FOR_SNAPSHOT = 1000
+
 
 def normalize_name(name: str) -> str:
     """Normalize a product name for matching.
@@ -266,8 +272,13 @@ def _log_unmatched(conn, name: str, source: str = "stock"):
         pass
 
 
-def apply_stock_updates(file_bytes: bytes) -> dict:
-    """Apply stock updates from Excel to the database. Returns summary."""
+def apply_stock_updates(file_bytes: bytes, force: bool = False) -> dict:
+    """Apply stock updates from Excel to the database. Returns summary.
+
+    Snapshot semantics: items active in the warehouse but missing from this
+    upload are flipped to out-of-stock. The `force` flag bypasses the
+    minimum-row guardrail for unusual files (small store, partial export).
+    """
     excel_stocks = parse_stock_excel(file_bytes)
     if not excel_stocks:
         return {"ok": False, "error": "No stock data found in Excel. Could not detect quantity column."}
@@ -297,6 +308,7 @@ def apply_stock_updates(file_bytes: bytes) -> dict:
     matched_count = 0
     auto_learned = 0
     unmatched_names = []
+    matched_ids = set()
     status_counts = {"in_stock": 0, "low_stock": 0, "out_of_stock": 0}
 
     from difflib import get_close_matches as _gcm
@@ -335,6 +347,7 @@ def apply_stock_updates(file_bytes: bytes) -> dict:
 
         if product:
             matched_count += 1
+            matched_ids.add(product["id"])
 
             # Auto-learn: if matched via normalized/fuzzy, save as alias for next time
             if match_method in ("normalized", "fuzzy"):
@@ -380,6 +393,45 @@ def apply_stock_updates(file_bytes: bytes) -> dict:
             _log_unmatched(conn, excel_name, "stock")
             unmatched_names.append(excel_name[:60])
 
+    # ── Snapshot reconciliation ────────────────────────────────────
+    # Active products with positive stock that weren't in this upload =
+    # ran out since the last upload. Flip them to out-of-stock.
+    candidates = [p for p in db_products
+                  if p["id"] not in matched_ids
+                  and p["stock_quantity"] is not None
+                  and float(p["stock_quantity"] or 0) > 0]
+
+    if not force and matched_count < MIN_MATCHED_FOR_SNAPSHOT:
+        conn.rollback()
+        conn.close()
+        return {
+            "ok": False,
+            "error": (
+                f"Faqat {matched_count} ta mahsulot mos keldi "
+                f"(min: {MIN_MATCHED_FOR_SNAPSHOT}). "
+                f"Прайс лист to'liq emasga o'xshaydi — {len(candidates)} ta "
+                f"mahsulot tugagan deb belgilanardi. "
+                f"Force qilish uchun caption: /stock force"
+            ),
+            "excel_products": len(excel_stocks),
+            "matched": matched_count,
+            "would_zero": len(candidates),
+        }
+
+    auto_zeroed_names = []
+    for p in candidates:
+        conn.execute(
+            """UPDATE products
+               SET stock_quantity = 0, stock_status = 'out_of_stock',
+                   stock_updated_at = datetime('now')
+               WHERE id = ?""",
+            (p["id"],),
+        )
+        auto_zeroed_names.append((p["name_display"] or p["name"])[:50])
+    auto_zeroed_count = len(candidates)
+    if auto_zeroed_count:
+        status_counts["out_of_stock"] = status_counts.get("out_of_stock", 0) + auto_zeroed_count
+
     conn.commit()
     conn.close()
 
@@ -397,4 +449,7 @@ def apply_stock_updates(file_bytes: bytes) -> dict:
         "status_counts": status_counts,
         "unmatched_count": unmatched_count,
         "unmatched_names": unmatched_names[:15],
+        "auto_zeroed": auto_zeroed_count,
+        "auto_zeroed_names": auto_zeroed_names[:15],
+        "force_used": force,
     }

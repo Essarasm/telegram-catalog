@@ -426,12 +426,16 @@ async def update_prices(file: UploadFile = File(...), admin_key: str = Form(""))
 
 
 @router.post("/update-stock")
-async def update_stock(file: UploadFile = File(...), admin_key: str = Form("")):
+async def update_stock(
+    file: UploadFile = File(...),
+    admin_key: str = Form(""),
+    force: str = Form(""),
+):
     """Upload Excel file to update stock/inventory levels."""
     if not check_admin_key(admin_key):
         return JSONResponse(status_code=403, content={"error": "Invalid admin key"})
     content = await file.read()
-    result = apply_stock_updates(content)
+    result = apply_stock_updates(content, force=bool(force))
     return result
 
 

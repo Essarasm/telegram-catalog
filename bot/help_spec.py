@@ -52,7 +52,7 @@ SPECS = {
         ]),
         ("📥 10 ta yuklash buyrug'i", [
             Cmd("/prices (reply Excel)", "Narxlar (1C price list)"),
-            Cmd("/stock (reply Excel)", "Qoldiq (Остаток — Справочник + miqdorlar)"),
+            Cmd("/stock (reply Excel)", "Прайс лист — to'liq snapshot (faylda yo'q = tugagan)"),
             Cmd("/catalog (reply Excel)", "Katalog yangi/o'chirilgan mahsulotlar"),
             Cmd("/balances (reply XLS)", "Оборотка 40.10 (UZS) + 40.11 (USD) — bitta fayl"),
             Cmd("/debtors (reply XLS)", "Дебиторка (дебиторская задолженность)"),

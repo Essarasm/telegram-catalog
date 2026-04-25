@@ -1,6 +1,6 @@
 """Stock alert service — identifies active products that are out of stock or running low.
 
-"Active" = had positive stock within the last 30 days (was in uncle's /stock
+"Active" = had positive stock within the last 60 days (was in uncle's /stock
 upload with qty > 0). This uses the stock file as source of truth — uncle only
 uploads products he actively stocks. Fallback criteria for products without
 stock_last_positive_at: sold in last 3 months or supplied recently.
@@ -10,7 +10,7 @@ from backend.database import get_db
 
 logger = logging.getLogger(__name__)
 
-ACTIVE_STOCK_DAYS = 30
+ACTIVE_STOCK_DAYS = 60
 SOLD_MONTHS = 3
 SUPPLY_MONTHS = 6
 

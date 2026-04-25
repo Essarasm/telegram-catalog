@@ -316,6 +316,9 @@ async def cmd_stock(message: types.Message):
         await message.reply("❌ Faqat Excel (.xlsx) fayllar qabul qilinadi.")
         return
 
+    caption_text = (message.caption or message.text or "").lower()
+    force = "force" in caption_text
+
     status_msg = await message.reply("⏳ Inventarizatsiya yangilanmoqda...")
 
     try:
@@ -331,16 +334,19 @@ async def cmd_stock(message: types.Message):
 
         # Send to our API
         api_url = f"{_BASE_URL}/api/products/update-stock"
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
+            data = {"admin_key": get_admin_key()}
+            if force:
+                data["force"] = "1"
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                data={"admin_key": get_admin_key()},
+                data=data,
             )
             result = resp.json()
 
         if not result.get("ok"):
-            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            await status_msg.edit_text(f"❌ {result.get('error', 'Unknown error')}", parse_mode="HTML")
             return
 
         track_daily_upload(
@@ -352,17 +358,33 @@ async def cmd_stock(message: types.Message):
         )
 
         sc = result.get('status_counts', {})
+        auto_zeroed = result.get('auto_zeroed', 0)
         lines = [
             "✅ <b>Inventarizatsiya yangilandi!</b>\n",
             f"📊 Excel: {result['excel_products']} ta mahsulot",
             f"🗄 Baza: {result['db_products']} ta mahsulot",
             f"🔗 Mos kelgan: {result['matched']}",
+        ]
+        if auto_zeroed:
+            lines.append(f"⬇️ Avtomatik tugadi: {auto_zeroed} (faylda yo'q edi)")
+        if result.get("force_used"):
+            lines.append("⚠️ <i>force rejimi ishlatildi</i>")
+        lines += [
             "",
             "<b>Holat:</b>",
             f"🟢 Mavjud: {sc.get('in_stock', 0)}",
             f"🟡 Kam qoldi: {sc.get('low_stock', 0)}",
             f"🔴 Tugagan: {sc.get('out_of_stock', 0)}",
         ]
+
+        # Show what got auto-zeroed (top names) — visibility for new behavior
+        auto_zeroed_names = result.get('auto_zeroed_names', [])
+        if auto_zeroed_names:
+            lines.append(f"\n<b>Yangi tugaganlar ({min(len(auto_zeroed_names), auto_zeroed)}):</b>")
+            for nm in auto_zeroed_names[:10]:
+                lines.append(f"  🔴 {html_escape(nm)}")
+            if auto_zeroed > len(auto_zeroed_names):
+                lines.append(f"  ... va yana {auto_zeroed - len(auto_zeroed_names)} ta")
 
         # Show notable status changes
         changes = result.get('status_changes', [])
