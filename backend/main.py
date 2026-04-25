@@ -1,3 +1,4 @@
+import mimetypes
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -5,6 +6,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
+
+# Some Python builds (esp. minimal Linux containers) ship a mimetypes DB that
+# doesn't know about WebP, which causes /images/*.webp to be served as
+# text/plain. Register before StaticFiles is mounted.
+mimetypes.add_type("image/webp", ".webp")
 
 
 class CacheControlMiddleware:
