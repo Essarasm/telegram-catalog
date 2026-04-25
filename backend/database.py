@@ -780,6 +780,18 @@ def init_db():
         ("tuman", "TEXT"),
         ("moljal", "TEXT"),
         ("last_master_synced_at", "TEXT"),
+        # Canonical client GPS — separate from `location` so importers cannot
+        # destroy agent/client-set coordinates. Written by bot location handler
+        # only; read by GET /api/client-location. Apr 2026 — Session M follow-up.
+        ("gps_latitude", "REAL"),
+        ("gps_longitude", "REAL"),
+        ("gps_address", "TEXT"),
+        ("gps_region", "TEXT"),
+        ("gps_district", "TEXT"),
+        ("gps_set_at", "TEXT"),
+        ("gps_set_by_tg_id", "INTEGER"),
+        ("gps_set_by_name", "TEXT"),
+        ("gps_set_by_role", "TEXT"),
     ]:
         if col not in ac_cols:
             conn.execute(f"ALTER TABLE allowed_clients ADD COLUMN {col} {coltype}")

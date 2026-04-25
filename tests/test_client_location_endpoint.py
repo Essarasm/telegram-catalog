@@ -1,17 +1,15 @@
 """Regression — GET /api/client-location must return the CLIENT's saved GPS
 when the requester is linked to a client, not the requester's own coords.
 
-Before the April 2026 fix the endpoint always read `users.latitude/longitude`
-for the requester. When an admin used /testclient to inspect a client, they
-saw their own GPS attributed to the client. When an agent relinked from
-client A to client B, the agent's users row still held A's coords until the
-next successful Yangilash write, so client B looked like client A in the
-Cabinet.
+The Apr 2026 fix moved canonical client GPS into dedicated `allowed_clients.gps_*`
+columns (see Session M follow-up). The legacy `allowed_clients.location` column
+is now treated as free-text only and intentionally NOT consulted by this
+endpoint, because importers (1C/CSV/Master) overwrite it freely. Reading from
+`gps_*` is immune to those imports.
 
-The fix: when `users.client_id` is set, prefer `allowed_clients.location`
-(stored as "lat,lng|address" by the bot handler) and only fall back to the
-requester's own users row when the client-level entry is missing or is the
-legacy free-text format from the 1C master import.
+Resolution order in `get_client_location`:
+  1. `allowed_clients.gps_*` — canonical client-level GPS (bot or self-share)
+  2. `users.latitude/longitude` — only when (1) is missing
 """
 from __future__ import annotations
 
@@ -28,13 +26,22 @@ def _client(db) -> TestClient:
     return TestClient(app)
 
 
-def _setup_client_row(db, *, client_id: int, client_id_1c: str = "TEST",
-                       location: str | None = None) -> None:
+def _setup_client_row(
+    db,
+    *,
+    client_id: int,
+    client_id_1c: str = "TEST",
+    location: str | None = None,
+    gps_lat: float | None = None,
+    gps_lng: float | None = None,
+    gps_address: str = "",
+) -> None:
     db.execute(
         "INSERT INTO allowed_clients (id, phone_normalized, name, client_id_1c, "
-        "source_sheet, status, location) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "source_sheet, status, location, gps_latitude, gps_longitude, gps_address) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (client_id, "+998900000000", client_id_1c, client_id_1c,
-         "test", "active", location),
+         "test", "active", location, gps_lat, gps_lng, gps_address),
     )
     db.commit()
 
@@ -56,7 +63,8 @@ def _setup_user(db, *, telegram_id: int, client_id: int | None,
 def test_client_linked_user_sees_client_gps_not_own(db):
     """Admin/agent linked to a client sees the client's saved coords, not their own."""
     _setup_client_row(db, client_id=1, client_id_1c="Акрам",
-                       location="39.64550,66.93900|Samarqand, shop")
+                       gps_lat=39.64550, gps_lng=66.93900,
+                       gps_address="Samarqand, shop")
     # Admin's own GPS is somewhere else entirely (their office).
     _setup_user(db, telegram_id=100, client_id=1,
                  lat=41.3000, lng=69.2000, addr="Admin office")
@@ -67,15 +75,13 @@ def test_client_linked_user_sees_client_gps_not_own(db):
     assert data["has_gps"] is True
     assert data["gps"]["latitude"] == pytest.approx(39.64550)
     assert data["gps"]["longitude"] == pytest.approx(66.93900)
-    # Address can come from the users-row metadata or from the allowed_clients
-    # tail — either way it must not silently drop to empty.
-    assert data["gps"]["address"]
+    assert data["gps"]["address"] == "Samarqand, shop"
 
 
 def test_client_linked_falls_back_to_user_row_when_client_has_no_gps(db):
-    """Legacy allowed_clients.location ("Samarqand shahar, Titova") → fall back."""
+    """No gps_* on the client → fall back to requester's own users row."""
     _setup_client_row(db, client_id=2, client_id_1c="Legacy",
-                       location="Samarqand shahar, Titova")
+                       location="Samarqand shahar, Titova")  # legacy free-text
     _setup_user(db, telegram_id=200, client_id=2,
                  lat=39.1234, lng=66.5678, addr="From registration")
 
@@ -85,6 +91,21 @@ def test_client_linked_falls_back_to_user_row_when_client_has_no_gps(db):
     assert data["gps"]["latitude"] == pytest.approx(39.1234)
     assert data["gps"]["longitude"] == pytest.approx(66.5678)
     assert data["gps"]["address"] == "From registration"
+
+
+def test_legacy_location_string_is_ignored_for_gps(db):
+    """Even if `allowed_clients.location` carries a stale "lat,lng|addr" string
+    from before the schema split, we ignore it — `gps_*` is the only source of
+    truth. (Otherwise importers could re-introduce the original bug.)"""
+    _setup_client_row(db, client_id=3, client_id_1c="Legacy2",
+                       location="39.999,66.999|Stale shop")  # NOT trusted
+    _setup_user(db, telegram_id=250, client_id=3,
+                 lat=39.1234, lng=66.5678, addr="Fallback")
+
+    resp = _client(db).get("/api/client-location?telegram_id=250")
+    data = resp.json()
+    assert data["gps"]["latitude"] == pytest.approx(39.1234)
+    assert data["gps"]["longitude"] == pytest.approx(66.5678)
 
 
 def test_unlinked_user_returns_own_gps(db):
@@ -110,12 +131,11 @@ def test_client_gps_wins_over_stale_requester_gps(db):
     """Agent relinked from client A (prior save) to client B — must not show A's coords.
 
     This is the exact shape of the production bug: the agent's users row
-    still holds client A's coords from the previous Yangilash. Now linked to
-    client B, the Cabinet must read client B's saved location, not the
-    agent's stale row.
+    still holds client A's coords. Now linked to client B, the Cabinet must
+    read client B's saved location from `gps_*`, not the agent's stale row.
     """
     _setup_client_row(db, client_id=10, client_id_1c="ClientB",
-                       location="40.0,67.5|B shop")
+                       gps_lat=40.0, gps_lng=67.5, gps_address="B shop")
     _setup_user(db, telegram_id=500, client_id=10,
                  lat=39.64550, lng=66.93900, addr="Old — client A's shop")
 

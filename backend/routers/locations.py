@@ -194,12 +194,20 @@ client_router = APIRouter(prefix="/api/client-location", tags=["client-location"
 def get_client_location(telegram_id: int = Query(...)):
     """Get a client's saved delivery location (GPS + manual).
 
-    For users linked to a 1C client (agents via /testclient, or the client
-    themselves), GPS coords come from `allowed_clients.location` — that is the
-    canonical client-level record written by the bot's location handler. The
-    requester's own `users.latitude/longitude` is only used as a fallback, so
-    an admin/agent relinking between clients via /testclient no longer sees
-    their own coords (or the previous client's) attributed to the new client.
+    GPS resolution order:
+      1. `allowed_clients.gps_*` — the canonical client-level GPS, written
+         by the bot location handler. Read-only here. Importers never touch
+         these columns, so this value survives every Master/CSV re-import.
+      2. Requester's own `users.latitude/longitude` — only used when the
+         requester has no client link, or when the linked client has no
+         GPS yet (so a self-shared GPS still shows up before someone tags
+         on their behalf).
+
+    Why no fallback to `allowed_clients.location`: until Apr 2026 that
+    column was overloaded as both free-text address (1C/Master imports)
+    AND canonical "lat,lng|addr" (bot). Any importer would smash the bot's
+    write. The new `gps_*` columns end the overload — the legacy `location`
+    field is now treated as free-text only and intentionally ignored here.
     """
     conn = get_db()
 
@@ -215,46 +223,23 @@ def get_client_location(telegram_id: int = Query(...)):
     has_gps = False
     gps_data = None
 
-    # Prefer the client-level saved location when the requester is linked.
-    # `allowed_clients.location` is written as "lat,lng|address" by the bot;
-    # legacy rows hold free-text ("Samarqand shahar, Titova") which we ignore
-    # here and let the users-row fallback handle instead.
     if user["client_id"]:
         ac_row = conn.execute(
-            "SELECT location FROM allowed_clients WHERE id = ?",
+            "SELECT gps_latitude, gps_longitude, gps_address, gps_region, "
+            "gps_district, gps_set_at FROM allowed_clients WHERE id = ?",
             (user["client_id"],),
         ).fetchone()
-        raw = (ac_row["location"] if ac_row else "") or ""
-        if "|" in raw:
-            coords_part, _, addr_part = raw.partition("|")
-            try:
-                lat_str, lng_str = coords_part.split(",", 1)
-                c_lat = float(lat_str.strip())
-                c_lng = float(lng_str.strip())
-            except (ValueError, AttributeError):
-                c_lat = c_lng = None
-            if c_lat is not None and c_lng is not None:
-                # Pull richer metadata (region/district/updated) from any user
-                # row that shares this client_id and matches the saved coords.
-                meta = conn.execute(
-                    "SELECT location_address, location_region, location_district, "
-                    "location_updated FROM users WHERE client_id = ? "
-                    "AND latitude = ? AND longitude = ? "
-                    "ORDER BY location_updated DESC LIMIT 1",
-                    (user["client_id"], c_lat, c_lng),
-                ).fetchone()
-                has_gps = True
-                gps_data = {
-                    "latitude": c_lat,
-                    "longitude": c_lng,
-                    "address": (meta["location_address"] if meta else "") or addr_part or "",
-                    "region": (meta["location_region"] if meta else "") or "",
-                    "district": (meta["location_district"] if meta else "") or "",
-                    "updated": (meta["location_updated"] if meta else "") or "",
-                }
+        if ac_row and ac_row["gps_latitude"] is not None and ac_row["gps_longitude"] is not None:
+            has_gps = True
+            gps_data = {
+                "latitude": ac_row["gps_latitude"],
+                "longitude": ac_row["gps_longitude"],
+                "address": ac_row["gps_address"] or "",
+                "region": ac_row["gps_region"] or "",
+                "district": ac_row["gps_district"] or "",
+                "updated": ac_row["gps_set_at"] or "",
+            }
 
-    # Fallback: requester's own users row (unchanged behaviour for users with
-    # no client link, and for client-linked users whose client has no saved GPS).
     if not has_gps and user["latitude"] and user["longitude"]:
         has_gps = True
         gps_data = {
@@ -373,7 +358,8 @@ def save_gps_location(data: GpsLocationSave):
     """
     conn = get_db()
     user = conn.execute(
-        "SELECT telegram_id FROM users WHERE telegram_id = ?", (data.telegram_id,)
+        "SELECT telegram_id, client_id, first_name FROM users WHERE telegram_id = ?",
+        (data.telegram_id,),
     ).fetchone()
     if not user:
         conn.close()
@@ -385,6 +371,20 @@ def save_gps_location(data: GpsLocationSave):
         "location_updated = datetime('now') WHERE telegram_id = ?",
         (data.latitude, data.longitude, data.address, data.region, data.district, data.telegram_id),
     )
+
+    # Mirror to the canonical client-level GPS so the Cabinet xaritada toggle
+    # (and any agent viewing this client) sees the in-app map pick too.
+    if user["client_id"]:
+        setter_name = user["first_name"] or str(data.telegram_id)
+        conn.execute(
+            "UPDATE allowed_clients SET "
+            "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "
+            "gps_region = ?, gps_district = ?, gps_set_at = datetime('now'), "
+            "gps_set_by_tg_id = ?, gps_set_by_name = ?, gps_set_by_role = 'client' "
+            "WHERE id = ?",
+            (data.latitude, data.longitude, data.address, data.region,
+             data.district, data.telegram_id, setter_name, user["client_id"]),
+        )
 
     # Backward flow: if this Telegram user is linked to an allowed_clients row,
     # fill in Viloyat/Tuman from the reverse-geocode when those are empty.

@@ -199,58 +199,54 @@ async def handle_location(message: Message):
     setter_name = user["first_name"] or str(telegram_id)
     setter_role = "agent" if is_agent_linked else "client"
 
-    target_tg = telegram_id
-    if is_agent_linked:
-        target_user = conn.execute(
-            "SELECT latitude, longitude, location_set_by_name, location_set_by_role, "
-            "location_set_by_tg_id, location_updated "
-            "FROM users WHERE client_id = ? AND latitude IS NOT NULL LIMIT 1",
+    # Previous client-level GPS (for the overwrite-notification, and to know
+    # whether this is a first-time tag). Read from the canonical gps_* columns
+    # on allowed_clients — never from users rows, because a users row's coords
+    # belong to that telegram user, not to whichever client they last tagged.
+    prev_client_gps = None
+    if user["client_id"]:
+        prev_client_gps = conn.execute(
+            "SELECT gps_latitude, gps_longitude, gps_set_by_name, gps_set_by_role "
+            "FROM allowed_clients WHERE id = ?",
             (user["client_id"],),
         ).fetchone()
-    else:
-        target_user = conn.execute(
-            "SELECT latitude, longitude, location_set_by_name, location_set_by_role, "
-            "location_set_by_tg_id, location_updated "
-            "FROM users WHERE telegram_id = ? AND latitude IS NOT NULL",
-            (telegram_id,),
-        ).fetchone()
 
-    had_location = bool(target_user and target_user["latitude"])
-    prev_setter_name = target_user["location_set_by_name"] if target_user else None
-    prev_setter_role = target_user["location_set_by_role"] if target_user else None
-    prev_lat = target_user["latitude"] if target_user else None
-    prev_lng = target_user["longitude"] if target_user else None
+    had_location = bool(prev_client_gps and prev_client_gps["gps_latitude"] is not None)
+    prev_setter_name = prev_client_gps["gps_set_by_name"] if prev_client_gps else None
+    prev_setter_role = prev_client_gps["gps_set_by_role"] if prev_client_gps else None
+    prev_lat = prev_client_gps["gps_latitude"] if prev_client_gps else None
+    prev_lng = prev_client_gps["gps_longitude"] if prev_client_gps else None
 
-    loc_tracking = (
-        "latitude = ?, longitude = ?, location_address = ?, "
-        "location_region = ?, location_district = ?, location_updated = datetime('now'), "
-        "location_set_by_tg_id = ?, location_set_by_name = ?, location_set_by_role = ?"
-    )
-    loc_params = (loc.latitude, loc.longitude, geo["address"], geo["region"],
-                  geo["district"], telegram_id, setter_name, setter_role)
-
-    if is_agent_linked:
+    if user["client_id"]:
         ac = conn.execute(
             "SELECT client_id_1c FROM allowed_clients WHERE id = ?",
             (user["client_id"],),
         ).fetchone()
         client_1c_name = ac["client_id_1c"] if ac else ""
-        conn.execute(f"UPDATE users SET {loc_tracking} WHERE telegram_id = ?",
-                     loc_params + (telegram_id,))
         conn.execute(
-            "UPDATE allowed_clients SET location = ? WHERE id = ?",
-            (f"{loc.latitude},{loc.longitude}|{geo['address'] or ''}", user["client_id"]),
+            "UPDATE allowed_clients SET "
+            "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "
+            "gps_region = ?, gps_district = ?, gps_set_at = datetime('now'), "
+            "gps_set_by_tg_id = ?, gps_set_by_name = ?, gps_set_by_role = ? "
+            "WHERE id = ?",
+            (loc.latitude, loc.longitude, geo["address"], geo["region"],
+             geo["district"], telegram_id, setter_name, setter_role,
+             user["client_id"]),
         )
-        from backend.database import get_sibling_client_ids
-        siblings = get_sibling_client_ids(conn, user["client_id"])
-        for sid in siblings:
-            conn.execute(
-                f"UPDATE users SET {loc_tracking} WHERE client_id = ? AND telegram_id != ?",
-                loc_params + (sid, telegram_id),
-            )
-    else:
-        conn.execute(f"UPDATE users SET {loc_tracking} WHERE telegram_id = ?",
-                     loc_params + (telegram_id,))
+
+    # The user's own users row tracks where THEY are (their personal GPS) —
+    # never the coords of a client they happen to be tagging. Only update it
+    # when the user is sharing their own location (no agent → client write).
+    if not is_agent_linked:
+        conn.execute(
+            "UPDATE users SET latitude = ?, longitude = ?, location_address = ?, "
+            "location_region = ?, location_district = ?, "
+            "location_updated = datetime('now'), "
+            "location_set_by_tg_id = ?, location_set_by_name = ?, "
+            "location_set_by_role = ? WHERE telegram_id = ?",
+            (loc.latitude, loc.longitude, geo["address"], geo["region"],
+             geo["district"], telegram_id, setter_name, setter_role, telegram_id),
+        )
 
     conn.commit()
     conn.close()
