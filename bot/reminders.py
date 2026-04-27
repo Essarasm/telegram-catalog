@@ -276,7 +276,7 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         messages = format_daily_inventory_message(alerts)
         if not messages:
             logger.info(
-                f"Stock alert skipped — nothing has run out this week yet "
+                f"Stock alert skipped — nothing has run out and no sales yet this week "
                 f"(cumulative tugagan: {len(alerts['out_of_stock'])})"
             )
             return
@@ -285,6 +285,7 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         logger.info(
             f"Stock alert sent ({len(messages)} msg): "
             f"weekly_out={len(alerts['weekly_out_of_stock'])}, "
+            f"top_sellers={len(alerts.get('weekly_top_sellers', []))}, "
             f"cumulative_oos={len(alerts['out_of_stock'])}"
         )
     except Exception as e:

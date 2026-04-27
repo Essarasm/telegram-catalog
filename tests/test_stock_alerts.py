@@ -199,3 +199,125 @@ class TestWeeklyOutOfStock:
         assert "Seshanba" in combined
         # Days should appear in chronological order, Mon before Tue
         assert combined.index("Dushanba") < combined.index("Seshanba")
+
+
+class TestWeeklyTopSellers:
+    """Top 5 products by units sold since this week's Monday (Tashkent)."""
+
+    WEEK_START_UTC = "2026-04-26 19:00:00"
+    WEEK_START_TK_DATE = "2026-04-27"
+
+    def _add_order(self, db, order_id, doc_date, item_specs):
+        """item_specs: list of (product_id, quantity)."""
+        db.execute(
+            """INSERT OR REPLACE INTO real_orders
+               (id, doc_number_1c, doc_date, client_name_1c)
+               VALUES (?, ?, ?, ?)""",
+            (order_id, f"DOC{order_id}", doc_date, "Test Client"),
+        )
+        for line_no, (pid, qty) in enumerate(item_specs, start=1):
+            db.execute(
+                """INSERT INTO real_order_items
+                   (real_order_id, line_no, product_name_1c, product_id, quantity)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (order_id, line_no, f"product-{pid}", pid, qty),
+            )
+        # Mark some seed products with positive stock so the active set
+        # is non-empty (otherwise get_stock_alerts short-circuits).
+        db.execute(
+            "UPDATE products SET stock_quantity = 50, stock_status = 'in_stock', "
+            "stock_last_positive_at = '2026-04-27' WHERE id <= 5",
+        )
+        db.commit()
+
+    def test_top5_orders_by_units_desc(self, seed_products):
+        db = seed_products
+        self._add_order(db, 1, "2026-04-27", [(1, 10), (2, 5), (3, 3)])
+        self._add_order(db, 2, "2026-04-28", [(1, 15), (4, 8), (5, 2)])
+        alerts = get_stock_alerts(
+            db,
+            week_start_utc=self.WEEK_START_UTC,
+            week_start_tk_date=self.WEEK_START_TK_DATE,
+        )
+        top = alerts["weekly_top_sellers"]
+        assert len(top) == 5
+        assert top[0]["product_id"] == 1 and top[0]["units_sold"] == 25
+        # Sorted descending
+        units = [t["units_sold"] for t in top]
+        assert units == sorted(units, reverse=True)
+
+    def test_top5_excludes_pre_week_orders(self, seed_products):
+        db = seed_products
+        # Last week — should NOT count
+        self._add_order(db, 1, "2026-04-20", [(1, 100)])
+        # This week
+        self._add_order(db, 2, "2026-04-27", [(2, 5)])
+        alerts = get_stock_alerts(
+            db,
+            week_start_utc=self.WEEK_START_UTC,
+            week_start_tk_date=self.WEEK_START_TK_DATE,
+        )
+        top_ids = {t["product_id"] for t in alerts["weekly_top_sellers"]}
+        assert 1 not in top_ids
+        assert 2 in top_ids
+
+    def test_top5_caps_at_five(self, seed_products):
+        db = seed_products
+        # 5 products × different quantities — fixture only has 5, so naturally capped
+        self._add_order(db, 1, "2026-04-27", [
+            (1, 10), (2, 9), (3, 8), (4, 7), (5, 6),
+        ])
+        alerts = get_stock_alerts(
+            db,
+            week_start_utc=self.WEEK_START_UTC,
+            week_start_tk_date=self.WEEK_START_TK_DATE,
+        )
+        assert len(alerts["weekly_top_sellers"]) == 5
+
+    def test_top5_groups_same_product_across_orders(self, seed_products):
+        db = seed_products
+        self._add_order(db, 1, "2026-04-27", [(1, 7)])
+        self._add_order(db, 2, "2026-04-28", [(1, 13)])
+        alerts = get_stock_alerts(
+            db,
+            week_start_utc=self.WEEK_START_UTC,
+            week_start_tk_date=self.WEEK_START_TK_DATE,
+        )
+        top = alerts["weekly_top_sellers"]
+        assert len(top) == 1
+        assert top[0]["product_id"] == 1
+        assert top[0]["units_sold"] == 20
+
+    def test_message_includes_top5_section(self, seed_products):
+        db = seed_products
+        self._add_order(db, 1, "2026-04-27", [(1, 25), (2, 12)])
+        alerts = get_stock_alerts(
+            db,
+            week_start_utc=self.WEEK_START_UTC,
+            week_start_tk_date=self.WEEK_START_TK_DATE,
+        )
+        msgs = format_daily_inventory_message(alerts)
+        combined = "\n".join(msgs)
+        assert "TOP-5 SOTILGAN" in combined
+        assert "🔥" in combined
+        # Top-ranked item appears before second-ranked
+        assert "1." in combined and "2." in combined
+
+    def test_message_sent_when_only_sales_no_stockouts(self, seed_products):
+        """Tuesday morning case: nothing ran out yet, but sales happened —
+        message should still go out (top-5 section alone is enough)."""
+        db = seed_products
+        self._add_order(db, 1, "2026-04-27", [(1, 5)])
+        alerts = get_stock_alerts(
+            db,
+            week_start_utc=self.WEEK_START_UTC,
+            week_start_tk_date=self.WEEK_START_TK_DATE,
+        )
+        # No stockouts but top sellers present
+        assert len(alerts["weekly_out_of_stock"]) == 0
+        assert len(alerts["weekly_top_sellers"]) > 0
+        msgs = format_daily_inventory_message(alerts)
+        assert msgs != []
+        combined = "\n".join(msgs)
+        assert "TOP-5 SOTILGAN" in combined
+        assert "BU HAFTA TUGAGAN" not in combined

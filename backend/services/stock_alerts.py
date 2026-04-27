@@ -39,6 +39,13 @@ def _current_week_start_utc_str() -> str:
     return monday_tk.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _current_week_start_tk_date_str() -> str:
+    """Monday of this week in Tashkent — `YYYY-MM-DD` for `real_orders.doc_date` comparisons."""
+    now_tk = datetime.now(TASHKENT_TZ)
+    monday_tk = (now_tk - timedelta(days=now_tk.weekday()))
+    return monday_tk.strftime("%Y-%m-%d")
+
+
 def _stockout_to_tk_day(stockout_at_str: Optional[str]) -> Tuple[int, str]:
     """Parse a UTC `YYYY-MM-DD HH:MM:SS` stamp → (weekday 0–6, dd/mm) in Tashkent."""
     if not stockout_at_str:
@@ -118,13 +125,55 @@ def get_active_product_ids(conn) -> set:
     return active_ids
 
 
-def get_stock_alerts(conn=None, week_start_utc: Optional[str] = None) -> dict:
+def _get_weekly_top_sellers(conn, week_start_tk_date: str, limit: int = 5) -> list:
+    """Top N products by units sold since this week's Monday (Tashkent).
+
+    Joins `real_order_items` × `real_orders` filtered by `doc_date >=` Monday;
+    groups by product_id; sorts by total units descending. Items with NULL
+    `product_id` (unmatched 1C names) are ignored — we can't display them.
+    """
+    try:
+        rows = conn.execute(
+            """SELECT roi.product_id,
+                      COALESCE(p.name_display, p.name) AS display_name,
+                      p.unit AS unit,
+                      SUM(roi.quantity) AS units_sold
+               FROM real_order_items roi
+               JOIN real_orders ro ON ro.id = roi.real_order_id
+               LEFT JOIN products p ON p.id = roi.product_id
+               WHERE ro.doc_date >= ?
+                 AND roi.product_id IS NOT NULL
+                 AND roi.quantity > 0
+               GROUP BY roi.product_id
+               ORDER BY units_sold DESC
+               LIMIT ?""",
+            (week_start_tk_date, limit),
+        ).fetchall()
+    except Exception as e:
+        logger.warning(f"weekly top sellers query failed: {e}")
+        return []
+
+    return [
+        {
+            "product_id": r["product_id"],
+            "name": (r["display_name"] or "—")[:50],
+            "unit": r["unit"] or "шт",
+            "units_sold": float(r["units_sold"] or 0),
+        }
+        for r in rows
+    ]
+
+
+def get_stock_alerts(conn=None, week_start_utc: Optional[str] = None,
+                     week_start_tk_date: Optional[str] = None) -> dict:
     """Generate stock alerts for active products.
 
     Args:
         conn: optional DB connection (for tests).
-        week_start_utc: optional override for the weekly cutoff (for tests).
-            Defaults to Monday 00:00 Tashkent expressed as a UTC string.
+        week_start_utc: optional override for the weekly stockout cutoff (UTC string).
+            Defaults to Monday 00:00 Tashkent expressed as UTC.
+        week_start_tk_date: optional override for the top-sellers cutoff
+            (`YYYY-MM-DD` Tashkent date). Defaults to this Monday in Tashkent.
 
     Returns:
         {
@@ -133,6 +182,7 @@ def get_stock_alerts(conn=None, week_start_utc: Optional[str] = None) -> dict:
             "weekly_out_of_stock": subset of out_of_stock stamped on/after this
                 week's Monday 00:00 Tashkent. Cumulative across Mon–Sat; resets
                 Monday. Restocked items drop because out_of_stock filters qty<1.
+            "weekly_top_sellers": top 5 products by units sold this week (Mon–Sat).
             "running_low": [{name, producer, qty, last_sold, last_supplied}, ...],
             "healthy_count": int,
         }
@@ -148,6 +198,7 @@ def get_stock_alerts(conn=None, week_start_utc: Optional[str] = None) -> dict:
                 "active_count": 0,
                 "out_of_stock": [],
                 "weekly_out_of_stock": [],
+                "weekly_top_sellers": [],
                 "running_low": [],
                 "healthy_count": 0,
             }
@@ -236,10 +287,15 @@ def get_stock_alerts(conn=None, week_start_utc: Optional[str] = None) -> dict:
         ]
         weekly_out_of_stock.sort(key=lambda x: x["stockout_at"] or "", reverse=True)
 
+        # Top sellers this week — uses Tashkent date for `real_orders.doc_date`.
+        date_cutoff = week_start_tk_date if week_start_tk_date is not None else _current_week_start_tk_date_str()
+        weekly_top_sellers = _get_weekly_top_sellers(conn, date_cutoff, limit=5)
+
         return {
             "active_count": len(products),
             "out_of_stock": out_of_stock,
             "weekly_out_of_stock": weekly_out_of_stock,
+            "weekly_top_sellers": weekly_top_sellers,
             "running_low": running_low,
             "healthy_count": healthy,
         }
@@ -266,18 +322,20 @@ def _chunk_lines(header: str, items_lines: list[str], max_chars: int = 3800) -> 
 
 
 def format_daily_inventory_message(alerts: dict) -> list[str]:
-    """09:00 cron message — items that ran out so far this work week (Mon–Sat).
+    """09:00 cron message — items that ran out so far this work week (Mon–Sat)
+    plus the top 5 best-selling products this week.
 
-    The list is cumulative within the week and resets Monday morning.
-    Restocked items drop automatically (still need qty<1 to appear). Items
-    are grouped under `<Day> — dd/mm` subheaders, ordered Monday → Saturday.
-    Returns [] when no item has run out yet this week, so the cron stays
-    silent rather than pinging the group with empty news.
+    The TUGAGAN list is cumulative within the week and resets Monday morning;
+    restocked items drop automatically (qty<1 filter). Items are grouped under
+    `<Day> — dd/mm` subheaders, Monday → Saturday. The top-5 section reflects
+    `real_orders` shipped since this Monday. Returns [] only when both halves
+    are empty (typical Monday morning before any /stock or /realorders runs).
     """
     if alerts.get("active_count", 0) == 0:
         return []
     weekly_out = alerts.get("weekly_out_of_stock", [])
-    if not weekly_out:
+    top_sellers = alerts.get("weekly_top_sellers", [])
+    if not weekly_out and not top_sellers:
         return []
 
     summary_parts = [
@@ -291,32 +349,42 @@ def format_daily_inventory_message(alerts: dict) -> list[str]:
     ]
     messages = ["\n".join(summary_parts)]
 
-    # Group by Tashkent calendar day so Monday's stockouts stay grouped on
-    # Friday's message instead of mixing with later days.
-    groups = defaultdict(list)  # type: ignore[var-annotated]
-    for item in weekly_out:
-        weekday, date_str = _stockout_to_tk_day(item["stockout_at"])
-        if weekday < 0:
-            continue
-        groups[(weekday, date_str)].append(item)
+    # ── Top 5 sellers this week ──────────────────────────────────────
+    if top_sellers:
+        top_lines = ["🔥 <b>BU HAFTA TOP-5 SOTILGAN:</b>"]
+        for idx, item in enumerate(top_sellers, start=1):
+            q = item["units_sold"]
+            qty_str = str(int(q)) if q == int(q) else f"{q:.1f}"
+            top_lines.append(f"  {idx}. {item['name']} — <b>{qty_str}</b> {item['unit']}")
+        messages.append("\n".join(top_lines))
 
-    sorted_keys = sorted(groups.keys(), key=lambda k: k[0])
+    # ── BU HAFTA TUGAGAN, grouped by day ─────────────────────────────
+    if weekly_out:
+        groups = defaultdict(list)  # type: ignore[var-annotated]
+        for item in weekly_out:
+            weekday, date_str = _stockout_to_tk_day(item["stockout_at"])
+            if weekday < 0:
+                continue
+            groups[(weekday, date_str)].append(item)
 
-    header = f"🔴 <b>BU HAFTA TUGAGAN</b> ({len(weekly_out)} ta):"
-    item_lines = []
-    for weekday, date_str in sorted_keys:
-        day_name = UZ_DAYS_FULL[weekday]
-        day_items = groups[(weekday, date_str)]
-        item_lines.append("")
-        item_lines.append(f"<b>{day_name} — {date_str}</b> ({len(day_items)} ta):")
-        for item in day_items:
-            sold = (
-                f" (sotilgan: {item['last_sold']})"
-                if item.get("last_sold") and item["last_sold"] != "—"
-                else ""
-            )
-            item_lines.append(f"  • {item['name']}{sold}")
-    messages.extend(_chunk_lines(header, item_lines))
+        sorted_keys = sorted(groups.keys(), key=lambda k: k[0])
+
+        header = f"🔴 <b>BU HAFTA TUGAGAN</b> ({len(weekly_out)} ta):"
+        item_lines = []
+        for weekday, date_str in sorted_keys:
+            day_name = UZ_DAYS_FULL[weekday]
+            day_items = groups[(weekday, date_str)]
+            item_lines.append("")
+            item_lines.append(f"<b>{day_name} — {date_str}</b> ({len(day_items)} ta):")
+            for item in day_items:
+                sold = (
+                    f" (sotilgan: {item['last_sold']})"
+                    if item.get("last_sold") and item["last_sold"] != "—"
+                    else ""
+                )
+                item_lines.append(f"  • {item['name']}{sold}")
+        messages.extend(_chunk_lines(header, item_lines))
+
     return messages
 
 
