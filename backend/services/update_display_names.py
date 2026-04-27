@@ -122,8 +122,8 @@ def update_display_names():
         excel_id = row[0]       # Column A = Excel ID (4881-7320)
         category = row[1]       # Column B = Category name
         name = row[4]           # Column E = Ilovadagi nomi (Latin)
-        unit = row[7]           # Column H = Birlik (unit type)
-        weight = row[10]        # Column K = Weight
+        unit = row[6]           # Column G = Birlik (unit type)
+        weight = row[9]         # Column J = Og'irligi (kg)
         if excel_id is None or name is None:
             skipped += 1
             continue
