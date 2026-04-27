@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 4  # 2026-04-25: +stock_last_seen_at (rolling 60-day active set)
+SCHEMA_VERSION = 5  # 2026-04-26: +stockout_at (daily delta for 09:00 inventory alert)
 
 
 def init_db():
@@ -1064,6 +1064,13 @@ def init_db():
             "WHERE stock_last_positive_at IS NOT NULL"
         )
 
+    # Stamp the moment a product flips from positive stock → 0. Drives the
+    # daily 09:00 inventory delta ("BUGUN TUGAGAN"). Left NULL on bootstrap so
+    # historical stockouts don't all flood the first delta message after deploy;
+    # populates organically as /stock imports flip items going forward.
+    if "stockout_at" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN stockout_at TEXT")
+
     # Product alias table: maps 1C name variants to canonical product IDs.
     # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
     # each successful fuzzy match in /stock or /prices auto-adds an alias.
@@ -1112,7 +1119,7 @@ def init_db():
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "stock_last_seen_at — rolling 60-day active set"),
+            (SCHEMA_VERSION, "stockout_at — daily delta for 09:00 inventory alert"),
         )
 
     conn.commit()

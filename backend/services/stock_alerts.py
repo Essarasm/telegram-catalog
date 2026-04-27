@@ -6,6 +6,7 @@ uploads products he actively stocks. Fallback criteria for products without
 stock_last_positive_at: sold in last 3 months or supplied recently.
 """
 import logging
+from datetime import datetime, timedelta
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 ACTIVE_STOCK_DAYS = 60
 SOLD_MONTHS = 3
 SUPPLY_MONTHS = 6
+NEWLY_OUT_HOURS = 24  # delta window for the 09:00 daily inventory alert
 
 
 def get_active_product_ids(conn) -> set:
@@ -88,7 +90,8 @@ def get_stock_alerts(conn=None) -> dict:
     Returns:
         {
             "active_count": int,
-            "out_of_stock": [{name, producer, last_sold, last_supplied}, ...],
+            "out_of_stock": [{name, producer, last_sold, last_supplied, stockout_at}, ...],
+            "newly_out_of_stock": subset of out_of_stock with stockout_at within NEWLY_OUT_HOURS,
             "running_low": [{name, producer, qty, last_sold, last_supplied}, ...],
             "healthy_count": int,
         }
@@ -100,14 +103,20 @@ def get_stock_alerts(conn=None) -> dict:
     try:
         active_ids = get_active_product_ids(conn)
         if not active_ids:
-            return {"active_count": 0, "out_of_stock": [], "running_low": [], "healthy_count": 0}
+            return {
+                "active_count": 0,
+                "out_of_stock": [],
+                "newly_out_of_stock": [],
+                "running_low": [],
+                "healthy_count": 0,
+            }
 
         placeholders = ",".join("?" for _ in active_ids)
         id_list = list(active_ids)
 
         products = conn.execute(
             f"""SELECT p.id, p.name, p.name_display, pr.name as producer_name,
-                       p.stock_quantity, p.stock_status, p.unit
+                       p.stock_quantity, p.stock_status, p.unit, p.stockout_at
                 FROM products p
                 JOIN producers pr ON pr.id = p.producer_id
                 WHERE p.is_active = 1 AND p.id IN ({placeholders})""",
@@ -163,6 +172,7 @@ def get_stock_alerts(conn=None) -> dict:
                 "unit": p["unit"] or "шт",
                 "last_sold": last_sold.get(pid, "—"),
                 "last_supplied": last_supplied.get(pid, "—"),
+                "stockout_at": p["stockout_at"],
             }
 
             if qty < 1:
@@ -176,15 +186,80 @@ def get_stock_alerts(conn=None) -> dict:
         out_of_stock.sort(key=lambda x: x["last_sold"] or "", reverse=True)
         running_low.sort(key=lambda x: x["qty"])
 
+        # Delta: items that flipped to 0 within the last NEWLY_OUT_HOURS.
+        # SQLite datetime('now') writes UTC, so we compare against UTC here too.
+        cutoff = (datetime.utcnow() - timedelta(hours=NEWLY_OUT_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+        newly_out_of_stock = [
+            item for item in out_of_stock
+            if item["stockout_at"] and item["stockout_at"] >= cutoff
+        ]
+        # Within the delta, surface fresh stockouts first.
+        newly_out_of_stock.sort(key=lambda x: x["stockout_at"] or "", reverse=True)
+
         return {
             "active_count": len(products),
             "out_of_stock": out_of_stock,
+            "newly_out_of_stock": newly_out_of_stock,
             "running_low": running_low,
             "healthy_count": healthy,
         }
     finally:
         if own_conn:
             conn.close()
+
+
+def _chunk_lines(header: str, items_lines: list[str], max_chars: int = 3800) -> list[str]:
+    """Break a long item list into Telegram-safe chunks, each with a header."""
+    chunks = []
+    current = [header]
+    current_len = len(header)
+    for ln in items_lines:
+        if current_len + len(ln) + 1 > max_chars and len(current) > 1:
+            chunks.append("\n".join(current))
+            current = [f"{header} (davom)"]
+            current_len = len(current[0])
+        current.append(ln)
+        current_len += len(ln) + 1
+    if len(current) > 1:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+def format_daily_inventory_message(alerts: dict) -> list[str]:
+    """09:00 cron message — focuses on items that flipped to 0 in the last 24h.
+
+    Cumulative count is shown for context; the full TUGAGAN list stays
+    available on demand via /stockalert tugagan. Returns [] when there is
+    nothing new — caller should treat that as "no message to send".
+    """
+    if alerts.get("active_count", 0) == 0:
+        return []
+    newly_out = alerts.get("newly_out_of_stock", [])
+    if not newly_out:
+        return []
+
+    summary_parts = [
+        f"📦 <b>Kunlik inventarizatsiya xabari</b>\n",
+        f"Faol mahsulotlar: <b>{alerts['active_count']}</b>",
+        f"🟢 Yetarli: {alerts['healthy_count']}",
+        f"🟡 Kam qoldi: {len(alerts['running_low'])}",
+        f"🔴 Tugagan: {len(alerts['out_of_stock'])} (bugun: <b>{len(newly_out)}</b>)",
+        "",
+        f"🔍 To'liq ro'yxat: <code>/stockalert tugagan</code>",
+    ]
+    messages = ["\n".join(summary_parts)]
+
+    header = f"🆕 <b>BUGUN TUGAGAN ({len(newly_out)} ta):</b>"
+    item_lines = []
+    for item in newly_out:
+        sold = (
+            f" (sotilgan: {item['last_sold']})"
+            if item.get("last_sold") and item["last_sold"] != "—"
+            else ""
+        )
+        item_lines.append(f"  • {item['name']}{sold}")
+    messages.extend(_chunk_lines(header, item_lines))
+    return messages
 
 
 def format_stock_alert_message(alerts: dict,
@@ -225,24 +300,6 @@ def format_stock_alert_message(alerts: dict,
             summary_parts.append("🔍 To'liq ro'yxat: " + " yoki ".join(hints))
             summary_parts.append("Yoki <code>/stockalert full</code> — ikkalasi ham.")
     messages = ["\n".join(summary_parts)]
-
-    # ── Helpers ────────────────────────────────────────────────────
-    def _chunk_lines(header: str, items_lines: list[str], max_chars: int = 3800) -> list[str]:
-        """Break a long list into Telegram-safe chunks, each with a header."""
-        chunks = []
-        current = [header]
-        current_len = len(header)
-        for ln in items_lines:
-            # +1 for newline
-            if current_len + len(ln) + 1 > max_chars and len(current) > 1:
-                chunks.append("\n".join(current))
-                current = [f"{header} (davom)"]
-                current_len = len(current[0])
-            current.append(ln)
-            current_len += len(ln) + 1
-        if len(current) > 1:
-            chunks.append("\n".join(current))
-        return chunks
 
     # ── 2) TUGAGAN section ────────────────────────────────────────
     if include_out and alerts["out_of_stock"]:

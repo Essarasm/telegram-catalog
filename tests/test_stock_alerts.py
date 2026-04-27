@@ -1,5 +1,9 @@
 """Tests for stock alert active product detection and classification."""
-from backend.services.stock_alerts import get_stock_alerts, format_stock_alert_message
+from backend.services.stock_alerts import (
+    get_stock_alerts,
+    format_stock_alert_message,
+    format_daily_inventory_message,
+)
 
 
 class TestStockAlerts:
@@ -112,3 +116,73 @@ class TestFormatMessage:
         msgs = format_stock_alert_message(alerts)
         assert len(msgs) == 1
         assert "Faol mahsulotlar topilmadi" in msgs[0]
+
+
+class TestNewlyOutOfStock:
+    """Daily 09:00 delta — items that flipped positive→0 within NEWLY_OUT_HOURS."""
+
+    def _setup(self, db, pid, qty, last_positive="2026-04-15", stockout_at=None):
+        db.execute(
+            """UPDATE products SET stock_quantity = ?, stock_status = ?,
+                                   stock_last_positive_at = ?, stockout_at = ?
+               WHERE id = ?""",
+            (
+                qty,
+                "in_stock" if qty > 0 else "out_of_stock",
+                last_positive,
+                stockout_at,
+                pid,
+            ),
+        )
+        db.commit()
+
+    def test_recent_stockout_in_delta(self, seed_products):
+        db = seed_products
+        # Use SQLite's own clock so the cutoff math matches.
+        recent = db.execute("SELECT datetime('now', '-1 hours')").fetchone()[0]
+        self._setup(db, 1, 0, stockout_at=recent)
+        self._setup(db, 2, 50)
+        alerts = get_stock_alerts(db)
+        newly = {item["id"] for item in alerts["newly_out_of_stock"]}
+        assert 1 in newly
+        assert 2 not in newly
+
+    def test_old_stockout_excluded(self, seed_products):
+        db = seed_products
+        # 48h ago — outside the 24h window
+        old = db.execute("SELECT datetime('now', '-48 hours')").fetchone()[0]
+        self._setup(db, 1, 0, stockout_at=old)
+        alerts = get_stock_alerts(db)
+        cumul = {item["id"] for item in alerts["out_of_stock"]}
+        newly = {item["id"] for item in alerts["newly_out_of_stock"]}
+        assert 1 in cumul  # still in cumulative tugagan
+        assert 1 not in newly  # but not in today's delta
+
+    def test_null_stockout_excluded(self, seed_products):
+        db = seed_products
+        # qty=0 but stockout_at NULL (e.g. pre-migration historical zero)
+        self._setup(db, 1, 0, stockout_at=None)
+        alerts = get_stock_alerts(db)
+        newly = {item["id"] for item in alerts["newly_out_of_stock"]}
+        assert 1 not in newly
+
+    def test_daily_message_empty_when_no_delta(self, seed_products):
+        db = seed_products
+        # All cumulative-out, none recent → 09:00 cron should be silent
+        old = db.execute("SELECT datetime('now', '-72 hours')").fetchone()[0]
+        self._setup(db, 1, 0, stockout_at=old)
+        alerts = get_stock_alerts(db)
+        msgs = format_daily_inventory_message(alerts)
+        assert msgs == []
+
+    def test_daily_message_includes_bugun_section(self, seed_products):
+        db = seed_products
+        recent = db.execute("SELECT datetime('now', '-2 hours')").fetchone()[0]
+        self._setup(db, 1, 0, stockout_at=recent)
+        alerts = get_stock_alerts(db)
+        msgs = format_daily_inventory_message(alerts)
+        combined = "\n".join(msgs)
+        assert "BUGUN TUGAGAN" in combined
+        assert "ВЭБЕР" in combined
+        # cumulative count is shown for context
+        assert "(bugun:" in combined

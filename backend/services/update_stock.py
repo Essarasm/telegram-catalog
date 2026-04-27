@@ -375,13 +375,24 @@ def apply_stock_updates(file_bytes: bytes, force: bool = False) -> dict:
                         (new_qty, new_status, product["id"]),
                     )
                 else:
-                    conn.execute(
-                        """UPDATE products
-                           SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now'),
-                               stock_last_seen_at = datetime('now')
-                           WHERE id = ?""",
-                        (new_qty, new_status, product["id"]),
-                    )
+                    was_positive = old_qty is not None and float(old_qty or 0) > 0
+                    if was_positive:
+                        conn.execute(
+                            """UPDATE products
+                               SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now'),
+                                   stock_last_seen_at = datetime('now'),
+                                   stockout_at = datetime('now')
+                               WHERE id = ?""",
+                            (new_qty, new_status, product["id"]),
+                        )
+                    else:
+                        conn.execute(
+                            """UPDATE products
+                               SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now'),
+                                   stock_last_seen_at = datetime('now')
+                               WHERE id = ?""",
+                            (new_qty, new_status, product["id"]),
+                        )
             else:
                 # No qty/status change but the product was in the file —
                 # stamp stock_last_seen_at so it counts toward the active set.
@@ -432,7 +443,8 @@ def apply_stock_updates(file_bytes: bytes, force: bool = False) -> dict:
         conn.execute(
             """UPDATE products
                SET stock_quantity = 0, stock_status = 'out_of_stock',
-                   stock_updated_at = datetime('now')
+                   stock_updated_at = datetime('now'),
+                   stockout_at = datetime('now')
                WHERE id = ?""",
             (p["id"],),
         )

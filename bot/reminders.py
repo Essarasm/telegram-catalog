@@ -257,7 +257,9 @@ async def _send_weekly_unlinked(bot, chat_id: int) -> None:
 
 
 async def _send_stock_alert(bot, chat_id: int) -> None:
-    """09:00 daily — smart stock alert for active products (TUGAGAN only)."""
+    """09:00 daily — delta inventory alert: items that flipped to 0 in the
+    last 24h. Cumulative TUGAGAN list stays available on demand via
+    /stockalert tugagan. Silent on days with no fresh stockouts."""
     today = datetime.now(TASHKENT)
     ok, reason = _should_send(today)
     if not ok:
@@ -265,22 +267,24 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         return
 
     try:
-        from backend.services.stock_alerts import get_stock_alerts, format_stock_alert_message
+        from backend.services.stock_alerts import get_stock_alerts, format_daily_inventory_message
         alerts = get_stock_alerts()
         if alerts["active_count"] == 0:
             logger.info("Stock alert skipped — no active products detected")
             return
-        if not alerts["out_of_stock"]:
-            logger.info("Stock alert skipped — no out-of-stock active products")
+        messages = format_daily_inventory_message(alerts)
+        if not messages:
+            logger.info(
+                f"Stock alert skipped — no newly-out items in last 24h "
+                f"(cumulative tugagan: {len(alerts['out_of_stock'])})"
+            )
             return
-        # Scheduled 09:00 alert = TUGAGAN only (top 25). Ops pull kam-qoldi
-        # on-demand via /stockalert kam from the Inventory group.
-        messages = format_stock_alert_message(alerts, include_low=False, full=False)
         for text in messages:
             await bot.send_message(chat_id, text, parse_mode="HTML")
         logger.info(
             f"Stock alert sent ({len(messages)} msg): "
-            f"{len(alerts['out_of_stock'])} OOS"
+            f"newly_out={len(alerts['newly_out_of_stock'])}, "
+            f"cumulative_oos={len(alerts['out_of_stock'])}"
         )
     except Exception as e:
         logger.error(f"Stock alert failed: {e}")
