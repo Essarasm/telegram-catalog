@@ -683,6 +683,20 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
     db_total_items = conn.execute("SELECT COUNT(*) FROM real_order_items").fetchone()[0]
     conn.close()
 
+    # Fire-and-forget: refresh units_score so the new shipments rerank the catalog.
+    try:
+        import os as _os, subprocess as _subprocess, sys as _sys
+        _SCRIPT = _os.path.join(
+            _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+            'tools', 'update_units_score.py',
+        )
+        _subprocess.Popen(
+            [_sys.executable, _SCRIPT],
+            stdout=_subprocess.DEVNULL, stderr=_subprocess.DEVNULL,
+        )
+    except Exception as _e:
+        logging.getLogger(__name__).warning(f"units_score recompute trigger failed: {_e}")
+
     # Deduplicate samples
     unique_unmatched_clients = sorted(set(unmatched_clients))
     unique_unmatched_products = sorted(set(unmatched_products))

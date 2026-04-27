@@ -892,6 +892,19 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_products_lifecycle ON products(lifecycle)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_real_order_items_name ON real_order_items(product_name_1c)")
 
+    # units_score: weighted blend of avg units shipped/day — 0.6×(last 30d) + 0.4×(prior 60d).
+    # Drives default catalog sort (top sellers float, cold items sink). Recomputed by
+    # tools/update_units_score.py at startup, after each /realorders import, and daily 04:30.
+    if "units_score" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN units_score REAL DEFAULT 0")
+        prod_cols.add("units_score")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_products_units_score ON products(units_score DESC)")
+
+    cat_cols = {row[1] for row in conn.execute("PRAGMA table_info(categories)").fetchall()}
+    if "units_score" not in cat_cols:
+        conn.execute("ALTER TABLE categories ADD COLUMN units_score REAL DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_categories_units_score ON categories(units_score DESC)")
+
     # Interest-click tracking for hidden (stale/never) products — drives the demand-signal alert.
     conn.execute("""
         CREATE TABLE IF NOT EXISTS product_interest_clicks (

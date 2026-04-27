@@ -275,6 +275,9 @@ def list_products(
         for item in rows:
             item.pop("search_text", None)
     else:
+        # Default catalog browse: top sellers first (weighted units shipped, last 30d × 0.6
+        # + prior 60d × 0.4, normalized per-day). Cold items (units_score = 0) sink to bottom,
+        # then alphabetical.
         rows = conn.execute(
             f"""SELECT p.id, p.name, p.name_display, p.lifecycle, p.category_id, c.name as category_name,
                        p.producer_id, pr.name as producer_name,
@@ -284,7 +287,7 @@ def list_products(
                 JOIN categories c ON c.id = p.category_id
                 JOIN producers pr ON pr.id = p.producer_id
                 WHERE {where}
-                ORDER BY p.name
+                ORDER BY p.units_score DESC, p.name
                 LIMIT ? OFFSET ?""",
             params + [limit, offset],
         ).fetchall()

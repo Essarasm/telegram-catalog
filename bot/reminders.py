@@ -292,6 +292,26 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         logger.error(f"Stock alert failed: {e}")
 
 
+async def _recompute_units_score(bot, chat_id: int) -> None:
+    """Daily 04:30 — refresh products/categories units_score so the rolling
+    30d/60d windows roll over even on days with no /realorders import.
+    Silent on success; noisy in logs only on failure."""
+    try:
+        import subprocess
+        import sys
+        script = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "tools", "update_units_score.py",
+        )
+        subprocess.Popen(
+            [sys.executable, script],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        logger.info("units_score daily recompute triggered")
+    except Exception as e:
+        logger.error(f"units_score daily recompute failed: {e}")
+
+
 async def _run_consistency_audit(bot, chat_id: int) -> None:
     """Daily 04:00 — run the data-consistency audit and post to Admin group
     if any issues are found. Silent if everything looks clean."""
@@ -645,6 +665,11 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 18, 0, _run_payment_notif_sweeper),
             name="daily-payment-notif-sweeper",
+        ),
+        # Daily 04:30 — refresh catalog units_score (rolling 30/60d windows).
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 4, 30, _recompute_units_score),
+            name="daily-units-score-recompute",
         ),
     ]
     logger.info(
