@@ -118,8 +118,13 @@ class TestFormatMessage:
         assert "Faol mahsulotlar topilmadi" in msgs[0]
 
 
-class TestNewlyOutOfStock:
-    """Daily 09:00 delta — items that flipped positive→0 within NEWLY_OUT_HOURS."""
+class TestWeeklyOutOfStock:
+    """Daily 09:00 work-week cumulative — items that ran out on/after this
+    week's Monday 00:00 Tashkent. Tests pin the cutoff explicitly via
+    ``week_start_utc`` so they don't depend on the current weekday."""
+
+    # Monday 2026-04-27 00:00 Tashkent = 2026-04-26 19:00 UTC.
+    WEEK_START = "2026-04-26 19:00:00"
 
     def _setup(self, db, pid, qty, last_positive="2026-04-15", stockout_at=None):
         db.execute(
@@ -136,53 +141,61 @@ class TestNewlyOutOfStock:
         )
         db.commit()
 
-    def test_recent_stockout_in_delta(self, seed_products):
+    def test_this_week_stockout_listed(self, seed_products):
         db = seed_products
-        # Use SQLite's own clock so the cutoff math matches.
-        recent = db.execute("SELECT datetime('now', '-1 hours')").fetchone()[0]
-        self._setup(db, 1, 0, stockout_at=recent)
+        # Mon 06:00 UTC = Mon 11:00 Tashkent — squarely inside the week
+        self._setup(db, 1, 0, stockout_at="2026-04-27 06:00:00")
         self._setup(db, 2, 50)
-        alerts = get_stock_alerts(db)
-        newly = {item["id"] for item in alerts["newly_out_of_stock"]}
-        assert 1 in newly
-        assert 2 not in newly
+        alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
+        weekly = {item["id"] for item in alerts["weekly_out_of_stock"]}
+        assert 1 in weekly
+        assert 2 not in weekly  # still in stock
 
-    def test_old_stockout_excluded(self, seed_products):
+    def test_last_week_stockout_excluded(self, seed_products):
         db = seed_products
-        # 48h ago — outside the 24h window
-        old = db.execute("SELECT datetime('now', '-48 hours')").fetchone()[0]
-        self._setup(db, 1, 0, stockout_at=old)
-        alerts = get_stock_alerts(db)
+        # Sat 2026-04-25 — last week
+        self._setup(db, 1, 0, stockout_at="2026-04-25 12:00:00")
+        alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
         cumul = {item["id"] for item in alerts["out_of_stock"]}
-        newly = {item["id"] for item in alerts["newly_out_of_stock"]}
-        assert 1 in cumul  # still in cumulative tugagan
-        assert 1 not in newly  # but not in today's delta
+        weekly = {item["id"] for item in alerts["weekly_out_of_stock"]}
+        assert 1 in cumul  # still in cumulative tugagan list
+        assert 1 not in weekly  # but not in this week's section
 
     def test_null_stockout_excluded(self, seed_products):
         db = seed_products
-        # qty=0 but stockout_at NULL (e.g. pre-migration historical zero)
         self._setup(db, 1, 0, stockout_at=None)
-        alerts = get_stock_alerts(db)
-        newly = {item["id"] for item in alerts["newly_out_of_stock"]}
-        assert 1 not in newly
+        alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
+        weekly = {item["id"] for item in alerts["weekly_out_of_stock"]}
+        assert 1 not in weekly
 
-    def test_daily_message_empty_when_no_delta(self, seed_products):
+    def test_restocked_item_drops_off(self, seed_products):
         db = seed_products
-        # All cumulative-out, none recent → 09:00 cron should be silent
-        old = db.execute("SELECT datetime('now', '-72 hours')").fetchone()[0]
-        self._setup(db, 1, 0, stockout_at=old)
-        alerts = get_stock_alerts(db)
+        # Stockout earlier this week, but qty>0 now (restocked) — should NOT appear
+        self._setup(db, 1, 5, stockout_at="2026-04-27 06:00:00")
+        alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
+        weekly = {item["id"] for item in alerts["weekly_out_of_stock"]}
+        assert 1 not in weekly
+
+    def test_daily_message_empty_when_nothing_this_week(self, seed_products):
+        db = seed_products
+        # Cumulative-out from last week only
+        self._setup(db, 1, 0, stockout_at="2026-04-20 12:00:00")
+        alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
         msgs = format_daily_inventory_message(alerts)
         assert msgs == []
 
-    def test_daily_message_includes_bugun_section(self, seed_products):
+    def test_daily_message_groups_by_day(self, seed_products):
         db = seed_products
-        recent = db.execute("SELECT datetime('now', '-2 hours')").fetchone()[0]
-        self._setup(db, 1, 0, stockout_at=recent)
-        alerts = get_stock_alerts(db)
+        # Mon 06:00 UTC → Mon 11:00 Tashkent (Dushanba)
+        self._setup(db, 1, 0, stockout_at="2026-04-27 06:00:00")
+        # Tue 06:00 UTC → Tue 11:00 Tashkent (Seshanba)
+        self._setup(db, 2, 0, stockout_at="2026-04-28 06:00:00")
+        alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
         msgs = format_daily_inventory_message(alerts)
         combined = "\n".join(msgs)
-        assert "BUGUN TUGAGAN" in combined
-        assert "ВЭБЕР" in combined
-        # cumulative count is shown for context
-        assert "(bugun:" in combined
+        assert "BU HAFTA TUGAGAN" in combined
+        assert "(bu haftada:" in combined
+        assert "Dushanba" in combined
+        assert "Seshanba" in combined
+        # Days should appear in chronological order, Mon before Tue
+        assert combined.index("Dushanba") < combined.index("Seshanba")

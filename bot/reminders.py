@@ -257,9 +257,10 @@ async def _send_weekly_unlinked(bot, chat_id: int) -> None:
 
 
 async def _send_stock_alert(bot, chat_id: int) -> None:
-    """09:00 daily — delta inventory alert: items that flipped to 0 in the
-    last 24h. Cumulative TUGAGAN list stays available on demand via
-    /stockalert tugagan. Silent on days with no fresh stockouts."""
+    """09:00 daily — work-week-cumulative inventory alert: items that ran out
+    on or after this week's Monday 00:00 Tashkent. Resets each Monday.
+    Cumulative TUGAGAN list stays available on demand via /stockalert tugagan.
+    Silent when nothing has run out this week yet (Monday-fresh)."""
     today = datetime.now(TASHKENT)
     ok, reason = _should_send(today)
     if not ok:
@@ -275,7 +276,7 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
         messages = format_daily_inventory_message(alerts)
         if not messages:
             logger.info(
-                f"Stock alert skipped — no newly-out items in last 24h "
+                f"Stock alert skipped — nothing has run out this week yet "
                 f"(cumulative tugagan: {len(alerts['out_of_stock'])})"
             )
             return
@@ -283,7 +284,7 @@ async def _send_stock_alert(bot, chat_id: int) -> None:
             await bot.send_message(chat_id, text, parse_mode="HTML")
         logger.info(
             f"Stock alert sent ({len(messages)} msg): "
-            f"newly_out={len(alerts['newly_out_of_stock'])}, "
+            f"weekly_out={len(alerts['weekly_out_of_stock'])}, "
             f"cumulative_oos={len(alerts['out_of_stock'])}"
         )
     except Exception as e:

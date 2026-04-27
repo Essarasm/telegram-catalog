@@ -6,7 +6,11 @@ uploads products he actively stocks. Fallback criteria for products without
 stock_last_positive_at: sold in last 3 months or supplied recently.
 """
 import logging
-from datetime import datetime, timedelta
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -14,7 +18,37 @@ logger = logging.getLogger(__name__)
 ACTIVE_STOCK_DAYS = 60
 SOLD_MONTHS = 3
 SUPPLY_MONTHS = 6
-NEWLY_OUT_HOURS = 24  # delta window for the 09:00 daily inventory alert
+
+# 09:00 daily inventory alert: cumulative across the work week (Mon–Sat,
+# Sundays skipped by the cron). Window resets at Monday 00:00 Tashkent. An
+# item drops off the list when restocked (qty > 0) — naturally enforced by
+# the existing `qty < 1` filter on `out_of_stock`.
+TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
+UZ_DAYS_FULL = [
+    "Dushanba", "Seshanba", "Chorshanba", "Payshanba",
+    "Juma", "Shanba", "Yakshanba",
+]
+
+
+def _current_week_start_utc_str() -> str:
+    """Monday 00:00 Tashkent → UTC string in SQLite's `datetime('now')` format."""
+    now_tk = datetime.now(TASHKENT_TZ)
+    monday_tk = (now_tk - timedelta(days=now_tk.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return monday_tk.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _stockout_to_tk_day(stockout_at_str: Optional[str]) -> Tuple[int, str]:
+    """Parse a UTC `YYYY-MM-DD HH:MM:SS` stamp → (weekday 0–6, dd/mm) in Tashkent."""
+    if not stockout_at_str:
+        return -1, ""
+    try:
+        dt_utc = datetime.strptime(stockout_at_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        dt_tk = dt_utc.astimezone(TASHKENT_TZ)
+        return dt_tk.weekday(), dt_tk.strftime("%d/%m")
+    except (ValueError, TypeError):
+        return -1, ""
 
 
 def get_active_product_ids(conn) -> set:
@@ -84,14 +118,21 @@ def get_active_product_ids(conn) -> set:
     return active_ids
 
 
-def get_stock_alerts(conn=None) -> dict:
+def get_stock_alerts(conn=None, week_start_utc: Optional[str] = None) -> dict:
     """Generate stock alerts for active products.
+
+    Args:
+        conn: optional DB connection (for tests).
+        week_start_utc: optional override for the weekly cutoff (for tests).
+            Defaults to Monday 00:00 Tashkent expressed as a UTC string.
 
     Returns:
         {
             "active_count": int,
             "out_of_stock": [{name, producer, last_sold, last_supplied, stockout_at}, ...],
-            "newly_out_of_stock": subset of out_of_stock with stockout_at within NEWLY_OUT_HOURS,
+            "weekly_out_of_stock": subset of out_of_stock stamped on/after this
+                week's Monday 00:00 Tashkent. Cumulative across Mon–Sat; resets
+                Monday. Restocked items drop because out_of_stock filters qty<1.
             "running_low": [{name, producer, qty, last_sold, last_supplied}, ...],
             "healthy_count": int,
         }
@@ -106,7 +147,7 @@ def get_stock_alerts(conn=None) -> dict:
             return {
                 "active_count": 0,
                 "out_of_stock": [],
-                "newly_out_of_stock": [],
+                "weekly_out_of_stock": [],
                 "running_low": [],
                 "healthy_count": 0,
             }
@@ -186,20 +227,19 @@ def get_stock_alerts(conn=None) -> dict:
         out_of_stock.sort(key=lambda x: x["last_sold"] or "", reverse=True)
         running_low.sort(key=lambda x: x["qty"])
 
-        # Delta: items that flipped to 0 within the last NEWLY_OUT_HOURS.
-        # SQLite datetime('now') writes UTC, so we compare against UTC here too.
-        cutoff = (datetime.utcnow() - timedelta(hours=NEWLY_OUT_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
-        newly_out_of_stock = [
+        # Weekly cumulative: items stamped on/after this week's Monday 00:00
+        # Tashkent. SQLite datetime('now') writes UTC, so the cutoff is UTC too.
+        cutoff = week_start_utc if week_start_utc is not None else _current_week_start_utc_str()
+        weekly_out_of_stock = [
             item for item in out_of_stock
             if item["stockout_at"] and item["stockout_at"] >= cutoff
         ]
-        # Within the delta, surface fresh stockouts first.
-        newly_out_of_stock.sort(key=lambda x: x["stockout_at"] or "", reverse=True)
+        weekly_out_of_stock.sort(key=lambda x: x["stockout_at"] or "", reverse=True)
 
         return {
             "active_count": len(products),
             "out_of_stock": out_of_stock,
-            "newly_out_of_stock": newly_out_of_stock,
+            "weekly_out_of_stock": weekly_out_of_stock,
             "running_low": running_low,
             "healthy_count": healthy,
         }
@@ -226,16 +266,18 @@ def _chunk_lines(header: str, items_lines: list[str], max_chars: int = 3800) -> 
 
 
 def format_daily_inventory_message(alerts: dict) -> list[str]:
-    """09:00 cron message — focuses on items that flipped to 0 in the last 24h.
+    """09:00 cron message — items that ran out so far this work week (Mon–Sat).
 
-    Cumulative count is shown for context; the full TUGAGAN list stays
-    available on demand via /stockalert tugagan. Returns [] when there is
-    nothing new — caller should treat that as "no message to send".
+    The list is cumulative within the week and resets Monday morning.
+    Restocked items drop automatically (still need qty<1 to appear). Items
+    are grouped under `<Day> — dd/mm` subheaders, ordered Monday → Saturday.
+    Returns [] when no item has run out yet this week, so the cron stays
+    silent rather than pinging the group with empty news.
     """
     if alerts.get("active_count", 0) == 0:
         return []
-    newly_out = alerts.get("newly_out_of_stock", [])
-    if not newly_out:
+    weekly_out = alerts.get("weekly_out_of_stock", [])
+    if not weekly_out:
         return []
 
     summary_parts = [
@@ -243,21 +285,37 @@ def format_daily_inventory_message(alerts: dict) -> list[str]:
         f"Faol mahsulotlar: <b>{alerts['active_count']}</b>",
         f"🟢 Yetarli: {alerts['healthy_count']}",
         f"🟡 Kam qoldi: {len(alerts['running_low'])}",
-        f"🔴 Tugagan: {len(alerts['out_of_stock'])} (bugun: <b>{len(newly_out)}</b>)",
+        f"🔴 Tugagan: {len(alerts['out_of_stock'])} (bu haftada: <b>{len(weekly_out)}</b>)",
         "",
         f"🔍 To'liq ro'yxat: <code>/stockalert tugagan</code>",
     ]
     messages = ["\n".join(summary_parts)]
 
-    header = f"🆕 <b>BUGUN TUGAGAN ({len(newly_out)} ta):</b>"
+    # Group by Tashkent calendar day so Monday's stockouts stay grouped on
+    # Friday's message instead of mixing with later days.
+    groups = defaultdict(list)  # type: ignore[var-annotated]
+    for item in weekly_out:
+        weekday, date_str = _stockout_to_tk_day(item["stockout_at"])
+        if weekday < 0:
+            continue
+        groups[(weekday, date_str)].append(item)
+
+    sorted_keys = sorted(groups.keys(), key=lambda k: k[0])
+
+    header = f"🔴 <b>BU HAFTA TUGAGAN</b> ({len(weekly_out)} ta):"
     item_lines = []
-    for item in newly_out:
-        sold = (
-            f" (sotilgan: {item['last_sold']})"
-            if item.get("last_sold") and item["last_sold"] != "—"
-            else ""
-        )
-        item_lines.append(f"  • {item['name']}{sold}")
+    for weekday, date_str in sorted_keys:
+        day_name = UZ_DAYS_FULL[weekday]
+        day_items = groups[(weekday, date_str)]
+        item_lines.append("")
+        item_lines.append(f"<b>{day_name} — {date_str}</b> ({len(day_items)} ta):")
+        for item in day_items:
+            sold = (
+                f" (sotilgan: {item['last_sold']})"
+                if item.get("last_sold") and item["last_sold"] != "—"
+                else ""
+            )
+            item_lines.append(f"  • {item['name']}{sold}")
     messages.extend(_chunk_lines(header, item_lines))
     return messages
 
