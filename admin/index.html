@@ -906,6 +906,35 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- 🔥 Top 20 Sotilgan — work-week, USD-equivalent ranking with WoW comparison -->
+                    <div class="section-title collapsible" onclick="toggleSection('topSellersSection')" style="margin-top: 24px;">
+                        🔥 Top 20 Sotilgan (Bu Hafta) <span id="topSellersMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        <span class="toggle-arrow" id="topSellersSection-arrow">▾</span>
+                    </div>
+                    <div id="topSellersSection" class="collapsible-content">
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Ranked by USD-equivalent revenue this work week (Mon → today, Tashkent). UZS revenue is converted via the latest <code>daily_fx_rates</code> rate <strong>for ranking only</strong> — native UZS / USD revenue is preserved per row. Δ vs last week (Mon–Sun); rank change shows movement (↑ moved up, ↓ moved down, 🆕 new entry).
+                        </div>
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Product</th>
+                                            <th>Units (this wk)</th>
+                                            <th>Δ Units</th>
+                                            <th>Revenue USD-eq</th>
+                                            <th>Δ Revenue</th>
+                                            <th>Rank Δ</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="topSellersBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Client Portfolio Tab -->
@@ -1050,6 +1079,34 @@
                                         <tbody id="activeLowBody"></tbody>
                                     </table>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- BU HAFTA TUGAGAN — work-week cumulative stockouts (Mon–Sat) -->
+                    <div class="section-title collapsible" onclick="toggleSection('weekOutSection')" style="margin-top: 16px;">
+                        🔴 BU HAFTA TUGAGAN (Du–Shb) <span id="weekOutCount" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        <span class="toggle-arrow" id="weekOutSection-arrow">▾</span>
+                    </div>
+                    <div id="weekOutSection" class="collapsible-content">
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Items that ran out on/after Monday 00:00 (Tashkent) and are still 0. Restocked items drop. Resets each Monday. Rows highlighted in <span style="color: #f59e0b;">amber</span> have been out 3+ days — possible refill delay.
+                        </div>
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th>Product (1C)</th>
+                                            <th>Producer</th>
+                                            <th>Tugagan kuni</th>
+                                            <th>Days out</th>
+                                            <th>Last Sold</th>
+                                            <th>Last Supplied</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="weekOutBody"></tbody>
+                                </table>
                             </div>
                         </div>
                     </div>
@@ -1408,6 +1465,16 @@
             return Math.round(n).toString();
         }
 
+        function escapeHtml(s) {
+            if (s === null || s === undefined) return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         function fmtFull(n) {
             if (!n) return '0';
             return Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -1589,6 +1656,69 @@
             drawRevenueChart();
             drawCollectionChart(collData);
             drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
+            loadTopSellersWoW();
+        }
+
+        async function loadTopSellersWoW() {
+            try {
+                const data = await apiCall('top-sellers-wow?limit=20');
+                renderTopSellers(data);
+            } catch (e) {
+                console.warn('top-sellers-wow load failed', e);
+            }
+        }
+
+        function renderTopSellers(data) {
+            const body = document.getElementById('topSellersBody');
+            const meta = document.getElementById('topSellersMeta');
+            if (!body) return;
+            const items = data && data.items ? data.items : [];
+            const fxrate = data && data.fxrate_used;
+            meta.textContent = items.length
+                ? `${items.length} ta · USD-eq @ ${fxrate ? fmt(fxrate) : '?'} so'm`
+                : 'No sales yet this week';
+            if (!items.length) {
+                body.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#8b8fa3; padding:16px;">Bu hafta sotuvlar hali yo\'q</td></tr>';
+                return;
+            }
+            body.innerHTML = items.map(it => {
+                const tw = it.this_week || {};
+                const lw = it.last_week || {};
+                const d = it.delta || {};
+                const unitsThis = tw.units || 0;
+                const unitsLast = lw.units || 0;
+                const usdEq = tw.revenue_usd_eq || 0;
+                const lastUsdEq = lw.revenue_usd_eq || 0;
+                const unitsDeltaPct = d.units_pct;
+                const usdDeltaPct = d.usd_eq_pct;
+                const rankDelta = d.rank;
+                const fmtPct = (v) => v === null || v === undefined ? '—' :
+                    `<span style="color: ${v >= 0 ? '#22c55e' : '#ef4444'};">${v > 0 ? '+' : ''}${v}%</span>`;
+                let rankCell;
+                if (rankDelta === null || rankDelta === undefined) {
+                    rankCell = '<span style="color:#a855f7;">🆕 new</span>';
+                } else if (rankDelta > 0) {
+                    rankCell = `<span style="color:#22c55e;">↑${rankDelta}</span>`;
+                } else if (rankDelta < 0) {
+                    rankCell = `<span style="color:#ef4444;">↓${Math.abs(rankDelta)}</span>`;
+                } else {
+                    rankCell = '<span style="color:#8b8fa3;">—</span>';
+                }
+                const nativeNote = (tw.revenue_uzs_native > 0 && tw.revenue_usd_native > 0)
+                    ? ` <span style="font-size:10px; color:#8b8fa3;">(UZS+USD)</span>`
+                    : (tw.revenue_usd_native > 0
+                        ? ` <span style="font-size:10px; color:#8b8fa3;">(USD)</span>`
+                        : '');
+                return `<tr>
+                    <td class="table-number">${it.rank}</td>
+                    <td>${escapeHtml(it.name)}</td>
+                    <td>${fmt(unitsThis)} ${escapeHtml(it.unit)} <span style="font-size:11px; color:#8b8fa3;">(prev: ${fmt(unitsLast)})</span></td>
+                    <td>${fmtPct(unitsDeltaPct)}</td>
+                    <td>$${fmt(Math.round(usdEq))}${nativeNote}</td>
+                    <td>${fmtPct(usdDeltaPct)}</td>
+                    <td>${rankCell}</td>
+                </tr>`;
+            }).join('');
         }
 
         function getFullMonths() {
@@ -2056,6 +2186,56 @@
         let inventoryData = {};
         let inventoryFilterMode = 'all';
 
+        async function loadInventoryWeekOut() {
+            try {
+                const data = await apiCall('inventory-week-out');
+                renderInventoryWeekOut(data);
+            } catch (e) {
+                console.warn('inventory-week-out load failed', e);
+            }
+        }
+
+        function renderInventoryWeekOut(data) {
+            const body = document.getElementById('weekOutBody');
+            const countEl = document.getElementById('weekOutCount');
+            if (!body) return;
+            const items = (data && data.items) || [];
+            countEl.textContent = items.length ? `${items.length} ta` : 'hech narsa';
+            if (!items.length) {
+                body.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#8b8fa3; padding:16px;">Bu hafta hech narsa tugamagan</td></tr>';
+                return;
+            }
+            const UZ_DAYS = ['Du', 'Se', 'Ch', 'Pa', 'Ju', 'Sh', 'Ya'];
+            body.innerHTML = items.map(it => {
+                const days = it.days_out || 0;
+                const warn = days >= 3;
+                const rowStyle = warn
+                    ? ' style="background: rgba(245,158,11,0.06);"'
+                    : '';
+                const daysCell = warn
+                    ? `<span style="color:#f59e0b; font-weight:600;">${days}</span>`
+                    : `<span>${days}</span>`;
+                // Convert stockout_at_utc → Tashkent display
+                let dayLabel = '—';
+                if (it.stockout_at_utc) {
+                    try {
+                        const d = new Date(it.stockout_at_utc.replace(' ', 'T') + 'Z');
+                        // Add 5h for Tashkent
+                        const tk = new Date(d.getTime() + 5 * 60 * 60 * 1000);
+                        dayLabel = `${UZ_DAYS[(tk.getUTCDay() + 6) % 7]} ${String(tk.getUTCDate()).padStart(2, '0')}/${String(tk.getUTCMonth() + 1).padStart(2, '0')}`;
+                    } catch (e) {}
+                }
+                return `<tr${rowStyle}>
+                    <td>${escapeHtml(it.name || '—')}</td>
+                    <td style="font-size:11px; color:#8b8fa3;">${escapeHtml(it.producer || '—')}</td>
+                    <td>${dayLabel}</td>
+                    <td>${daysCell}</td>
+                    <td style="font-size:11px;">${escapeHtml(it.last_sold || '—')}</td>
+                    <td style="font-size:11px;">${escapeHtml(it.last_supplied || '—')}</td>
+                </tr>`;
+            }).join('');
+        }
+
         async function loadInventoryData() {
             const stock = await apiCall('stock-status');
             inventoryData = stock;
@@ -2076,6 +2256,9 @@
 
             // Stock distribution chart
             drawStockDistributionChart(summary);
+
+            // Work-week cumulative stockouts (Mon–Sat)
+            loadInventoryWeekOut();
 
             // Setup KPI click handlers
             document.querySelectorAll('[data-inventory-filter]').forEach(card => {

@@ -1243,6 +1243,271 @@ def platform_health(admin_key: str = Query(...)):
     }
 
 
+# ── Inventory Intelligence v2 — weekly tugagan + top sellers ─────
+
+
+def _week_bounds_tashkent(weeks_back: int = 0):
+    """Return (monday_utc_str, monday_tk_date_str, sunday_tk_date_str) for the
+    work week N weeks before this Monday. weeks_back=0 → this week, 1 → last week.
+    UTC string is `YYYY-MM-DD HH:MM:SS` for `stockout_at` comparisons; Tashkent
+    date strings are `YYYY-MM-DD` for `real_orders.doc_date` comparisons.
+    """
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    tk = ZoneInfo("Asia/Tashkent")
+    now_tk = datetime.now(tk)
+    monday_tk = (now_tk - timedelta(days=now_tk.weekday() + 7 * weeks_back)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    sunday_tk = monday_tk + timedelta(days=6)
+    monday_utc_str = monday_tk.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return monday_utc_str, monday_tk.strftime("%Y-%m-%d"), sunday_tk.strftime("%Y-%m-%d")
+
+
+def _days_out_tashkent(stockout_at_utc: str, now_tk=None) -> int:
+    """Whole calendar days in Tashkent between stockout_at and now."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    if not stockout_at_utc:
+        return 0
+    try:
+        dt_utc = datetime.strptime(stockout_at_utc, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return 0
+    tk = ZoneInfo("Asia/Tashkent")
+    if now_tk is None:
+        now_tk = datetime.now(tk)
+    dt_tk = dt_utc.astimezone(tk)
+    return max(0, (now_tk.date() - dt_tk.date()).days)
+
+
+@router.get("/inventory-week-out")
+def inventory_week_out(admin_key: str = Query(...)):
+    """Items that ran out this work week (Mon–Sat Tashkent) and are still 0.
+
+    Cumulative within the week, resets Monday. Restocked items naturally drop
+    because we filter `stock_quantity < 1`. Each row carries `days_out` for
+    spotting items sitting unfilled long enough to be a personnel-monitoring
+    signal (3+ days = warning territory).
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+    monday_utc, monday_tk_date, _ = _week_bounds_tashkent(0)
+
+    rows = conn.execute(
+        """SELECT p.id,
+                  p.name as name_cyrillic,
+                  p.name_display,
+                  p.unit,
+                  p.stockout_at,
+                  pr.name as producer
+           FROM products p
+           JOIN producers pr ON pr.id = p.producer_id
+           WHERE p.is_active = 1
+             AND p.stock_quantity < 1
+             AND p.stockout_at IS NOT NULL
+             AND p.stockout_at >= ?
+           ORDER BY p.stockout_at ASC""",
+        (monday_utc,),
+    ).fetchall()
+
+    if not rows:
+        conn.close()
+        return {
+            "ok": True,
+            "week_start": monday_tk_date,
+            "count": 0,
+            "items": [],
+        }
+
+    ids = [r["id"] for r in rows]
+    placeholders = ",".join("?" for _ in ids)
+
+    last_sold = {
+        r["product_id"]: r["last_date"]
+        for r in conn.execute(
+            f"""SELECT roi.product_id, MAX(ro.doc_date) as last_date
+                FROM real_order_items roi
+                JOIN real_orders ro ON ro.id = roi.real_order_id
+                WHERE roi.product_id IN ({placeholders})
+                GROUP BY roi.product_id""",
+            ids,
+        ).fetchall()
+    }
+    last_supplied = {
+        r["pid"]: r["last_date"]
+        for r in conn.execute(
+            f"""SELECT soi.matched_product_id as pid, MAX(so.doc_date) as last_date
+                FROM supply_order_items soi
+                JOIN supply_orders so ON so.id = soi.supply_order_id
+                WHERE soi.matched_product_id IN ({placeholders})
+                GROUP BY soi.matched_product_id""",
+            ids,
+        ).fetchall()
+    }
+
+    conn.close()
+
+    items = []
+    for r in rows:
+        pid = r["id"]
+        days_out = _days_out_tashkent(r["stockout_at"])
+        items.append({
+            "product_id": pid,
+            "name": r["name_display"] or r["name_cyrillic"],
+            "name_cyrillic": r["name_cyrillic"],
+            "producer": r["producer"],
+            "unit": r["unit"] or "шт",
+            "stockout_at_utc": r["stockout_at"],
+            "days_out": days_out,
+            "last_sold": last_sold.get(pid),
+            "last_supplied": last_supplied.get(pid),
+        })
+
+    return {
+        "ok": True,
+        "week_start": monday_tk_date,
+        "count": len(items),
+        "items": items,
+    }
+
+
+def _latest_fxrate(conn, fallback: float = 12000.0) -> float:
+    row = conn.execute(
+        """SELECT rate FROM daily_fx_rates
+           WHERE currency_pair = 'USD_UZS'
+           ORDER BY rate_date DESC LIMIT 1"""
+    ).fetchone()
+    return float(row["rate"]) if row and row["rate"] else fallback
+
+
+def _aggregate_sales_by_product(conn, start_tk_date: str, end_tk_date: str, fxrate: float):
+    """Return {product_id: {units, revenue_uzs_native, revenue_usd_native, revenue_usd_eq}}.
+
+    revenue_uzs_native: sum of `total_local` from orders where currency='UZS'
+    revenue_usd_native: sum of `total_local` from orders where currency='USD'
+    revenue_usd_eq: USD-equivalent ranking value =
+        revenue_usd_native + (revenue_uzs_native / fxrate)
+    """
+    rows = conn.execute(
+        """SELECT roi.product_id,
+                  COALESCE(p.name_display, p.name) as display_name,
+                  p.unit,
+                  SUM(roi.quantity) as units,
+                  SUM(CASE WHEN ro.currency = 'UZS' THEN roi.total_local ELSE 0 END) as uzs_rev,
+                  SUM(CASE WHEN ro.currency = 'USD' THEN roi.total_local ELSE 0 END) as usd_rev
+           FROM real_order_items roi
+           JOIN real_orders ro ON ro.id = roi.real_order_id
+           LEFT JOIN products p ON p.id = roi.product_id
+           WHERE ro.doc_date >= ?
+             AND ro.doc_date <= ?
+             AND roi.product_id IS NOT NULL
+             AND roi.quantity > 0
+           GROUP BY roi.product_id""",
+        (start_tk_date, end_tk_date),
+    ).fetchall()
+
+    out = {}
+    for r in rows:
+        pid = r["product_id"]
+        uzs = float(r["uzs_rev"] or 0)
+        usd = float(r["usd_rev"] or 0)
+        usd_eq = usd + (uzs / fxrate if fxrate > 0 else 0)
+        out[pid] = {
+            "product_id": pid,
+            "name": (r["display_name"] or "—"),
+            "unit": r["unit"] or "шт",
+            "units": float(r["units"] or 0),
+            "revenue_uzs_native": uzs,
+            "revenue_usd_native": usd,
+            "revenue_usd_eq": usd_eq,
+        }
+    return out
+
+
+@router.get("/top-sellers-wow")
+def top_sellers_wow(
+    admin_key: str = Query(...),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Top N products by USD-equivalent revenue this work week (Mon–Sat),
+    with last-week comparison and rank change.
+
+    USD-equivalent ranking — UZS revenue is converted via the latest
+    `daily_fx_rates` rate for ranking only; native UZS and USD revenues are
+    preserved per row so the dual-currency rule is not violated at the data
+    layer. Display layer chooses how to surface.
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+
+    fxrate = _latest_fxrate(conn)
+    _, this_mon, this_sat = _week_bounds_tashkent(0)
+    _, last_mon, last_sat = _week_bounds_tashkent(1)
+
+    this_week = _aggregate_sales_by_product(conn, this_mon, this_sat, fxrate)
+    last_week = _aggregate_sales_by_product(conn, last_mon, last_sat, fxrate)
+
+    conn.close()
+
+    # Rank both weeks by usd_eq desc
+    this_ranking = sorted(
+        this_week.values(), key=lambda r: r["revenue_usd_eq"], reverse=True
+    )
+    last_ranking = sorted(
+        last_week.values(), key=lambda r: r["revenue_usd_eq"], reverse=True
+    )
+    last_rank_by_pid = {r["product_id"]: idx + 1 for idx, r in enumerate(last_ranking)}
+
+    items = []
+    for idx, r in enumerate(this_ranking[:limit]):
+        pid = r["product_id"]
+        last = last_week.get(pid)
+        last_units = last["units"] if last else 0
+        last_usd_eq = last["revenue_usd_eq"] if last else 0
+        units_delta_pct = (
+            round((r["units"] - last_units) / last_units * 100, 1)
+            if last_units > 0 else None
+        )
+        usd_delta_pct = (
+            round((r["revenue_usd_eq"] - last_usd_eq) / last_usd_eq * 100, 1)
+            if last_usd_eq > 0 else None
+        )
+        last_rank = last_rank_by_pid.get(pid)
+        rank_change = (last_rank - (idx + 1)) if last_rank is not None else None
+        items.append({
+            "rank": idx + 1,
+            "product_id": pid,
+            "name": r["name"],
+            "unit": r["unit"],
+            "this_week": {
+                "units": r["units"],
+                "revenue_uzs_native": r["revenue_uzs_native"],
+                "revenue_usd_native": r["revenue_usd_native"],
+                "revenue_usd_eq": round(r["revenue_usd_eq"], 2),
+            },
+            "last_week": {
+                "units": last_units,
+                "revenue_usd_eq": round(last_usd_eq, 2),
+                "rank": last_rank,
+            },
+            "delta": {
+                "units_pct": units_delta_pct,
+                "usd_eq_pct": usd_delta_pct,
+                "rank": rank_change,  # positive = moved up, None = new entry
+            },
+        })
+
+    return {
+        "ok": True,
+        "week_start": this_mon,
+        "last_week_start": last_mon,
+        "fxrate_used": fxrate,
+        "limit": limit,
+        "items": items,
+    }
+
+
 @router.post("/upload-images")
 async def upload_images(
     file: UploadFile = File(...),
