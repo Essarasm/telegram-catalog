@@ -48,6 +48,7 @@ export default function App() {
   const [approved, setApproved] = useState(false);
   const [isAgent, setIsAgent] = useState(false);
   const [actingAsClient, setActingAsClient] = useState(null); // null when unlinked
+  const [previousActingAsClient, setPreviousActingAsClient] = useState(null); // last client before entering agent panel
   const [supplementingOrderId, setSupplementingOrderId] = useState(null);
   const cart = useCart();
   const goBackRef = useRef(null);
@@ -229,6 +230,7 @@ export default function App() {
   const exitToAgentPanel = async () => {
     const uid = getTelegramUserId();
     if (!uid) return;
+    if (actingAsClient) setPreviousActingAsClient(actingAsClient);
     await switchAgentClient({ telegram_id: uid, clear: true });
     setActingAsClient(null);
     setPage('catalog');
@@ -236,7 +238,19 @@ export default function App() {
 
   const onAgentClientPicked = (client) => {
     setActingAsClient(client);
+    setPreviousActingAsClient(null);
     setPage('catalog');
+  };
+
+  const resumePreviousClient = async () => {
+    const uid = getTelegramUserId();
+    if (!uid || !previousActingAsClient) return;
+    const r = await switchAgentClient({ telegram_id: uid, client_id: previousActingAsClient.id });
+    if (r.ok && r.client) {
+      setActingAsClient(r.client);
+      setPreviousActingAsClient(null);
+      setPage('catalog');
+    }
   };
 
   const getTitle = () => {
@@ -471,7 +485,11 @@ export default function App() {
       {/* Content */}
       <main className="px-3 py-3">
         {isAgent && !actingAsClient ? (
-          <AgentHomePage onClientSwitched={onAgentClientPicked} />
+          <AgentHomePage
+            onClientSwitched={onAgentClientPicked}
+            previousClient={previousActingAsClient}
+            onResumePrevious={resumePreviousClient}
+          />
         ) : (
         <>
         {page === 'catalog' && (

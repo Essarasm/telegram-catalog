@@ -248,6 +248,12 @@ def apply_client_master_v2(
             # No change
             if (val or None) == (existing or None):
                 continue
+            # Fill-only policy: Master is a read source, never authoritative for
+            # soft fields. Mini-app and 1C /clients writes win — Master only
+            # fills genuinely empty slots. (phone_normalized + status are handled
+            # above with their own rules and are exempt from this policy.)
+            if existing not in (None, ""):
+                continue
             updates.append(f"{field} = ?")
             params.append(val)
 

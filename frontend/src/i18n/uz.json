@@ -1,6 +1,7 @@
 {
   "add_to_cart": "Qo'shish",
   "agent_acting_as": "Mijoz sifatida ishlayapsiz",
+  "agent_back_to_catalog_suffix": "katalogiga qaytish",
   "agent_back_to_panel": "Panelga qaytish",
   "agent_clients": "mijoz",
   "agent_dashboard_beta": "Beta",

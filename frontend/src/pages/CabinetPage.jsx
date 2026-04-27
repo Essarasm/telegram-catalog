@@ -1156,13 +1156,18 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
           <div className="text-base font-semibold mt-0.5">
             {akt.client_1c_name}
           </div>
-          {actingAsClient?.phone && (
-            <a
-              href={`tel:${actingAsClient.phone}`}
-              className="inline-block mt-1 text-sm text-tg-link"
-            >
-              📞 {actingAsClient.phone}
-            </a>
+          {actingAsClient?.phones?.length > 0 && (
+            <div className="mt-1 flex flex-col items-center gap-0.5">
+              {actingAsClient.phones.map((p) => (
+                <a
+                  key={p}
+                  href={`tel:${p}`}
+                  className="text-sm text-tg-link"
+                >
+                  📞 {p}
+                </a>
+              ))}
+            </div>
           )}
         </div>
       )}

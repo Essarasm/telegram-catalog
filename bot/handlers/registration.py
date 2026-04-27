@@ -123,6 +123,8 @@ async def handle_registration_reply(message: Message):
             )
             conn.execute("UPDATE users SET is_approved = 1, client_id = ? WHERE telegram_id = ?", (client_id, tg_id))
             conn.execute("UPDATE allowed_clients SET matched_telegram_id = ? WHERE id = ?", (tg_id, client_id))
+            from backend.services.phone_slots import fill_empty_slot
+            fill_empty_slot(conn, client_id, phone)
             conn.commit()
 
             try:

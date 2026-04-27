@@ -120,7 +120,7 @@ function ClientRow({ label, sub, onClick, isNew }) {
   );
 }
 
-export default function AgentHomePage({ onClientSwitched }) {
+export default function AgentHomePage({ onClientSwitched, previousClient, onResumePrevious }) {
   const uid = getTelegramUserId();
   const [fx, setFx] = useState(null);
   const [recent, setRecent] = useState([]);
@@ -176,8 +176,25 @@ export default function AgentHomePage({ onClientSwitched }) {
     }
   };
 
+  const previousLabel = previousClient
+    ? (previousClient.client_id_1c || previousClient.name || `#${previousClient.id}`)
+    : null;
+
   return (
     <div className="space-y-4">
+      {previousClient && (
+        <button
+          onClick={onResumePrevious}
+          className="w-full rounded-xl bg-blue-500/10 border border-blue-500/40 px-3 py-2 flex items-center gap-2 active:bg-blue-500/20"
+        >
+          <span className="text-tg-link text-lg shrink-0">←</span>
+          <div className="flex-1 min-w-0 text-left">
+            <div className="text-sm font-medium truncate leading-tight">
+              {previousLabel} {t.agent_back_to_catalog_suffix}
+            </div>
+          </div>
+        </button>
+      )}
       <FxRateBanner data={fx} />
 
       {/* Search bar */}

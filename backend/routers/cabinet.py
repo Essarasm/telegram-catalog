@@ -17,8 +17,12 @@ def client_info(telegram_id: int = Query(...)):
     """Return the currently-linked client's display identity.
 
     Used by the agent panel to render the "Acting as: [Name]" bar. Phone
-    number is only returned when the caller has is_agent=1 — regular
-    clients never receive a phone field through this endpoint.
+    numbers are only returned when the caller has is_agent=1 — regular
+    clients never receive a phones field through this endpoint. The list
+    includes phones from every sibling allowed_clients row (same client_id_1c,
+    one row per registered phone) plus raqam_02/raqam_03 from each, deduped,
+    with the acting row's primary number first, so agents can reach the shop
+    on any known number.
     """
     conn = get_db()
     try:
@@ -43,7 +47,22 @@ def client_info(telegram_id: int = Query(...)):
             "client_id_1c": client["client_id_1c"],
         }
         if user["is_agent"]:
-            payload["phone"] = client["phone_normalized"] or ""
+            sibling_ids = get_sibling_client_ids(conn, client["id"])
+            placeholders = ",".join("?" * len(sibling_ids))
+            sibling_rows = conn.execute(
+                f"SELECT id, phone_normalized, raqam_02, raqam_03 "
+                f"FROM allowed_clients WHERE id IN ({placeholders})",
+                sibling_ids,
+            ).fetchall()
+            # Acting row's primary phone first, then everything else in row order.
+            ordered = sorted(sibling_rows, key=lambda r: 0 if r["id"] == client["id"] else 1)
+            phones = []
+            for r in ordered:
+                for raw in (r["phone_normalized"], r["raqam_02"], r["raqam_03"]):
+                    p = (raw or "").strip()
+                    if p and p not in phones:
+                        phones.append(p)
+            payload["phones"] = phones
         return {"ok": True, "client": payload}
     finally:
         conn.close()
