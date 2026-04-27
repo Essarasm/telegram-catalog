@@ -12,6 +12,17 @@ Rassvet is a family-owned construction materials wholesaler (Uzbekistan, run by 
 
 **Workspace scope:** This `telegram-catalog/` folder is the live app. The parent folder (`../`) also holds analytics tooling (cashback/loyalty workbooks, `tools/`, root-level Python scripts), the photo pipeline (`product_photos_original/` → `bgremoval_poc/` → `images_transparent/` → `images_allocation/`), and ops state in `../obsidian-vault/` (morning briefings, command center, MOC, error log, inbox — check there before assuming a task is new). Do not edit `../telegram-catalog-latest/` — stale Mar 23 copy. Current parent-root diagnostic docs (Apr 13 2026): `SCORING_ALGORITHM_TECHNICAL.md`, `README_DIAGNOSTICS.md`, `DIAGNOSTIC_SUMMARY.txt`, `prompt_debtors_command.md`. `PROJECT_ROADMAP.md` and `WEEKLY_UPDATE_WORKFLOW.md` are stale (Mar).
 
+## Working in this project — read these first
+
+These artifacts govern how to work here. Read in order before starting any task:
+
+- **`.claude/rules/`** — six numbered rules + `07-proactive-anticipation.md` (audit before declaring done; every defer needs a trigger; cost-to-fix vs cost-to-defer; meta-work doesn't auto-attribute to active session). Loaded automatically as project context — but cite the specific rule by number when invoking it.
+- **`.claude/sessions/_index.md`** — letter-and-cross-cutting charter index. Every active letter (A–Y) and every cross-cutting concern (Agent / Bot / Communications / Ops) has a charter here.
+- **`.claude/sessions/_conventions.md`** — letter immutability, cross-session topic rules, progress marking. Letters retire when sessions retire; subsessions use `<L><digit>`; cross-cutting concerns get charters not letters.
+- **`.claude/sessions/_workflow.md`** — slash command reference, daily lifecycle, hooks, "where state lives" table. Has a §0 listing every active deferral with its named resolution trigger.
+- **`obsidian-vault/📒 Session Scope Map.md`** — canonical commit-attribution reference; nine numbered decision rules answer "which session does this commit belong to?"
+- **`obsidian-vault/📊 Session Status Dashboard.md`** — live status. Active table is auto-regenerated from session-log YAML frontmatter by `tools/rebuild_views.py` — don't edit the active region directly.
+
 ## Hard Constraints — Never Change Without Asking
 
 Load-bearing decisions. Stop and confirm with Ulugbek before touching:
