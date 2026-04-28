@@ -317,7 +317,10 @@ async def _run_consistency_audit(bot, chat_id: int) -> None:
     if any issues are found. Silent if everything looks clean."""
     try:
         from backend.services.consistency_audit import run_audit, format_audit_message
-        findings = run_audit()
+        # 09:00 cron auto-heals healable_orphans (defense-in-depth on top of
+        # per-mutator heal from Session F refactor phase 8). Other audit
+        # checks remain alert-only.
+        findings = run_audit(fix=True)
         msg = format_audit_message(findings)
         if not msg:
             logger.info("consistency_audit: clean, nothing to report")

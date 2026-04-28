@@ -20,11 +20,22 @@ from __future__ import annotations
 from backend.database import get_db
 
 
-def run_audit() -> dict:
+def run_audit(fix: bool = False) -> dict:
     """Returns a dict of findings. Keys are check names, values are dicts
     with at least {"count": N, "sample": [...]} when count > 0. Empty
     findings are omitted entirely so the caller can check `if result:` to
-    decide whether to notify."""
+    decide whether to notify.
+
+    When `fix=True`, the audit also auto-heals `healable_orphans` via
+    `client_identity.heal_all_finance_tables()` before recording the
+    finding. The reported count then reflects what was healed in this run
+    (so persistent residuals after fix indicate a real new class of orphan
+    that the heal SQL can't resolve — worth investigating).
+
+    Default `fix=False` keeps backward compatibility for `/consistencycheck`
+    on-demand admin command (alert-only). The 09:00 cron passes `fix=True`
+    as a daily safety net layered on top of the per-mutator heal (Session F
+    refactor phase 8)."""
     conn = get_db()
     result: dict = {}
     try:
@@ -133,26 +144,42 @@ def run_audit() -> dict:
 
         # 8. Heal-eligible orphans per finance table — rows with client_id IS
         # NULL whose client_name_1c DOES match an allowed_clients.client_id_1c.
-        # Post-import heal (Phase 2) should drive these to 0; any non-zero
-        # count means a new class of orphan is escaping the heal path.
-        healable = {}
-        for table in ("client_balances", "real_orders",
-                      "client_payments", "client_debts"):
-            row = conn.execute(
-                f"""SELECT COUNT(*) AS n FROM {table} t
-                    WHERE t.client_id IS NULL
-                      AND t.client_name_1c IN (
-                          SELECT client_id_1c FROM allowed_clients
-                          WHERE COALESCE(status, 'active') != 'merged'
-                            AND client_id_1c IS NOT NULL
-                            AND client_id_1c != ''
-                      )"""
-            ).fetchone()
-            if row and row["n"]:
-                healable[table] = row["n"]
-        if healable:
-            result["healable_orphans"] = {"count": sum(healable.values()),
-                                          "by_table": healable}
+        # Per-mutator heal (Session F phase 8) should drive these to 0; any
+        # non-zero count means a new class of orphan is escaping the heal
+        # path. When fix=True, we run the heal here as a defense-in-depth
+        # safety net (09:00 cron) and report what got healed.
+        if fix:
+            from backend.services import client_identity
+            healed = client_identity.heal_all_finance_tables(conn)
+            conn.commit()
+            healable = {t: n for t, n in healed.items() if n}
+            if healable:
+                result["healable_orphans"] = {
+                    "count": sum(healable.values()),
+                    "by_table": healable,
+                    "auto_healed": True,
+                }
+        else:
+            healable = {}
+            for table in ("client_balances", "real_orders",
+                          "client_payments", "client_debts"):
+                row = conn.execute(
+                    f"""SELECT COUNT(*) AS n FROM {table} t
+                        WHERE t.client_id IS NULL
+                          AND t.client_name_1c IN (
+                              SELECT client_id_1c FROM allowed_clients
+                              WHERE COALESCE(status, 'active') != 'merged'
+                                AND client_id_1c IS NOT NULL
+                                AND client_id_1c != ''
+                          )"""
+                ).fetchone()
+                if row and row["n"]:
+                    healable[table] = row["n"]
+            if healable:
+                result["healable_orphans"] = {
+                    "count": sum(healable.values()),
+                    "by_table": healable,
+                }
 
         # 9. Debt-USD coverage collapse — if client_debts has significant
         # row count but zero USD anywhere, the 1C report probably lost its
@@ -275,6 +302,11 @@ def format_audit_message(findings: dict) -> str | None:
 
     for key, label in issue_labels.items():
         if key in findings:
+            # Healable orphans surface auto-heal status so the cron's report
+            # distinguishes "we just fixed N rows" from "alert: N rows need
+            # investigation" (the on-demand /consistencycheck path).
+            if key == "healable_orphans" and findings[key].get("auto_healed"):
+                label = label + " — auto-healed ✓"
             item = findings[key]
             n = item.get("count", 0)
             lines.append(f"<b>{label}:</b> {n}")
