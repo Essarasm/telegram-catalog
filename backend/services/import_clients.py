@@ -23,6 +23,57 @@ def normalize_phone(raw: str) -> str:
     return digits
 
 
+def _resolve_cid_1c_tiebreaker(conn, existing_id: int, new_cid_1c: str):
+    """Activity-aware tiebreaker for client_id_1c overwrites.
+
+    When a client_id_1c update would change an existing allowed_clients row,
+    check `real_orders` for last-180-day activity under each name. Prefer
+    whichever has activity. If both have activity, keep the more recent and
+    flag `needs_review` so an operator can adjudicate.
+
+    Used by both the bot path (apply_clients_upload) and the CSV CLI
+    (import_clients) so a stale shorthand in clients_data.csv can't blindly
+    overwrite a canonical name that's actively in use by 1C imports.
+
+    Returns: (resolved_cid_1c, flag_needs_review)
+    """
+    existing_cid_row = conn.execute(
+        "SELECT client_id_1c FROM allowed_clients WHERE id = ?",
+        (existing_id,),
+    ).fetchone()
+    prev_cid = (existing_cid_row[0] if existing_cid_row else None) or ""
+
+    if not prev_cid or prev_cid == new_cid_1c:
+        return new_cid_1c, False
+
+    try:
+        prev_recent = conn.execute(
+            "SELECT MAX(doc_date) FROM real_orders "
+            "WHERE client_name_1c = ? "
+            "AND doc_date >= date('now','-180 days')",
+            (prev_cid,),
+        ).fetchone()[0]
+        new_recent = conn.execute(
+            "SELECT MAX(doc_date) FROM real_orders "
+            "WHERE client_name_1c = ? "
+            "AND doc_date >= date('now','-180 days')",
+            (new_cid_1c,),
+        ).fetchone()[0]
+        if prev_recent and new_recent:
+            # Both have activity within 180d — flag ambiguity, keep more recent.
+            if prev_recent >= new_recent:
+                return prev_cid, True
+            return new_cid_1c, True
+        elif prev_recent and not new_recent:
+            # Existing wins — has activity, incoming doesn't.
+            return prev_cid, False
+        # else: no prev activity → new overwrites normally
+    except Exception:
+        pass  # activity check is best-effort
+
+    return new_cid_1c, False
+
+
 def import_clients():
     if not os.path.exists(CLIENTS_FILE):
         print("[import_clients] No clients_data.csv found, skipping.")
@@ -65,6 +116,7 @@ def import_clients():
                 # Update existing record with new data (preserving non-empty fields)
                 updates = []
                 params = []
+                flag_needs_review = False
                 if name:
                     updates.append("name = ?")
                     params.append(name)
@@ -75,11 +127,20 @@ def import_clients():
                     updates.append("source_sheet = ?")
                     params.append(source)
                 if client_id_1c:
+                    # Activity-aware tiebreaker — prevents stale CSV shorthand
+                    # (e.g. "Хушвахт ТИТОВА") from overwriting canonical 1C
+                    # names ("Бахтиер /Хушвахт ТИТОВА/") that the bot path
+                    # already restored. Same logic as apply_clients_upload.
+                    client_id_1c, flag_needs_review = _resolve_cid_1c_tiebreaker(
+                        conn, existing[0], client_id_1c
+                    )
                     updates.append("client_id_1c = ?")
                     params.append(client_id_1c)
                 if company_name:
                     updates.append("company_name = ?")
                     params.append(company_name)
+                if flag_needs_review:
+                    updates.append("needs_review = 1")
                 if updates:
                     params.append(existing[0])
                     conn.execute(
@@ -339,41 +400,12 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
             if source:
                 updates.append("source_sheet = ?"); params.append(source)
             if cid_1c:
-                # 1C ambiguity tiebreaker: if an existing name already has
-                # recent activity (real_orders / payments in last 180d) and
-                # the incoming Контрагент name differs, don't silently
-                # overwrite — flag needs_review so an operator can pick.
-                existing_cid = conn.execute(
-                    "SELECT client_id_1c FROM allowed_clients WHERE id = ?",
-                    (existing[0],),
-                ).fetchone()
-                prev_cid = (existing_cid[0] if existing_cid else None) or ""
-                if prev_cid and prev_cid != cid_1c:
-                    try:
-                        prev_recent = conn.execute(
-                            "SELECT MAX(doc_date) FROM real_orders "
-                            "WHERE client_name_1c = ? "
-                            "AND doc_date >= date('now','-180 days')",
-                            (prev_cid,),
-                        ).fetchone()[0]
-                        new_recent = conn.execute(
-                            "SELECT MAX(doc_date) FROM real_orders "
-                            "WHERE client_name_1c = ? "
-                            "AND doc_date >= date('now','-180 days')",
-                            (cid_1c,),
-                        ).fetchone()[0]
-                        # Rule: prefer the name with the more recent activity.
-                        # If both have activity within 180d, flag ambiguity.
-                        if prev_recent and new_recent:
-                            flag_needs_review = True
-                            # Keep whichever is more recent (string ISO date)
-                            if prev_recent >= new_recent:
-                                cid_1c = prev_cid  # revert to existing
-                        elif prev_recent and not new_recent:
-                            cid_1c = prev_cid  # existing wins on activity
-                        # else: no prev activity — the new cid_1c overwrites normally
-                    except Exception:
-                        pass  # activity check is best-effort
+                # Activity-aware tiebreaker (shared with CSV CLI path).
+                cid_1c, tb_flag = _resolve_cid_1c_tiebreaker(
+                    conn, existing[0], cid_1c
+                )
+                if tb_flag:
+                    flag_needs_review = True
                 updates.append("client_id_1c = ?"); params.append(cid_1c)
             if company:
                 updates.append("company_name = ?"); params.append(company)
