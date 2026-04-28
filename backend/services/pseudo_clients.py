@@ -44,6 +44,15 @@ SYSTEM_NON_CLIENT_NAMES = [
     "Организации (переч.)",
     "СТРОЙКА",
     "В О З В Р А Т ПОСТАВЩИКУ",
+    # Below: one-off non-clients confirmed in finances_client_merge_map.md
+    # (validated personally with Ulugbek, 2026-04-22 loyalty rebuild work).
+    # Promoting from memory-only knowledge to code-enforced exclusion so
+    # is_pseudo_client() and client_identity.is_excluded() agree.
+    "ПАРВИЗ SILKCOAT ФИРМЕННЫЙ МАГАЗИН",  # closed client
+    "ЖАМШЕД УРГУТ",                         # single $600 receipt, no pattern
+    "ДИЛДОРА МАХМУДОВА СУПЕР",              # 4 duplicate receipts 2025-01-04
+    "САМАВТО",                              # vendor/internal, not customer
+    "1",                                    # single-char data-entry error
 ]
 
 _NORMALIZED = frozenset(_normalize(s) for s in SYSTEM_NON_CLIENT_NAMES)
