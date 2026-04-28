@@ -37,6 +37,7 @@ from typing import Dict, List, Optional, Tuple
 
 from backend.database import get_db
 from backend.services import client_identity
+from backend.services.pseudo_clients import is_pseudo_client
 
 logger = logging.getLogger(__name__)
 
@@ -876,39 +877,12 @@ def _py_normalize_client_name(name: Optional[str]) -> str:
     return s
 
 
-# 1C placeholder / aggregate docs that should NOT be treated as real clients.
-# These are booked on non-client buckets (cash registers, generic category
-# holders, legal-entity aggregate) or are adjustment markers. Names are stored
-# py-normalized so `_is_system_non_client` can do a single set lookup.
-#
-# The first two are 1C correction/adjustment markers. The middle block
-# (added 2026-04-07 after user confirmed) are walk-in cash/aggregate
-# buckets — together they were 77% of the post-relink unmatched residue
-# on the Q1 2026 dataset. "В О З В Р А Т ПОСТАВЩИКУ" was added 2026-04-07
-# after the full 2025 historical ingest — it is the 1C return-to-supplier
-# doc marker (letter-spaced in the export, analogous to ИСПРАВЛЕНИЕ) and
-# appeared in 10 of 12 months of 2025 unmatched residue.
-SYSTEM_NON_CLIENT_NAMES = frozenset(
-    _py_normalize_client_name(s) for s in [
-        "ИСПРАВЛЕНИЕ",
-        "ИСПРАВЛЕНИЕ СКЛАД 2",
-        "Наличка №1",
-        "Наличка №2",
-        "Наличка №3",
-        "Наличка СКЛАД",
-        "Наличка - Магазин",
-        "Организации (переч.)",
-        "СТРОЙКА",
-        "В О З В Р А Т ПОСТАВЩИКУ",
-    ]
-)
-
-
-def _is_system_non_client(name: Optional[str]) -> bool:
-    """True if the name is a known 1C correction/adjustment marker, not a real client."""
-    if not name:
-        return False
-    return _py_normalize_client_name(name) in SYSTEM_NON_CLIENT_NAMES
+# Structural-exclusion classification is centralized in
+# `backend.services.pseudo_clients.is_pseudo_client` (imported above).
+# The previous local SYSTEM_NON_CLIENT_NAMES + _is_system_non_client copy
+# was removed in Session F refactor phase 7 (2026-04-28) to eliminate
+# drift. To add new structural placeholders, edit
+# `pseudo_clients.SYSTEM_NON_CLIENT_NAMES` only.
 
 
 def list_unmatched_real_clients(limit: int = 200) -> dict:
@@ -939,7 +913,7 @@ def list_unmatched_real_clients(limit: int = 200) -> dict:
 
     for r in rows:
         name = r["client_name_1c"] or ""
-        if _is_system_non_client(name):
+        if is_pseudo_client(name):
             skipped_system += int(r["doc_count"] or 0)
             continue
         doc_count = int(r["doc_count"] or 0)
@@ -1103,7 +1077,7 @@ def relink_real_orders() -> dict:
 
     for row in unmatched_rows:
         raw_name = row["client_name_1c"] or ""
-        if _is_system_non_client(raw_name):
+        if is_pseudo_client(raw_name):
             skipped_system += 1
             continue
 
@@ -1153,7 +1127,7 @@ def relink_real_orders() -> dict:
     all_rows = conn.execute(
         "SELECT client_id, client_name_1c FROM real_orders"
     ).fetchall()
-    db_system_docs = sum(1 for r in all_rows if _is_system_non_client(r["client_name_1c"]))
+    db_system_docs = sum(1 for r in all_rows if is_pseudo_client(r["client_name_1c"]))
     conn.close()
 
     db_real_client_docs = db_total_docs - db_system_docs
@@ -1161,7 +1135,7 @@ def relink_real_orders() -> dict:
     # weird but not impossible if someone aliased it in allowed_clients).
     db_real_client_matched = sum(
         1 for r in all_rows
-        if r["client_id"] is not None and not _is_system_non_client(r["client_name_1c"])
+        if r["client_id"] is not None and not is_pseudo_client(r["client_name_1c"])
     )
     real_match_pct = (
         (db_real_client_matched / db_real_client_docs * 100.0)
