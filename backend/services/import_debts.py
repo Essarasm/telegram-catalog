@@ -16,6 +16,7 @@ import logging
 from typing import Optional
 
 from backend.database import get_db
+from backend.services import client_identity
 
 logger = logging.getLogger(__name__)
 
@@ -72,30 +73,6 @@ def _parse_number(val) -> float:
         return float(s)
     except (ValueError, TypeError):
         return 0.0
-
-
-def _try_match_client(client_name_1c: str, conn) -> Optional[int]:
-    """Match 1C client name to allowed_clients.id.
-
-    Always returns the lowest ID (deterministic) and skips merged records.
-    Same logic as import_balances._try_match_client.
-    """
-    row = conn.execute(
-        "SELECT id FROM allowed_clients WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged' ORDER BY id LIMIT 1",
-        (client_name_1c,),
-    ).fetchone()
-    if row:
-        return row[0]
-
-    normalized = client_name_1c.strip().lower()
-    row = conn.execute(
-        "SELECT id FROM allowed_clients WHERE LOWER(TRIM(name)) = ? AND COALESCE(status, 'active') != 'merged' ORDER BY id LIMIT 1",
-        (normalized,),
-    ).fetchone()
-    if row:
-        return row[0]
-
-    return None
 
 
 def parse_debtors_xls(file_bytes: bytes) -> dict:
@@ -253,7 +230,8 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
     total_usd = 0.0
 
     for c in clients:
-        client_id = _try_match_client(c["client_name_1c"], conn)
+        match = client_identity.resolve_client_id(c["client_name_1c"], conn)
+        client_id = match.client_id
         if client_id:
             matched += 1
         else:
@@ -279,9 +257,9 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
             ),
         )
 
-    # Post-import orphan heal — see import_balances.py for rationale.
-    from backend.services.client_search import heal_finance_orphans_by_1c_name
-    orphans_healed = heal_finance_orphans_by_1c_name(conn, "client_debts")
+    # Post-import orphan heal — re-homed to client_identity.py (Session F
+    # refactor phase 4). Idempotent; only touches client_id IS NULL rows.
+    orphans_healed = client_identity.heal_finance_orphans(conn, "client_debts")
 
     conn.commit()
     conn.close()
