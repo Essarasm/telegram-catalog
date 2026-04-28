@@ -332,6 +332,12 @@ def apply_client_master_v2(
         (totals["rows_seen"], totals["new_rows"], totals["updated"],
          totals["conflicts"], upload_log_id),
     )
+
+    # Step 8 — mutator chokepoint. Heal any orphan finance rows that the
+    # master import unblocked. Idempotent; safe in same transaction.
+    from backend.services import client_identity
+    orphans_healed = client_identity.heal_all_finance_tables(conn)
+
     conn.commit()
     conn.close()
 
@@ -340,4 +346,5 @@ def apply_client_master_v2(
         "archive_path": archive_path,
         "upload_log_id": upload_log_id,
         "totals": totals,
+        "orphans_healed": orphans_healed,
     }

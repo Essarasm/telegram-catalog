@@ -119,12 +119,21 @@ def import_clients():
 
     # Set is_approved to 0 for any NULL values (from migration)
     conn.execute("UPDATE users SET is_approved = 0 WHERE is_approved IS NULL")
+
+    # Step 8 — mutator chokepoint (same rationale as apply_clients_upload).
+    # Heal any orphan finance rows that the new/updated allowed_clients rows
+    # now resolve. Idempotent; safe on every CLI run.
+    from backend.services import client_identity
+    orphans_healed = client_identity.heal_all_finance_tables(conn)
+
     conn.commit()
     conn.close()
 
     print(f"[import_clients] Inserted {rows_inserted}, updated {rows_updated}. Total: {total}")
     if approved_count:
         print(f"[import_clients] Retroactively approved {approved_count} existing users.")
+    if any(orphans_healed.values()):
+        print(f"[import_clients] Orphan finance rows healed: {orphans_healed}")
 
 
 _HEADER_ALIAS = {
@@ -388,6 +397,13 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
             )
             inserted += 1
 
+    # Step 8 — mutator chokepoint. /clients runs after /debtors and /cash in the
+    # daily upload order, so any allowed_clients row added/updated above may
+    # unblock orphan finance rows that the per-row resolve couldn't link at
+    # /debtors- or /cash-import time. Heal in same transaction → atomic at commit.
+    from backend.services import client_identity
+    orphans_healed = client_identity.heal_all_finance_tables(conn)
+
     conn.commit()
     total = conn.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0]
     conn.close()
@@ -398,6 +414,7 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
         "updated": updated,
         "skipped": skipped,
         "total_clients": total,
+        "orphans_healed": orphans_healed,
         "headers_seen": header_raw,
         "phone_column_detected": any_phone,
     }

@@ -367,6 +367,12 @@ def apply_client_master_import(file_bytes: bytes, filename_hint: str = "") -> Di
                 (match[0], tg_id),
             )
             approved += 1
+
+    # Step 8 — mutator chokepoint. Master imports add/update allowed_clients
+    # rows that may unblock orphan finance rows. Heal in same transaction.
+    from backend.services import client_identity
+    orphans_healed = client_identity.heal_all_finance_tables(conn)
+
     conn.commit()
 
     total_allowed = conn.execute(
@@ -387,4 +393,5 @@ def apply_client_master_import(file_bytes: bytes, filename_hint: str = "") -> Di
         "users_retroactively_approved": approved,
         "db_total_allowed_clients": total_allowed,
         "db_distinct_client_names": total_with_1c_name,
+        "orphans_healed": orphans_healed,
     }

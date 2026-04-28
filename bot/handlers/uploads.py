@@ -881,6 +881,12 @@ async def cmd_clients(message: types.Message):
         lines.append(f"⏭ O'tkazib yuborildi: {skipped}")
         lines.append(f"📊 Jami ro'yxatda: {result.get('total_clients', 0)}")
 
+        healed = result.get("orphans_healed") or {}
+        healed_total = sum(int(v or 0) for v in healed.values())
+        if healed_total:
+            parts = [f"{t.split('_')[-1]}={n}" for t, n in healed.items() if n]
+            lines.append(f"🔗 Orfan qatorlar bog'landi: {healed_total} ({', '.join(parts)})")
+
         # If zero rows matched a phone column, surface the headers so we
         # can tell which column names your Excel actually uses.
         if not result.get("phone_column_detected") and not (inserted or updated):
