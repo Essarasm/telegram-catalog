@@ -36,7 +36,7 @@ from datetime import datetime, time
 from typing import Dict, List, Optional, Tuple
 
 from backend.database import get_db
-from backend.services.import_balances import _try_match_client
+from backend.services import client_identity
 
 logger = logging.getLogger(__name__)
 
@@ -585,7 +585,7 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
 
         client_name = d["client_name_1c"]
         if client_name not in client_cache:
-            client_cache[client_name] = _try_match_client(client_name, conn)
+            client_cache[client_name] = client_identity.resolve_client_id(client_name, conn).client_id
         client_id = client_cache[client_name]
 
         if client_id is not None:
@@ -673,9 +673,8 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
             )
             inserted_items += 1
 
-    # Post-import orphan heal — see import_balances.py for rationale.
-    from backend.services.client_search import heal_finance_orphans_by_1c_name
-    orphans_healed = heal_finance_orphans_by_1c_name(conn, "real_orders")
+    # Post-import orphan heal — re-homed to client_identity (refactor phase 5a).
+    orphans_healed = client_identity.heal_finance_orphans(conn, "real_orders")
 
     conn.commit()
 

@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from backend.database import get_db
+from backend.services import client_identity
 
 logger = logging.getLogger(__name__)
 
@@ -295,35 +296,6 @@ def parse_balance_xls(file_bytes: bytes) -> dict:
     }
 
 
-def _try_match_client(client_name_1c: str, conn) -> Optional[int]:
-    """Try to match a 1C client name to an allowed_clients record.
-
-    Always returns the lowest ID (deterministic) and skips merged records.
-    Matching strategy:
-    1. Exact match on client_id_1c (if populated)
-    2. Normalized name match on allowed_clients.name
-    Returns allowed_clients.id or None.
-    """
-    # 1. Check if any allowed_client has this as their client_id_1c
-    row = conn.execute(
-        "SELECT id FROM allowed_clients WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged' ORDER BY id LIMIT 1",
-        (client_name_1c,),
-    ).fetchone()
-    if row:
-        return row[0]
-
-    # 2. Normalized name matching (lowercase, stripped)
-    normalized = client_name_1c.strip().lower()
-    row = conn.execute(
-        "SELECT id FROM allowed_clients WHERE LOWER(TRIM(name)) = ? AND COALESCE(status, 'active') != 'merged' ORDER BY id LIMIT 1",
-        (normalized,),
-    ).fetchone()
-    if row:
-        return row[0]
-
-    return None
-
-
 def apply_balance_import(file_bytes: bytes) -> dict:
     """Parse balance XLS and upsert into client_balances table.
 
@@ -379,7 +351,8 @@ def apply_balance_import(file_bytes: bytes) -> dict:
                 continue
 
             # Try to match client to allowed_clients
-            client_id = _try_match_client(c["client_name_1c"], conn)
+            match = client_identity.resolve_client_id(c["client_name_1c"], conn)
+            client_id = match.client_id
             if client_id:
                 matched += 1
                 sec_matched += 1
@@ -437,11 +410,10 @@ def apply_balance_import(file_bytes: bytes) -> dict:
             "matched": sec_matched,
         })
 
-    # Post-import orphan heal — catches rows the per-row _try_match_client
-    # missed (late-added allowed_clients entries, stale caches, Cyrillic
-    # LOWER mismatches). Safe: only touches client_id IS NULL.
-    from backend.services.client_search import heal_finance_orphans_by_1c_name
-    orphans_healed = heal_finance_orphans_by_1c_name(conn, "client_balances")
+    # Post-import orphan heal — catches rows the per-row resolve missed
+    # (late-added allowed_clients entries, stale caches, Cyrillic LOWER
+    # mismatches). Safe: only touches client_id IS NULL.
+    orphans_healed = client_identity.heal_finance_orphans(conn, "client_balances")
 
     conn.commit()
 

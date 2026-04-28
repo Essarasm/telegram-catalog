@@ -44,7 +44,7 @@ from backend.services.import_real_orders import (
     _build_column_map,
     _Sheet,
 )
-from backend.services.import_balances import _try_match_client
+from backend.services import client_identity
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +256,7 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
             client_id = None
             if client_name:
                 if client_name not in client_cache:
-                    client_cache[client_name] = _try_match_client(client_name, conn)
+                    client_cache[client_name] = client_identity.resolve_client_id(client_name, conn).client_id
                 client_id = client_cache[client_name]
                 if client_id is not None:
                     matched_clients += 1
@@ -310,9 +310,8 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
                 )
                 inserted += 1
 
-        # Post-import orphan heal — see import_balances.py for rationale.
-        from backend.services.client_search import heal_finance_orphans_by_1c_name
-        orphans_healed = heal_finance_orphans_by_1c_name(conn, "client_payments")
+        # Post-import orphan heal — re-homed to client_identity (refactor phase 5a).
+        orphans_healed = client_identity.heal_finance_orphans(conn, "client_payments")
 
         # Queue "payment received" notifications (Session N). Must run after
         # orphan-heal so late-matched rows can resolve their client_id.
