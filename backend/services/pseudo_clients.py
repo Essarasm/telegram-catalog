@@ -53,6 +53,75 @@ SYSTEM_NON_CLIENT_NAMES = [
     "ДИЛДОРА МАХМУДОВА СУПЕР",              # 4 duplicate receipts 2025-01-04
     "САМАВТО",                              # vendor/internal, not customer
     "1",                                    # single-char data-entry error
+
+    # 2026-04-30 Group 2 review — uncle classified 51 names as non-clients
+    # across four sub-patterns documented in memory:
+    #   finances_1c_return_markers.md
+    #   finances_1c_supplier_bonus_pattern.md
+    #   finances_1c_card_rename_pattern.md (KRIPTEKS aliases)
+    # Source doc: Uncle/Группа2_проверка_RU.docx (also EN + UZ).
+
+    # Structural — retail-customer returns. Pairs with В О З В Р А Т ПОСТАВЩИКУ
+    # above, which covers the supplier-side direction.
+    "В О З В Р А Т",
+
+    # 1C placeholders / defunct cards — uncle marked "null it":
+    "<...>",                                # literal placeholder garbage
+    "DEKS",                                 # defunct; the real account is "DEKS - БОНУС"
+
+    # Supplier-bonus accumulator accounts (booked when suppliers grant
+    # rebates per purchase; identified by "БОНУС" / "BONUS" in the name):
+    "DEKS - БОНУС",
+    "СОМОФИКС БОНУС",
+
+    # Products / brands / materials / suppliers — 1C ledger accounts that
+    # appear as `client_name_1c` in oborotnaya but are not actual customers:
+    "DELUX Самандар ака",
+    "EAST COLOR /BUILD TECHNO TRADE/",
+    "GAMMA COLOR SERVICE",
+    "GOOGLE",
+    "LAMA STANDART",
+    "PAINTERA",
+    "R O Y A L",
+    "SILKCOAT PAINT",
+    "SIMPLEX BIZNES",
+    "ZIP КОЛЛЕР",
+    "АКФИКС",
+    "ДЕКОАРТ",
+    "КАРБИД",
+    "ЛИНОЛЕУМ САНФА",
+    "ЛОПАТКИ /РАЗНЫЕ/",
+    "ПРОЧИЕ",
+    "Растворитель",
+    "СЕНТИФОН",
+    "СОУДАЛ /ПОЛИСАН/",
+    "УЗКАБЕЛЬ",
+    "ШЛИФ ШКУРКА",
+    "ЭЛЕКТРОД",
+    "ЭМАЛЬ НЦ-132П",
+    "Ташкент Трубный з-д",                  # supplier (pipe factory)
+    "САМОРЕЗ  OFM",
+    "ШЛАНГ ПОЛИВНОЙ",
+    "KRIPTEKS - METAL",                     # same 1C card as ГВОЗДИ /KRIPTEKS-METAL/ — Alisher renamed
+    "ЭКОС /КораСарой/",
+    "MASHXAD",
+    "PUFA MIX",
+    "WEBER",
+    "ДЕКОПЛАСТ",
+    "НАЦИОНАЛ КЕРАМИК",
+    "НОРА ойти",
+    "НЮМИКС",
+    "ПалИЖ КОЛЛЕР",
+    "СОБСАН",
+    "СОМО FIX",
+    "ЦЕМЕНТ",
+    "ЭЛЕРОН ЭЛИТ СЕРВИС",
+    "FUBER",
+    "ГВОЗДИ /KRIPTEKS-METAL/",              # alias of KRIPTEKS - METAL above
+    "КораСарой/ЭКОС/",
+    "Саморез TAGERT",
+    "СП ООО \"RANGLI B O' Y O Q\"",
+    "RANGLI BO'YOQ",
 ]
 
 _NORMALIZED = frozenset(_normalize(s) for s in SYSTEM_NON_CLIENT_NAMES)
