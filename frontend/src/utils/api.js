@@ -231,3 +231,17 @@ export async function fetchPendingForClient(telegramId, clientId) {
     return { ok: false, items: [] };
   }
 }
+
+export async function cancelIntakePayment({ telegramId, paymentId, reason }) {
+  const res = await fetch(`${API_BASE}/payments/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      telegram_id: telegramId,
+      payment_id: paymentId,
+      reason: reason || '',
+    }),
+  });
+  const data = await res.json();
+  return { status: res.status, ...data };
+}

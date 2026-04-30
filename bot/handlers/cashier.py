@@ -50,8 +50,10 @@ from backend.services.payment_intake import (
     get_payment,
     list_pending_for_cashier,
     resolve_client_telegram_ids,
+    admin_cancel_payment,
 )
 from backend.services.client_search import search_clients
+from bot.shared import is_admin, is_admin_cb
 
 logger = logging.getLogger(__name__)
 router = Router(name="cashier")
@@ -255,6 +257,112 @@ def _render_summary(s: dict) -> str:
         lines.append(f"⏳ Kutilayotgan: <b>{pending} ta</b> agent yuboruvi tasdiq kutmoqda.")
 
     return "\n".join(lines)
+
+
+# ── /cashbook (admin) — list non-rejected intake_payments + cancel ─
+
+def _cashbook_render_rows(rows):
+    """Build the admin cashbook list message + inline keyboard. Each row
+    has a small "✖ Bekor #N" button so admin can soft-cancel."""
+    if not rows:
+        return "🧾 <b>Cashbook — kutilayotgan / tasdiqlangan to'lov yo'q</b>", None
+    lines = [f"🧾 <b>Cashbook — oxirgi {len(rows)} ta yozuv</b>\n"]
+    kb_rows = []
+    for r in rows:
+        cname = (r.get("client_id_1c") or r.get("client_name") or f"ID {r['client_id']}")[:30]
+        amt = _fmt_amount(r["amount"], r["currency"])
+        status_icon = {
+            "pending_handover": "⏳",
+            "pending_review":   "🔍",
+            "confirmed":        "✅",
+        }.get(r["status"], "•")
+        lines.append(
+            f"{status_icon} #{r['id']} — <b>{html_escape(cname)}</b> · {amt} "
+            f"<i>{r['status']}</i>"
+        )
+        kb_rows.append([InlineKeyboardButton(
+            text=f"✖ Bekor #{r['id']} — {amt}",
+            callback_data=f"cashier:admin_cancel_{r['id']}",
+        )])
+    kb_rows.append([InlineKeyboardButton(text="❌ Yopish", callback_data="cashier:admin_close")])
+    return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
+def _cashbook_recent_rows(conn, limit: int = 15):
+    """Recent non-rejected intake_payments (any status), newest first."""
+    rows = conn.execute(
+        """SELECT ip.id, ip.client_id, ip.amount, ip.currency, ip.status,
+                  ip.submitted_at, ac.name AS client_name, ac.client_id_1c
+           FROM intake_payments ip
+           LEFT JOIN allowed_clients ac ON ac.id = ip.client_id
+           WHERE ip.status != 'rejected'
+           ORDER BY ip.submitted_at DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@router.message(Command("cashbook"))
+async def cmd_cashbook(message: Message):
+    """Admin cashbook — recent intake_payments with cancel buttons.
+    Works wherever the user is_admin (admin/daily/inventory groups + DM)."""
+    if not is_admin(message):
+        return
+    conn = get_db()
+    try:
+        rows = _cashbook_recent_rows(conn, limit=15)
+    finally:
+        conn.close()
+    text, kb = _cashbook_render_rows(rows)
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cashier:admin_cancel_"))
+async def cb_admin_cancel(cb: CallbackQuery, bot: Bot):
+    if not is_admin_cb(cb):
+        await cb.answer("Faqat admin", show_alert=True)
+        return
+    try:
+        payment_id = int(cb.data.rsplit("_", 1)[1])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri ID", show_alert=True)
+        return
+    conn = get_db()
+    try:
+        try:
+            row = admin_cancel_payment(conn, payment_id, cb.from_user.id, "admin_cancelled_via_bot")
+        except ValueError as e:
+            conn.rollback()
+            await cb.answer(str(e), show_alert=True)
+            return
+        conn.commit()
+        # Re-render the list with the row removed
+        rows = _cashbook_recent_rows(conn, limit=15)
+    finally:
+        conn.close()
+    text, kb = _cashbook_render_rows(rows)
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        # Edit may fail (e.g., message too old); fall back to a fresh post
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    cname = row.get("client_id_1c") or row.get("client_name") or ""
+    await cb.answer(
+        f"✖ Bekor qilindi: #{row['id']} — {_fmt_amount(row['amount'], row['currency'])} ({cname})"[:200]
+    )
+
+
+@router.callback_query(F.data == "cashier:admin_close")
+async def cb_admin_close(cb: CallbackQuery):
+    if not is_admin_cb(cb):
+        await cb.answer()
+        return
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await cb.answer()
 
 
 @router.message(Command("bekor"))

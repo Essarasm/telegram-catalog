@@ -224,6 +224,37 @@ def reject_payment(
     return get_payment(conn, payment_id)
 
 
+def admin_cancel_payment(
+    conn,
+    payment_id: int,
+    admin_telegram_id: int,
+    reason: Optional[str] = None,
+) -> dict:
+    """Admin-only soft cancel — flips status to 'rejected' regardless of
+    current state (pending_handover/pending_review/confirmed all OK).
+    No-op if already rejected. Audit row in payment_intake_raw is
+    preserved; the intake_payments row itself is also kept (status flip,
+    not deletion) per the zero-data-loss rule."""
+    row = conn.execute(
+        "SELECT status FROM intake_payments WHERE id = ?", (payment_id,)
+    ).fetchone()
+    if not row:
+        raise ValueError(f"payment {payment_id} not found")
+    if row["status"] == "rejected":
+        return get_payment(conn, payment_id)
+    final_reason = (reason or "").strip() or "admin_cancelled"
+    conn.execute(
+        """UPDATE intake_payments
+           SET status = 'rejected',
+               rejected_at = datetime('now'),
+               confirmed_by_telegram_id = ?,
+               reject_reason = ?
+           WHERE id = ?""",
+        (admin_telegram_id, final_reason, payment_id),
+    )
+    return get_payment(conn, payment_id)
+
+
 def get_payment(conn, payment_id: int) -> dict:
     row = conn.execute(
         """SELECT ip.*, ac.name AS client_name, ac.client_id_1c

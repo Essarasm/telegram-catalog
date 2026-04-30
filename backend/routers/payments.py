@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 
 from backend.database import get_db, get_sibling_client_ids
 from backend.services.payment_intake import (
+    admin_cancel_payment,
     check_recent_duplicate,
     create_intake_payment,
     insert_intake_raw,
@@ -261,3 +262,39 @@ def my_pending(telegram_id: int = Query(...)):
             for p in items
         ],
     }
+
+
+@router.post("/cancel")
+def admin_cancel(payload: dict = Body(...)):
+    """Admin-only soft-cancel of any non-rejected intake_payment row.
+    Flips status → 'rejected' (audit row in payment_intake_raw stays;
+    no actual deletion). Used by the Mini-App admin button + the
+    `/cashbook` bot command.
+
+    Payload: {telegram_id: int, payment_id: int, reason?: str}
+    """
+    try:
+        telegram_id = int(payload.get("telegram_id") or 0)
+        payment_id = int(payload.get("payment_id") or 0)
+        reason = (payload.get("reason") or "").strip() or None
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid payload"}, status_code=400)
+    if not telegram_id or not payment_id:
+        return JSONResponse(
+            {"ok": False, "error": "telegram_id and payment_id required"},
+            status_code=400,
+        )
+    if telegram_id not in _admin_ids():
+        return JSONResponse({"ok": False, "error": "admin only"}, status_code=403)
+
+    conn = get_db()
+    try:
+        try:
+            row = admin_cancel_payment(conn, payment_id, telegram_id, reason)
+        except ValueError as e:
+            conn.rollback()
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "payment": row}

@@ -147,6 +147,19 @@ def is_agent_or_admin_cb(cb) -> bool:
     return False
 
 
+def is_admin_cb(cb) -> bool:
+    """Callback-variant of is_admin — admin user-id whitelist OR admin-
+    type group (admin / daily / inventory). Excludes ORDER_GROUP."""
+    if ADMIN_IDS and cb.from_user and cb.from_user.id in ADMIN_IDS:
+        return True
+    chat_id = cb.message.chat.id if cb.message else None
+    if chat_id == ORDER_GROUP_CHAT_ID:
+        return False
+    if chat_id in (ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID):
+        return True
+    return False
+
+
 def is_cashier(message) -> bool:
     """User is whitelisted as a cashier (CASHIER_IDS) or message comes
     from the dedicated cashier group."""

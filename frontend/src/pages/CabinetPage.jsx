@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { formatCartPrice, fetchPendingForClient } from '../utils/api';
+import { formatCartPrice, fetchPendingForClient, cancelIntakePayment } from '../utils/api';
 import { roleTheme } from '../utils/roleTheme';
 import t from '../i18n/uz.json';
 
@@ -877,6 +877,24 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     } catch { return iso; }
   };
 
+  const refreshPending = () => {
+    fetchPendingForClient(userId, actingAsClient?.id).then((r) => {
+      if (r.ok) setPendingPayments(r.items || []);
+    });
+  };
+
+  const handleAdminCancel = async (paymentId) => {
+    const ok = window.confirm(t.pending_cancel_confirm || 'Bu to\'lovni bekor qilasizmi?');
+    if (!ok) return;
+    const r = await cancelIntakePayment({ telegramId: userId, paymentId, reason: 'admin_cancelled_via_cabinet' });
+    if (r.ok) {
+      setPendingPayments((prev) => prev.filter((p) => p.id !== paymentId));
+      refreshPending();
+    } else {
+      alert(r.error || t.pending_cancel_failed || 'Xatolik');
+    }
+  };
+
   const PendingPaymentRow = ({ p }) => {
     const isCashierWaiting = p.status === 'pending_handover' || p.status === 'pending_review';
     // Stale = confirmed but 1C kassa import hasn't matched it after 48h.
@@ -917,6 +935,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
         ? `${t.pending_role_cashier || 'Kassir'}: ${p.submitter_name}`
         : p.submitter_name;
     const timeSource = isStale ? p.confirmed_at : p.submitted_at;
+    const isAdmin = userRole === 'admin';
     return (
       <div className={`${bgClass} ring-1 ${ringClass} rounded-xl px-4 py-2 min-h-[56px] flex items-center gap-3`}>
         <span className="text-2xl flex-shrink-0">{icon}</span>
@@ -928,6 +947,16 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
           <div className="text-base font-bold text-emerald-600">+{amount}</div>
           <div className="text-[10px] text-tg-hint">{fmtPendingTime(timeSource)}</div>
         </div>
+        {isAdmin && (
+          <button
+            onClick={(e) => { e.stopPropagation(); handleAdminCancel(p.id); }}
+            className="ml-1 text-red-500 text-lg active:opacity-60 px-1"
+            aria-label={t.pending_cancel_aria || 'Bekor qilish'}
+            title={t.pending_cancel_aria || 'Bekor qilish'}
+          >
+            ✖
+          </button>
+        )}
       </div>
     );
   };
