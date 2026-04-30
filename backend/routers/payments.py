@@ -284,11 +284,14 @@ def admin_cancel(payload: dict = Body(...)):
             {"ok": False, "error": "telegram_id and payment_id required"},
             status_code=400,
         )
-    if telegram_id not in _admin_ids():
-        return JSONResponse({"ok": False, "error": "admin only"}, status_code=403)
 
     conn = get_db()
     try:
+        # Admin role lives in users.agent_role now (with env-var fallback).
+        # Env-only check would miss admins promoted through /makeagent.
+        from backend.services.roles import role_in
+        if not role_in(conn, telegram_id, {"admin"}):
+            return JSONResponse({"ok": False, "error": "admin only"}, status_code=403)
         try:
             row = admin_cancel_payment(conn, payment_id, telegram_id, reason)
         except ValueError as e:
