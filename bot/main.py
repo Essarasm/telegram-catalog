@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -29,7 +30,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+# MemoryStorage is the default in aiogram 3, but stating it explicitly so
+# the cashier FSM (bot/handlers/cashier.py — first FSM in this codebase)
+# has a documented home for its state. State is lost on restart, which is
+# fine: cashier flows are short and recoverable.
+dp = Dispatcher(storage=MemoryStorage())
 
 
 # ───────────────────────────────────────────
@@ -498,7 +503,11 @@ async def main():
     from bot.handlers.orders import router as orders_router
     from bot.handlers.registration import router as registration_router
     from bot.handlers.support import router as support_router
+    from bot.handlers.cashier import router as cashier_router
 
+    # cashier_router first — its FSM-state filters short-circuit messages
+    # in the cashier group before any catch-all router can swallow them.
+    dp.include_router(cashier_router)
     dp.include_router(testclient_router)
     dp.include_router(admin_router)
     dp.include_router(uploads_router)
@@ -507,7 +516,7 @@ async def main():
     dp.include_router(location_router)
     dp.include_router(registration_router)
     dp.include_router(support_router)
-    logger.info("Loaded handler modules: testclient, admin, uploads, score, orders, location, registration, support")
+    logger.info("Loaded handler modules: cashier, testclient, admin, uploads, score, orders, location, registration, support")
 
     # Error alerter: any uncaught exception inside a bot handler now posts
     # to Admin group with full traceback (same infrastructure as the

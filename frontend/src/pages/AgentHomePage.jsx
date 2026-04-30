@@ -6,6 +6,7 @@ import {
   searchAgentClients,
   switchAgentClient,
 } from '../utils/api';
+import { roleTheme } from '../utils/roleTheme';
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -120,8 +121,14 @@ function ClientRow({ label, sub, onClick, isNew }) {
   );
 }
 
-export default function AgentHomePage({ onClientSwitched, previousClient, onResumePrevious }) {
+export default function AgentHomePage({ onClientSwitched, previousClient, onResumePrevious, userRole }) {
   const uid = getTelegramUserId();
+  const theme = roleTheme(userRole);
+  const roleTitle =
+    userRole === 'admin' ? t.admin_panel_home_title :
+    userRole === 'cashier' ? t.cashier_panel_home_title :
+    userRole === 'worker' ? t.worker_panel_home_title :
+    t.agent_panel_home_title;
   const [fx, setFx] = useState(null);
   const [recent, setRecent] = useState([]);
   const [query, setQuery] = useState('');
@@ -182,6 +189,15 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
 
   return (
     <div className="space-y-4">
+      {/* Role banner — color tells the user at a glance which panel they're in */}
+      <div
+        className={`rounded-xl px-3 py-2 ${theme.bgClass}`}
+        style={theme.style}
+      >
+        <div className="text-[11px] uppercase tracking-wider opacity-80">
+          {roleTitle}
+        </div>
+      </div>
       {previousClient && (
         <button
           onClick={onResumePrevious}

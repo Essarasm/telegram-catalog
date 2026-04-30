@@ -193,3 +193,41 @@ export function getImageUrl(product) {
   }
   return null;
 }
+
+// ── Cashbook (Session Z — Phase 1) ──────────────────────────────
+
+export async function submitAgentCashHandover({ telegramId, clientId, uzsAmount, usdAmount, force = false }) {
+  const res = await fetch(`${API_BASE}/payments/agent-cash-handover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      telegram_id: telegramId,
+      client_id: clientId,
+      uzs_amount: uzsAmount || 0,
+      usd_amount: usdAmount || 0,
+      force,
+    }),
+  });
+  const data = await res.json();
+  return { status: res.status, ...data };
+}
+
+export async function fetchMyPendingPayments(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/payments/my-pending?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, items: [] };
+  }
+}
+
+export async function fetchPendingForClient(telegramId, clientId) {
+  try {
+    const params = new URLSearchParams({ telegram_id: telegramId });
+    if (clientId) params.set('client_id', clientId);
+    const res = await fetch(`${API_BASE}/payments/pending-for-client?${params}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, items: [] };
+  }
+}

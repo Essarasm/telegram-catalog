@@ -8,6 +8,8 @@ import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
 import CabinetPage from './pages/CabinetPage';
 import AgentHomePage from './pages/AgentHomePage';
+import WorkerClientView from './pages/WorkerClientView';
+import CashHandoverInline from './pages/CashHandoverInline';
 import t from './i18n/uz.json';
 import { cloudSave, cloudLoad } from './utils/cloudStorage';
 import { fetchCabinetClientInfo, switchAgentClient } from './utils/api';
@@ -47,6 +49,7 @@ export default function App() {
   const [registered, setRegistered] = useState(null);
   const [approved, setApproved] = useState(false);
   const [isAgent, setIsAgent] = useState(false);
+  const [userRole, setUserRole] = useState(null); // 'admin' | 'cashier' | 'agent' | 'worker' | null
   const [actingAsClient, setActingAsClient] = useState(null); // null when unlinked
   const [previousActingAsClient, setPreviousActingAsClient] = useState(null); // last client before entering agent panel
   const [supplementingOrderId, setSupplementingOrderId] = useState(null);
@@ -70,6 +73,7 @@ export default function App() {
         setRegistered(data.registered);
         setApproved(data.approved || false);
         setIsAgent(data.is_agent || false);
+        setUserRole(data.role || null);
         if (data.is_agent) refreshActingAs();
       })
       .catch(() => {});
@@ -100,6 +104,7 @@ export default function App() {
           setRegistered(true);
           setApproved(data.approved || false);
           setIsAgent(data.is_agent || false);
+          setUserRole(data.role || null);
           if (data.is_agent) refreshActingAs();
         } else {
           // Server lost user data — try silent re-registration from cache
@@ -108,6 +113,7 @@ export default function App() {
             setRegistered(true);
             setApproved(result.approved || false);
             setIsAgent(result.is_agent || false);
+            setUserRole(result.role || null);
             if (result.is_agent) refreshActingAs();
           } else {
             // No cache or re-register failed — show RegisterPage
@@ -489,7 +495,12 @@ export default function App() {
             onClientSwitched={onAgentClientPicked}
             previousClient={previousActingAsClient}
             onResumePrevious={resumePreviousClient}
+            userRole={userRole}
           />
+        ) : userRole === 'worker' && actingAsClient ? (
+          // Workers get a stripped-down view: phones + raw debt + send-location.
+          // No catalog, cart, cabinet, cash-handover, stats — none of that applies.
+          <WorkerClientView actingAsClient={actingAsClient} />
         ) : (
         <>
         {page === 'catalog' && (
@@ -524,9 +535,15 @@ export default function App() {
             onOrderPlaced={() => setSupplementingOrderId(null)} />
         )}
         {page === 'cabinet' && (
-          <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')}
-            onSupplementOrder={(orderId) => { setSupplementingOrderId(orderId); navigateTo('catalog'); }}
-            actingAsClient={actingAsClient} />
+          <>
+            {isAgent && actingAsClient && userRole !== 'worker' && (
+              <CashHandoverInline telegramId={getTelegramUserId()} client={actingAsClient} />
+            )}
+            <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')}
+              onSupplementOrder={(orderId) => { setSupplementingOrderId(orderId); navigateTo('catalog'); }}
+              actingAsClient={actingAsClient}
+              userRole={userRole} />
+          </>
         )}
         </>
         )}

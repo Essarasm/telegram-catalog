@@ -511,6 +511,39 @@ async def _send_master_sync_nudge(bot, chat_id: int) -> None:
         logger.error(f"Master sync nudge failed: {e}")
 
 
+async def _send_cashbook_summary(bot, chat_id: int) -> None:
+    """18:00 Tashkent — post the day's cashbook intake summary to the
+    cashier group. Quiet on a 0-row + 0-pending day (no chat noise)."""
+    if not chat_id:
+        # Cashier group not configured — feature stays inert by design.
+        return
+    today = datetime.now(TASHKENT)
+    ok, reason = _should_send(today)
+    if not ok:
+        logger.info(f"Cashbook summary skipped: {reason}")
+        return
+    try:
+        from backend.database import get_db
+        from backend.services.payment_intake import summarize_today_intake
+        from bot.handlers.cashier import _render_summary
+        conn = get_db()
+        try:
+            summary = summarize_today_intake(conn)
+        finally:
+            conn.close()
+        if summary["total_count"] == 0 and summary["pending_count"] == 0:
+            logger.info("Cashbook summary: 0 rows + 0 pending — staying quiet")
+            return
+        await bot.send_message(chat_id, _render_summary(summary), parse_mode="HTML")
+        logger.info(
+            f"Cashbook summary sent: count={summary['total_count']} "
+            f"uzs={summary['uzs_total']} usd={summary['usd_total']} "
+            f"pending={summary['pending_count']}"
+        )
+    except Exception as e:
+        logger.error(f"Cashbook summary failed: {e}")
+
+
 async def _run_payment_notif_sweeper(bot, admin_chat_id: int) -> None:
     """Daily 18:00 Tashkent — sweep pending payment notifications that are
     >24h old. Runs after 17:00 EOD uploads check, so any legitimately queued
@@ -668,6 +701,18 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 18, 0, _run_payment_notif_sweeper),
             name="daily-payment-notif-sweeper",
+        ),
+        # Daily 18:00 — Cashbook intake summary into the cashier group.
+        # Mirrors /bugun output (totals, by channel, top clients, pending count).
+        # Quiet on a 0-row day except when there are unactioned pendings.
+        asyncio.create_task(
+            run_daily_reminder(
+                bot,
+                int(os.getenv("CASHIER_GROUP_CHAT_ID", "0")),
+                18, 0,
+                _send_cashbook_summary,
+            ),
+            name="daily-cashbook-summary",
         ),
         # Daily 04:30 — refresh catalog units_score (rolling 30/60d windows).
         asyncio.create_task(

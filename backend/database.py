@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 5  # 2026-04-26: +stockout_at (daily delta for 09:00 inventory alert)
+SCHEMA_VERSION = 6  # 2026-04-29: +intake_payments, payment_intake_raw, dedicated_cards, payment_reconciliation (Cashbook Phase 1)
 
 
 def init_db():
@@ -999,6 +999,67 @@ def init_db():
     user_cols_agent = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "is_agent" not in user_cols_agent:
         conn.execute("ALTER TABLE users ADD COLUMN is_agent INTEGER DEFAULT 0")
+
+    # Role tier (admin / cashier / agent / worker). NULL = no panel access.
+    # is_agent stays writable for backwards compat — we keep it in lockstep
+    # with the role column (any non-null role means panel access).
+    if "agent_role" not in user_cols_agent:
+        conn.execute("ALTER TABLE users ADD COLUMN agent_role TEXT")
+        # Backfill: existing is_agent=1 rows become 'agent'. Specific seed
+        # IDs override (admin = Ulu; the three field workers).
+        conn.execute(
+            "UPDATE users SET agent_role = 'agent' "
+            "WHERE is_agent = 1 AND agent_role IS NULL"
+        )
+        # Hard-coded admin (Ulu). Insert a placeholder row if the user has
+        # never opened the mini-app yet, so /makeagent admin works idempotently.
+        conn.execute(
+            "INSERT OR IGNORE INTO users (telegram_id, is_approved, is_agent, agent_role) "
+            "VALUES (652836922, 1, 1, 'admin')"
+        )
+        conn.execute(
+            "UPDATE users SET is_approved = 1, is_agent = 1, agent_role = 'admin' "
+            "WHERE telegram_id = 652836922"
+        )
+        # Field workers (Ibrohim / Behruz / Murodov). They were is_agent=1
+        # under the legacy single-bit model — demote to 'worker'.
+        for worker_id in (7887515376, 8433825091, 8708128443):
+            conn.execute(
+                "INSERT OR IGNORE INTO users (telegram_id, is_approved, is_agent, agent_role) "
+                "VALUES (?, 1, 1, 'worker')",
+                (worker_id,),
+            )
+            conn.execute(
+                "UPDATE users SET is_agent = 1, agent_role = 'worker' "
+                "WHERE telegram_id = ?",
+                (worker_id,),
+            )
+    # Sync env-based cashier whitelist into the DB on every startup so the
+    # env list stays an authoritative fallback (matches the Session B 4-layer
+    # auth pattern: DB first, env override second).
+    import os as _os_role
+    _cashier_env = _os_role.getenv("CASHIER_IDS", "")
+    if _cashier_env:
+        for _raw in _cashier_env.split(","):
+            _raw = _raw.strip()
+            if not _raw.isdigit():
+                continue
+            _cid = int(_raw)
+            conn.execute(
+                "INSERT OR IGNORE INTO users (telegram_id, is_approved, is_agent, agent_role) "
+                "VALUES (?, 1, 1, 'cashier')",
+                (_cid,),
+            )
+            # Only promote to cashier if currently unset / agent — never
+            # overwrite an explicit admin / worker designation.
+            conn.execute(
+                "UPDATE users SET is_agent = 1, agent_role = 'cashier' "
+                "WHERE telegram_id = ? AND (agent_role IS NULL OR agent_role = 'agent')",
+                (_cid,),
+            )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_users_agent_role ON users(agent_role)"
+    )
     order_cols4 = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
     if "placed_by_telegram_id" not in order_cols4:
         conn.execute("ALTER TABLE orders ADD COLUMN placed_by_telegram_id INTEGER")
@@ -1128,11 +1189,91 @@ def init_db():
         ON unmatched_import_names(name_lower)
     """)
 
+    # Cashbook Phase 1 (2026-04-29): bot/Mini-App payment intake.
+    # intake_payments — confirmed/pending payments captured outside 1C, sits
+    # parallel to client_payments (the 1C kassa import) until reconciliation
+    # is clean for ~2 weeks, then becomes source of truth for collected money.
+    # payment_intake_raw — audit-first row written before any matching, per
+    # the zero-data-loss rule. dedicated_cards seeded for P2P (Phase 2).
+    # payment_reconciliation populated nightly from Phase 3 onward.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dedicated_cards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_number TEXT NOT NULL,
+            holder_first_name TEXT NOT NULL,
+            holder_last_name TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            retired_at TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_dedicated_cards_active ON dedicated_cards(active)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS payment_intake_raw (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            submitter_telegram_id INTEGER NOT NULL,
+            submitter_role TEXT NOT NULL,
+            raw_payload TEXT NOT NULL,
+            processed_payment_id INTEGER,
+            notes TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_intake_raw_submitter ON payment_intake_raw(submitter_telegram_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_intake_raw_submitted ON payment_intake_raw(submitted_at)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS intake_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            amount REAL NOT NULL,
+            currency TEXT NOT NULL CHECK(currency IN ('UZS', 'USD')),
+            channel TEXT NOT NULL CHECK(channel IN ('cash_direct', 'cash_via_agent', 'p2p')),
+            card_id INTEGER,
+            handover_agent_id INTEGER,
+            submitter_telegram_id INTEGER NOT NULL,
+            submitter_role TEXT NOT NULL,
+            confirmed_by_telegram_id INTEGER,
+            submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+            confirmed_at TEXT,
+            rejected_at TEXT,
+            reject_reason TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending_handover', 'pending_review', 'confirmed', 'rejected')),
+            screenshot_file_id TEXT,
+            notes TEXT,
+            source_intake_raw_id INTEGER NOT NULL,
+            FOREIGN KEY (client_id) REFERENCES allowed_clients(id),
+            FOREIGN KEY (card_id) REFERENCES dedicated_cards(id),
+            FOREIGN KEY (source_intake_raw_id) REFERENCES payment_intake_raw(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_status ON intake_payments(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_client ON intake_payments(client_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_submitter ON intake_payments(submitter_telegram_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_submitted ON intake_payments(submitted_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_confirmed ON intake_payments(confirmed_at)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS payment_reconciliation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reconcile_date TEXT NOT NULL,
+            bot_payment_id INTEGER,
+            kassa_doc_no TEXT,
+            match_status TEXT NOT NULL CHECK(match_status IN ('matched', 'bot_only', 'kassa_only')),
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (bot_payment_id) REFERENCES intake_payments(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_reconciliation_date ON payment_reconciliation(reconcile_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_reconciliation_status ON payment_reconciliation(match_status)")
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "stockout_at — daily delta for 09:00 inventory alert"),
+            (SCHEMA_VERSION, "Cashbook Phase 1: intake_payments + payment_intake_raw + dedicated_cards + payment_reconciliation"),
         )
 
     conn.commit()

@@ -229,14 +229,31 @@ async def on_unlinked_callback(cb: types.CallbackQuery):
 
 
 
+_ROLE_LABEL = {
+    "admin": "🛡 Admin",
+    "cashier": "💰 Kassir",
+    "agent": "👔 Agent",
+    "worker": "🚚 Ishchi",
+}
+_ROLE_ORDER = ("admin", "cashier", "agent", "worker")
+_VALID_ROLES = set(_ROLE_ORDER)
+
+
 @router.message(Command("makeagent"))
 async def cmd_makeagent(message: types.Message):
-    """Toggle users.is_agent for a given Telegram ID.
+    """Set the agent-panel role for a given Telegram ID.
+
+    Roles: admin, cashier, agent, worker.
+    is_agent stays in lockstep with role (any role → is_agent=1).
 
     Usage:
-        /makeagent 652836922            — set is_agent=1
-        /makeagent 652836922 off        — set is_agent=0
-        /makeagent list                 — show all current agents
+        /makeagent 652836922 admin       — set role
+        /makeagent 652836922 cashier
+        /makeagent 652836922 agent
+        /makeagent 652836922 worker
+        /makeagent 652836922             — back-compat: defaults to 'agent'
+        /makeagent 652836922 off         — strip role + is_agent
+        /makeagent list                  — grouped by role
     """
     if not is_admin(message):
         return
@@ -245,44 +262,94 @@ async def cmd_makeagent(message: types.Message):
     try:
         if len(parts) == 2 and parts[1].lower() == "list":
             rows = conn.execute(
-                "SELECT telegram_id, first_name, last_name, client_id "
-                "FROM users WHERE is_agent = 1"
+                "SELECT telegram_id, first_name, last_name, agent_role, is_agent "
+                "FROM users WHERE is_agent = 1 OR agent_role IS NOT NULL"
             ).fetchall()
             if not rows:
-                await message.reply("Agentlar ro'yxati bo'sh.")
+                await message.reply("Hech kim ro'yxatda yo'q.")
                 return
-            lines = [f"👔 <b>Agentlar ({len(rows)}):</b>", ""]
+            buckets: dict[str, list] = {r: [] for r in _ROLE_ORDER}
+            legacy: list = []
             for r in rows:
-                name = " ".join(filter(None, [r["first_name"], r["last_name"]])) or "—"
-                lines.append(f"  <code>{r['telegram_id']}</code> — {html_escape(name)}")
+                role = (r["agent_role"] or "").lower()
+                if role in buckets:
+                    buckets[role].append(r)
+                else:
+                    legacy.append(r)
+            lines: list[str] = []
+            total = sum(len(v) for v in buckets.values()) + len(legacy)
+            lines.append(f"👥 <b>Panel foydalanuvchilari ({total}):</b>")
+            for role in _ROLE_ORDER:
+                rs = buckets[role]
+                if not rs:
+                    continue
+                lines.append("")
+                lines.append(f"<b>{_ROLE_LABEL[role]} ({len(rs)})</b>")
+                for r in rs:
+                    name = " ".join(filter(None, [r["first_name"], r["last_name"]])) or "—"
+                    lines.append(f"  <code>{r['telegram_id']}</code> — {html_escape(name)}")
+            if legacy:
+                lines.append("")
+                lines.append(f"<b>⚠️ Roli yo'q ({len(legacy)})</b> — eski is_agent=1 yozuvlari")
+                for r in legacy:
+                    name = " ".join(filter(None, [r["first_name"], r["last_name"]])) or "—"
+                    lines.append(f"  <code>{r['telegram_id']}</code> — {html_escape(name)}")
             await message.reply("\n".join(lines), parse_mode="HTML")
             return
 
         if len(parts) < 2 or not parts[1].isdigit():
             await message.reply(
                 "Foydalanish:\n"
-                "<code>/makeagent 652836922</code> — qo'shish\n"
-                "<code>/makeagent 652836922 off</code> — o'chirish\n"
+                "<code>/makeagent 652836922 admin</code>\n"
+                "<code>/makeagent 652836922 cashier</code>\n"
+                "<code>/makeagent 652836922 agent</code>\n"
+                "<code>/makeagent 652836922 worker</code>\n"
+                "<code>/makeagent 652836922 off</code> — olib tashlash\n"
                 "<code>/makeagent list</code> — ro'yxat",
                 parse_mode="HTML",
             )
             return
 
         target_id = int(parts[1])
-        turn_off = len(parts) >= 3 and parts[2].lower() in ("off", "0", "false")
-        new_value = 0 if turn_off else 1
+        flag = parts[2].lower() if len(parts) >= 3 else "agent"
+
+        if flag in ("off", "0", "false", "none"):
+            conn.execute(
+                "INSERT OR IGNORE INTO users (telegram_id, is_approved) VALUES (?, 1)",
+                (target_id,),
+            )
+            conn.execute(
+                "UPDATE users SET is_agent = 0, agent_role = NULL WHERE telegram_id = ?",
+                (target_id,),
+            )
+            conn.commit()
+            await message.reply(
+                f"❌ Roli olib tashlandi: <code>{target_id}</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        if flag not in _VALID_ROLES:
+            await message.reply(
+                f"❓ Noma'lum rol: <code>{html_escape(flag)}</code>\n"
+                "Mavjud: admin · cashier · agent · worker · off",
+                parse_mode="HTML",
+            )
+            return
 
         conn.execute(
             "INSERT OR IGNORE INTO users (telegram_id, is_approved) VALUES (?, 1)",
             (target_id,),
         )
         conn.execute(
-            "UPDATE users SET is_agent = ? WHERE telegram_id = ?",
-            (new_value, target_id),
+            "UPDATE users SET is_agent = 1, agent_role = ? WHERE telegram_id = ?",
+            (flag, target_id),
         )
         conn.commit()
-        label = "✅ Agent qilindi" if new_value else "❌ Agent emas"
-        await message.reply(f"{label}: <code>{target_id}</code>", parse_mode="HTML")
+        await message.reply(
+            f"✅ Rol o'rnatildi: <code>{target_id}</code> → {_ROLE_LABEL[flag]}",
+            parse_mode="HTML",
+        )
     finally:
         conn.close()
 

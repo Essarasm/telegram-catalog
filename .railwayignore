@@ -19,6 +19,9 @@ data/catalog.db
 data/catalog.db-wal
 data/catalog.db-shm
 
+# Local DB snapshots — 163MB, never needed on prod
+data/snapshots/
+
 # Docs & session logs
 obsidian-vault
 

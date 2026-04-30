@@ -240,6 +240,8 @@ app.include_router(feedback.router)
 app.include_router(locations.router)
 from backend.routers import agent
 app.include_router(agent.router)
+from backend.routers import payments
+app.include_router(payments.router)
 app.include_router(locations.client_router)
 
 # Serve admin dashboard (static HTML)

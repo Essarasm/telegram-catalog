@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { formatCartPrice } from '../utils/api';
+import { formatCartPrice, fetchPendingForClient } from '../utils/api';
+import { roleTheme } from '../utils/roleTheme';
 import t from '../i18n/uz.json';
 
 const API = '/api/cabinet';
@@ -269,7 +270,7 @@ function AktSheetItemsLoader({ orderId, onLoaded }) {
   return <div className="text-[11px] text-tg-hint py-1">…</div>;
 }
 
-export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder, actingAsClient }) {
+export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder, actingAsClient, userRole }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
@@ -291,6 +292,10 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
   const [akt, setAkt] = useState(null);
   const [aktSheet, setAktSheet] = useState(null);  // payment or order detail
   const [aktSheetItems, setAktSheetItems] = useState(null);  // order items when sheet is an order
+
+  // Pending intake_payments (cashbook) — shown at top of Hisob-kitob until
+  // both the cashier and the next 1C kassa import have confirmed the row.
+  const [pendingPayments, setPendingPayments] = useState([]);
 
   // Confirmed-vs-wishlist diff sheet
   const [confirmSheet, setConfirmSheet] = useState(null);  // {wishlistOrderId, loading, data}
@@ -364,6 +369,12 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
       .then(data => { if (data?.ok) setAkt(data); })
       .catch(() => {});
 
+    // Pending cashbook payments for THIS client (acting-as for agents,
+    // own client for regular users). Phase 1: shown until 14d old.
+    fetchPendingForClient(userId, actingAsClient?.id).then((r) => {
+      if (r.ok) setPendingPayments(r.items || []);
+    });
+
     // Agent dashboard (403 if not an agent → ignored)
     fetch(`/api/agent/stats?telegram_id=${userId}`)
       .then(r => r.ok ? r.json() : null)
@@ -406,7 +417,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
         if (data.has_gps && data.gps) setUserLocation(data.gps);
       })
       .catch(() => {});
-  }, [userId]);
+  }, [userId, actingAsClient?.id]);
 
   // Toggle expand real order detail
   const toggleExpandReal = async (realId) => {
@@ -741,13 +752,17 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     const today = agentStats.today || {};
     const month = agentStats.month || {};
     const fmtUzsInt = (v) => (v || 0).toLocaleString('ru-RU').replace(/,/g, ' ');
+    const theme = roleTheme(userRole);
     return (
-      <div className="mb-4 rounded-xl p-4 bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-lg">
+      <div
+        className={`mb-4 rounded-xl p-4 shadow-lg ${theme.bgClass}`}
+        style={theme.style}
+      >
         <div className="flex items-center justify-between mb-3">
           <div className="text-[11px] uppercase tracking-wider opacity-90">
-            {t.agent_dashboard_title || 'Agent paneli'}
+            {theme.label}
           </div>
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20">
+          <span className={`text-[10px] px-2 py-0.5 rounded-full ${theme.badgeClass}`}>
             {t.agent_dashboard_beta || 'Beta'}
           </span>
         </div>
@@ -849,10 +864,79 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     );
   };
 
+  const fmtPendingTime = (iso) => {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso.replace(' ', 'T') + 'Z');
+      const mins = Math.max(0, Math.floor((Date.now() - d.getTime()) / 60000));
+      if (mins < 1) return t.pending_time_now || 'hozirgina';
+      if (mins < 60) return `${mins} ${t.pending_time_min || 'daqiqa'}`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs} ${t.pending_time_hr || 'soat'}`;
+      return `${Math.floor(hrs / 24)} ${t.pending_time_day || 'kun'}`;
+    } catch { return iso; }
+  };
+
+  const PendingPaymentRow = ({ p }) => {
+    const isCashierWaiting = p.status === 'pending_handover' || p.status === 'pending_review';
+    // Stale = confirmed but 1C kassa import hasn't matched it after 48h.
+    // Until Phase 3 reconciliation lands, this heuristic keeps mismatches
+    // visible rather than silently hiding them.
+    const STALE_HOURS = 48;
+    const confirmedAtMs = p.confirmed_at
+      ? new Date(p.confirmed_at.replace(' ', 'T') + 'Z').getTime()
+      : null;
+    const isStale = !isCashierWaiting && confirmedAtMs &&
+      (Date.now() - confirmedAtMs) / 3600000 > STALE_HOURS;
+
+    let icon, statusLabel, bgClass, ringClass, labelClass;
+    if (isCashierWaiting) {
+      icon = '⏳';
+      statusLabel = t.pending_status_cashier || "Kassir tasdig'ida";
+      bgClass = 'bg-yellow-500/10';
+      ringClass = 'ring-yellow-500/40';
+      labelClass = 'text-yellow-700';
+    } else if (isStale) {
+      icon = '⚠️';
+      statusLabel = t.pending_status_stale || 'Tekshirish kerak';
+      bgClass = 'bg-red-500/10';
+      ringClass = 'ring-red-500/50';
+      labelClass = 'text-red-700';
+    } else {
+      icon = '🔄';
+      statusLabel = t.pending_status_1c || "1C ga o'tishi kutilmoqda";
+      bgClass = 'bg-amber-500/10';
+      ringClass = 'ring-amber-500/40';
+      labelClass = 'text-amber-700';
+    }
+
+    const amount = p.currency === 'USD' ? fmtUsd(p.amount) : fmtUzs(p.amount);
+    const submitterLine = p.agent_name
+      ? `${t.pending_role_agent || 'Agent'}: ${p.agent_name}`
+      : p.submitter_role === 'cashier'
+        ? `${t.pending_role_cashier || 'Kassir'}: ${p.submitter_name}`
+        : p.submitter_name;
+    const timeSource = isStale ? p.confirmed_at : p.submitted_at;
+    return (
+      <div className={`${bgClass} ring-1 ${ringClass} rounded-xl px-4 py-2 min-h-[56px] flex items-center gap-3`}>
+        <span className="text-2xl flex-shrink-0">{icon}</span>
+        <div className="flex-1 min-w-0">
+          <div className={`text-sm font-semibold ${labelClass}`}>{statusLabel}</div>
+          <div className="text-[11px] text-tg-hint truncate">{submitterLine}</div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <div className="text-base font-bold text-emerald-600">+{amount}</div>
+          <div className="text-[10px] text-tg-hint">{fmtPendingTime(timeSource)}</div>
+        </div>
+      </div>
+    );
+  };
+
   const AktSverkiSection = () => {
     if (!akt || !akt.linked) return null;
     const events = akt.events || [];
-    if (events.length === 0) return null;
+    const hasPending = pendingPayments && pendingPayments.length > 0;
+    if (events.length === 0 && !hasPending) return null;
 
     // newest first, capped at 8 orders + 8 payments, interleaved chronologically
     const reversed = [...events].reverse();
@@ -866,6 +950,12 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
         <div className="text-base font-semibold mb-2">
           📒 {t.akt_title}
         </div>
+
+        {hasPending && (
+          <div className="space-y-2 mb-2">
+            {pendingPayments.map((p) => <PendingPaymentRow key={p.id} p={p} />)}
+          </div>
+        )}
 
         <div className="space-y-2">
           {rows.map((e) => {

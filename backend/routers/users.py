@@ -6,6 +6,7 @@ from typing import Optional
 from backend.database import get_db
 from backend.services.notify_registration import send_registration_notification
 from backend.services.backup_users import save_user_to_backup
+from backend.services.roles import get_role as get_panel_role
 from backend.admin_auth import check_admin_key
 import json
 import os
@@ -134,10 +135,18 @@ def check_user(telegram_id: int = Query(...)):
             pass
 
     is_agent = bool(row["is_agent"]) if row["is_agent"] else False
+    # Resolve full panel role (admin/cashier/agent/worker/None). Frontend
+    # uses this for per-role theming and worker-view gating.
+    conn3 = get_db()
+    try:
+        role = get_panel_role(conn3, telegram_id)
+    finally:
+        conn3.close()
 
     if is_approved:
         return {"registered": True, "approved": True, "phone": row["phone"],
-                "first_name": row["first_name"], "is_agent": is_agent}
+                "first_name": row["first_name"], "is_agent": is_agent,
+                "role": role}
     else:
         return {"registered": True, "approved": False, "phone": row["phone"]}
 

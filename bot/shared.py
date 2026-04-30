@@ -19,7 +19,7 @@ logger = logging.getLogger("bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 _BASE_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.railway.app")
-WEBAPP_URL = f"{_BASE_URL}?v=15"
+WEBAPP_URL = f"{_BASE_URL}?v=16"
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 
 ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
@@ -27,6 +27,9 @@ ADMIN_GROUP_CHAT_ID = int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))
 AGENTS_GROUP_CHAT_ID = int(os.getenv("AGENTS_GROUP_CHAT_ID", "-1003922400481"))
 DAILY_GROUP_CHAT_ID = int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))
 INVENTORY_GROUP_CHAT_ID = int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))
+# Cashier-only group (Aunt + Uncle for now). 0 = unconfigured;
+# the cashier FSM stays inert until this is set in the env.
+CASHIER_GROUP_CHAT_ID = int(os.getenv("CASHIER_GROUP_CHAT_ID", "0"))
 
 
 def chat_context(message) -> str:
@@ -44,6 +47,8 @@ def chat_context(message) -> str:
         return 'inventory'
     if cid == AGENTS_GROUP_CHAT_ID:
         return 'agents'
+    if CASHIER_GROUP_CHAT_ID and cid == CASHIER_GROUP_CHAT_ID:
+        return 'cashier'
     if getattr(message, 'chat', None) and message.chat.type == 'private':
         uid = message.from_user.id if getattr(message, 'from_user', None) else None
         if uid and ADMIN_IDS and uid in ADMIN_IDS:
@@ -55,6 +60,14 @@ ADMIN_IDS: set[int] = set()
 _admin_env = os.getenv("ADMIN_IDS", "")
 if _admin_env:
     ADMIN_IDS = {int(x.strip()) for x in _admin_env.split(",") if x.strip().isdigit()}
+
+# Cashier whitelist — Aunt Muqaddas (275116966) + Uncle (21117506) for the
+# parallel-mode launch. Uncle reverts to bank-transfers-only after cutover;
+# his ID stays here while we test.
+CASHIER_IDS: set[int] = set()
+_cashier_env = os.getenv("CASHIER_IDS", "")
+if _cashier_env:
+    CASHIER_IDS = {int(x.strip()) for x in _cashier_env.split(",") if x.strip().isdigit()}
 
 TESTCLIENT_PROMPT = "🔎 Qidirish uchun mijoz ismini yozing"
 
@@ -132,6 +145,45 @@ def is_agent_or_admin_cb(cb) -> bool:
     if chat_id in (ORDER_GROUP_CHAT_ID, ADMIN_GROUP_CHAT_ID, AGENTS_GROUP_CHAT_ID):
         return True
     return False
+
+
+def is_cashier(message) -> bool:
+    """User is whitelisted as a cashier (CASHIER_IDS) or message comes
+    from the dedicated cashier group."""
+    uid = message.from_user.id if getattr(message, 'from_user', None) else None
+    if CASHIER_IDS and uid and uid in CASHIER_IDS:
+        return True
+    cid = message.chat.id if hasattr(message, 'chat') else None
+    if CASHIER_GROUP_CHAT_ID and cid == CASHIER_GROUP_CHAT_ID:
+        return True
+    return False
+
+
+def is_cashier_or_admin(message) -> bool:
+    return is_admin(message) or is_cashier(message)
+
+
+def is_cashier_or_admin_cb(cb) -> bool:
+    if ADMIN_IDS and cb.from_user and cb.from_user.id in ADMIN_IDS:
+        return True
+    if CASHIER_IDS and cb.from_user and cb.from_user.id in CASHIER_IDS:
+        return True
+    chat_id = cb.message.chat.id if cb.message else None
+    if chat_id in (ADMIN_GROUP_CHAT_ID,) or (CASHIER_GROUP_CHAT_ID and chat_id == CASHIER_GROUP_CHAT_ID):
+        return True
+    return False
+
+
+def get_user_role(message):
+    """Return the most-privileged role that applies. Used for audit and
+    role tagging on intake records. Returns None if no recognized role."""
+    if is_admin(message):
+        return "admin"
+    if is_cashier(message):
+        return "cashier"
+    if is_agent_or_admin(message):
+        return "agent"
+    return None
 
 
 # ── Display helpers ──────────────────────────────────────────────────

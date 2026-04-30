@@ -1,4 +1,9 @@
-"""Agent-only dashboard endpoints (Phase 1: simple stats).
+"""Agent-panel endpoints, role-gated.
+
+Roles: admin / cashier / agent / worker (`users.agent_role`).
+- admin / cashier / agent: full panel access.
+- worker: minimal — fxrate, client search, switch-client, debt readout,
+  location-save. Stats / cash-handover / order timeline are blocked.
 
 The MVP returns today / this-month realization volume for orders the agent
 physically placed (orders.placed_by_telegram_id = agent.telegram_id). No
@@ -15,24 +20,31 @@ from backend.services.client_search import (
     relink_orphan_finance_rows,
     search_clients,
 )
+from backend.services.roles import get_role, role_in
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 
+# Roles that may use the panel at all (any non-worker still has full access).
+_PANEL_ROLES = {"admin", "cashier", "agent", "worker"}
+_NON_WORKER_ROLES = {"admin", "cashier", "agent"}
+
+
 def _is_agent(conn, telegram_id: int) -> bool:
-    row = conn.execute(
-        "SELECT is_agent FROM users WHERE telegram_id = ?", (telegram_id,),
-    ).fetchone()
-    return bool(row and row["is_agent"])
+    """Backwards-compat: any non-null panel role counts as 'agent' for the
+    legacy is_agent gate."""
+    return role_in(conn, telegram_id, _PANEL_ROLES)
 
 
 @router.get("/stats")
 def agent_stats(telegram_id: int = Query(...)):
-    """Return today + this-month order counts and totals placed by this agent."""
+    """Return today + this-month order counts and totals placed by this agent.
+    Workers are excluded — they have no need for placed-order metrics.
+    """
     conn = get_db()
     try:
-        if not _is_agent(conn, telegram_id):
-            return JSONResponse({"ok": False, "error": "not an agent"}, status_code=403)
+        if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
+            return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
 
         today_str = date.today().isoformat()
         month_prefix = today_str[:7]  # 'YYYY-MM'

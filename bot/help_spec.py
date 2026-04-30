@@ -39,6 +39,12 @@ OBJECTIVES = {
         "monitoring qilish. Har kuni 08:00 Toshkent vaqtida "
         "/stockalert avtomatik postlanadi."
     ),
+    'cashier': (
+        "💼 <b>Kassa</b>\n\n"
+        "Maqsad: klientlardan to'lovlarni qabul qilish va agentlardan "
+        "kelayotgan to'lovlarni tasdiqlash. /qabul — yangi sessiya. "
+        "Qog'oz daftar — zaxira nusxa (saqlanadi)."
+    ),
 }
 
 # ── Command lists per chat role ─────────────────────────────────────
@@ -144,6 +150,14 @@ SPECS = {
             Cmd("/cleanupinactive [N] confirm", "Qo'llash — is_active=0 ga o'tkazadi"),
             Cmd("/demand [kunlar]", "Tugagan mahsulotlarga mijoz talabi"),
             Cmd("/stock (reply Excel)", "Qoldiqni yangilash"),
+            Cmd("/chatid", "Chat va user ID"),
+        ]),
+    ],
+    'cashier': [
+        ("💼 Kassa amallari", [
+            Cmd("/qabul", "Yangi to'lov qabul qilish — Klientdan yoki Agentdan"),
+            Cmd("/bugun", "Bugungi qabul qilingan to'lovlar — yig'ma jadval"),
+            Cmd("/bekor", "Joriy sessiyani bekor qilish"),
             Cmd("/chatid", "Chat va user ID"),
         ]),
     ],
