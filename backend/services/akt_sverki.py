@@ -49,13 +49,17 @@ def _fetch_events(conn, client_ids: list[int]) -> list[dict]:
 
     # Payments: sum per (date, client_id) across all касса entries of either
     # currency — one logical "client paid money today" event.
+    # UZS rows live in amount_local; USD rows live in amount_currency.
+    # Don't COALESCE across the two columns — amount_currency=0 is NOT NULL,
+    # so COALESCE(amount_currency, amount_local) silently drops UZS values
+    # (Error Log #23, pattern SQL_COALESCE_OVER_NUMERIC_ZERO).
     pay_rows = conn.execute(
         f"""SELECT doc_date,
                    SUM(CASE WHEN UPPER(COALESCE(currency,'UZS'))='UZS'
-                            THEN COALESCE(amount_currency, amount_local, 0)
+                            THEN amount_local
                             ELSE 0 END) AS uzs_amount,
                    SUM(CASE WHEN UPPER(currency)='USD'
-                            THEN COALESCE(amount_currency, amount_local, 0)
+                            THEN amount_currency
                             ELSE 0 END) AS usd_amount,
                    GROUP_CONCAT(id) AS ids,
                    MAX(doc_number_1c) AS doc_number
