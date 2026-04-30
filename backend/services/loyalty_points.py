@@ -107,19 +107,29 @@ def calculate_monthly_points(month_str=None, conn=None):
                 "debt_ratio": float(s["debt_ratio"] or 0),
             }
 
-        # Check for clean sheet (zero debt at end of month)
+        # Check for clean sheet — both UZS and USD must be ~zero per F's
+        # "never convert UZS↔USD" rule. Source is `client_debts` (latest /debtors
+        # snapshot, F's authoritative current-debt table) — *not* `client_balances`,
+        # which is per-period and has no `balance` column. The prior implementation
+        # queried a non-existent column under `try/except: pass`, which silently
+        # zeroed every client's debt and granted CLEAN_SHEET_BONUS to everyone.
+        # Error Log #25.
         debt_data = {}
         try:
             debts = conn.execute(
-                """SELECT client_id, SUM(COALESCE(balance, 0)) as total_debt
-                   FROM client_balances
-                   WHERE client_id IS NOT NULL
-                   GROUP BY client_id"""
+                """SELECT client_id,
+                          COALESCE(debt_uzs, 0) AS debt_uzs,
+                          COALESCE(debt_usd, 0) AS debt_usd
+                   FROM client_debts
+                   WHERE client_id IS NOT NULL"""
             ).fetchall()
             for d in debts:
-                debt_data[d["client_id"]] = float(d["total_debt"] or 0)
-        except Exception:
-            pass
+                debt_data[d["client_id"]] = (
+                    float(d["debt_uzs"] or 0),
+                    float(d["debt_usd"] or 0),
+                )
+        except Exception as e:
+            logger.warning("loyalty_points: failed to load client_debts for clean-sheet check: %s", e)
 
         scored = 0
         grade_counts = {"A+": 0, "A": 0, "B": 0, "C": 0, "D": 0}
@@ -141,9 +151,9 @@ def calculate_monthly_points(month_str=None, conn=None):
             grade, multiplier = _grade_from_on_time_rate(on_time_rate)
             bucket = sd.get("volume_bucket", "Micro")
 
-            # Clean sheet bonus
-            client_debt = debt_data.get(cid, 0)
-            clean_sheet = CLEAN_SHEET_BONUS if client_debt <= 0.01 else 0
+            # Clean sheet bonus — both currencies must be settled.
+            debt_uzs, debt_usd = debt_data.get(cid, (0.0, 0.0))
+            clean_sheet = CLEAN_SHEET_BONUS if (debt_uzs <= 0.01 and debt_usd <= 0.01) else 0
 
             # Effective points
             effective = int(purchase_points * multiplier) + clean_sheet
