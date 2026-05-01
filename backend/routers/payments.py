@@ -30,6 +30,7 @@ from backend.services.payment_intake import (
     list_dedicated_cards,
     list_my_pending,
     list_pending_for_client,
+    list_pending_legal_transfers_for_client,
     list_suppliers_in_category,
 )
 
@@ -507,6 +508,75 @@ def _can_submit_for_client(conn, telegram_id: int, client_id: int) -> bool:
         (telegram_id, client_id),
     ).fetchone()
     return row is not None
+
+
+@router.get("/pending-legal-transfers")
+def pending_legal_transfers(
+    telegram_id: int = Query(...),
+    client_id: int = Query(None),
+):
+    """Active legal-entity transfer requests for the client's cabinet
+    Hisob-kitob pending tile. Disappears at 'supplier_confirmed' (uncle
+    confirms supplier received money — debt decremented). Read by:
+      - The client themselves (their own client_id)
+      - An agent acting-as the client (agent role + client_id query param)
+      - An admin
+
+    If client_id is omitted, resolves to the user's own linked client.
+    """
+    conn = get_db()
+    try:
+        # Resolve target client_id
+        if not client_id:
+            u = conn.execute(
+                "SELECT client_id FROM users WHERE telegram_id = ?",
+                (telegram_id,),
+            ).fetchone()
+            if not u or not u["client_id"]:
+                return {"ok": True, "items": []}
+            client_id = u["client_id"]
+
+        # Permission: same as can_submit (staff OR linked-to-client)
+        if not _can_submit_for_client(conn, telegram_id, client_id):
+            return JSONResponse(
+                {"ok": False, "error": "not allowed for this client"},
+                status_code=403,
+            )
+
+        items = list_pending_legal_transfers_for_client(conn, client_id, days=14)
+    finally:
+        conn.close()
+
+    def _submitter_name(it):
+        return _format_name(
+            it.get("submitter_first_name"),
+            it.get("submitter_last_name"),
+            it.get("submitter_username"),
+            telegram_id,
+        )
+
+    return {
+        "ok": True,
+        "items": [
+            {
+                "id": it["id"],
+                "amount_uzs": it["amount_uzs"],
+                "status": it["status"],
+                "created_at": it["created_at"],
+                "updated_at": it["updated_at"],
+                "legal_entity_name": it["legal_entity_name"],
+                "legal_entity_inn": it["legal_entity_inn"],
+                "category_label": (
+                    f"Boshqa: {it['category_freetext']}"
+                    if it["category_is_freetext"] and it["category_freetext"]
+                    else it["category_label"]
+                ),
+                "supplier_name": it["supplier_name_1c"],
+                "submitter_name": _submitter_name(it),
+            }
+            for it in items
+        ],
+    }
 
 
 @router.get("/p2p-cards")

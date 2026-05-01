@@ -257,6 +257,17 @@ export async function fetchPaymentCategories(telegramId) {
   }
 }
 
+export async function fetchPendingLegalTransfers(telegramId, clientId) {
+  try {
+    const params = new URLSearchParams({ telegram_id: telegramId });
+    if (clientId) params.set('client_id', clientId);
+    const res = await fetch(`${API_BASE}/payments/pending-legal-transfers?${params}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, items: [] };
+  }
+}
+
 export async function submitLegalTransfer({
   telegramId,
   clientId,

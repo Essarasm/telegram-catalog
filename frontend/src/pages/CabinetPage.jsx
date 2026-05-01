@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { formatCartPrice, fetchPendingForClient, cancelIntakePayment } from '../utils/api';
+import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers } from '../utils/api';
 import { roleTheme } from '../utils/roleTheme';
 import t from '../i18n/uz.json';
 
@@ -297,6 +297,11 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
   // both the cashier and the next 1C kassa import have confirmed the row.
   const [pendingPayments, setPendingPayments] = useState([]);
 
+  // Pending legal-entity bank-transfer requests — shown above intake_payments
+  // pending. Disappears at status='supplier_confirmed' (Stage 5b: uncle
+  // confirms supplier received the wire — debt decremented).
+  const [pendingLegalTx, setPendingLegalTx] = useState([]);
+
   // Confirmed-vs-wishlist diff sheet
   const [confirmSheet, setConfirmSheet] = useState(null);  // {wishlistOrderId, loading, data}
 
@@ -373,6 +378,11 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     // own client for regular users). Phase 1: shown until 14d old.
     fetchPendingForClient(userId, actingAsClient?.id).then((r) => {
       if (r.ok) setPendingPayments(r.items || []);
+    });
+
+    // Pending legal-entity bank transfer requests for the same client.
+    fetchPendingLegalTransfers(userId, actingAsClient?.id).then((r) => {
+      if (r.ok) setPendingLegalTx(r.items || []);
     });
 
     // Agent dashboard (403 if not an agent → ignored)
@@ -881,6 +891,9 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     fetchPendingForClient(userId, actingAsClient?.id).then((r) => {
       if (r.ok) setPendingPayments(r.items || []);
     });
+    fetchPendingLegalTransfers(userId, actingAsClient?.id).then((r) => {
+      if (r.ok) setPendingLegalTx(r.items || []);
+    });
   };
 
   const handleAdminCancel = async (paymentId) => {
@@ -961,11 +974,51 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     );
   };
 
+  const PendingLegalTransferRow = ({ tx }) => {
+    // Map status → label + color. All non-terminal statuses get a yellow/
+    // amber tone (pending = waiting on someone). Terminal statuses
+    // (supplier_confirmed/closed/cancelled) are filtered out server-side.
+    const STATUS_LABELS = {
+      submitted: t.legaltx_pending_submitted || "Kassir ko'rib chiqishi kutilmoqda",
+      supplier_assigned: t.legaltx_pending_supplier_assigned || "Yetkazib beruvchi tanlandi",
+      agreement_received: t.legaltx_pending_agreement || "Shartnoma tayyor — to'lovni amalga oshiring",
+      awaiting_client_transfer: t.legaltx_pending_awaiting || "Mijoz to'lovi kutilmoqda",
+      transfer_proof_uploaded: t.legaltx_pending_proof || "Chek tekshirilmoqda",
+      doverennost_received: t.legaltx_pending_doverennost || "Doverennost qabul qilindi",
+    };
+    const isMidFlow = tx.status === 'transfer_proof_uploaded';
+    const bgClass = isMidFlow ? 'bg-amber-500/10' : 'bg-yellow-500/10';
+    const ringClass = isMidFlow ? 'ring-amber-500/40' : 'ring-yellow-500/40';
+    const labelClass = isMidFlow ? 'text-amber-700' : 'text-yellow-700';
+    const icon = '🏛';
+    const statusLabel = STATUS_LABELS[tx.status] || tx.status;
+
+    const amount = fmtUzs(tx.amount_uzs);
+    const subline = tx.supplier_name
+      ? `${tx.supplier_name} · ${tx.category_label || ''}`
+      : tx.category_label || tx.legal_entity_name || '';
+
+    return (
+      <div className={`${bgClass} ring-1 ${ringClass} rounded-xl px-4 py-2 min-h-[56px] flex items-center gap-3`}>
+        <span className="text-2xl flex-shrink-0">{icon}</span>
+        <div className="flex-1 min-w-0">
+          <div className={`text-sm font-semibold ${labelClass}`}>{statusLabel}</div>
+          <div className="text-[11px] text-tg-hint truncate">{subline}</div>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <div className="text-base font-bold text-emerald-600">+{amount}</div>
+          <div className="text-[10px] text-tg-hint">{fmtPendingTime(tx.created_at)}</div>
+        </div>
+      </div>
+    );
+  };
+
   const AktSverkiSection = () => {
     if (!akt || !akt.linked) return null;
     const events = akt.events || [];
     const hasPending = pendingPayments && pendingPayments.length > 0;
-    if (events.length === 0 && !hasPending) return null;
+    const hasPendingLegal = pendingLegalTx && pendingLegalTx.length > 0;
+    if (events.length === 0 && !hasPending && !hasPendingLegal) return null;
 
     // newest first, capped at 8 orders + 8 payments, interleaved chronologically
     const reversed = [...events].reverse();
@@ -979,6 +1032,12 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
         <div className="text-base font-semibold mb-2">
           📒 {t.akt_title}
         </div>
+
+        {hasPendingLegal && (
+          <div className="space-y-2 mb-2">
+            {pendingLegalTx.map((tx) => <PendingLegalTransferRow key={`lt-${tx.id}`} tx={tx} />)}
+          </div>
+        )}
 
         {hasPending && (
           <div className="space-y-2 mb-2">

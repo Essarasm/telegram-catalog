@@ -346,5 +346,11 @@
   "p2p_submit": "Yuborish",
   "p2p_cancel": "Bekor",
   "p2p_sent": "Yuborildi",
-  "p2p_failed": "Xatolik yuz berdi"
+  "p2p_failed": "Xatolik yuz berdi",
+  "legaltx_pending_submitted": "Kassir ko'rib chiqishi kutilmoqda",
+  "legaltx_pending_supplier_assigned": "Yetkazib beruvchi tanlandi",
+  "legaltx_pending_agreement": "Shartnoma tayyor — to'lovni amalga oshiring",
+  "legaltx_pending_awaiting": "Mijoz to'lovi kutilmoqda",
+  "legaltx_pending_proof": "Chek tekshirilmoqda",
+  "legaltx_pending_doverennost": "Doverennost qabul qilindi"
 }

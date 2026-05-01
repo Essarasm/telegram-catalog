@@ -665,6 +665,42 @@ def record_legal_transfer_event(
     return event_id
 
 
+def list_pending_legal_transfers_for_client(
+    conn, client_id: int, days: int = 14
+) -> List[dict]:
+    """Active legal-entity transfer requests for a client — NOT in any
+    terminal status (supplier_confirmed = client paid, closed = faktura
+    received, cancelled = aborted). Ordered newest first.
+
+    The 14-day cap applies to status='submitted' only — once uncle has
+    progressed the row, it stays visible until terminal regardless of
+    age, so a long-running document chase never disappears from the
+    client's view.
+    """
+    rows = conn.execute(
+        """SELECT lt.id, lt.amount_uzs, lt.status, lt.created_at, lt.updated_at,
+                  lt.legal_entity_name, lt.legal_entity_inn,
+                  lt.category_freetext,
+                  pc.label_uz AS category_label,
+                  pc.is_freetext AS category_is_freetext,
+                  s.name_1c AS supplier_name_1c,
+                  u.first_name AS submitter_first_name,
+                  u.last_name AS submitter_last_name,
+                  u.username AS submitter_username
+             FROM legal_transfers lt
+             LEFT JOIN procurement_categories pc ON pc.id = lt.category_id
+             LEFT JOIN suppliers s ON s.id = lt.supplier_id
+             LEFT JOIN users u ON u.telegram_id = lt.submitted_by_telegram_id
+            WHERE lt.client_id = ?
+              AND lt.status NOT IN ('supplier_confirmed', 'closed', 'cancelled')
+              AND (lt.status != 'submitted'
+                   OR lt.created_at >= datetime('now', ?))
+            ORDER BY lt.created_at DESC""",
+        (client_id, f'-{days} days'),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_suppliers_in_category(conn, category_id: int) -> List[dict]:
     """All active suppliers mapped to this category, alphabetically by name_1c.
     Used to build the cashier-group inline keyboard for Stage 2 supplier
