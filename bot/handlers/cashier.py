@@ -51,6 +51,7 @@ from backend.services.payment_intake import (
     list_pending_for_cashier,
     resolve_client_telegram_ids,
     admin_cancel_payment,
+    assign_supplier,
 )
 from backend.services.client_search import search_clients
 from bot.shared import is_admin, is_admin_cb
@@ -363,6 +364,62 @@ async def cb_admin_close(cb: CallbackQuery):
     except Exception:
         pass
     await cb.answer()
+
+
+# ── Stage 2: legal-entity transfer supplier picker ─────────────────
+# Callback data: legaltx:pick:<transfer_id>:<supplier_id>
+
+@router.callback_query(F.data.startswith("legaltx:pick:"))
+async def cb_legaltx_pick_supplier(cb: CallbackQuery, bot: Bot):
+    """Uncle (or any cashier) picks the supplier for a Stage 1 legal-
+    entity transfer request. Atomically sets supplier_id + flips status
+    submitted → supplier_assigned + logs event. Edits the original
+    notification in place to remove the keyboard and append a footer
+    showing which supplier was picked.
+    """
+    if not is_cashier_or_admin_cb(cb):
+        await cb.answer("Faqat kassir/admin", show_alert=True)
+        return
+    try:
+        parts = cb.data.split(":")
+        transfer_id = int(parts[2])
+        supplier_id = int(parts[3])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri tugma", show_alert=True)
+        return
+
+    conn = get_db()
+    try:
+        try:
+            result = assign_supplier(
+                conn,
+                legal_transfer_id=transfer_id,
+                supplier_id=supplier_id,
+                actor_telegram_id=cb.from_user.id,
+            )
+        except ValueError as e:
+            await cb.answer(str(e)[:200], show_alert=True)
+            return
+    finally:
+        conn.close()
+
+    supplier_name = result["supplier_name_1c"]
+    # Edit the notification in place — remove keyboard, append footer
+    original = cb.message.html_text or cb.message.text or ""
+    new_text = original + f"\n\n✅ → <b>{html_escape(supplier_name)}</b>"
+    try:
+        await cb.message.edit_text(
+            new_text, parse_mode="HTML", disable_web_page_preview=True
+        )
+    except Exception as e:
+        # Edit may fail if message is too old or content unchanged; fall
+        # back to a fresh confirmation message in the group
+        logger.warning(f"legaltx pick edit failed: {e}")
+        await cb.message.answer(
+            f"✅ #{transfer_id} → <b>{html_escape(supplier_name)}</b>",
+            parse_mode="HTML",
+        )
+    await cb.answer(f"✅ {supplier_name[:50]}")
 
 
 @router.message(Command("bekor"))

@@ -579,3 +579,73 @@ def record_legal_transfer_event(
     )
     conn.commit()
     return event_id
+
+
+def list_suppliers_in_category(conn, category_id: int) -> List[dict]:
+    """All active suppliers mapped to this category, alphabetically by name_1c.
+    Used to build the cashier-group inline keyboard for Stage 2 supplier
+    picking. Returns [] for the Boshqa category (no rows in supplier_categories
+    point at it) — caller should render a manual-handling note in that case.
+    """
+    rows = conn.execute(
+        """SELECT s.id, s.name_1c, s.legal_name
+           FROM suppliers s
+           JOIN supplier_categories sc ON sc.supplier_id = s.id
+           WHERE sc.category_id = ?
+             AND s.is_active = 1
+           ORDER BY s.name_1c COLLATE NOCASE""",
+        (category_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def assign_supplier(
+    conn,
+    *,
+    legal_transfer_id: int,
+    supplier_id: int,
+    actor_telegram_id: int,
+) -> dict:
+    """Atomic Stage 2 transition: set supplier_id + flip status
+    submitted → supplier_assigned + log event, all in one commit.
+
+    Raises ValueError if transfer not found, already past 'submitted',
+    or supplier doesn't exist / is inactive.
+
+    Returns dict with the post-transition row's key fields for the caller
+    to use in confirmation messages.
+    """
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT status FROM legal_transfers WHERE id = ?",
+        (legal_transfer_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Transfer #{legal_transfer_id} not found")
+    if row["status"] != "submitted":
+        raise ValueError(f"Transfer is '{row['status']}', not submittable")
+
+    sup = cur.execute(
+        "SELECT id, name_1c, is_active FROM suppliers WHERE id = ?",
+        (supplier_id,),
+    ).fetchone()
+    if not sup:
+        raise ValueError(f"Supplier #{supplier_id} not found")
+    if not sup["is_active"]:
+        raise ValueError(f"Supplier #{supplier_id} is inactive")
+
+    cur.execute(
+        """UPDATE legal_transfers
+              SET supplier_id = ?, status = 'supplier_assigned',
+                  updated_at = datetime('now')
+            WHERE id = ?""",
+        (supplier_id, legal_transfer_id),
+    )
+    cur.execute(
+        """INSERT INTO legal_transfer_events
+              (legal_transfer_id, from_status, to_status, actor_telegram_id, note)
+           VALUES (?, 'submitted', 'supplier_assigned', ?, NULL)""",
+        (legal_transfer_id, actor_telegram_id),
+    )
+    conn.commit()
+    return {"supplier_name_1c": sup["name_1c"], "supplier_id": sup["id"]}

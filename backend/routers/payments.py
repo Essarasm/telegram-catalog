@@ -28,6 +28,7 @@ from backend.services.payment_intake import (
     list_active_categories,
     list_my_pending,
     list_pending_for_client,
+    list_suppliers_in_category,
 )
 
 logger = logging.getLogger(__name__)
@@ -258,6 +259,7 @@ def _notify_cashier_group_legal_transfer(
     transfer_id: int,
     client_name: str,
     amount_uzs: float,
+    category_id: int,
     category_label: str,
     is_freetext: bool,
     category_freetext: str,
@@ -265,12 +267,14 @@ def _notify_cashier_group_legal_transfer(
     legal_entity_inn: str,
     guvohnoma_photo_url: str,
     agent_name: str,
+    suppliers: list,
 ) -> bool:
     """Send a structured notification to the cashier group when an agent
-    submits a Stage 1 legal-entity transfer request. Returns True on
-    Telegram 200, False otherwise. Failures are logged but don't break the
-    request — the row is already in the DB and uncle can find it via
-    /cashbook later.
+    submits a Stage 1 legal-entity transfer request. Includes an inline
+    keyboard for uncle's Stage 2 supplier pick (one button per active
+    supplier in the chosen category). Returns True on Telegram 200, False
+    otherwise. Failures are logged but don't break the request — the row
+    is already in the DB and uncle can find it via /cashbook later.
     """
     if not BOT_TOKEN or not CASHIER_GROUP_CHAT_ID:
         logger.warning(
@@ -297,15 +301,38 @@ def _notify_cashier_group_legal_transfer(
         lines.append(f"📷 Guvohnoma: {guvohnoma_photo_url}")
     lines += ["", f"🤵 Agent: {agent_name}"]
 
+    # Inline keyboard: one button per active supplier in this category
+    reply_markup = None
+    if suppliers:
+        lines += ["", "👇 <i>Yetkazib beruvchini tanlang:</i>"]
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": s["name_1c"][:60],
+                        "callback_data": f"legaltx:pick:{transfer_id}:{s['id']}",
+                    }
+                ]
+                for s in suppliers
+            ]
+        }
+    else:
+        # Boshqa or empty category — no buttons; uncle handles manually
+        lines += ["", "⚠️ <i>Bu toifa uchun yetkazib beruvchi ro'yxatda yo'q. Qo'lda hal qiling.</i>"]
+
+    payload = {
+        "chat_id": CASHIER_GROUP_CHAT_ID,
+        "text": "\n".join(lines),
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+
     try:
         r = httpx.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": CASHIER_GROUP_CHAT_ID,
-                "text": "\n".join(lines),
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
+            json=payload,
             timeout=10,
         )
         if r.status_code != 200:
@@ -426,6 +453,8 @@ def submit_legal_transfer(payload: dict = Body(...)):
             category_freetext=category_freetext if cat["is_freetext"] else None,
             guvohnoma_photo_url=guvohnoma_photo_url or None,
         )
+        # Look up active suppliers for the cashier-group inline picker
+        suppliers = list_suppliers_in_category(conn, category_id)
     finally:
         conn.close()
 
@@ -433,6 +462,7 @@ def submit_legal_transfer(payload: dict = Body(...)):
         transfer_id=transfer_id,
         client_name=client_row["client_id_1c"] or client_row["name"] or f"#{client_id}",
         amount_uzs=amount_uzs,
+        category_id=category_id,
         category_label=cat["label_uz"],
         is_freetext=bool(cat["is_freetext"]),
         category_freetext=category_freetext,
@@ -440,6 +470,7 @@ def submit_legal_transfer(payload: dict = Body(...)):
         legal_entity_inn=legal_entity_inn,
         guvohnoma_photo_url=guvohnoma_photo_url,
         agent_name=agent_name,
+        suppliers=suppliers,
     )
 
     return {"ok": True, "transfer_id": transfer_id, "notified": notify_ok}
