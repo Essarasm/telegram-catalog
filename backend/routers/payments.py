@@ -274,7 +274,8 @@ def _notify_cashier_group_legal_transfer(
     legal_entity_name: str,
     legal_entity_inn: str,
     guvohnoma_photo_url: str,
-    agent_name: str,
+    submitter_name: str,
+    submitter_kind: str = "agent",  # 'agent' or 'client'
     suppliers: list,
 ) -> bool:
     """Send a structured notification to the cashier group when an agent
@@ -307,7 +308,9 @@ def _notify_cashier_group_legal_transfer(
     ]
     if guvohnoma_photo_url:
         lines.append(f"📷 Guvohnoma: {guvohnoma_photo_url}")
-    lines += ["", f"🤵 Agent: {agent_name}"]
+    submitter_emoji = "🤵" if submitter_kind == "agent" else "👤"
+    submitter_label = "Agent" if submitter_kind == "agent" else "Klient"
+    lines += ["", f"{submitter_emoji} {submitter_label}: {submitter_name}"]
 
     # Inline keyboard: one button per active supplier in this category
     reply_markup = None
@@ -408,9 +411,10 @@ def submit_legal_transfer(payload: dict = Body(...)):
 
     conn = get_db()
     try:
-        if not _is_agent(conn, telegram_id):
+        if not _can_submit_for_client(conn, telegram_id, client_id):
             return JSONResponse(
-                {"ok": False, "error": "not an agent"}, status_code=403
+                {"ok": False, "error": "not allowed for this client"},
+                status_code=403,
             )
 
         cat = get_category(conn, category_id)
@@ -435,11 +439,16 @@ def submit_legal_transfer(payload: dict = Body(...)):
                 {"ok": False, "error": "client not found"}, status_code=400
             )
 
+        # Resolve submitter context (staff vs self-submitting client)
+        from backend.services.roles import role_in
+        is_staff = role_in(conn, telegram_id, {"admin", "cashier", "agent"})
+        submitter_kind = "agent" if is_staff else "client"
+
         agent_row = conn.execute(
             "SELECT first_name, last_name, username FROM users WHERE telegram_id = ?",
             (telegram_id,),
         ).fetchone()
-        agent_name = (
+        submitter_name = (
             _format_name(
                 agent_row["first_name"] if agent_row else None,
                 agent_row["last_name"] if agent_row else None,
@@ -477,7 +486,8 @@ def submit_legal_transfer(payload: dict = Body(...)):
         legal_entity_name=legal_entity_name,
         legal_entity_inn=legal_entity_inn,
         guvohnoma_photo_url=guvohnoma_photo_url,
-        agent_name=agent_name,
+        submitter_name=submitter_name,
+        submitter_kind=submitter_kind,
         suppliers=suppliers,
     )
 
