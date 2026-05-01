@@ -37,8 +37,8 @@ function parseUsdInput(s) {
 
 // ── Component ───────────────────────────────────────────────────────
 
-export default function CashHandoverInline({ telegramId, client }) {
-  const [open, setOpen] = useState(false);
+export default function CashHandoverInline({ telegramId, client, defaultOpen = false, onClose }) {
+  const [open, setOpen] = useState(defaultOpen);
   const [uzs, setUzs] = useState('');
   const [usd, setUsd] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -47,11 +47,11 @@ export default function CashHandoverInline({ telegramId, client }) {
   // Reset form when the active client changes — prevents amount carrying
   // over to the next client by accident.
   useEffect(() => {
-    setOpen(false);
+    setOpen(defaultOpen);
     setUzs('');
     setUsd('');
     setFeedback(null);
-  }, [client?.id]);
+  }, [client?.id, defaultOpen]);
 
   if (!client?.id) return null;
 
@@ -60,6 +60,7 @@ export default function CashHandoverInline({ telegramId, client }) {
     setUzs('');
     setUsd('');
     setFeedback(null);
+    if (onClose) onClose();
   };
 
   const onSubmit = async (force = false) => {
@@ -95,18 +96,22 @@ export default function CashHandoverInline({ telegramId, client }) {
 
   return (
     <div className="space-y-2 mb-3">
-      {/* Toggle button — high-contrast, large hit target */}
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full rounded-xl bg-emerald-500 text-white px-4 py-4 text-base font-bold shadow active:opacity-80 flex items-center justify-center gap-2"
-      >
-        <span className="text-xl">{open ? '✕' : '📥'}</span>
-        <span>{t.agent_handover_title}</span>
-      </button>
-      {!open && (
-        <div className="text-xs text-tg-hint px-1">
-          {t.agent_handover_hint}
-        </div>
+      {/* Toggle button — hidden when defaultOpen (PayChooser owns it) */}
+      {!defaultOpen && (
+        <>
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="w-full rounded-xl bg-emerald-500 text-white px-4 py-4 text-base font-bold shadow active:opacity-80 flex items-center justify-center gap-2"
+          >
+            <span className="text-xl">{open ? '✕' : '📥'}</span>
+            <span>{t.agent_handover_title}</span>
+          </button>
+          {!open && (
+            <div className="text-xs text-tg-hint px-1">
+              {t.agent_handover_hint}
+            </div>
+          )}
+        </>
       )}
 
       {/* Form (the agent is already acting-as the client — no picker) */}

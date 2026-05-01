@@ -11,6 +11,7 @@ import AgentHomePage from './pages/AgentHomePage';
 import WorkerClientView from './pages/WorkerClientView';
 import CashHandoverInline from './pages/CashHandoverInline';
 import LegalTransferInline from './pages/LegalTransferInline';
+import PayChooser from './pages/PayChooser';
 import t from './i18n/uz.json';
 import { cloudSave, cloudLoad } from './utils/cloudStorage';
 import { fetchCabinetClientInfo, switchAgentClient } from './utils/api';
@@ -75,7 +76,9 @@ export default function App() {
         setApproved(data.approved || false);
         setIsAgent(data.is_agent || false);
         setUserRole(data.role || null);
-        if (data.is_agent) refreshActingAs();
+        // Always refresh client linkage — actingAsClient now drives the
+        // client-self-submit Pay flow too, not just agent acting-as.
+        refreshActingAs();
       })
       .catch(() => {});
   }, [refreshActingAs]);
@@ -106,7 +109,9 @@ export default function App() {
           setApproved(data.approved || false);
           setIsAgent(data.is_agent || false);
           setUserRole(data.role || null);
-          if (data.is_agent) refreshActingAs();
+          // Always refresh client linkage — actingAsClient now drives the
+        // client-self-submit Pay flow too, not just agent acting-as.
+        refreshActingAs();
         } else {
           // Server lost user data — try silent re-registration from cache
           const result = await silentReRegister(uid);
@@ -115,7 +120,7 @@ export default function App() {
             setApproved(result.approved || false);
             setIsAgent(result.is_agent || false);
             setUserRole(result.role || null);
-            if (result.is_agent) refreshActingAs();
+            refreshActingAs();
           } else {
             // No cache or re-register failed — show RegisterPage
             setRegistered(false);
@@ -537,11 +542,12 @@ export default function App() {
         )}
         {page === 'cabinet' && (
           <>
-            {isAgent && actingAsClient && userRole !== 'worker' && (
-              <>
-                <CashHandoverInline telegramId={getTelegramUserId()} client={actingAsClient} />
-                <LegalTransferInline telegramId={getTelegramUserId()} client={actingAsClient} />
-              </>
+            {actingAsClient && userRole !== 'worker' && (
+              <PayChooser
+                telegramId={getTelegramUserId()}
+                client={actingAsClient}
+                methods={isAgent ? ['cash', 'p2p', 'bank'] : ['p2p', 'bank']}
+              />
             )}
             <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')}
               onSupplementOrder={(orderId) => { setSupplementingOrderId(orderId); navigateTo('catalog'); }}

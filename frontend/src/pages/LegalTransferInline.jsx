@@ -18,8 +18,8 @@ function formatInnInput(raw) {
   return (raw || '').replace(/[^\d]/g, '').slice(0, 9);
 }
 
-export default function LegalTransferInline({ telegramId, client }) {
-  const [open, setOpen] = useState(false);
+export default function LegalTransferInline({ telegramId, client, defaultOpen = false, onClose }) {
+  const [open, setOpen] = useState(defaultOpen);
   const [categories, setCategories] = useState([]);
   const [loadingCats, setLoadingCats] = useState(false);
   const [categoryId, setCategoryId] = useState('');
@@ -32,14 +32,14 @@ export default function LegalTransferInline({ telegramId, client }) {
 
   // Reset when client switches
   useEffect(() => {
-    setOpen(false);
+    setOpen(defaultOpen);
     setCategoryId('');
     setCategoryFreetext('');
     setUzs('');
     setEntityName('');
     setInn('');
     setFeedback(null);
-  }, [client?.id]);
+  }, [client?.id, defaultOpen]);
 
   // Lazy-load categories on first open
   useEffect(() => {
@@ -66,6 +66,7 @@ export default function LegalTransferInline({ telegramId, client }) {
     setEntityName('');
     setInn('');
     setFeedback(null);
+    if (onClose) onClose();
   };
 
   const onSubmit = async () => {
@@ -117,16 +118,20 @@ export default function LegalTransferInline({ telegramId, client }) {
 
   return (
     <div className="space-y-2 mb-3">
-      {/* Toggle button — indigo to distinguish from cash flow's emerald */}
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full rounded-xl bg-indigo-500 text-white px-4 py-4 text-base font-bold shadow active:opacity-80 flex items-center justify-center gap-2"
-      >
-        <span className="text-xl">{open ? '✕' : '🏛'}</span>
-        <span>{t.legaltx_title}</span>
-      </button>
-      {!open && (
-        <div className="text-xs text-tg-hint px-1">{t.legaltx_hint}</div>
+      {/* Toggle button — hidden when defaultOpen (PayChooser owns it) */}
+      {!defaultOpen && (
+        <>
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="w-full rounded-xl bg-indigo-500 text-white px-4 py-4 text-base font-bold shadow active:opacity-80 flex items-center justify-center gap-2"
+          >
+            <span className="text-xl">{open ? '✕' : '🏛'}</span>
+            <span>{t.legaltx_title}</span>
+          </button>
+          {!open && (
+            <div className="text-xs text-tg-hint px-1">{t.legaltx_hint}</div>
+          )}
+        </>
       )}
 
       {open && (

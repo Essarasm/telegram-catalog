@@ -282,3 +282,24 @@ export async function submitLegalTransfer({
   const data = await res.json();
   return { status: res.status, ...data };
 }
+
+export async function fetchP2PCards(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/payments/p2p-cards?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, items: [] };
+  }
+}
+
+export async function submitP2P({ telegramId, clientId, amountUzs, cardId, screenshot }) {
+  const fd = new FormData();
+  fd.append('telegram_id', String(telegramId));
+  fd.append('client_id', String(clientId));
+  fd.append('amount_uzs', String(amountUzs || 0));
+  fd.append('card_id', String(cardId || 0));
+  fd.append('screenshot', screenshot);
+  const res = await fetch(`${API_BASE}/payments/p2p`, { method: 'POST', body: fd });
+  const data = await res.json();
+  return { status: res.status, ...data };
+}
