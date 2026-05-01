@@ -482,7 +482,7 @@ async def cb_legaltx_agreement_upload(message: Message, bot: Bot):
         except ValueError as e:
             await message.reply(f"⚠️ {str(e)[:200]}")
             return
-        client_tg_ids = resolve_client_telegram_ids(conn, [result["client_id"]])
+        client_tg_ids = resolve_client_telegram_ids(conn, result["client_id"])
     finally:
         conn.close()
 
