@@ -275,23 +275,24 @@ def _notify_cashier_group_legal_transfer(
     category_freetext: str,
     legal_entity_name: str,
     legal_entity_inn: str,
-    guvohnoma_photo_url: str,
     submitter_name: str,
     submitter_kind: str = "agent",  # 'agent' or 'client'
     suppliers: list,
-) -> bool:
-    """Send a structured notification to the cashier group when an agent
-    submits a Stage 1 legal-entity transfer request. Includes an inline
-    keyboard for uncle's Stage 2 supplier pick (one button per active
-    supplier in the chosen category). Returns True on Telegram 200, False
-    otherwise. Failures are logged but don't break the request — the row
-    is already in the DB and uncle can find it via /cashbook later.
+    file_bytes: bytes,
+    file_name: str,
+    file_mime: str,
+) -> tuple[bool, str | None]:
+    """Send the Stage 1 notification as a Telegram photo (image) or
+    document (PDF) attached to the legal-transfer group, with the same
+    caption + inline supplier-picker keyboard previously used. Returns
+    (ok, file_id) — caller persists file_id on legal_transfers.extra_doc_url
+    so the document can be re-forwarded later.
     """
     if not BOT_TOKEN or not LEGAL_TRANSFER_GROUP_CHAT_ID:
         logger.warning(
             "BOT_TOKEN or LEGAL_TRANSFER_GROUP_CHAT_ID missing; skipping legal-transfer notify"
         )
-        return False
+        return False, None
 
     if is_freetext and category_freetext:
         category_line = f"📦 Toifa: <b>Boshqa</b> — <i>{category_freetext}</i>"
@@ -308,8 +309,6 @@ def _notify_cashier_group_legal_transfer(
         f"🏢 Firma: <b>{legal_entity_name}</b>",
         f"🆔 INN: <code>{legal_entity_inn}</code>",
     ]
-    if guvohnoma_photo_url:
-        lines.append(f"📷 Guvohnoma: {guvohnoma_photo_url}")
     submitter_emoji = "🤵" if submitter_kind == "agent" else "👤"
     submitter_label = "Agent" if submitter_kind == "agent" else "Klient"
     lines += ["", f"{submitter_emoji} {submitter_label}: {submitter_name}"]
@@ -333,63 +332,74 @@ def _notify_cashier_group_legal_transfer(
         # Boshqa or empty category — no buttons; uncle handles manually
         lines += ["", "⚠️ <i>Bu toifa uchun yetkazib beruvchi ro'yxatda yo'q. Qo'lda hal qiling.</i>"]
 
-    payload = {
+    is_image = (file_mime or "").startswith("image/")
+    api = "sendPhoto" if is_image else "sendDocument"
+    field = "photo" if is_image else "document"
+
+    files = {field: (file_name, file_bytes, file_mime)}
+    data = {
         "chat_id": LEGAL_TRANSFER_GROUP_CHAT_ID,
-        "text": "\n".join(lines),
+        "caption": "\n".join(lines),
         "parse_mode": "HTML",
-        "disable_web_page_preview": True,
     }
     if reply_markup is not None:
-        payload["reply_markup"] = reply_markup
+        data["reply_markup"] = __import__("json").dumps(reply_markup)
 
     try:
         r = httpx.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json=payload,
-            timeout=10,
+            f"https://api.telegram.org/bot{BOT_TOKEN}/{api}",
+            data=data,
+            files=files,
+            timeout=30,
         )
         if r.status_code != 200:
             logger.error(
-                f"legal-transfer notify failed: {r.status_code} {r.text[:200]}"
+                f"legal-transfer notify failed: {r.status_code} {r.text[:300]}"
             )
-            return False
-        return True
+            return False, None
+        body = r.json()
+        if not body.get("ok"):
+            logger.error(f"legal-transfer notify Telegram error: {body}")
+            return False, None
+        result = body.get("result", {})
+        if is_image:
+            photos = result.get("photo") or []
+            file_id = photos[-1]["file_id"] if photos else None
+        else:
+            doc = result.get("document")
+            file_id = doc["file_id"] if doc else None
+        return True, file_id
     except Exception as e:
         logger.error(f"legal-transfer notify exception: {e}")
-        return False
+        return False, None
 
 
 @router.post("/legal-transfer")
-def submit_legal_transfer(payload: dict = Body(...)):
-    """Agent submits Stage 1 of a legal-entity bank transfer request.
+async def submit_legal_transfer(
+    telegram_id: int = Form(...),
+    client_id: int = Form(...),
+    amount_uzs: float = Form(...),
+    category_id: int = Form(...),
+    category_freetext: str = Form(""),
+    legal_entity_name: str = Form(...),
+    legal_entity_inn: str = Form(...),
+    extra_doc: UploadFile = File(...),
+):
+    """Stage 1 — submit a legal-entity bank-transfer request.
 
     Writes one legal_transfers row (status='submitted') + initial audit event,
-    fires a cashier-group notification with all collected data so uncle can
-    pick a supplier in Stage 2 (next commit).
+    forwards the attached document to Перечисление group as the notification,
+    captures the resulting Telegram file_id on legal_transfers.extra_doc_url.
 
-    Payload:
-        {
-            telegram_id: int (the agent),
-            client_id: int,
-            amount_uzs: float (>0),
-            category_id: int (FK procurement_categories),
-            category_freetext: str (required iff category.is_freetext),
-            legal_entity_name: str (non-empty),
-            legal_entity_inn: str (9 digits),
-            guvohnoma_photo_url: str (optional)
-        }
+    Multipart form (required file):
+        telegram_id, client_id, amount_uzs, category_id,
+        category_freetext (required iff category.is_freetext),
+        legal_entity_name, legal_entity_inn (9 digits),
+        extra_doc (image or PDF)
     """
-    try:
-        telegram_id = int(payload.get("telegram_id") or 0)
-        client_id = int(payload.get("client_id") or 0)
-        amount_uzs = float(payload.get("amount_uzs") or 0)
-        category_id = int(payload.get("category_id") or 0)
-        category_freetext = (payload.get("category_freetext") or "").strip()
-        legal_entity_name = (payload.get("legal_entity_name") or "").strip()
-        legal_entity_inn = (payload.get("legal_entity_inn") or "").strip()
-        guvohnoma_photo_url = (payload.get("guvohnoma_photo_url") or "").strip()
-    except (TypeError, ValueError):
-        return JSONResponse({"ok": False, "error": "invalid payload"}, status_code=400)
+    category_freetext = (category_freetext or "").strip()
+    legal_entity_name = (legal_entity_name or "").strip()
+    legal_entity_inn = (legal_entity_inn or "").strip()
 
     if not telegram_id or not client_id:
         return JSONResponse(
@@ -410,6 +420,15 @@ def submit_legal_transfer(payload: dict = Body(...)):
         return JSONResponse(
             {"ok": False, "error": "legal_entity_inn must be 9 digits"}, status_code=400
         )
+
+    # Read the file (required) — must be image or PDF
+    file_bytes = await extra_doc.read()
+    if not file_bytes:
+        return JSONResponse(
+            {"ok": False, "error": "extra_doc is empty"}, status_code=400
+        )
+    fname = extra_doc.filename or "doc"
+    fmime = extra_doc.content_type or "application/octet-stream"
 
     conn = get_db()
     try:
@@ -470,14 +489,14 @@ def submit_legal_transfer(payload: dict = Body(...)):
             legal_entity_name=legal_entity_name,
             legal_entity_inn=legal_entity_inn,
             category_freetext=category_freetext if cat["is_freetext"] else None,
-            guvohnoma_photo_url=guvohnoma_photo_url or None,
+            extra_doc_url=None,  # filled below after Telegram returns file_id
         )
         # Look up active suppliers for the cashier-group inline picker
         suppliers = list_suppliers_in_category(conn, category_id)
     finally:
         conn.close()
 
-    notify_ok = _notify_cashier_group_legal_transfer(
+    notify_ok, file_id = _notify_cashier_group_legal_transfer(
         transfer_id=transfer_id,
         client_name=client_row["client_id_1c"] or client_row["name"] or f"#{client_id}",
         amount_uzs=amount_uzs,
@@ -487,11 +506,26 @@ def submit_legal_transfer(payload: dict = Body(...)):
         category_freetext=category_freetext,
         legal_entity_name=legal_entity_name,
         legal_entity_inn=legal_entity_inn,
-        guvohnoma_photo_url=guvohnoma_photo_url,
         submitter_name=submitter_name,
         submitter_kind=submitter_kind,
         suppliers=suppliers,
+        file_bytes=file_bytes,
+        file_name=fname,
+        file_mime=fmime,
     )
+
+    # Persist the Telegram file_id back on the row so the doc can be
+    # re-forwarded later (admin tools, audit, etc.)
+    if file_id:
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE legal_transfers SET extra_doc_url = ? WHERE id = ?",
+                (f"tg://{file_id}", transfer_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     return {"ok": True, "transfer_id": transfer_id, "notified": notify_ok}
 

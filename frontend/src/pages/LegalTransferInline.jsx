@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import t from '../i18n/uz.json';
 import { fetchPaymentCategories, submitLegalTransfer } from '../utils/api';
 
@@ -29,6 +29,8 @@ export default function LegalTransferInline({ telegramId, client, defaultOpen = 
   const [inn, setInn] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState(null); // {type:'ok'|'err', text}
+  const [extraDoc, setExtraDoc] = useState(null); // File object
+  const fileInputRef = useRef(null);
 
   // Reset when client switches
   useEffect(() => {
@@ -39,6 +41,8 @@ export default function LegalTransferInline({ telegramId, client, defaultOpen = 
     setEntityName('');
     setInn('');
     setFeedback(null);
+    setExtraDoc(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }, [client?.id, defaultOpen]);
 
   // Lazy-load categories on first open
@@ -74,7 +78,27 @@ export default function LegalTransferInline({ telegramId, client, defaultOpen = 
     setEntityName('');
     setInn('');
     setFeedback(null);
+    setExtraDoc(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     if (onClose) onClose();
+  };
+
+  const onFilePicked = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) {
+      setExtraDoc(null);
+      return;
+    }
+    if (!/^image\/|^application\/pdf$/.test(f.type)) {
+      setFeedback({ type: 'err', text: t.legaltx_doc_bad_type || 'Faqat rasm yoki PDF' });
+      return;
+    }
+    if (f.size > 10 * 1024 * 1024) {
+      setFeedback({ type: 'err', text: t.legaltx_doc_too_big || 'Fayl juda katta (10MB max)' });
+      return;
+    }
+    setFeedback(null);
+    setExtraDoc(f);
   };
 
   const onSubmit = async () => {
@@ -99,6 +123,10 @@ export default function LegalTransferInline({ telegramId, client, defaultOpen = 
       setFeedback({ type: 'err', text: t.legaltx_inn_required });
       return;
     }
+    if (!extraDoc) {
+      setFeedback({ type: 'err', text: t.legaltx_doc_required || 'Hujjat biriktiring' });
+      return;
+    }
     setSubmitting(true);
     setFeedback(null);
     const r = await submitLegalTransfer({
@@ -109,6 +137,7 @@ export default function LegalTransferInline({ telegramId, client, defaultOpen = 
       categoryFreetext: isFreetextCat ? categoryFreetext.trim() : '',
       legalEntityName: entityName.trim(),
       legalEntityInn: inn,
+      extraDoc,
     });
     setSubmitting(false);
     if (r.ok) {
@@ -219,6 +248,31 @@ export default function LegalTransferInline({ telegramId, client, defaultOpen = 
               className="mt-1 w-full bg-tg-bg rounded-lg px-3 py-2 text-base outline-none border border-tg-hint/20 focus:border-tg-link"
             />
           </label>
+
+          {/* Required attachment — clearly clickable, no label */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,application/pdf"
+            onChange={onFilePicked}
+            style={{ display: 'none' }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className={`w-full rounded-lg border-2 border-dashed py-3 px-3 text-sm font-medium active:opacity-80 flex items-center justify-center gap-2 ${
+              extraDoc
+                ? 'border-emerald-500 bg-emerald-500/10 text-emerald-700'
+                : 'border-indigo-400 bg-indigo-500/5 text-indigo-700'
+            }`}
+          >
+            <span className="text-lg">📎</span>
+            <span className="truncate">
+              {extraDoc
+                ? `${extraDoc.name} (${Math.round(extraDoc.size / 1024)} KB)`
+                : (t.legaltx_doc_btn || 'Hujjat biriktirish')}
+            </span>
+          </button>
 
           {feedback?.type === 'ok' && (
             <div className="text-xs text-emerald-300 bg-emerald-500/10 rounded-lg p-2">

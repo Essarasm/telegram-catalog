@@ -1401,6 +1401,11 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_legal_transfer_events_transfer ON legal_transfer_events(legal_transfer_id)")
 
+    # Migration: add extra_doc_url to legal_transfers (Stage 1 mandatory file)
+    lt_cols = {row[1] for row in conn.execute("PRAGMA table_info(legal_transfers)").fetchall()}
+    if "extra_doc_url" not in lt_cols:
+        conn.execute("ALTER TABLE legal_transfers ADD COLUMN extra_doc_url TEXT")
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(

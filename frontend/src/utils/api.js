@@ -289,20 +289,18 @@ export async function submitLegalTransfer({
   categoryFreetext,
   legalEntityName,
   legalEntityInn,
+  extraDoc,
 }) {
-  const res = await fetch(`${API_BASE}/payments/legal-transfer`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      telegram_id: telegramId,
-      client_id: clientId,
-      amount_uzs: amountUzs || 0,
-      category_id: categoryId || 0,
-      category_freetext: categoryFreetext || '',
-      legal_entity_name: legalEntityName || '',
-      legal_entity_inn: legalEntityInn || '',
-    }),
-  });
+  const fd = new FormData();
+  fd.append('telegram_id', String(telegramId));
+  fd.append('client_id', String(clientId));
+  fd.append('amount_uzs', String(amountUzs || 0));
+  fd.append('category_id', String(categoryId || 0));
+  fd.append('category_freetext', categoryFreetext || '');
+  fd.append('legal_entity_name', legalEntityName || '');
+  fd.append('legal_entity_inn', legalEntityInn || '');
+  fd.append('extra_doc', extraDoc);
+  const res = await fetch(`${API_BASE}/payments/legal-transfer`, { method: 'POST', body: fd });
   const data = await res.json();
   return { status: res.status, ...data };
 }

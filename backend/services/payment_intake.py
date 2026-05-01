@@ -597,6 +597,7 @@ def create_legal_transfer(
     legal_entity_inn: str,
     category_freetext: Optional[str] = None,
     guvohnoma_photo_url: Optional[str] = None,
+    extra_doc_url: Optional[str] = None,
 ) -> int:
     """Create a legal_transfers row + the initial 'submitted' audit event.
     Returns the new row id. Caller is responsible for input validation;
@@ -609,8 +610,8 @@ def create_legal_transfer(
               (client_id, submitted_by_telegram_id, amount_uzs,
                category_id, category_freetext,
                legal_entity_name, legal_entity_inn, guvohnoma_photo_url,
-               status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted')""",
+               extra_doc_url, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted')""",
         (
             client_id,
             submitted_by_telegram_id,
@@ -620,6 +621,7 @@ def create_legal_transfer(
             legal_entity_name,
             legal_entity_inn,
             guvohnoma_photo_url,
+            extra_doc_url,
         ),
     )
     transfer_id = cur.lastrowid
