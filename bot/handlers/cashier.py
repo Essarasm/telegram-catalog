@@ -18,6 +18,7 @@ Notifications fire from this handler directly via bot.send_message:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import Optional
 
@@ -54,6 +55,7 @@ from backend.services.payment_intake import (
     admin_cancel_payment,
     assign_supplier,
     attach_agreement,
+    attach_transfer_proof,
 )
 from backend.services.client_search import search_clients
 from bot.shared import is_admin, is_admin_cb
@@ -442,13 +444,18 @@ def _fmt_uzs_for_msg(amount: float) -> str:
     return f"{n:,}".replace(",", " ")
 
 
-@router.message(F.document & F.reply_to_message)
+@router.message(
+    F.document
+    & F.reply_to_message
+    & F.chat.type.in_({"group", "supergroup"})
+)
 async def cb_legaltx_agreement_upload(message: Message, bot: Bot):
     """Stage 3: agreement file uploaded as a reply to the Stage 1 notification.
 
-    Filters: must be a reply to one of the bot's own messages, the original
-    message must contain the legal-transfer header marker AND a #<id> token,
-    and the user must have admin/cashier role. Otherwise silently ignored —
+    Filters: must be in a group/supergroup (not DM — DMs are Stage 5a's
+    territory), reply to one of the bot's own messages, original message
+    must contain the legal-transfer header marker AND a #<id> token, and
+    the user must have admin/cashier role. Otherwise silently ignored —
     the bot stays out of the way of unrelated documents in the group.
     """
     rt = message.reply_to_message
@@ -539,6 +546,143 @@ async def cb_legaltx_agreement_upload(message: Message, bot: Bot):
     if sent_count == 0:
         await message.reply(
             f"⚠️ Klientga yuborib bo'lmadi (botni bloklagan bo'lishi mumkin). Qo'lda yuboring."
+        )
+
+
+# ── Stage 5a: client uploads bank-transfer proof in DM ────────────────
+# Client receives the agreement DM in Stage 3, makes the wire to the
+# supplier, then replies in their DM to that agreement message with a
+# photo (bank screenshot) or PDF (receipt). Bot detects, attaches the
+# proof to the legal_transfer row, advances status, and forwards the
+# proof to the legal-transfer group with a "supplier confirmed?" button
+# for uncle (Stage 5b — wired in next commit).
+
+@router.message(
+    (F.photo | F.document)
+    & F.reply_to_message
+    & (F.chat.type == "private")
+)
+async def cb_legaltx_transfer_proof_upload(message: Message, bot: Bot):
+    """Stage 5a: client replies to the agreement DM with bank-transfer proof.
+
+    Silently ignored unless: reply target is one of the bot's own messages,
+    its caption contains the legal-transfer header AND a #<id> token, the
+    user is linked to that transfer's client (or admin), and the transfer
+    is currently in agreement_received status.
+    """
+    rt = message.reply_to_message
+    if not rt or not rt.from_user or rt.from_user.id != bot.id:
+        return
+    caption = rt.caption or rt.text or ""
+    if "yuridik shaxs to'lov" not in caption.lower():
+        return
+    m = _LEGALTX_ID_RE.search(caption)
+    if not m:
+        return
+    try:
+        transfer_id = int(m.group(1))
+    except ValueError:
+        return
+
+    # Pick the file_id (photos arrive as a list of sizes; take the largest)
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document:
+        file_id = message.document.file_id
+    else:
+        return
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT lt.client_id, lt.status FROM legal_transfers lt WHERE lt.id = ?""",
+            (transfer_id,),
+        ).fetchone()
+        if not row:
+            await message.reply(f"⚠️ #{transfer_id} so'rov topilmadi.")
+            return
+
+        # Permission: uploader must be linked to this client OR be admin.
+        # Ulu (admin) can upload on behalf during testing or for clients
+        # who sent proof via WhatsApp.
+        from backend.services.roles import role_in
+        is_admin_role = role_in(conn, message.from_user.id, {"admin"})
+        is_client_user = bool(
+            conn.execute(
+                """SELECT 1 FROM users
+                    WHERE telegram_id = ? AND client_id = ?
+                      AND COALESCE(is_approved, 0) = 1""",
+                (message.from_user.id, row["client_id"]),
+            ).fetchone()
+        )
+        if not (is_admin_role or is_client_user):
+            await message.reply(
+                f"⚠️ Sizda #{transfer_id} uchun chek yuborish ruxsati yo'q."
+            )
+            return
+
+        try:
+            result = attach_transfer_proof(
+                conn,
+                legal_transfer_id=transfer_id,
+                transfer_proof_url=f"tg://{file_id}",
+                actor_telegram_id=message.from_user.id,
+            )
+        except ValueError as e:
+            await message.reply(f"⚠️ {str(e)[:200]}")
+            return
+    finally:
+        conn.close()
+
+    # Reply to the client in DM
+    await message.reply(
+        f"✅ Chek qabul qilindi (<b>#{transfer_id}</b>). "
+        f"Kassir tekshirib yetkazib beruvchi bilan tasdiqlashi kutilmoqda.",
+        parse_mode="HTML",
+    )
+
+    # Forward the proof to the legal-transfer group with a Stage-5b button
+    group_id = (
+        os.getenv("LEGAL_TRANSFER_GROUP_CHAT_ID", "")
+        or os.getenv("CASHIER_GROUP_CHAT_ID", "")
+    )
+    if not group_id:
+        logger.warning("No LEGAL_TRANSFER_GROUP_CHAT_ID — skipping Stage 5a forward")
+        return
+
+    g_caption = (
+        f"💰 <b>#{transfer_id}</b> Klient bank chekini yubordi\n"
+        f"🏪 → <b>{html_escape(result['supplier_name_1c'] or '')}</b>\n"
+        f"💰 {_fmt_uzs_for_msg(result['amount_uzs'])} UZS\n"
+        f"🏢 {html_escape(result['legal_entity_name'] or '')}\n\n"
+        f"<i>Yetkazib beruvchi bilan tasdiqlanggandan keyin tugmani bosing:</i>"
+    )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Yetkazib beruvchi pulni oldi",
+                    callback_data=f"legaltx:confirm:{transfer_id}",
+                )
+            ]
+        ]
+    )
+
+    try:
+        if message.photo:
+            await bot.send_photo(
+                group_id, file_id, caption=g_caption,
+                parse_mode="HTML", reply_markup=keyboard,
+            )
+        else:
+            await bot.send_document(
+                group_id, file_id, caption=g_caption,
+                parse_mode="HTML", reply_markup=keyboard,
+            )
+    except Exception as e:
+        logger.error(f"Stage 5a group forward failed for #{transfer_id}: {e}")
+        await message.reply(
+            "⚠️ Chek saqlandi, lekin guruhga yuborib bo'lmadi. Adminga xabar bering."
         )
 
 

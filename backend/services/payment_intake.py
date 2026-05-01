@@ -599,6 +599,61 @@ def list_suppliers_in_category(conn, category_id: int) -> List[dict]:
     return [dict(r) for r in rows]
 
 
+def attach_transfer_proof(
+    conn,
+    *,
+    legal_transfer_id: int,
+    transfer_proof_url: str,
+    actor_telegram_id: int,
+) -> dict:
+    """Atomic Stage 5a transition: store transfer_proof_url (typically
+    'tg://<file_id>' for v1) + flip status agreement_received →
+    transfer_proof_uploaded + log event.
+
+    Returns transfer info for downstream notification (forwarding the proof
+    to the legal-transfer group with a "supplier confirmed?" button).
+
+    Raises ValueError if transfer not found or not in agreement_received status.
+    """
+    cur = conn.cursor()
+    row = cur.execute(
+        """SELECT lt.status, lt.client_id, lt.amount_uzs, lt.legal_entity_name,
+                  s.name_1c AS supplier_name_1c
+             FROM legal_transfers lt
+             LEFT JOIN suppliers s ON s.id = lt.supplier_id
+            WHERE lt.id = ?""",
+        (legal_transfer_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Transfer #{legal_transfer_id} not found")
+    if row["status"] != "agreement_received":
+        raise ValueError(
+            f"Transfer is '{row['status']}', not agreement_received (Stage 5a expects agreement_received)"
+        )
+
+    cur.execute(
+        """UPDATE legal_transfers
+              SET transfer_proof_url = ?, status = 'transfer_proof_uploaded',
+                  updated_at = datetime('now')
+            WHERE id = ?""",
+        (transfer_proof_url, legal_transfer_id),
+    )
+    cur.execute(
+        """INSERT INTO legal_transfer_events
+              (legal_transfer_id, from_status, to_status, actor_telegram_id, note)
+           VALUES (?, 'agreement_received', 'transfer_proof_uploaded', ?, NULL)""",
+        (legal_transfer_id, actor_telegram_id),
+    )
+    conn.commit()
+    return {
+        "id": legal_transfer_id,
+        "client_id": row["client_id"],
+        "amount_uzs": row["amount_uzs"],
+        "legal_entity_name": row["legal_entity_name"],
+        "supplier_name_1c": row["supplier_name_1c"],
+    }
+
+
 def attach_agreement(
     conn,
     *,
