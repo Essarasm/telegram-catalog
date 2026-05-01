@@ -34,6 +34,12 @@ from backend.services.payment_intake import (
 logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CASHIER_GROUP_CHAT_ID = os.getenv("CASHIER_GROUP_CHAT_ID", "")
+# Dedicated group for legal-entity bank transfer flow (Stage 1 notifications,
+# Stage 2 supplier picker, future stages). Falls back to the cashier group if
+# unset so older deployments don't break.
+LEGAL_TRANSFER_GROUP_CHAT_ID = (
+    os.getenv("LEGAL_TRANSFER_GROUP_CHAT_ID", "") or CASHIER_GROUP_CHAT_ID
+)
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
@@ -276,9 +282,9 @@ def _notify_cashier_group_legal_transfer(
     otherwise. Failures are logged but don't break the request — the row
     is already in the DB and uncle can find it via /cashbook later.
     """
-    if not BOT_TOKEN or not CASHIER_GROUP_CHAT_ID:
+    if not BOT_TOKEN or not LEGAL_TRANSFER_GROUP_CHAT_ID:
         logger.warning(
-            "BOT_TOKEN or CASHIER_GROUP_CHAT_ID missing; skipping legal-transfer notify"
+            "BOT_TOKEN or LEGAL_TRANSFER_GROUP_CHAT_ID missing; skipping legal-transfer notify"
         )
         return False
 
@@ -321,7 +327,7 @@ def _notify_cashier_group_legal_transfer(
         lines += ["", "⚠️ <i>Bu toifa uchun yetkazib beruvchi ro'yxatda yo'q. Qo'lda hal qiling.</i>"]
 
     payload = {
-        "chat_id": CASHIER_GROUP_CHAT_ID,
+        "chat_id": LEGAL_TRANSFER_GROUP_CHAT_ID,
         "text": "\n".join(lines),
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
