@@ -475,3 +475,19 @@ def resolve_client_telegram_ids(conn, client_id: int) -> List[int]:
         tuple(ids),
     ).fetchall()
     return [r["telegram_id"] for r in rows]
+
+
+def list_active_categories(conn) -> List[dict]:
+    """Active procurement categories for the Stage 1 dropdown of the
+    legal-entity bank transfer flow. Returned in display order.
+
+    The 'Boshqa' free-text fallback row has is_freetext=1 — frontend
+    should render it last and surface a free-text input when picked.
+    """
+    rows = conn.execute(
+        """SELECT id, label_uz, label_ru, label_en, sort_order, is_freetext
+           FROM procurement_categories
+           WHERE is_active = 1
+           ORDER BY sort_order"""
+    ).fetchall()
+    return [dict(r) for r in rows]

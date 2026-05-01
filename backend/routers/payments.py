@@ -16,6 +16,7 @@ from backend.services.payment_intake import (
     check_recent_duplicate,
     create_intake_payment,
     insert_intake_raw,
+    list_active_categories,
     list_my_pending,
     list_pending_for_client,
 )
@@ -230,6 +231,37 @@ def pending_for_client(
             "agent_name": agent_name,
         })
     return {"ok": True, "items": items}
+
+
+@router.get("/categories")
+def categories(telegram_id: int = Query(...)):
+    """Active procurement categories for the Stage 1 picker of the
+    legal-entity bank transfer flow. Agent-gated (matches the rest of
+    /api/payments/*). Returns 13 rows in display order; the 'Boshqa'
+    free-text fallback has is_freetext=1.
+    """
+    conn = get_db()
+    try:
+        if not _is_agent(conn, telegram_id):
+            return JSONResponse(
+                {"ok": False, "error": "not an agent"}, status_code=403
+            )
+        items = list_active_categories(conn)
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "items": [
+            {
+                "id": c["id"],
+                "label_uz": c["label_uz"],
+                "label_ru": c["label_ru"],
+                "label_en": c["label_en"],
+                "is_freetext": bool(c["is_freetext"]),
+            }
+            for c in items
+        ],
+    }
 
 
 @router.get("/my-pending")
