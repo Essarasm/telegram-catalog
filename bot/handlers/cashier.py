@@ -897,6 +897,108 @@ async def cb_legaltx_transfer_proof_upload(message: Message, bot: Bot):
         )
 
 
+# ── P2P inline confirm/reject on the cashier-group photo ────────────
+# Callback data: p2p:confirm:<id> | p2p:reject:<id>
+#
+# Default reject reason "Rad etildi (kassir tomonidan)" is used for the
+# inline button. Cashier wanting a specific reason can use the existing
+# /qabul → Agentdan flow (it asks for reason via FSM).
+
+@router.callback_query(F.data.startswith("p2p:confirm:"))
+async def cb_p2p_confirm(cb: CallbackQuery, bot: Bot):
+    if not is_cashier_or_admin_cb(cb):
+        await cb.answer("Faqat kassir/admin", show_alert=True)
+        return
+    try:
+        pid = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri ID", show_alert=True)
+        return
+    conn = get_db()
+    try:
+        try:
+            payment = confirm_payment(conn, pid, cb.from_user.id)
+            conn.commit()
+        except ValueError as e:
+            conn.rollback()
+            await cb.answer(str(e)[:200], show_alert=True)
+            return
+        client_tg_ids = resolve_client_telegram_ids(conn, payment["client_id"])
+    finally:
+        conn.close()
+
+    # Edit the photo caption to remove buttons + add confirmation footer
+    original = cb.message.html_text or cb.message.caption or ""
+    new_caption = original + f"\n\n✅ <b>Tasdiqlandi</b>"
+    try:
+        await cb.message.edit_caption(
+            caption=new_caption, parse_mode="HTML", reply_markup=None
+        )
+    except Exception as e:
+        logger.warning(f"P2P confirm edit failed for #{pid}: {e}")
+    await cb.answer(f"✅ #{pid} tasdiqlandi")
+
+    # DM client(s)
+    client_msg = (
+        f"✅ <b>P2P to'lov tasdiqlandi (#{pid})</b>\n\n"
+        f"💰 {_fmt_uzs_for_msg(payment['amount'])} UZS qabul qilindi.\n"
+        f"<i>Qarzingiz yangilandi.</i>"
+    )
+    for tg in client_tg_ids:
+        try:
+            await bot.send_message(tg, client_msg, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"P2P confirm DM #{pid} → tg={tg} failed: {e}")
+
+
+@router.callback_query(F.data.startswith("p2p:reject:"))
+async def cb_p2p_reject(cb: CallbackQuery, bot: Bot):
+    if not is_cashier_or_admin_cb(cb):
+        await cb.answer("Faqat kassir/admin", show_alert=True)
+        return
+    try:
+        pid = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri ID", show_alert=True)
+        return
+    default_reason = "Rad etildi (kassir tomonidan)"
+    conn = get_db()
+    try:
+        try:
+            payment = reject_payment(conn, pid, cb.from_user.id, default_reason)
+            conn.commit()
+        except ValueError as e:
+            conn.rollback()
+            await cb.answer(str(e)[:200], show_alert=True)
+            return
+        submitter_tg = payment.get("submitter_telegram_id")
+    finally:
+        conn.close()
+
+    original = cb.message.html_text or cb.message.caption or ""
+    new_caption = original + f"\n\n❌ <b>Rad etildi</b>"
+    try:
+        await cb.message.edit_caption(
+            caption=new_caption, parse_mode="HTML", reply_markup=None
+        )
+    except Exception as e:
+        logger.warning(f"P2P reject edit failed for #{pid}: {e}")
+    await cb.answer(f"❌ #{pid} rad etildi")
+
+    # Notify submitter (agent or client)
+    if submitter_tg:
+        try:
+            await bot.send_message(
+                submitter_tg,
+                f"❌ <b>P2P to'lov rad etildi (#{pid})</b>\n\n"
+                f"<i>Sabab:</i> {html_escape(default_reason)}\n\n"
+                f"Iltimos kassir bilan bog'laning.",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.warning(f"P2P reject DM #{pid} → tg={submitter_tg} failed: {e}")
+
+
 # ── Stage 5b: uncle taps "supplier confirmed" on the proof message ─────
 # Callback data: legaltx:confirm:<transfer_id>
 

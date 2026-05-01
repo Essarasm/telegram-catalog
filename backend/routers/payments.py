@@ -14,7 +14,7 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, File, Form, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 from backend.database import get_db, get_sibling_client_ids
@@ -23,9 +23,11 @@ from backend.services.payment_intake import (
     check_recent_duplicate,
     create_intake_payment,
     create_legal_transfer,
+    format_card_number,
     get_category,
     insert_intake_raw,
     list_active_categories,
+    list_dedicated_cards,
     list_my_pending,
     list_pending_for_client,
     list_suppliers_in_category,
@@ -480,6 +482,276 @@ def submit_legal_transfer(payload: dict = Body(...)):
     )
 
     return {"ok": True, "transfer_id": transfer_id, "notified": notify_ok}
+
+
+def _can_submit_for_client(conn, telegram_id: int, client_id: int) -> bool:
+    """True when the user is staff (admin/cashier/agent) OR the user's
+    own user-row is linked to this client_id (i.e., they're the client
+    self-submitting). Used to gate /p2p and /legal-transfer."""
+    if _is_agent(conn, telegram_id):
+        return True
+    row = conn.execute(
+        """SELECT 1 FROM users
+            WHERE telegram_id = ? AND client_id = ?
+              AND COALESCE(is_approved, 0) = 1""",
+        (telegram_id, client_id),
+    ).fetchone()
+    return row is not None
+
+
+@router.get("/p2p-cards")
+def p2p_cards(telegram_id: int = Query(...)):
+    """Active P2P destination cards — the chooser data source for the
+    Mini App's P2P submit form. Any registered/approved user can read
+    (clients self-submit P2P)."""
+    conn = get_db()
+    try:
+        # Light gate: must be a known/approved user. Stronger gate is on submit.
+        u = conn.execute(
+            "SELECT COALESCE(is_approved, 0) AS approved FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        if not u or not u["approved"]:
+            return JSONResponse(
+                {"ok": False, "error": "not approved"}, status_code=403
+            )
+        cards = list_dedicated_cards(conn, active_only=True)
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "items": [
+            {
+                "id": c["id"],
+                "card_number": c["card_number"],
+                "card_number_display": format_card_number(c["card_number"]),
+                "holder_first_name": c["holder_first_name"],
+                "holder_last_name": c["holder_last_name"],
+            }
+            for c in cards
+        ],
+    }
+
+
+def _notify_cashier_group_p2p(
+    *,
+    payment_id: int,
+    client_name: str,
+    amount_uzs: float,
+    card_holder: str,
+    card_number_display: str,
+    submitter_name: str,
+    submitter_kind: str,  # 'agent' or 'client'
+    photo_bytes: bytes,
+    photo_filename: str,
+    photo_mime: str,
+) -> tuple[bool, str | None]:
+    """Send the P2P submission as a cashier-group photo with inline
+    confirm/reject buttons. Returns (ok, screenshot_file_id) — caller
+    stores the file_id on the intake_payments row.
+    """
+    if not BOT_TOKEN or not CASHIER_GROUP_CHAT_ID:
+        logger.warning(
+            "BOT_TOKEN or CASHIER_GROUP_CHAT_ID missing; skipping P2P notify"
+        )
+        return False, None
+
+    submitter_emoji = "🤵" if submitter_kind == "agent" else "👤"
+    submitter_label = "Agent" if submitter_kind == "agent" else "Klient"
+
+    caption = (
+        f"💳 <b>Yangi P2P to'lov #{payment_id}</b>\n\n"
+        f"👤 Mijoz: <b>{client_name}</b>\n"
+        f"💰 Summa: <b>{_fmt_uzs(amount_uzs)} UZS</b>\n"
+        f"💳 Karta: <code>{card_number_display}</code>\n"
+        f"👨 Ega: <b>{card_holder}</b>\n\n"
+        f"{submitter_emoji} {submitter_label}: {submitter_name}\n\n"
+        f"<i>Tekshirib tasdiqlang yoki rad eting:</i>"
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Tasdiqlash", "callback_data": f"p2p:confirm:{payment_id}"},
+                {"text": "❌ Rad etish", "callback_data": f"p2p:reject:{payment_id}"},
+            ]
+        ]
+    }
+
+    try:
+        files = {"photo": (photo_filename, photo_bytes, photo_mime)}
+        data = {
+            "chat_id": CASHIER_GROUP_CHAT_ID,
+            "caption": caption,
+            "parse_mode": "HTML",
+            "reply_markup": __import__("json").dumps(keyboard),
+        }
+        r = httpx.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
+            data=data,
+            files=files,
+            timeout=30,
+        )
+        if r.status_code != 200:
+            logger.error(f"P2P notify failed: {r.status_code} {r.text[:300]}")
+            return False, None
+        body = r.json()
+        if not body.get("ok"):
+            logger.error(f"P2P notify Telegram error: {body}")
+            return False, None
+        # Pick the largest photo's file_id (last item)
+        photos = body.get("result", {}).get("photo") or []
+        file_id = photos[-1]["file_id"] if photos else None
+        return True, file_id
+    except Exception as e:
+        logger.error(f"P2P notify exception: {e}")
+        return False, None
+
+
+@router.post("/p2p")
+async def submit_p2p(
+    telegram_id: int = Form(...),
+    client_id: int = Form(...),
+    amount_uzs: float = Form(...),
+    card_id: int = Form(...),
+    screenshot: UploadFile = File(...),
+):
+    """Client (or agent acting-as) submits a P2P card-to-card transfer
+    request. Writes payment_intake_raw + intake_payments
+    (channel='p2p', status='pending_review'), forwards the screenshot to
+    the cashier group as a Telegram photo with confirm/reject inline
+    buttons. The Telegram file_id from sendPhoto's response is stored on
+    the intake_payments row for later forwarding.
+    """
+    if amount_uzs <= 0:
+        return JSONResponse(
+            {"ok": False, "error": "amount_uzs must be > 0"}, status_code=400
+        )
+    if not telegram_id or not client_id or not card_id:
+        return JSONResponse(
+            {"ok": False, "error": "telegram_id, client_id, card_id required"},
+            status_code=400,
+        )
+
+    photo_bytes = await screenshot.read()
+    if not photo_bytes:
+        return JSONResponse(
+            {"ok": False, "error": "screenshot is empty"}, status_code=400
+        )
+    photo_filename = screenshot.filename or "p2p_proof"
+    photo_mime = screenshot.content_type or "image/jpeg"
+
+    conn = get_db()
+    try:
+        if not _can_submit_for_client(conn, telegram_id, client_id):
+            return JSONResponse(
+                {"ok": False, "error": "not allowed for this client"},
+                status_code=403,
+            )
+
+        client_row = conn.execute(
+            "SELECT id, name, client_id_1c FROM allowed_clients WHERE id = ?",
+            (client_id,),
+        ).fetchone()
+        if not client_row:
+            return JSONResponse(
+                {"ok": False, "error": "client not found"}, status_code=400
+            )
+
+        card_row = conn.execute(
+            """SELECT id, card_number, holder_first_name, holder_last_name, active
+                 FROM dedicated_cards WHERE id = ?""",
+            (card_id,),
+        ).fetchone()
+        if not card_row:
+            return JSONResponse(
+                {"ok": False, "error": "card not found"}, status_code=400
+            )
+        if not card_row["active"]:
+            return JSONResponse(
+                {"ok": False, "error": "card retired"}, status_code=400
+            )
+
+        # Resolve submitter context (agent vs client) for the notification
+        from backend.services.roles import role_in
+        is_staff = role_in(conn, telegram_id, {"admin", "cashier", "agent"})
+        submitter_kind = "agent" if is_staff else "client"
+        submitter_role = "agent" if is_staff else "client"
+
+        agent_row = conn.execute(
+            "SELECT first_name, last_name, username FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        submitter_name = (
+            _format_name(
+                agent_row["first_name"] if agent_row else None,
+                agent_row["last_name"] if agent_row else None,
+                agent_row["username"] if agent_row else None,
+                telegram_id,
+            )
+            if agent_row
+            else f"#{telegram_id}"
+        )
+
+        # Audit row
+        raw_id = insert_intake_raw(
+            conn,
+            submitter_telegram_id=telegram_id,
+            submitter_role=submitter_role,
+            payload={
+                "channel": "p2p",
+                "client_id": client_id,
+                "amount_uzs": amount_uzs,
+                "card_id": card_id,
+                "screenshot_filename": photo_filename,
+                "submitter_kind": submitter_kind,
+            },
+        )
+        # Canonical intake_payments row
+        payment_id = create_intake_payment(
+            conn,
+            raw_id=raw_id,
+            client_id=client_id,
+            amount=amount_uzs,
+            currency="UZS",
+            channel="p2p",
+            status="pending_review",
+            submitter_telegram_id=telegram_id,
+            submitter_role=submitter_role,
+            card_id=card_id,
+            notes=f"P2P from {submitter_kind} {submitter_name}",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Send the screenshot to the cashier group with inline buttons
+    card_holder = f"{card_row['holder_first_name']} {card_row['holder_last_name']}".strip()
+    ok, file_id = _notify_cashier_group_p2p(
+        payment_id=payment_id,
+        client_name=client_row["client_id_1c"] or client_row["name"] or f"#{client_id}",
+        amount_uzs=amount_uzs,
+        card_holder=card_holder,
+        card_number_display=format_card_number(card_row["card_number"]),
+        submitter_name=submitter_name,
+        submitter_kind=submitter_kind,
+        photo_bytes=photo_bytes,
+        photo_filename=photo_filename,
+        photo_mime=photo_mime,
+    )
+
+    # Persist the file_id on the row for future re-forwarding
+    if ok and file_id:
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE intake_payments SET screenshot_file_id = ? WHERE id = ?",
+                (file_id, payment_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    return {"ok": True, "payment_id": payment_id, "notified": ok}
 
 
 @router.get("/categories")
