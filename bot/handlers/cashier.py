@@ -56,6 +56,7 @@ from backend.services.payment_intake import (
     assign_supplier,
     attach_agreement,
     attach_transfer_proof,
+    confirm_supplier_receipt,
 )
 from backend.services.client_search import search_clients
 from bot.shared import is_admin, is_admin_cb
@@ -684,6 +685,91 @@ async def cb_legaltx_transfer_proof_upload(message: Message, bot: Bot):
         await message.reply(
             "⚠️ Chek saqlandi, lekin guruhga yuborib bo'lmadi. Adminga xabar bering."
         )
+
+
+# ── Stage 5b: uncle taps "supplier confirmed" on the proof message ─────
+# Callback data: legaltx:confirm:<transfer_id>
+
+@router.callback_query(F.data.startswith("legaltx:confirm:"))
+async def cb_legaltx_supplier_confirm(cb: CallbackQuery, bot: Bot):
+    """Uncle confirms (offline call to supplier) that the wire landed.
+    Flips status to supplier_confirmed + edits the proof message in place
+    + DMs the client a confirmation. Cabinet debt-tile integration is
+    deferred to a follow-up commit (see confirm_supplier_receipt docstring).
+    """
+    if not is_cashier_or_admin_cb(cb):
+        await cb.answer("Faqat kassir/admin", show_alert=True)
+        return
+    try:
+        parts = cb.data.split(":")
+        transfer_id = int(parts[2])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri tugma", show_alert=True)
+        return
+
+    conn = get_db()
+    try:
+        try:
+            result = confirm_supplier_receipt(
+                conn,
+                legal_transfer_id=transfer_id,
+                actor_telegram_id=cb.from_user.id,
+            )
+        except ValueError as e:
+            await cb.answer(str(e)[:200], show_alert=True)
+            return
+        client_tg_ids = resolve_client_telegram_ids(conn, result["client_id"])
+    finally:
+        conn.close()
+
+    # Edit the proof message to remove the keyboard + add confirmation footer
+    original = cb.message.html_text or cb.message.caption or ""
+    new_text = (
+        original
+        + "\n\n✅ <b>Yetkazib beruvchi pulni oldi</b> — qarz kamaytirildi"
+    )
+    try:
+        # The proof message has the photo/document with caption — use
+        # edit_caption rather than edit_text since it's not a text-only msg
+        if cb.message.photo or cb.message.document:
+            await cb.message.edit_caption(
+                caption=new_text, parse_mode="HTML", reply_markup=None
+            )
+        else:
+            await cb.message.edit_text(
+                new_text, parse_mode="HTML", reply_markup=None,
+                disable_web_page_preview=True,
+            )
+    except Exception as e:
+        logger.warning(f"Stage 5b edit failed for #{transfer_id}: {e}")
+        # Fallback: send a fresh confirmation to the group
+        await cb.message.answer(
+            f"✅ <b>#{transfer_id}</b> Yetkazib beruvchi pulni oldi — qarz kamaytirildi",
+            parse_mode="HTML",
+        )
+
+    await cb.answer(f"✅ #{transfer_id} tasdiqlandi")
+
+    # DM the client
+    if client_tg_ids:
+        client_msg = (
+            f"✅ <b>To'lov tasdiqlandi (#{transfer_id})</b>\n\n"
+            f"💰 {_fmt_uzs_for_msg(result['amount_uzs'])} UZS\n"
+            f"🏪 Yetkazib beruvchi: <b>{html_escape(result['supplier_name_1c'] or '')}</b>\n"
+            f"🏢 Sizning firma: <b>{html_escape(result['legal_entity_name'] or '')}</b>\n\n"
+            f"Yetkazib beruvchi pulni qabul qildi. Qarzingiz kamaytirildi.\n\n"
+            f"<i>Keyingi qadam: kabinetingizdan doverennost yuklash kerak (yaqinda).</i>"
+        )
+        for client_tg in client_tg_ids:
+            try:
+                await bot.send_message(
+                    client_tg, client_msg, parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Stage 5b client DM #{transfer_id} → tg={client_tg} failed: {e}"
+                )
 
 
 @router.message(Command("bekor"))

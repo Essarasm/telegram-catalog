@@ -599,6 +599,64 @@ def list_suppliers_in_category(conn, category_id: int) -> List[dict]:
     return [dict(r) for r in rows]
 
 
+def confirm_supplier_receipt(
+    conn,
+    *,
+    legal_transfer_id: int,
+    actor_telegram_id: int,
+) -> dict:
+    """Atomic Stage 5b transition: flip status transfer_proof_uploaded →
+    supplier_confirmed + log event.
+
+    NOTE — Cabinet debt-tile integration is deferred to a follow-up commit.
+    The legal-transfer payment is currently NOT mirrored into intake_payments
+    because the channel CHECK constraint would need a SQLite table recreation
+    to add 'legal_transfer'. For v1 the legal_transfer row IS the canonical
+    record; the cabinet pending tile will get a separate query branch later.
+
+    Returns transfer info (amount, supplier, client linkage) so the caller
+    can DM the client + edit the cashier-group message.
+
+    Raises ValueError on missing transfer or wrong-status.
+    """
+    cur = conn.cursor()
+    row = cur.execute(
+        """SELECT lt.status, lt.client_id, lt.amount_uzs, lt.legal_entity_name,
+                  s.name_1c AS supplier_name_1c
+             FROM legal_transfers lt
+             LEFT JOIN suppliers s ON s.id = lt.supplier_id
+            WHERE lt.id = ?""",
+        (legal_transfer_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Transfer #{legal_transfer_id} not found")
+    if row["status"] != "transfer_proof_uploaded":
+        raise ValueError(
+            f"Transfer is '{row['status']}', not transfer_proof_uploaded (Stage 5b expects transfer_proof_uploaded)"
+        )
+
+    cur.execute(
+        """UPDATE legal_transfers
+              SET status = 'supplier_confirmed', updated_at = datetime('now')
+            WHERE id = ?""",
+        (legal_transfer_id,),
+    )
+    cur.execute(
+        """INSERT INTO legal_transfer_events
+              (legal_transfer_id, from_status, to_status, actor_telegram_id, note)
+           VALUES (?, 'transfer_proof_uploaded', 'supplier_confirmed', ?, NULL)""",
+        (legal_transfer_id, actor_telegram_id),
+    )
+    conn.commit()
+    return {
+        "id": legal_transfer_id,
+        "client_id": row["client_id"],
+        "amount_uzs": row["amount_uzs"],
+        "legal_entity_name": row["legal_entity_name"],
+        "supplier_name_1c": row["supplier_name_1c"],
+    }
+
+
 def attach_transfer_proof(
     conn,
     *,
