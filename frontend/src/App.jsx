@@ -10,6 +10,7 @@ import CabinetPage from './pages/CabinetPage';
 import AgentHomePage from './pages/AgentHomePage';
 import WorkerClientView from './pages/WorkerClientView';
 import CashHandoverInline from './pages/CashHandoverInline';
+import LegalTransferInline from './pages/LegalTransferInline';
 import t from './i18n/uz.json';
 import { cloudSave, cloudLoad } from './utils/cloudStorage';
 import { fetchCabinetClientInfo, switchAgentClient } from './utils/api';
@@ -537,7 +538,10 @@ export default function App() {
         {page === 'cabinet' && (
           <>
             {isAgent && actingAsClient && userRole !== 'worker' && (
-              <CashHandoverInline telegramId={getTelegramUserId()} client={actingAsClient} />
+              <>
+                <CashHandoverInline telegramId={getTelegramUserId()} client={actingAsClient} />
+                <LegalTransferInline telegramId={getTelegramUserId()} client={actingAsClient} />
+              </>
             )}
             <CabinetPage cart={cart} onNavigateToCart={() => navigateTo('cart')}
               onSupplementOrder={(orderId) => { setSupplementingOrderId(orderId); navigateTo('catalog'); }}

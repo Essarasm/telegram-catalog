@@ -245,3 +245,40 @@ export async function cancelIntakePayment({ telegramId, paymentId, reason }) {
   const data = await res.json();
   return { status: res.status, ...data };
 }
+
+// ── Cashbook Phase 2 — legal-entity bank transfer ──────────────
+
+export async function fetchPaymentCategories(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/payments/categories?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, items: [] };
+  }
+}
+
+export async function submitLegalTransfer({
+  telegramId,
+  clientId,
+  amountUzs,
+  categoryId,
+  categoryFreetext,
+  legalEntityName,
+  legalEntityInn,
+}) {
+  const res = await fetch(`${API_BASE}/payments/legal-transfer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      telegram_id: telegramId,
+      client_id: clientId,
+      amount_uzs: amountUzs || 0,
+      category_id: categoryId || 0,
+      category_freetext: categoryFreetext || '',
+      legal_entity_name: legalEntityName || '',
+      legal_entity_inn: legalEntityInn || '',
+    }),
+  });
+  const data = await res.json();
+  return { status: res.status, ...data };
+}
