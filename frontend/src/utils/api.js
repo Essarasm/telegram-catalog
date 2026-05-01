@@ -268,6 +268,19 @@ export async function fetchPendingLegalTransfers(telegramId, clientId) {
   }
 }
 
+export async function submitLegalTransferDoverennost({ telegramId, transferId, file }) {
+  const fd = new FormData();
+  fd.append('telegram_id', String(telegramId));
+  fd.append('transfer_id', String(transferId));
+  fd.append('doverennost', file);
+  const res = await fetch(`${API_BASE}/payments/legal-transfer-doverennost`, {
+    method: 'POST',
+    body: fd,
+  });
+  const data = await res.json();
+  return { status: res.status, ...data };
+}
+
 export async function submitLegalTransfer({
   telegramId,
   clientId,

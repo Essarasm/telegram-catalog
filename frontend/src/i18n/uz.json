@@ -352,5 +352,10 @@
   "legaltx_pending_agreement": "Shartnoma tayyor — to'lovni amalga oshiring",
   "legaltx_pending_awaiting": "Mijoz to'lovi kutilmoqda",
   "legaltx_pending_proof": "Chek tekshirilmoqda",
-  "legaltx_pending_doverennost": "Doverennost qabul qilindi"
+  "legaltx_pending_supplier_confirmed": "Doverennost yuklang",
+  "legaltx_pending_doverennost_received": "Doverennost qabul qilindi — faktura kutilmoqda",
+  "legaltx_doverennost_btn": "📎 Doverennost yuklash",
+  "legaltx_doverennost_bad_type": "Faqat rasm yoki PDF",
+  "legaltx_doverennost_too_big": "Fayl juda katta (10MB max)",
+  "legaltx_doverennost_failed": "Xatolik yuz berdi"
 }

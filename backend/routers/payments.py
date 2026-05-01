@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from backend.database import get_db, get_sibling_client_ids
 from backend.services.payment_intake import (
     admin_cancel_payment,
+    attach_doverennost,
     check_recent_duplicate,
     create_intake_payment,
     create_legal_transfer,
@@ -508,6 +509,109 @@ def _can_submit_for_client(conn, telegram_id: int, client_id: int) -> bool:
         (telegram_id, client_id),
     ).fetchone()
     return row is not None
+
+
+@router.post("/legal-transfer-doverennost")
+async def submit_legal_transfer_doverennost(
+    telegram_id: int = Form(...),
+    transfer_id: int = Form(...),
+    doverennost: UploadFile = File(...),
+):
+    """Stage 6: client (or staff on their behalf) uploads the doverennost
+    (power of attorney) for a legal-transfer that's reached
+    supplier_confirmed. Atomically advances status to doverennost_received,
+    forwards the file to the Перечисление group so uncle can pass it to
+    the supplier (gate for truck pickup of restock goods).
+    """
+    if not telegram_id or not transfer_id:
+        return JSONResponse(
+            {"ok": False, "error": "telegram_id and transfer_id required"},
+            status_code=400,
+        )
+
+    file_bytes = await doverennost.read()
+    if not file_bytes:
+        return JSONResponse(
+            {"ok": False, "error": "file is empty"}, status_code=400
+        )
+    fname = doverennost.filename or "doverennost"
+    fmime = doverennost.content_type or "application/octet-stream"
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT lt.client_id, lt.status FROM legal_transfers lt WHERE lt.id = ?""",
+            (transfer_id,),
+        ).fetchone()
+        if not row:
+            return JSONResponse(
+                {"ok": False, "error": f"transfer #{transfer_id} not found"},
+                status_code=404,
+            )
+        if not _can_submit_for_client(conn, telegram_id, row["client_id"]):
+            return JSONResponse(
+                {"ok": False, "error": "not allowed for this client"},
+                status_code=403,
+            )
+
+        # Forward to Перечисление group first — get a Telegram file_id back
+        # before we commit the doverennost_url, so the URL we store is the
+        # real one (not a multipart placeholder).
+        file_id = None
+        if BOT_TOKEN and LEGAL_TRANSFER_GROUP_CHAT_ID:
+            is_image = fmime.startswith("image/")
+            api = "sendPhoto" if is_image else "sendDocument"
+            field = "photo" if is_image else "document"
+            files = {field: (fname, file_bytes, fmime)}
+            data = {
+                "chat_id": LEGAL_TRANSFER_GROUP_CHAT_ID,
+                "caption": (
+                    f"📎 <b>#{transfer_id}</b> Doverennost yuklandi\n"
+                    f"<i>Yetkazib beruvchiga yuborish uchun.</i>"
+                ),
+                "parse_mode": "HTML",
+            }
+            try:
+                r = httpx.post(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/{api}",
+                    data=data,
+                    files=files,
+                    timeout=30,
+                )
+                if r.status_code == 200:
+                    body = r.json()
+                    if body.get("ok"):
+                        result = body.get("result", {})
+                        if is_image:
+                            photos = result.get("photo") or []
+                            file_id = photos[-1]["file_id"] if photos else None
+                        else:
+                            doc = result.get("document")
+                            file_id = doc["file_id"] if doc else None
+                else:
+                    logger.error(
+                        f"doverennost upload notify failed: {r.status_code} {r.text[:300]}"
+                    )
+            except Exception as e:
+                logger.error(f"doverennost notify exception: {e}")
+
+        # Status flip + audit (uses tg://<id> if Telegram returned one,
+        # otherwise tg-pending placeholder so the row still progresses)
+        try:
+            attach_doverennost(
+                conn,
+                legal_transfer_id=transfer_id,
+                doverennost_url=f"tg://{file_id}" if file_id else "tg://pending",
+                actor_telegram_id=telegram_id,
+            )
+        except ValueError as e:
+            return JSONResponse(
+                {"ok": False, "error": str(e)[:200]}, status_code=400
+            )
+    finally:
+        conn.close()
+
+    return {"ok": True, "transfer_id": transfer_id, "file_id": file_id}
 
 
 @router.get("/pending-legal-transfers")

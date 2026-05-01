@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers } from '../utils/api';
+import { useState, useEffect, useRef } from 'react';
+import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers, submitLegalTransferDoverennost } from '../utils/api';
 import { roleTheme } from '../utils/roleTheme';
 import t from '../i18n/uz.json';
 
@@ -975,21 +975,36 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
   };
 
   const PendingLegalTransferRow = ({ tx }) => {
-    // Map status → label + color. All non-terminal statuses get a yellow/
-    // amber tone (pending = waiting on someone). Terminal statuses
-    // (supplier_confirmed/closed/cancelled) are filtered out server-side.
+    // Map status → label. The tile stays visible from `submitted` through
+    // `doverennost_received` (i.e., until faktura closes the transfer).
+    // When status is `supplier_confirmed`, the client owes the next
+    // action (upload doverennost) — the tile shows a 📎 attachment button.
     const STATUS_LABELS = {
       submitted: t.legaltx_pending_submitted || "Kassir ko'rib chiqishi kutilmoqda",
       supplier_assigned: t.legaltx_pending_supplier_assigned || "Yetkazib beruvchi tanlandi",
       agreement_received: t.legaltx_pending_agreement || "Shartnoma tayyor — to'lovni amalga oshiring",
       awaiting_client_transfer: t.legaltx_pending_awaiting || "Mijoz to'lovi kutilmoqda",
       transfer_proof_uploaded: t.legaltx_pending_proof || "Chek tekshirilmoqda",
-      doverennost_received: t.legaltx_pending_doverennost || "Doverennost qabul qilindi",
+      supplier_confirmed: t.legaltx_pending_supplier_confirmed || "Doverennost yuklang",
+      doverennost_received: t.legaltx_pending_doverennost_received || "Doverennost qabul qilindi — faktura kutilmoqda",
     };
-    const isMidFlow = tx.status === 'transfer_proof_uploaded';
-    const bgClass = isMidFlow ? 'bg-amber-500/10' : 'bg-yellow-500/10';
-    const ringClass = isMidFlow ? 'ring-amber-500/40' : 'ring-yellow-500/40';
-    const labelClass = isMidFlow ? 'text-amber-700' : 'text-yellow-700';
+    const needsDoverennost = tx.status === 'supplier_confirmed';
+    const isMidFlow = tx.status === 'transfer_proof_uploaded' || tx.status === 'doverennost_received';
+    let bgClass, ringClass, labelClass;
+    if (needsDoverennost) {
+      // Action required from the client — emerald to draw attention
+      bgClass = 'bg-emerald-500/10';
+      ringClass = 'ring-emerald-500/40';
+      labelClass = 'text-emerald-700';
+    } else if (isMidFlow) {
+      bgClass = 'bg-amber-500/10';
+      ringClass = 'ring-amber-500/40';
+      labelClass = 'text-amber-700';
+    } else {
+      bgClass = 'bg-yellow-500/10';
+      ringClass = 'ring-yellow-500/40';
+      labelClass = 'text-yellow-700';
+    }
     const icon = '🏛';
     const statusLabel = STATUS_LABELS[tx.status] || tx.status;
 
@@ -998,17 +1013,73 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
       ? `${tx.supplier_name} · ${tx.category_label || ''}`
       : tx.category_label || tx.legal_entity_name || '';
 
+    const fileInputRef = useRef(null);
+    const [uploading, setUploading] = useState(false);
+    const [uploadError, setUploadError] = useState(null);
+
+    const handleFile = async (e) => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      if (!/^image\/|^application\/pdf$/.test(f.type)) {
+        setUploadError(t.legaltx_doverennost_bad_type || 'Faqat rasm yoki PDF');
+        return;
+      }
+      if (f.size > 10 * 1024 * 1024) {
+        setUploadError(t.legaltx_doverennost_too_big || 'Fayl juda katta (10MB max)');
+        return;
+      }
+      setUploadError(null);
+      setUploading(true);
+      const r = await submitLegalTransferDoverennost({
+        telegramId: userId,
+        transferId: tx.id,
+        file: f,
+      });
+      setUploading(false);
+      if (r.ok) {
+        refreshPending();
+      } else {
+        setUploadError(r.error || t.legaltx_doverennost_failed || 'Xatolik');
+      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
     return (
-      <div className={`${bgClass} ring-1 ${ringClass} rounded-xl px-4 py-2 min-h-[56px] flex items-center gap-3`}>
-        <span className="text-2xl flex-shrink-0">{icon}</span>
-        <div className="flex-1 min-w-0">
-          <div className={`text-sm font-semibold ${labelClass}`}>{statusLabel}</div>
-          <div className="text-[11px] text-tg-hint truncate">{subline}</div>
+      <div className={`${bgClass} ring-1 ${ringClass} rounded-xl px-4 py-2 min-h-[56px] flex flex-col gap-2`}>
+        <div className="flex items-center gap-3">
+          <span className="text-2xl flex-shrink-0">{icon}</span>
+          <div className="flex-1 min-w-0">
+            <div className={`text-sm font-semibold ${labelClass}`}>{statusLabel}</div>
+            <div className="text-[11px] text-tg-hint truncate">{subline}</div>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <div className="text-base font-bold text-emerald-600">+{amount}</div>
+            <div className="text-[10px] text-tg-hint">{fmtPendingTime(tx.created_at)}</div>
+          </div>
         </div>
-        <div className="text-right flex-shrink-0">
-          <div className="text-base font-bold text-emerald-600">+{amount}</div>
-          <div className="text-[10px] text-tg-hint">{fmtPendingTime(tx.created_at)}</div>
-        </div>
+        {needsDoverennost && (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,application/pdf"
+              onChange={handleFile}
+              style={{ display: 'none' }}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="w-full rounded-lg bg-emerald-500 text-white py-2 text-sm font-semibold active:opacity-80 disabled:opacity-50"
+            >
+              {uploading
+                ? '…'
+                : (t.legaltx_doverennost_btn || '📎 Doverennost yuklash')}
+            </button>
+            {uploadError && (
+              <div className="text-[11px] text-red-500">⚠️ {uploadError}</div>
+            )}
+          </>
+        )}
       </div>
     );
   };

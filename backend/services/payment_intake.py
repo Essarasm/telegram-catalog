@@ -668,14 +668,18 @@ def record_legal_transfer_event(
 def list_pending_legal_transfers_for_client(
     conn, client_id: int, days: int = 14
 ) -> List[dict]:
-    """Active legal-entity transfer requests for a client — NOT in any
-    terminal status (supplier_confirmed = client paid, closed = faktura
-    received, cancelled = aborted). Ordered newest first.
+    """Active legal-entity transfer requests for a client — every status
+    that still has a pending action by SOMEONE in the chain. Hides only
+    terminal states (closed = faktura received, cancelled = aborted).
+
+    Includes 'supplier_confirmed' (waiting for client to upload
+    doverennost) and 'doverennost_received' (waiting for supplier
+    faktura). The cabinet tile's per-status label tells the client what
+    action — if any — is on them. Ordered newest first.
 
     The 14-day cap applies to status='submitted' only — once uncle has
     progressed the row, it stays visible until terminal regardless of
-    age, so a long-running document chase never disappears from the
-    client's view.
+    age, so a long-running document chase never disappears.
     """
     rows = conn.execute(
         """SELECT lt.id, lt.amount_uzs, lt.status, lt.created_at, lt.updated_at,
@@ -692,7 +696,7 @@ def list_pending_legal_transfers_for_client(
              LEFT JOIN suppliers s ON s.id = lt.supplier_id
              LEFT JOIN users u ON u.telegram_id = lt.submitted_by_telegram_id
             WHERE lt.client_id = ?
-              AND lt.status NOT IN ('supplier_confirmed', 'closed', 'cancelled')
+              AND lt.status NOT IN ('closed', 'cancelled')
               AND (lt.status != 'submitted'
                    OR lt.created_at >= datetime('now', ?))
             ORDER BY lt.created_at DESC""",
@@ -717,6 +721,62 @@ def list_suppliers_in_category(conn, category_id: int) -> List[dict]:
         (category_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def attach_doverennost(
+    conn,
+    *,
+    legal_transfer_id: int,
+    doverennost_url: str,
+    actor_telegram_id: int,
+) -> dict:
+    """Atomic Stage 6 transition: store doverennost_url + flip status
+    supplier_confirmed → doverennost_received + log event.
+
+    The client (or staff on their behalf) uploads the power-of-attorney
+    document via the cabinet pending tile's 📎 button. Backend forwards
+    the file to the Перечисление group so uncle can pass it to the
+    supplier (truck pickup gate).
+
+    Raises ValueError if transfer not found or not in supplier_confirmed.
+    """
+    cur = conn.cursor()
+    row = cur.execute(
+        """SELECT lt.status, lt.client_id, lt.amount_uzs, lt.legal_entity_name,
+                  s.name_1c AS supplier_name_1c
+             FROM legal_transfers lt
+             LEFT JOIN suppliers s ON s.id = lt.supplier_id
+            WHERE lt.id = ?""",
+        (legal_transfer_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Transfer #{legal_transfer_id} not found")
+    if row["status"] != "supplier_confirmed":
+        raise ValueError(
+            f"Transfer is '{row['status']}', not supplier_confirmed (Stage 6 expects supplier_confirmed)"
+        )
+
+    cur.execute(
+        """UPDATE legal_transfers
+              SET doverennost_url = ?, status = 'doverennost_received',
+                  updated_at = datetime('now')
+            WHERE id = ?""",
+        (doverennost_url, legal_transfer_id),
+    )
+    cur.execute(
+        """INSERT INTO legal_transfer_events
+              (legal_transfer_id, from_status, to_status, actor_telegram_id, note)
+           VALUES (?, 'supplier_confirmed', 'doverennost_received', ?, NULL)""",
+        (legal_transfer_id, actor_telegram_id),
+    )
+    conn.commit()
+    return {
+        "id": legal_transfer_id,
+        "client_id": row["client_id"],
+        "amount_uzs": row["amount_uzs"],
+        "legal_entity_name": row["legal_entity_name"],
+        "supplier_name_1c": row["supplier_name_1c"],
+    }
 
 
 def confirm_supplier_receipt(
