@@ -491,3 +491,91 @@ def list_active_categories(conn) -> List[dict]:
            ORDER BY sort_order"""
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_category(conn, category_id: int) -> Optional[dict]:
+    """Single category lookup — used to decide if free-text is required."""
+    row = conn.execute(
+        "SELECT id, label_uz, label_ru, is_freetext FROM procurement_categories WHERE id = ?",
+        (category_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def create_legal_transfer(
+    conn,
+    *,
+    client_id: int,
+    submitted_by_telegram_id: int,
+    amount_uzs: float,
+    category_id: int,
+    legal_entity_name: str,
+    legal_entity_inn: str,
+    category_freetext: Optional[str] = None,
+    guvohnoma_photo_url: Optional[str] = None,
+) -> int:
+    """Create a legal_transfers row + the initial 'submitted' audit event.
+    Returns the new row id. Caller is responsible for input validation;
+    this function trusts its arguments (matches the create_intake_payment
+    pattern at line 156).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO legal_transfers
+              (client_id, submitted_by_telegram_id, amount_uzs,
+               category_id, category_freetext,
+               legal_entity_name, legal_entity_inn, guvohnoma_photo_url,
+               status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitted')""",
+        (
+            client_id,
+            submitted_by_telegram_id,
+            amount_uzs,
+            category_id,
+            category_freetext,
+            legal_entity_name,
+            legal_entity_inn,
+            guvohnoma_photo_url,
+        ),
+    )
+    transfer_id = cur.lastrowid
+    cur.execute(
+        """INSERT INTO legal_transfer_events
+              (legal_transfer_id, from_status, to_status, actor_telegram_id, note)
+           VALUES (?, NULL, 'submitted', ?, NULL)""",
+        (transfer_id, submitted_by_telegram_id),
+    )
+    conn.commit()
+    return transfer_id
+
+
+def record_legal_transfer_event(
+    conn,
+    *,
+    legal_transfer_id: int,
+    from_status: str,
+    to_status: str,
+    actor_telegram_id: int,
+    note: Optional[str] = None,
+) -> int:
+    """Append a legal_transfer_events row + atomically flip
+    legal_transfers.status + bump updated_at. Returns the event row id.
+    Caller validates the from→to transition is legal for the state machine
+    (a thin wrapper service in a later commit will own that).
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO legal_transfer_events
+              (legal_transfer_id, from_status, to_status, actor_telegram_id, note)
+           VALUES (?, ?, ?, ?, ?)""",
+        (legal_transfer_id, from_status, to_status, actor_telegram_id, note),
+    )
+    event_id = cur.lastrowid
+    cur.execute(
+        """UPDATE legal_transfers
+              SET status = ?, updated_at = datetime('now')
+            WHERE id = ?""",
+        (to_status, legal_transfer_id),
+    )
+    conn.commit()
+    return event_id

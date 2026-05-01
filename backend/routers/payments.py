@@ -1,12 +1,19 @@
-"""Cashbook intake — Mini App agent endpoints (Session Z, Phase 1).
+"""Cashbook intake — Mini App agent endpoints (Session Z, Phase 1+2).
 
 The cashier surface lives entirely in the bot FSM (bot/handlers/cashier.py).
 Agents continue to use the Mini App agent panel; these endpoints let them
 record cash handovers (status: pending_handover) that show up in the
 cashier's queue for confirmation. P2P is Phase 2.
+
+Phase 2 also adds the legal-entity bank transfer flow: agent submits Stage 1
+data (amount, category, client's legal entity), creating a legal_transfers
+row + cashier-group notification. Uncle picks the supplier in Stage 2 (next
+commit's inline keyboard).
 """
+import logging
 import os
 
+import httpx
 from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
 
@@ -15,11 +22,17 @@ from backend.services.payment_intake import (
     admin_cancel_payment,
     check_recent_duplicate,
     create_intake_payment,
+    create_legal_transfer,
+    get_category,
     insert_intake_raw,
     list_active_categories,
     list_my_pending,
     list_pending_for_client,
 )
+
+logger = logging.getLogger(__name__)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+CASHIER_GROUP_CHAT_ID = os.getenv("CASHIER_GROUP_CHAT_ID", "")
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
@@ -231,6 +244,205 @@ def pending_for_client(
             "agent_name": agent_name,
         })
     return {"ok": True, "items": items}
+
+
+def _fmt_uzs(amount: float) -> str:
+    """30000000 → '30 000 000'. Space-separated thousands, no decimals."""
+    n = int(round(amount))
+    s = f"{n:,}".replace(",", " ")
+    return s
+
+
+def _notify_cashier_group_legal_transfer(
+    *,
+    transfer_id: int,
+    client_name: str,
+    amount_uzs: float,
+    category_label: str,
+    is_freetext: bool,
+    category_freetext: str,
+    legal_entity_name: str,
+    legal_entity_inn: str,
+    guvohnoma_photo_url: str,
+    agent_name: str,
+) -> bool:
+    """Send a structured notification to the cashier group when an agent
+    submits a Stage 1 legal-entity transfer request. Returns True on
+    Telegram 200, False otherwise. Failures are logged but don't break the
+    request — the row is already in the DB and uncle can find it via
+    /cashbook later.
+    """
+    if not BOT_TOKEN or not CASHIER_GROUP_CHAT_ID:
+        logger.warning(
+            "BOT_TOKEN or CASHIER_GROUP_CHAT_ID missing; skipping legal-transfer notify"
+        )
+        return False
+
+    if is_freetext and category_freetext:
+        category_line = f"📦 Toifa: <b>Boshqa</b> — <i>{category_freetext}</i>"
+    else:
+        category_line = f"📦 Toifa: <b>{category_label}</b>"
+
+    lines = [
+        f"🏛 <b>Yangi yuridik shaxs to'lov so'rovi #{transfer_id}</b>",
+        "",
+        f"👤 Mijoz: <b>{client_name}</b>",
+        f"💰 Summa: <b>{_fmt_uzs(amount_uzs)} UZS</b>",
+        category_line,
+        "",
+        f"🏢 Firma: <b>{legal_entity_name}</b>",
+        f"🆔 INN: <code>{legal_entity_inn}</code>",
+    ]
+    if guvohnoma_photo_url:
+        lines.append(f"📷 Guvohnoma: {guvohnoma_photo_url}")
+    lines += ["", f"🤵 Agent: {agent_name}"]
+
+    try:
+        r = httpx.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": CASHIER_GROUP_CHAT_ID,
+                "text": "\n".join(lines),
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            logger.error(
+                f"legal-transfer notify failed: {r.status_code} {r.text[:200]}"
+            )
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"legal-transfer notify exception: {e}")
+        return False
+
+
+@router.post("/legal-transfer")
+def submit_legal_transfer(payload: dict = Body(...)):
+    """Agent submits Stage 1 of a legal-entity bank transfer request.
+
+    Writes one legal_transfers row (status='submitted') + initial audit event,
+    fires a cashier-group notification with all collected data so uncle can
+    pick a supplier in Stage 2 (next commit).
+
+    Payload:
+        {
+            telegram_id: int (the agent),
+            client_id: int,
+            amount_uzs: float (>0),
+            category_id: int (FK procurement_categories),
+            category_freetext: str (required iff category.is_freetext),
+            legal_entity_name: str (non-empty),
+            legal_entity_inn: str (9 digits),
+            guvohnoma_photo_url: str (optional)
+        }
+    """
+    try:
+        telegram_id = int(payload.get("telegram_id") or 0)
+        client_id = int(payload.get("client_id") or 0)
+        amount_uzs = float(payload.get("amount_uzs") or 0)
+        category_id = int(payload.get("category_id") or 0)
+        category_freetext = (payload.get("category_freetext") or "").strip()
+        legal_entity_name = (payload.get("legal_entity_name") or "").strip()
+        legal_entity_inn = (payload.get("legal_entity_inn") or "").strip()
+        guvohnoma_photo_url = (payload.get("guvohnoma_photo_url") or "").strip()
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid payload"}, status_code=400)
+
+    if not telegram_id or not client_id:
+        return JSONResponse(
+            {"ok": False, "error": "telegram_id and client_id required"},
+            status_code=400,
+        )
+    if amount_uzs <= 0:
+        return JSONResponse(
+            {"ok": False, "error": "amount_uzs must be > 0"}, status_code=400
+        )
+    if not category_id:
+        return JSONResponse({"ok": False, "error": "category_id required"}, status_code=400)
+    if not legal_entity_name:
+        return JSONResponse(
+            {"ok": False, "error": "legal_entity_name required"}, status_code=400
+        )
+    if not legal_entity_inn.isdigit() or len(legal_entity_inn) != 9:
+        return JSONResponse(
+            {"ok": False, "error": "legal_entity_inn must be 9 digits"}, status_code=400
+        )
+
+    conn = get_db()
+    try:
+        if not _is_agent(conn, telegram_id):
+            return JSONResponse(
+                {"ok": False, "error": "not an agent"}, status_code=403
+            )
+
+        cat = get_category(conn, category_id)
+        if not cat:
+            return JSONResponse(
+                {"ok": False, "error": "category not found"}, status_code=400
+            )
+        if cat["is_freetext"] and not category_freetext:
+            return JSONResponse(
+                {"ok": False, "error": "category_freetext required for Boshqa"},
+                status_code=400,
+            )
+
+        # Verify client exists (FK enforcement happens at insert; surface a
+        # clean 400 instead of a SQLite IntegrityError)
+        client_row = conn.execute(
+            "SELECT id, name, client_id_1c FROM allowed_clients WHERE id = ?",
+            (client_id,),
+        ).fetchone()
+        if not client_row:
+            return JSONResponse(
+                {"ok": False, "error": "client not found"}, status_code=400
+            )
+
+        agent_row = conn.execute(
+            "SELECT first_name, last_name, username FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        agent_name = (
+            _format_name(
+                agent_row["first_name"] if agent_row else None,
+                agent_row["last_name"] if agent_row else None,
+                agent_row["username"] if agent_row else None,
+                telegram_id,
+            )
+            if agent_row
+            else f"#{telegram_id}"
+        )
+
+        transfer_id = create_legal_transfer(
+            conn,
+            client_id=client_id,
+            submitted_by_telegram_id=telegram_id,
+            amount_uzs=amount_uzs,
+            category_id=category_id,
+            legal_entity_name=legal_entity_name,
+            legal_entity_inn=legal_entity_inn,
+            category_freetext=category_freetext if cat["is_freetext"] else None,
+            guvohnoma_photo_url=guvohnoma_photo_url or None,
+        )
+    finally:
+        conn.close()
+
+    notify_ok = _notify_cashier_group_legal_transfer(
+        transfer_id=transfer_id,
+        client_name=client_row["client_id_1c"] or client_row["name"] or f"#{client_id}",
+        amount_uzs=amount_uzs,
+        category_label=cat["label_uz"],
+        is_freetext=bool(cat["is_freetext"]),
+        category_freetext=category_freetext,
+        legal_entity_name=legal_entity_name,
+        legal_entity_inn=legal_entity_inn,
+        guvohnoma_photo_url=guvohnoma_photo_url,
+        agent_name=agent_name,
+    )
+
+    return {"ok": True, "transfer_id": transfer_id, "notified": notify_ok}
 
 
 @router.get("/categories")
