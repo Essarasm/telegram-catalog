@@ -45,12 +45,20 @@ export default function LegalTransferInline({ telegramId, client, defaultOpen = 
   useEffect(() => {
     if (!open || categories.length > 0 || loadingCats) return;
     setLoadingCats(true);
-    fetchPaymentCategories(telegramId).then((r) => {
-      setLoadingCats(false);
-      if (r.ok && Array.isArray(r.items)) {
-        setCategories(r.items);
-      }
-    });
+    fetchPaymentCategories(telegramId)
+      .then((r) => {
+        if (r.ok && Array.isArray(r.items)) {
+          setCategories(r.items);
+        } else {
+          setFeedback({ type: 'err', text: r.error || t.legaltx_failed });
+        }
+      })
+      .catch((e) => {
+        setFeedback({ type: 'err', text: t.legaltx_failed });
+      })
+      .finally(() => {
+        setLoadingCats(false);
+      });
   }, [open, telegramId, categories.length, loadingCats]);
 
   if (!client?.id) return null;

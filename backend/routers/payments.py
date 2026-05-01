@@ -767,15 +767,20 @@ async def submit_p2p(
 @router.get("/categories")
 def categories(telegram_id: int = Query(...)):
     """Active procurement categories for the Stage 1 picker of the
-    legal-entity bank transfer flow. Agent-gated (matches the rest of
-    /api/payments/*). Returns 13 rows in display order; the 'Boshqa'
-    free-text fallback has is_freetext=1.
+    legal-entity bank transfer flow. Light gate: any approved user
+    (clients now self-submit bank transfers, so a strict agent-only
+    gate would 403 them on the dropdown fetch). Returns 13 rows in
+    display order; the 'Boshqa' free-text fallback has is_freetext=1.
     """
     conn = get_db()
     try:
-        if not _is_agent(conn, telegram_id):
+        u = conn.execute(
+            "SELECT COALESCE(is_approved, 0) AS approved FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        ).fetchone()
+        if not u or not u["approved"]:
             return JSONResponse(
-                {"ok": False, "error": "not an agent"}, status_code=403
+                {"ok": False, "error": "not approved"}, status_code=403
             )
         items = list_active_categories(conn)
     finally:
