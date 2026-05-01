@@ -147,9 +147,30 @@ def is_agent_or_admin_cb(cb) -> bool:
     return False
 
 
+def _db_role_check(uid, allowed: set) -> bool:
+    """DB-backed role lookup — extends env-var/chat checks with the
+    users.agent_role truth. Used as final fallback when ADMIN_IDS /
+    CASHIER_IDS env vars are unset (per F-handoff 2026-04-30 admin
+    cancel fix) and the callback originates in a chat that's not in
+    our hardcoded admin/cashier set (e.g., the dedicated legal-transfer
+    group). Lazy-imports roles to avoid any circular concern."""
+    if not uid:
+        return False
+    try:
+        from backend.services.roles import role_in
+        conn = get_db()
+        try:
+            return role_in(conn, uid, allowed)
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
 def is_admin_cb(cb) -> bool:
     """Callback-variant of is_admin — admin user-id whitelist OR admin-
-    type group (admin / daily / inventory). Excludes ORDER_GROUP."""
+    type group (admin / daily / inventory) OR DB role 'admin'. Excludes
+    ORDER_GROUP."""
     if ADMIN_IDS and cb.from_user and cb.from_user.id in ADMIN_IDS:
         return True
     chat_id = cb.message.chat.id if cb.message else None
@@ -157,17 +178,21 @@ def is_admin_cb(cb) -> bool:
         return False
     if chat_id in (ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID):
         return True
+    if cb.from_user and _db_role_check(cb.from_user.id, {"admin"}):
+        return True
     return False
 
 
 def is_cashier(message) -> bool:
-    """User is whitelisted as a cashier (CASHIER_IDS) or message comes
-    from the dedicated cashier group."""
+    """User is whitelisted as a cashier (CASHIER_IDS), message comes from
+    the dedicated cashier group, or DB role is 'cashier'/'admin'."""
     uid = message.from_user.id if getattr(message, 'from_user', None) else None
     if CASHIER_IDS and uid and uid in CASHIER_IDS:
         return True
     cid = message.chat.id if hasattr(message, 'chat') else None
     if CASHIER_GROUP_CHAT_ID and cid == CASHIER_GROUP_CHAT_ID:
+        return True
+    if uid and _db_role_check(uid, {"admin", "cashier"}):
         return True
     return False
 
@@ -183,6 +208,8 @@ def is_cashier_or_admin_cb(cb) -> bool:
         return True
     chat_id = cb.message.chat.id if cb.message else None
     if chat_id in (ADMIN_GROUP_CHAT_ID,) or (CASHIER_GROUP_CHAT_ID and chat_id == CASHIER_GROUP_CHAT_ID):
+        return True
+    if cb.from_user and _db_role_check(cb.from_user.id, {"admin", "cashier"}):
         return True
     return False
 
