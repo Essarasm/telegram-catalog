@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 6  # 2026-04-29: +intake_payments, payment_intake_raw, dedicated_cards, payment_reconciliation (Cashbook Phase 1)
+SCHEMA_VERSION = 7  # 2026-05-01: +procurement_categories, suppliers, supplier_categories (Cashbook Phase 2 — legal-entity bank transfer routing)
 
 
 def init_db():
@@ -1269,11 +1269,62 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_reconciliation_date ON payment_reconciliation(reconcile_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_payment_reconciliation_status ON payment_reconciliation(match_status)")
 
+    # ─────────────────────────────────────────────────────────────
+    # Session Z: Cashbook Phase 2 — legal-entity bank transfer routing
+    # Procurement categories drive Stage 1 of Option 3 (legal→legal):
+    # agent picks a category, uncle picks the supplier in Stage 2.
+    # Seeded from Uncle/Suppliers_Master.xlsx column F (locked 2026-05-01).
+    # ─────────────────────────────────────────────────────────────
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS procurement_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label_uz TEXT NOT NULL UNIQUE,
+            label_ru TEXT NOT NULL,
+            label_en TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0,
+            is_freetext INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_procurement_categories_sort ON procurement_categories(sort_order)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS suppliers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name_1c TEXT NOT NULL UNIQUE,
+            legal_name TEXT,
+            accountant_phone TEXT,
+            activity_uzs REAL DEFAULT 0,
+            activity_usd REAL DEFAULT 0,
+            periods INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            notes TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_suppliers_active ON suppliers(is_active)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS supplier_categories (
+            supplier_id INTEGER NOT NULL,
+            category_id INTEGER NOT NULL,
+            PRIMARY KEY (supplier_id, category_id),
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
+            FOREIGN KEY (category_id) REFERENCES procurement_categories(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_supplier_categories_cat ON supplier_categories(category_id)")
+
+    # Seed (idempotent — re-runs are safe)
+    from backend.services.seed_procurement import seed_procurement
+    seed_procurement(conn)
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "Cashbook Phase 1: intake_payments + payment_intake_raw + dedicated_cards + payment_reconciliation"),
+            (SCHEMA_VERSION, "Cashbook Phase 2: procurement_categories + suppliers + supplier_categories (legal-entity transfer routing)"),
         )
 
     conn.commit()
