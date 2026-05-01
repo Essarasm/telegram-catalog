@@ -114,6 +114,98 @@ def get_locations(
     return {"locations": [dict(r) for r in rows]}
 
 
+@router.get("/heatmap")
+def get_agent_heatmap(
+    admin_key: str = Query(...),
+    role: str = Query("agent"),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    agent_tg_id: Optional[int] = Query(None),
+):
+    """Admin: GPS points submitted by agents (or any role).
+
+    Reads from the canonical `allowed_clients.gps_*` columns — the same
+    rows the bot location handler writes when an agent tags a client's
+    location. `role='agent'` (default) filters to non-client setters
+    (`gps_set_by_role = 'agent'`); `role='client'` returns self-shared
+    points; `role='all'` returns both.
+
+    Optional `from` / `to` are ISO date strings filtered on `gps_set_at`.
+    Optional `agent_tg_id` scopes to a single setter.
+
+    Returns:
+        points: [{lat, lng, client_id, client_name, agent_tg_id,
+                  agent_name, role, set_at, address}]
+        agents: [{tg_id, name, count}] — all setters in the result, for
+                the dashboard's per-agent filter dropdown
+        total:  count of points
+    """
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    conn = get_db()
+    where = [
+        "ac.gps_latitude IS NOT NULL",
+        "ac.gps_longitude IS NOT NULL",
+        "COALESCE(ac.status, 'active') != 'merged'",
+    ]
+    params: list = []
+    if role == "agent":
+        where.append("ac.gps_set_by_role = 'agent'")
+    elif role == "client":
+        where.append("ac.gps_set_by_role = 'client'")
+    elif role != "all":
+        raise HTTPException(status_code=400, detail="role must be agent, client, or all")
+
+    if date_from:
+        where.append("ac.gps_set_at >= ?")
+        params.append(date_from)
+    if date_to:
+        where.append("ac.gps_set_at <= ?")
+        params.append(date_to + " 23:59:59" if len(date_to) == 10 else date_to)
+    if agent_tg_id is not None:
+        where.append("ac.gps_set_by_tg_id = ?")
+        params.append(agent_tg_id)
+
+    rows = conn.execute(
+        f"""
+        SELECT
+            ac.id              AS client_id,
+            ac.client_id_1c    AS client_1c,
+            ac.name            AS client_name,
+            ac.company_name    AS company_name,
+            ac.gps_latitude    AS lat,
+            ac.gps_longitude   AS lng,
+            ac.gps_address     AS address,
+            ac.gps_set_at      AS set_at,
+            ac.gps_set_by_tg_id AS agent_tg_id,
+            ac.gps_set_by_name  AS agent_name,
+            ac.gps_set_by_role  AS role
+        FROM allowed_clients ac
+        WHERE {' AND '.join(where)}
+        ORDER BY ac.gps_set_at DESC
+        """,
+        params,
+    ).fetchall()
+    conn.close()
+
+    points = []
+    agent_counts: dict = {}
+    for r in rows:
+        d = dict(r)
+        d["client_label"] = d.get("client_1c") or d.get("company_name") or d.get("client_name") or f"#{d['client_id']}"
+        points.append(d)
+        tg = d.get("agent_tg_id")
+        if tg is None:
+            continue
+        if tg not in agent_counts:
+            agent_counts[tg] = {"tg_id": tg, "name": d.get("agent_name") or str(tg), "count": 0}
+        agent_counts[tg]["count"] += 1
+
+    agents = sorted(agent_counts.values(), key=lambda a: -a["count"])
+    return {"points": points, "agents": agents, "total": len(points)}
+
+
 @router.get("/{location_id}")
 def get_location(location_id: int):
     """Get a single location with its parent chain."""

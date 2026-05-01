@@ -279,6 +279,32 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_debts_client_id ON client_debts(client_id);
         CREATE INDEX IF NOT EXISTS idx_client_debts_report_date ON client_debts(report_date);
 
+        -- Collection-attempt log: every dispatcher phone call to a debtor
+        -- before/while a truck heads out. Snapshots debt + aging at call time
+        -- so history survives later debt-table reimports.
+        CREATE TABLE IF NOT EXISTS collection_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            dispatcher_name TEXT,
+            dispatcher_tg_id INTEGER,
+            call_at TEXT DEFAULT (datetime('now')),
+            outcome TEXT NOT NULL,
+            agreed_amount_uzs REAL,
+            agreed_amount_usd REAL,
+            notes TEXT,
+            debt_uzs_at_call REAL,
+            debt_usd_at_call REAL,
+            oldest_aging_at_call TEXT,
+            destination_tuman_id INTEGER,
+            destination_lat REAL,
+            destination_lng REAL,
+            included_in_route INTEGER DEFAULT 0,
+            actual_collected_uzs REAL,
+            actual_collected_usd REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ca_client ON collection_attempts(client_id, call_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_ca_call_at ON collection_attempts(call_at DESC);
+
         -- Demand signals: track orders on out-of-stock products
         CREATE TABLE IF NOT EXISTS demand_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

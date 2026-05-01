@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rassvet Admin Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
     <style>
         * {
             margin: 0;
@@ -805,6 +811,8 @@
                 <!-- BEGIN Phase 3: Search Analytics tab -->
                 <div class="nav-tab" data-tab="search" onclick="switchTab('search')">Search</div>
                 <!-- END Phase 3 -->
+                <div class="nav-tab" data-tab="coverage" onclick="switchTab('coverage')">Agent Coverage</div>
+                <div class="nav-tab" data-tab="collections" onclick="switchTab('collections')">Collections</div>
             </div>
             <div class="nav-footer">
                 <div class="currency-toggle">
@@ -1433,6 +1441,157 @@
                     </div>
                 </div>
                 <!-- END Phase 3 -->
+
+                <!-- Agent Coverage tab -->
+                <div id="coverage-tab" class="tab-content hidden">
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px;">
+                        <div style="color: #8b8fa3; font-size: 13px;">GPS pins agents tagged on client locations. Heat shows density; cluster shows individual visits.</div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                            <select id="coverageRole" onchange="reloadCoverage()" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
+                                <option value="agent" selected>Agents only</option>
+                                <option value="client">Clients (self-shared)</option>
+                                <option value="all">Both</option>
+                            </select>
+                            <select id="coverageAgent" onchange="renderCoverage()" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
+                                <option value="">All setters</option>
+                            </select>
+                            <input type="date" id="coverageFrom" onchange="reloadCoverage()" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
+                            <input type="date" id="coverageTo" onchange="reloadCoverage()" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
+                            <div class="currency-toggle" id="coverageLayerToggle">
+                                <button class="currency-btn active" data-clayer="heat" onclick="setCoverageLayer('heat')">Heat</button>
+                                <button class="currency-btn" data-clayer="cluster" onclick="setCoverageLayer('cluster')">Pins</button>
+                                <button class="currency-btn" data-clayer="both" onclick="setCoverageLayer('both')">Both</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Total Pins</div>
+                            <div class="kpi-value" id="coverage-kpi-total">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Unique Setters</div>
+                            <div class="kpi-value" id="coverage-kpi-setters">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Unique Clients</div>
+                            <div class="kpi-value" id="coverage-kpi-clients">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Last Pin</div>
+                            <div class="kpi-value" id="coverage-kpi-last" style="font-size:18px;">-</div>
+                        </div>
+                    </div>
+
+                    <div class="chart-container" style="padding: 0; overflow: hidden;">
+                        <div id="coverageMap" style="height: 600px; width: 100%; background:#0f1117;"></div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-title">Top Setters</div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Setter</th>
+                                        <th>Telegram ID</th>
+                                        <th>Pins</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="coverageSettersBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Collections tab -->
+                <div id="collections-tab" class="tab-content hidden">
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+                        <div style="color:#8b8fa3; font-size:13px;">Pick where your trucks are heading — see debtors along the way, call them, build the driver's route.</div>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <span style="font-size:12px; color:#8b8fa3;">Logged in as:</span>
+                            <select id="collDispatcher" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
+                                <option value="">— pick —</option>
+                                <option value="Alisher">Alisher</option>
+                                <option value="Uchqun">Uchqun</option>
+                                <option value="Ibrat">Ibrat</option>
+                                <option value="Shuxrat">Shuxrat</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="chart-container" id="collRoutesPanel" style="padding:16px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                            <div class="chart-title" style="margin:0;">Trucks heading out</div>
+                            <button onclick="addCollRoute()" style="background:#6366f1; color:white; border:none; border-radius:6px; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer;">+ Add truck</button>
+                        </div>
+                        <div id="collRoutesList"></div>
+                        <div style="display:flex; gap:8px; align-items:center; margin-top:12px;">
+                            <button onclick="loadCollCandidates()" style="background:#22c55e; color:white; border:none; border-radius:6px; padding:10px 18px; font-size:13px; font-weight:600; cursor:pointer;">Find debtors on the way</button>
+                            <label style="display:flex; align-items:center; gap:6px; color:#8b8fa3; font-size:12px;">
+                                <input type="checkbox" id="collExcludeRecent"> Hide 0–30 day debts
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="kpi-grid">
+                        <div class="kpi-card"><div class="kpi-label">Candidates</div><div class="kpi-value" id="coll-kpi-total">-</div></div>
+                        <div class="kpi-card"><div class="kpi-label">Total UZS Owed</div><div class="kpi-value" id="coll-kpi-uzs" style="font-size:22px;">-</div></div>
+                        <div class="kpi-card"><div class="kpi-label">Total USD Owed</div><div class="kpi-value" id="coll-kpi-usd" style="font-size:22px;">-</div></div>
+                        <div class="kpi-card"><div class="kpi-label">120+ Days</div><div class="kpi-value" id="coll-kpi-aged" style="color:#ef4444;">-</div></div>
+                    </div>
+
+                    <div class="chart-container" style="padding:0; overflow:hidden;">
+                        <div id="collectionsMap" style="height:520px; width:100%; background:#0f1117;"></div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-title" style="display:flex; justify-content:space-between; align-items:center;">
+                            <span>Debtors on the way</span>
+                            <button onclick="openBuildRouteModal()" style="background:#6366f1; color:white; border:none; border-radius:6px; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer;">Build driver route →</button>
+                        </div>
+                        <div class="table-wrapper" style="max-height:600px;">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Truck</th>
+                                        <th>Client</th>
+                                        <th>Tuman</th>
+                                        <th>Distance</th>
+                                        <th>Debt UZS</th>
+                                        <th>Debt USD</th>
+                                        <th>Aging</th>
+                                        <th>Last call</th>
+                                        <th style="min-width:160px;">Outcome</th>
+                                        <th style="min-width:140px;">Note</th>
+                                        <th>Save</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="collTbody"><tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:24px;">Add a truck destination above and click "Find debtors on the way".</td></tr></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Build-route modal -->
+        <div id="collRouteModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:100; align-items:center; justify-content:center;">
+            <div style="background:#1a1d27; border:1px solid #2a2d3a; border-radius:12px; padding:24px; max-width:720px; width:90%; max-height:85vh; overflow-y:auto;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <h2 style="margin:0; font-size:18px;">Driver route</h2>
+                    <button onclick="closeBuildRouteModal()" style="background:none; border:none; color:#8b8fa3; font-size:20px; cursor:pointer;">✕</button>
+                </div>
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:12px; color:#8b8fa3; margin-bottom:6px;">Google Maps link <span style="color:#6366f1; cursor:pointer;" onclick="copyToClipboard(document.getElementById('collModalUrl').textContent, this)">[Copy]</span></div>
+                    <div id="collModalUrl" style="font-family:monospace; font-size:11px; background:#0f1117; padding:10px; border-radius:6px; word-break:break-all; color:#22d3ee;"></div>
+                </div>
+                <div>
+                    <div style="font-size:12px; color:#8b8fa3; margin-bottom:6px;">Driver brief (Telegram-ready) <span style="color:#6366f1; cursor:pointer;" onclick="copyToClipboard(document.getElementById('collModalText').textContent, this)">[Copy]</span></div>
+                    <pre id="collModalText" style="font-family:inherit; font-size:13px; background:#0f1117; padding:12px; border-radius:6px; white-space:pre-wrap; color:#e4e4e7; max-height:50vh; overflow-y:auto;"></pre>
+                </div>
             </div>
         </div>
     </div>
@@ -1572,7 +1731,9 @@
                 clients: 'Client Portfolio',
                 inventory: 'Inventory',
                 health: 'Platform Health',
-                search: 'Search'
+                search: 'Search',
+                coverage: 'Agent Coverage',
+                collections: 'Collection Route Planner'
             };
             document.getElementById('pageTitle').textContent = titles[tabName];
 
@@ -1581,6 +1742,12 @@
                 Object.values(charts).forEach(c => {
                     if (c && c.resize) c.resize();
                 });
+                if (tabName === 'coverage' && coverageMap) {
+                    coverageMap.invalidateSize();
+                }
+                if (tabName === 'collections' && collectionsMap) {
+                    collectionsMap.invalidateSize();
+                }
             }, 100);
         }
 
@@ -1600,7 +1767,8 @@
                     loadClientsData(),
                     loadInventoryData(),
                     loadHealthData(),
-                    /* BEGIN Phase 3 */ loadSearchData() /* END Phase 3 */
+                    /* BEGIN Phase 3 */ loadSearchData() /* END Phase 3 */,
+                    loadCoverageData()
                 ]);
             } catch (err) {
                 console.error('Data load error:', err);
@@ -2853,6 +3021,512 @@
             }
         }
         // END Phase 3
+
+        // ==================== AGENT COVERAGE MAP ====================
+        let coverageMap = null;
+        let coverageHeatLayer = null;
+        let coverageClusterLayer = null;
+        let coverageLayer = 'heat';   // 'heat' | 'cluster' | 'both'
+        let coveragePoints = [];      // last loaded points (full result for current role+date filter)
+
+        function setCoverageLayer(mode) {
+            coverageLayer = mode;
+            document.querySelectorAll('#coverageLayerToggle .currency-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`[data-clayer="${mode}"]`).classList.add('active');
+            renderCoverage();
+        }
+
+        function ensureCoverageMap() {
+            if (coverageMap) return coverageMap;
+            coverageMap = L.map('coverageMap', { zoomControl: true }).setView([41.31, 69.27], 11); // Tashkent default
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap',
+                maxZoom: 19
+            }).addTo(coverageMap);
+            return coverageMap;
+        }
+
+        function escHtml(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        async function loadCoverageData() {
+            try {
+                const role = document.getElementById('coverageRole').value || 'agent';
+                const from = document.getElementById('coverageFrom').value;
+                const to = document.getElementById('coverageTo').value;
+                const params = new URLSearchParams({ admin_key: ADMIN_KEY, role });
+                if (from) params.set('from', from);
+                if (to) params.set('to', to);
+                const res = await fetch(`/api/locations/heatmap?${params.toString()}`);
+                if (!res.ok) throw new Error(`heatmap ${res.status}`);
+                const data = await res.json();
+                coveragePoints = data.points || [];
+
+                // Populate setter dropdown (preserve current selection if still valid)
+                const sel = document.getElementById('coverageAgent');
+                const current = sel.value;
+                sel.innerHTML = '<option value="">All setters</option>' +
+                    (data.agents || []).map(a =>
+                        `<option value="${a.tg_id}">${escHtml(a.name)} (${a.count})</option>`
+                    ).join('');
+                if (current && (data.agents || []).some(a => String(a.tg_id) === current)) {
+                    sel.value = current;
+                }
+
+                // Top setters table
+                const body = document.getElementById('coverageSettersBody');
+                body.innerHTML = (data.agents || []).slice(0, 50).map((a, i) =>
+                    `<tr><td class="table-number">${i + 1}</td><td>${escHtml(a.name)}</td><td style="color:#8b8fa3;">${a.tg_id}</td><td>${a.count}</td></tr>`
+                ).join('') || '<tr><td colspan="4" style="text-align:center; color:#8b8fa3;">No GPS pins yet.</td></tr>';
+
+                renderCoverage();
+            } catch (err) {
+                console.error('Coverage load error:', err);
+                document.getElementById('coverageSettersBody').innerHTML =
+                    '<tr><td colspan="4" style="text-align:center; color:#ef4444;">Failed to load coverage data.</td></tr>';
+            }
+        }
+
+        function reloadCoverage() {
+            loadCoverageData();
+        }
+
+        function renderCoverage() {
+            ensureCoverageMap();
+            const agentFilter = document.getElementById('coverageAgent').value;
+            const pts = agentFilter
+                ? coveragePoints.filter(p => String(p.agent_tg_id) === agentFilter)
+                : coveragePoints;
+
+            // KPIs
+            document.getElementById('coverage-kpi-total').textContent = pts.length;
+            const setters = new Set(pts.map(p => p.agent_tg_id).filter(x => x != null));
+            document.getElementById('coverage-kpi-setters').textContent = setters.size;
+            const clients = new Set(pts.map(p => p.client_id));
+            document.getElementById('coverage-kpi-clients').textContent = clients.size;
+            const last = pts.reduce((acc, p) => (p.set_at && (!acc || p.set_at > acc) ? p.set_at : acc), null);
+            document.getElementById('coverage-kpi-last').textContent = last ? last.slice(0, 16).replace('T', ' ') : '—';
+
+            // Clear old layers
+            if (coverageHeatLayer) { coverageMap.removeLayer(coverageHeatLayer); coverageHeatLayer = null; }
+            if (coverageClusterLayer) { coverageMap.removeLayer(coverageClusterLayer); coverageClusterLayer = null; }
+
+            if (!pts.length) return;
+
+            const latlngs = pts.map(p => [p.lat, p.lng]);
+
+            if (coverageLayer === 'heat' || coverageLayer === 'both') {
+                coverageHeatLayer = L.heatLayer(latlngs, {
+                    radius: 28,
+                    blur: 22,
+                    maxZoom: 14,
+                    minOpacity: 0.4,
+                    gradient: { 0.2: '#3b82f6', 0.4: '#22d3ee', 0.6: '#facc15', 0.8: '#f97316', 1.0: '#ef4444' }
+                }).addTo(coverageMap);
+            }
+
+            if (coverageLayer === 'cluster' || coverageLayer === 'both') {
+                coverageClusterLayer = L.markerClusterGroup({ chunkedLoading: true });
+                pts.forEach(p => {
+                    const when = p.set_at ? p.set_at.slice(0, 16).replace('T', ' ') : '—';
+                    const popup =
+                        `<div style="font-size:13px; line-height:1.5;">` +
+                        `<div style="font-weight:600; margin-bottom:4px;">${escHtml(p.client_label)}</div>` +
+                        `<div style="color:#555;">Setter: ${escHtml(p.agent_name || '—')} <span style="color:#999;">(${escHtml(p.role || '—')})</span></div>` +
+                        `<div style="color:#555;">When: ${escHtml(when)}</div>` +
+                        (p.address ? `<div style="color:#555; margin-top:4px;">${escHtml(p.address)}</div>` : '') +
+                        `<div style="margin-top:6px;"><a href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Open in Google Maps</a></div>` +
+                        `</div>`;
+                    L.marker([p.lat, p.lng]).bindPopup(popup).addTo(coverageClusterLayer);
+                });
+                coverageMap.addLayer(coverageClusterLayer);
+            }
+
+            // Fit bounds to data on first render or when filter shrinks the set significantly
+            try {
+                const b = L.latLngBounds(latlngs);
+                if (b.isValid()) coverageMap.fitBounds(b.pad(0.15), { maxZoom: 14, animate: false });
+            } catch (e) { /* keep current view */ }
+        }
+
+        // ==================== COLLECTIONS / ROUTE PLANNER ====================
+        const WAREHOUSE = { lat: 39.6455, lng: 66.9392 }; // 39°38'43.7"N 66°56'21.0"E (Samarkand main)
+        const ROUTE_COLORS = ['#3b82f6', '#f59e0b', '#22c55e', '#ec4899', '#a855f7'];
+        const AGING_COLORS = { '120+': '#ef4444', '91-120': '#f97316', '61-90': '#eab308', '31-60': '#3b82f6', '0-30': '#6b7280' };
+
+        let collectionsMap = null;
+        let collTumans = [];           // [{tuman_id, name, viloyat_name, lat, lng, pin_count}]
+        let collRoutes = [{ destMode: 'tuman', destTumanId: '', destLat: null, destLng: null, bufferKm: 5 }];
+        let collCandidates = [];       // last loaded candidates
+        let collMapLayers = [];        // Leaflet layers added per refresh (cleared on reload)
+        let collMarkerById = {};       // client_id → marker (for highlight on row hover)
+
+        // Restore dispatcher selection from localStorage
+        document.addEventListener('DOMContentLoaded', () => {
+            const sel = document.getElementById('collDispatcher');
+            if (sel) {
+                const saved = localStorage.getItem('collDispatcher');
+                if (saved) sel.value = saved;
+                sel.addEventListener('change', () => localStorage.setItem('collDispatcher', sel.value));
+            }
+        });
+
+        function ensureCollectionsMap() {
+            if (collectionsMap) return collectionsMap;
+            collectionsMap = L.map('collectionsMap', { zoomControl: true }).setView([WAREHOUSE.lat, WAREHOUSE.lng], 9);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap', maxZoom: 19
+            }).addTo(collectionsMap);
+            // Fixed warehouse marker
+            L.marker([WAREHOUSE.lat, WAREHOUSE.lng], {
+                icon: L.divIcon({
+                    html: '<div style="background:#6366f1; color:white; border:2px solid white; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-size:14px; box-shadow:0 2px 6px rgba(0,0,0,0.4);">🏠</div>',
+                    className: '', iconSize: [24, 24], iconAnchor: [12, 12]
+                })
+            }).bindPopup('<b>Склад (Warehouse)</b><br>Origin for all trucks').addTo(collectionsMap);
+            return collectionsMap;
+        }
+
+        async function loadCollTumans() {
+            if (collTumans.length) return collTumans;
+            const r = await fetch(`/api/collections/tumans?admin_key=${encodeURIComponent(ADMIN_KEY)}`);
+            if (!r.ok) throw new Error(`tumans ${r.status}`);
+            const data = await r.json();
+            collTumans = data.tumans || [];
+            return collTumans;
+        }
+
+        function renderCollRoutes() {
+            const list = document.getElementById('collRoutesList');
+            const tumanOptions = collTumans.map(t => {
+                const has = t.lat != null;
+                return `<option value="${t.tuman_id}" data-lat="${t.lat || ''}" data-lng="${t.lng || ''}">${escHtml(t.viloyat_name || '')} → ${escHtml(t.name)}${has ? '' : ' (no GPS)'}</option>`;
+            }).join('');
+
+            list.innerHTML = collRoutes.map((rt, i) => `
+                <div style="display:flex; gap:10px; align-items:center; padding:10px; background:#0f1117; border:1px solid #2a2d3a; border-radius:8px; margin-bottom:8px;">
+                    <div style="width:14px; height:14px; border-radius:50%; background:${ROUTE_COLORS[i % ROUTE_COLORS.length]};"></div>
+                    <div style="font-weight:600; font-size:13px; min-width:60px;">Truck ${i + 1}</div>
+                    <select onchange="setCollRouteTuman(${i}, this)" style="background:#1a1d27; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px; min-width:240px;">
+                        <option value="">— pick destination tuman —</option>
+                        ${tumanOptions}
+                    </select>
+                    <span style="font-size:11px; color:#8b8fa3;">or</span>
+                    <button onclick="startMapPickDest(${i})" id="collPickBtn-${i}" style="background:#1a1d27; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 12px; font-size:12px; cursor:pointer;">📍 Click on map</button>
+                    <span id="collDestLabel-${i}" style="font-size:11px; color:#22d3ee; margin-left:6px;">${rt.destLat ? `${rt.destLat.toFixed(4)},${rt.destLng.toFixed(4)}` : ''}</span>
+                    <span style="margin-left:auto; font-size:11px; color:#8b8fa3;">Buffer:</span>
+                    <select onchange="collRoutes[${i}].bufferKm = +this.value" style="background:#1a1d27; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 8px; font-size:12px;">
+                        ${[2, 5, 10, 20].map(km => `<option value="${km}" ${rt.bufferKm === km ? 'selected' : ''}>${km} km</option>`).join('')}
+                    </select>
+                    ${collRoutes.length > 1 ? `<button onclick="removeCollRoute(${i})" style="background:none; border:none; color:#ef4444; cursor:pointer; font-size:18px;">✕</button>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function setCollRouteTuman(i, sel) {
+            const opt = sel.options[sel.selectedIndex];
+            const lat = parseFloat(opt.dataset.lat);
+            const lng = parseFloat(opt.dataset.lng);
+            collRoutes[i].destTumanId = +sel.value || null;
+            if (!isNaN(lat) && !isNaN(lng)) {
+                collRoutes[i].destLat = lat;
+                collRoutes[i].destLng = lng;
+                collRoutes[i].destMode = 'tuman';
+                document.getElementById(`collDestLabel-${i}`).textContent = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+            } else if (sel.value) {
+                collRoutes[i].destLat = null;
+                collRoutes[i].destLng = null;
+                document.getElementById(`collDestLabel-${i}`).textContent = '⚠ tuman has no pinned clients yet — use map click';
+            }
+        }
+
+        function startMapPickDest(i) {
+            ensureCollectionsMap();
+            const btn = document.getElementById(`collPickBtn-${i}`);
+            btn.textContent = '🎯 Click on map…';
+            btn.style.background = '#6366f1';
+            const handler = (e) => {
+                collRoutes[i].destLat = e.latlng.lat;
+                collRoutes[i].destLng = e.latlng.lng;
+                collRoutes[i].destMode = 'pin';
+                collRoutes[i].destTumanId = null;
+                document.getElementById(`collDestLabel-${i}`).textContent = `${e.latlng.lat.toFixed(4)},${e.latlng.lng.toFixed(4)}`;
+                btn.textContent = '📍 Click on map';
+                btn.style.background = '#1a1d27';
+                collectionsMap.off('click', handler);
+            };
+            collectionsMap.on('click', handler);
+        }
+
+        function addCollRoute() {
+            collRoutes.push({ destMode: 'tuman', destTumanId: '', destLat: null, destLng: null, bufferKm: 5 });
+            renderCollRoutes();
+        }
+
+        function removeCollRoute(i) {
+            if (collRoutes.length <= 1) return;
+            collRoutes.splice(i, 1);
+            renderCollRoutes();
+        }
+
+        async function initCollectionsTab() {
+            ensureCollectionsMap();
+            try { await loadCollTumans(); } catch (e) { console.error('tumans:', e); }
+            renderCollRoutes();
+        }
+        // Hook into tab switch — initialize on first view
+        const _origSwitchTab = switchTab;
+        switchTab = function(tabName) {
+            _origSwitchTab(tabName);
+            if (tabName === 'collections' && !collectionsMap) initCollectionsTab();
+        };
+
+        async function loadCollCandidates() {
+            const valid = collRoutes.filter(r => r.destLat != null && r.destLng != null);
+            if (!valid.length) { alert('Pick at least one destination first.'); return; }
+            const body = {
+                routes: valid.map(r => ({
+                    origin_lat: WAREHOUSE.lat, origin_lng: WAREHOUSE.lng,
+                    dest_lat: r.destLat, dest_lng: r.destLng,
+                    dest_tuman_id: r.destTumanId || null,
+                    buffer_km: r.bufferKm
+                })),
+                exclude_aging_0_30: document.getElementById('collExcludeRecent').checked
+            };
+            try {
+                const r = await fetch(`/api/collections/candidates?admin_key=${encodeURIComponent(ADMIN_KEY)}`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                if (!r.ok) throw new Error(`candidates ${r.status}`);
+                const data = await r.json();
+                collCandidates = data.candidates || [];
+                renderCollMap();
+                renderCollTable();
+            } catch (e) {
+                console.error(e); alert('Failed to load candidates: ' + e.message);
+            }
+        }
+
+        function renderCollMap() {
+            ensureCollectionsMap();
+            collMapLayers.forEach(l => collectionsMap.removeLayer(l));
+            collMapLayers = []; collMarkerById = {};
+
+            // Draw each route as polyline + buffer corridor
+            const validRoutes = collRoutes.filter(r => r.destLat != null && r.destLng != null);
+            const allLatLngs = [[WAREHOUSE.lat, WAREHOUSE.lng]];
+            validRoutes.forEach((rt, i) => {
+                const color = ROUTE_COLORS[i % ROUTE_COLORS.length];
+                const line = L.polyline([[WAREHOUSE.lat, WAREHOUSE.lng], [rt.destLat, rt.destLng]],
+                    { color, weight: 4, opacity: 0.9 }).addTo(collectionsMap);
+                collMapLayers.push(line);
+                // Translucent corridor — approximate as a wide polyline
+                const corridor = L.polyline([[WAREHOUSE.lat, WAREHOUSE.lng], [rt.destLat, rt.destLng]],
+                    { color, weight: rt.bufferKm * 8, opacity: 0.12, lineCap: 'butt' }).addTo(collectionsMap);
+                collMapLayers.push(corridor);
+                // Destination marker
+                const destMarker = L.marker([rt.destLat, rt.destLng], {
+                    icon: L.divIcon({
+                        html: `<div style="background:${color}; color:white; border:2px solid white; border-radius:50%; width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; box-shadow:0 2px 6px rgba(0,0,0,0.4);">${i + 1}</div>`,
+                        className: '', iconSize: [22, 22], iconAnchor: [11, 11]
+                    })
+                }).bindPopup(`<b>Truck ${i + 1} destination</b>`).addTo(collectionsMap);
+                collMapLayers.push(destMarker);
+                allLatLngs.push([rt.destLat, rt.destLng]);
+            });
+
+            // Debtor pins
+            collCandidates.forEach(c => {
+                if (c.lat == null || c.lng == null) return;
+                const debtTotal = (c.debt_uzs || 0) + (c.debt_usd || 0) * 12500;
+                const radius = Math.min(20, Math.max(6, Math.log10(debtTotal + 1) * 2));
+                const marker = L.circleMarker([c.lat, c.lng], {
+                    radius, color: AGING_COLORS[c.oldest_aging] || '#9ca3af',
+                    fillColor: AGING_COLORS[c.oldest_aging] || '#9ca3af',
+                    fillOpacity: 0.7, weight: 2
+                }).addTo(collectionsMap);
+                marker.bindPopup(`<b>${escHtml(c.client_name)}</b><br>Debt: ${fmtSomCompact(c.debt_uzs)} / $${(c.debt_usd || 0).toFixed(0)}<br>Aging: ${c.oldest_aging}<br>Trucks: ${c.matched_routes.map(r => r + 1).join(', ')}`);
+                collMapLayers.push(marker);
+                collMarkerById[c.client_id] = marker;
+                allLatLngs.push([c.lat, c.lng]);
+            });
+
+            try {
+                const b = L.latLngBounds(allLatLngs);
+                if (b.isValid()) collectionsMap.fitBounds(b.pad(0.1), { maxZoom: 11, animate: false });
+            } catch (e) { /* */ }
+        }
+
+        function fmtSomCompact(n) {
+            n = +n || 0;
+            if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+            return n.toFixed(0);
+        }
+
+        function fmtCallTs(s) {
+            if (!s) return '—';
+            return s.slice(5, 16).replace('T', ' ');
+        }
+
+        function renderCollTable() {
+            // KPIs
+            const totalUzs = collCandidates.reduce((s, c) => s + (c.debt_uzs || 0), 0);
+            const totalUsd = collCandidates.reduce((s, c) => s + (c.debt_usd || 0), 0);
+            const aged = collCandidates.filter(c => c.oldest_aging === '120+').length;
+            document.getElementById('coll-kpi-total').textContent = collCandidates.length;
+            document.getElementById('coll-kpi-uzs').textContent = fmtSomCompact(totalUzs);
+            document.getElementById('coll-kpi-usd').textContent = '$' + fmtSomCompact(totalUsd);
+            document.getElementById('coll-kpi-aged').textContent = aged;
+
+            const tbody = document.getElementById('collTbody');
+            if (!collCandidates.length) {
+                tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:24px;">No debtors on the way for the chosen routes.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = collCandidates.map((c, i) => {
+                const truckBadges = c.matched_routes.map(r => `<span style="background:${ROUTE_COLORS[r % ROUTE_COLORS.length]}; color:white; padding:2px 6px; border-radius:8px; font-size:10px; margin-right:2px;">${r + 1}</span>`).join('');
+                const phone = c.phone || '';
+                const callLink = phone ? `<a href="tel:${escHtml(phone)}" style="color:#22d3ee;">☎ ${escHtml(phone)}</a>` : '<span style="color:#6b7280;">no phone</span>';
+                const last = c.last_attempt;
+                const lastCell = last
+                    ? `<span title="${escHtml(last.notes || '')}" style="color:${last.outcome.startsWith('agreed') ? '#22c55e' : last.outcome === 'refused' ? '#ef4444' : '#8b8fa3'}; font-size:11px;">${escHtml(last.outcome)} · ${fmtCallTs(last.called_at)}</span>`
+                    : '<span style="color:#6b7280; font-size:11px;">—</span>';
+                const dist = c.distance_km != null ? `${c.distance_km.toFixed(1)} km` : '—';
+                return `
+                    <tr data-cid="${c.client_id}" onmouseover="highlightCollPin(${c.client_id}, true)" onmouseout="highlightCollPin(${c.client_id}, false)">
+                        <td>${truckBadges}</td>
+                        <td><div style="font-weight:600;">${escHtml(c.client_name)}</div>${callLink}</td>
+                        <td style="font-size:11px; color:#8b8fa3;">${escHtml(c.tuman || '—')}</td>
+                        <td>${dist}</td>
+                        <td>${fmtSomCompact(c.debt_uzs)}</td>
+                        <td>$${(c.debt_usd || 0).toFixed(0)}</td>
+                        <td><span style="background:${AGING_COLORS[c.oldest_aging]}; color:white; padding:2px 6px; border-radius:8px; font-size:10px;">${c.oldest_aging}</span></td>
+                        <td>${lastCell}</td>
+                        <td>
+                            <select id="coll-out-${i}" onchange="onCollOutcomeChange(${i})" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:4px; padding:4px 6px; font-size:11px; width:100%;">
+                                <option value="">—</option>
+                                <option value="no_answer">No answer</option>
+                                <option value="will_call_later">Will call later</option>
+                                <option value="refused">Refused</option>
+                                <option value="agreed_partial">Agreed partial</option>
+                                <option value="agreed_full">Agreed full</option>
+                            </select>
+                            <div id="coll-amt-${i}" style="display:none; margin-top:4px;">
+                                <input type="number" id="coll-amt-uzs-${i}" placeholder="UZS" style="width:80px; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:4px; padding:3px 5px; font-size:11px;">
+                                <input type="number" id="coll-amt-usd-${i}" placeholder="USD" style="width:60px; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:4px; padding:3px 5px; font-size:11px;">
+                            </div>
+                        </td>
+                        <td><input type="text" id="coll-note-${i}" maxlength="140" placeholder="optional note" style="width:140px; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:4px; padding:4px 6px; font-size:11px;"></td>
+                        <td><button onclick="saveCollAttempt(${i})" id="coll-save-${i}" style="background:#22c55e; color:white; border:none; border-radius:4px; padding:5px 10px; font-size:11px; cursor:pointer;">Save</button></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function onCollOutcomeChange(i) {
+            const o = document.getElementById(`coll-out-${i}`).value;
+            const amt = document.getElementById(`coll-amt-${i}`);
+            amt.style.display = (o === 'agreed_full' || o === 'agreed_partial') ? 'block' : 'none';
+        }
+
+        function highlightCollPin(cid, on) {
+            const m = collMarkerById[cid]; if (!m) return;
+            m.setStyle({ weight: on ? 4 : 2, fillOpacity: on ? 1 : 0.7 });
+        }
+
+        async function saveCollAttempt(i) {
+            const c = collCandidates[i];
+            const outcome = document.getElementById(`coll-out-${i}`).value;
+            if (!outcome) { alert('Pick an outcome first'); return; }
+            const dispatcher = document.getElementById('collDispatcher').value;
+            if (!dispatcher) { alert('Pick "Logged in as" at the top first'); return; }
+            const notes = document.getElementById(`coll-note-${i}`).value || null;
+            let agreed_uzs = null, agreed_usd = null;
+            if (outcome === 'agreed_full' || outcome === 'agreed_partial') {
+                const u = parseFloat(document.getElementById(`coll-amt-uzs-${i}`).value);
+                const d = parseFloat(document.getElementById(`coll-amt-usd-${i}`).value);
+                if (!isNaN(u)) agreed_uzs = u;
+                if (!isNaN(d)) agreed_usd = d;
+                if (outcome === 'agreed_full' && agreed_uzs == null && agreed_usd == null) {
+                    agreed_uzs = c.debt_uzs || null;
+                    agreed_usd = c.debt_usd || null;
+                }
+            }
+            // Pull route context — first matched route for snapshot
+            const route = collRoutes.filter(r => r.destLat != null)[c.matched_routes[0]];
+            const body = {
+                client_id: c.client_id, outcome,
+                dispatcher_name: dispatcher,
+                agreed_amount_uzs: agreed_uzs,
+                agreed_amount_usd: agreed_usd,
+                notes,
+                destination_tuman_id: route?.destTumanId || null,
+                destination_lat: route?.destLat || null,
+                destination_lng: route?.destLng || null
+            };
+            const btn = document.getElementById(`coll-save-${i}`);
+            btn.textContent = '...'; btn.disabled = true;
+            try {
+                const r = await fetch(`/api/collections/attempts?admin_key=${encodeURIComponent(ADMIN_KEY)}`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                if (!r.ok) throw new Error(`save ${r.status}`);
+                const out = await r.json();
+                c._attempt_id = out.id;  // remember for build-route
+                c.last_attempt = { outcome, notes, called_at: new Date().toISOString().slice(0, 19), agreed_uzs, agreed_usd };
+                btn.textContent = '✓'; btn.style.background = '#16a34a';
+            } catch (e) {
+                console.error(e); alert('Save failed: ' + e.message);
+                btn.textContent = 'Save'; btn.disabled = false;
+            }
+        }
+
+        async function openBuildRouteModal() {
+            // Collect attempt IDs for rows that were saved with an "agreed_*" outcome
+            const ids = collCandidates
+                .filter(c => c._attempt_id && c.last_attempt && c.last_attempt.outcome.startsWith('agreed'))
+                .map(c => c._attempt_id);
+            // Also collect delivery destinations from the route list (the trucks themselves)
+            const deliveryStops = collRoutes
+                .filter(r => r.destLat != null)
+                .map((r, i) => ({ lat: r.destLat, lng: r.destLng, label: `Truck ${i + 1} delivery` }));
+            if (!ids.length && !deliveryStops.length) {
+                alert('Save at least one "agreed" debtor outcome first, or add a destination.'); return;
+            }
+            const body = {
+                origin_lat: WAREHOUSE.lat, origin_lng: WAREHOUSE.lng,
+                delivery_stops: deliveryStops,
+                collection_attempt_ids: ids
+            };
+            try {
+                const r = await fetch(`/api/collections/route?admin_key=${encodeURIComponent(ADMIN_KEY)}`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                if (!r.ok) throw new Error(`route ${r.status}`);
+                const out = await r.json();
+                document.getElementById('collModalUrl').textContent = out.google_maps_url;
+                document.getElementById('collModalText').textContent = out.telegram_message;
+                document.getElementById('collRouteModal').style.display = 'flex';
+            } catch (e) {
+                console.error(e); alert('Build route failed: ' + e.message);
+            }
+        }
+
+        function closeBuildRouteModal() {
+            document.getElementById('collRouteModal').style.display = 'none';
+        }
+
+        function copyToClipboard(text, el) {
+            navigator.clipboard.writeText(text).then(() => {
+                if (el) {
+                    const orig = el.textContent;
+                    el.textContent = '[Copied!]';
+                    setTimeout(() => { el.textContent = orig; }, 1500);
+                }
+            });
+        }
     </script>
 </body>
 </html>

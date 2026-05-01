@@ -243,6 +243,8 @@ app.include_router(agent.router)
 from backend.routers import payments
 app.include_router(payments.router)
 app.include_router(locations.client_router)
+from backend.routers import collections as collections_router
+app.include_router(collections_router.router)
 
 # Serve admin dashboard (static HTML)
 admin_dir = Path("./admin")
