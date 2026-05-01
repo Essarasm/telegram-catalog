@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 7  # 2026-05-01: +procurement_categories, suppliers, supplier_categories (Cashbook Phase 2 — legal-entity bank transfer routing)
+SCHEMA_VERSION = 8  # 2026-05-01: +legal_transfers, legal_transfer_events (Cashbook Phase 2 — live transaction record for legal-entity bank transfer flow)
 
 
 def init_db():
@@ -1320,11 +1320,63 @@ def init_db():
     from backend.services.seed_procurement import seed_procurement
     seed_procurement(conn)
 
+    # ─────────────────────────────────────────────────────────────
+    # Session Z: Cashbook Phase 2 — live transaction record
+    # legal_transfers = one row per legal-entity bank transfer request
+    # (born at agent Stage 1 submit, lives through 7-stage flow to faktura close)
+    # legal_transfer_events = audit chain (every state transition logged)
+    # ─────────────────────────────────────────────────────────────
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS legal_transfers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            submitted_by_telegram_id INTEGER NOT NULL,
+            amount_uzs REAL NOT NULL,
+            category_id INTEGER NOT NULL,
+            category_freetext TEXT,
+            legal_entity_name TEXT NOT NULL,
+            legal_entity_inn TEXT NOT NULL,
+            guvohnoma_photo_url TEXT,
+            supplier_id INTEGER,
+            agreement_url TEXT,
+            transfer_proof_url TEXT,
+            doverennost_url TEXT,
+            faktura_url TEXT,
+            status TEXT NOT NULL DEFAULT 'submitted'
+                CHECK(status IN ('submitted', 'supplier_assigned', 'agreement_received',
+                                  'awaiting_client_transfer', 'transfer_proof_uploaded',
+                                  'supplier_confirmed', 'doverennost_received', 'closed', 'cancelled')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (client_id) REFERENCES allowed_clients(id),
+            FOREIGN KEY (category_id) REFERENCES procurement_categories(id),
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_legal_transfers_status ON legal_transfers(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_legal_transfers_client ON legal_transfers(client_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_legal_transfers_supplier ON legal_transfers(supplier_id)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS legal_transfer_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            legal_transfer_id INTEGER NOT NULL,
+            from_status TEXT,
+            to_status TEXT NOT NULL,
+            actor_telegram_id INTEGER NOT NULL,
+            note TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (legal_transfer_id) REFERENCES legal_transfers(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_legal_transfer_events_transfer ON legal_transfer_events(legal_transfer_id)")
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "Cashbook Phase 2: procurement_categories + suppliers + supplier_categories (legal-entity transfer routing)"),
+            (SCHEMA_VERSION, "Cashbook Phase 2: legal_transfers + legal_transfer_events (live transaction record for legal-entity bank transfer)"),
         )
 
     conn.commit()
