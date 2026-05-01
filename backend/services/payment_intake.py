@@ -599,6 +599,62 @@ def list_suppliers_in_category(conn, category_id: int) -> List[dict]:
     return [dict(r) for r in rows]
 
 
+def attach_agreement(
+    conn,
+    *,
+    legal_transfer_id: int,
+    agreement_url: str,
+    actor_telegram_id: int,
+) -> dict:
+    """Atomic Stage 3 transition: store agreement_url (typically 'tg://<file_id>'
+    for v1 — Telegram-mediated storage) + flip status supplier_assigned →
+    agreement_received + log event.
+
+    Returns transfer info (id, client_id, amount_uzs, legal_entity_name,
+    supplier_name_1c) for downstream notification — caller uses this to
+    DM the client and edit the cashier-group message.
+
+    Raises ValueError if transfer not found or not in supplier_assigned status.
+    """
+    cur = conn.cursor()
+    row = cur.execute(
+        """SELECT lt.status, lt.client_id, lt.amount_uzs, lt.legal_entity_name,
+                  s.name_1c AS supplier_name_1c
+             FROM legal_transfers lt
+             LEFT JOIN suppliers s ON s.id = lt.supplier_id
+            WHERE lt.id = ?""",
+        (legal_transfer_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Transfer #{legal_transfer_id} not found")
+    if row["status"] != "supplier_assigned":
+        raise ValueError(
+            f"Transfer is '{row['status']}', not supplier_assigned (Stage 3 expects supplier_assigned)"
+        )
+
+    cur.execute(
+        """UPDATE legal_transfers
+              SET agreement_url = ?, status = 'agreement_received',
+                  updated_at = datetime('now')
+            WHERE id = ?""",
+        (agreement_url, legal_transfer_id),
+    )
+    cur.execute(
+        """INSERT INTO legal_transfer_events
+              (legal_transfer_id, from_status, to_status, actor_telegram_id, note)
+           VALUES (?, 'supplier_assigned', 'agreement_received', ?, NULL)""",
+        (legal_transfer_id, actor_telegram_id),
+    )
+    conn.commit()
+    return {
+        "id": legal_transfer_id,
+        "client_id": row["client_id"],
+        "amount_uzs": row["amount_uzs"],
+        "legal_entity_name": row["legal_entity_name"],
+        "supplier_name_1c": row["supplier_name_1c"],
+    }
+
+
 def assign_supplier(
     conn,
     *,

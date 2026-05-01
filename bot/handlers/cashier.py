@@ -18,6 +18,7 @@ Notifications fire from this handler directly via bot.send_message:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from aiogram import Router, F, Bot, types
@@ -52,6 +53,7 @@ from backend.services.payment_intake import (
     resolve_client_telegram_ids,
     admin_cancel_payment,
     assign_supplier,
+    attach_agreement,
 )
 from backend.services.client_search import search_clients
 from bot.shared import is_admin, is_admin_cb
@@ -404,22 +406,140 @@ async def cb_legaltx_pick_supplier(cb: CallbackQuery, bot: Bot):
         conn.close()
 
     supplier_name = result["supplier_name_1c"]
-    # Edit the notification in place — remove keyboard, append footer
+    # Edit the notification in place — remove keyboard, append supplier
+    # footer + Stage 3 instruction (uncle replies with agreement file)
     original = cb.message.html_text or cb.message.text or ""
-    new_text = original + f"\n\n✅ → <b>{html_escape(supplier_name)}</b>"
+    new_text = (
+        original
+        + f"\n\n✅ → <b>{html_escape(supplier_name)}</b>"
+        + "\n📎 <i>Shartnomani shu xabarga javob qilib yuboring</i>"
+    )
     try:
         await cb.message.edit_text(
             new_text, parse_mode="HTML", disable_web_page_preview=True
         )
     except Exception as e:
-        # Edit may fail if message is too old or content unchanged; fall
-        # back to a fresh confirmation message in the group
         logger.warning(f"legaltx pick edit failed: {e}")
         await cb.message.answer(
-            f"✅ #{transfer_id} → <b>{html_escape(supplier_name)}</b>",
+            f"✅ #{transfer_id} → <b>{html_escape(supplier_name)}</b>\n"
+            f"📎 <i>Shartnomani shu xabarga javob qilib yuboring</i>",
             parse_mode="HTML",
         )
     await cb.answer(f"✅ {supplier_name[:50]}")
+
+
+# ── Stage 3: agreement document upload ──────────────────────────────
+# Uncle replies to a Stage 1 notification (in the legal-transfer group)
+# with a .docx (or any doc). Bot detects the reply, parses #<id> from
+# the original message text, attaches the file_id, and DMs the client
+# with the document so they can wire to the supplier.
+
+_LEGALTX_ID_RE = re.compile(r"#(\d+)")
+
+
+def _fmt_uzs_for_msg(amount: float) -> str:
+    n = int(round(amount))
+    return f"{n:,}".replace(",", " ")
+
+
+@router.message(F.document & F.reply_to_message)
+async def cb_legaltx_agreement_upload(message: Message, bot: Bot):
+    """Stage 3: agreement file uploaded as a reply to the Stage 1 notification.
+
+    Filters: must be a reply to one of the bot's own messages, the original
+    message must contain the legal-transfer header marker AND a #<id> token,
+    and the user must have admin/cashier role. Otherwise silently ignored —
+    the bot stays out of the way of unrelated documents in the group.
+    """
+    rt = message.reply_to_message
+    if not rt or not rt.from_user or rt.from_user.id != bot.id:
+        return
+    text = rt.text or rt.caption or ""
+    if "yuridik shaxs to'lov" not in text.lower():
+        return
+    m = _LEGALTX_ID_RE.search(text)
+    if not m:
+        return
+    try:
+        transfer_id = int(m.group(1))
+    except ValueError:
+        return
+    if not is_cashier_or_admin(message):
+        return  # Silent — not our event
+
+    file_id = message.document.file_id
+    file_name = message.document.file_name or "agreement"
+
+    conn = get_db()
+    try:
+        try:
+            result = attach_agreement(
+                conn,
+                legal_transfer_id=transfer_id,
+                agreement_url=f"tg://{file_id}",
+                actor_telegram_id=message.from_user.id,
+            )
+        except ValueError as e:
+            await message.reply(f"⚠️ {str(e)[:200]}")
+            return
+        client_tg_ids = resolve_client_telegram_ids(conn, [result["client_id"]])
+    finally:
+        conn.close()
+
+    # Edit the original notification: replace the Stage 3 prompt line with
+    # a "Shartnoma yuklandi" confirmation + Stage 4 prompt for the cashier.
+    original_html = rt.html_text or rt.text or ""
+    # Strip the old Stage 3 prompt if present so we don't accumulate clutter
+    original_html = original_html.replace(
+        "📎 <i>Shartnomani shu xabarga javob qilib yuboring</i>", ""
+    ).rstrip()
+    new_text = (
+        original_html
+        + "\n📎 ✅ <b>Shartnoma yuklandi</b>"
+        + "\n💰 <i>Klient to'lovni amalga oshirgandan keyin chek shu xabarga javob qilsin</i>"
+    )
+    try:
+        await rt.edit_text(new_text, parse_mode="HTML", disable_web_page_preview=True)
+    except Exception as e:
+        logger.warning(f"agreement upload edit failed: {e}")
+
+    await message.reply(
+        f"✅ <b>#{transfer_id}</b> Shartnoma qabul qilindi — klientga yuborildi.",
+        parse_mode="HTML",
+    )
+
+    # DM client(s) — siblings (multiple phones same client_id_1c) all get a copy
+    if not client_tg_ids:
+        await message.reply(
+            f"⚠️ Klient <b>#{result['client_id']}</b> uchun bog'langan Telegram foydalanuvchi topilmadi. "
+            f"Shartnomani qo'lda yuboring.",
+            parse_mode="HTML",
+        )
+        return
+
+    client_caption = (
+        f"🏛 <b>Yuridik shaxs to'lov #{transfer_id}</b>\n\n"
+        f"Shartnoma keldi. Iltimos, faylni o'qing va to'lovni amalga oshiring.\n\n"
+        f"💰 Summa: <b>{_fmt_uzs_for_msg(result['amount_uzs'])} UZS</b>\n"
+        f"🏪 Yetkazib beruvchi: <b>{html_escape(result['supplier_name_1c'] or '')}</b>\n"
+        f"🏢 Sizning firma: <b>{html_escape(result['legal_entity_name'] or '')}</b>\n\n"
+        f"<i>To'lov amalga oshgandan keyin bank chekini bot orqali yuboring.</i>"
+    )
+    sent_count = 0
+    for client_tg in client_tg_ids:
+        try:
+            await bot.send_document(
+                client_tg, file_id, caption=client_caption, parse_mode="HTML"
+            )
+            sent_count += 1
+        except Exception as e:
+            logger.warning(
+                f"Failed to send agreement #{transfer_id} to client tg={client_tg}: {e}"
+            )
+    if sent_count == 0:
+        await message.reply(
+            f"⚠️ Klientga yuborib bo'lmadi (botni bloklagan bo'lishi mumkin). Qo'lda yuboring."
+        )
 
 
 @router.message(Command("bekor"))
