@@ -470,9 +470,13 @@ async def cmd_list(message: types.Message):
 # The fallback lives on the dispatcher (root router), which in aiogram 3 is
 # tried BEFORE any included sub-router. Anything the fallback matches is
 # swallowed and never reaches `bot/handlers/*`. Exclude message shapes that
-# sub-routers need to handle — currently location pins (location_router) and
-# documents (uploads_router has document-caption handlers for private DMs too).
-@dp.message(F.chat.type == "private", ~F.location, ~F.document)
+# sub-routers need to handle:
+#   - location pins (location_router)
+#   - documents (uploads_router has document-caption handlers in DM;
+#     cashier_router has Stage 5a transfer-proof handler in DM)
+#   - photos (cashier_router Stage 5a accepts photo replies in DM as
+#     bank-transfer proof for legal-entity transfer flow)
+@dp.message(F.chat.type == "private", ~F.location, ~F.document, ~F.photo)
 async def fallback(message: types.Message):
     """Handle unrecognized messages in private chats."""
 
