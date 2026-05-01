@@ -477,6 +477,90 @@ def resolve_client_telegram_ids(conn, client_id: int) -> List[int]:
     return [r["telegram_id"] for r in rows]
 
 
+def format_card_number(num: str) -> str:
+    """8600123412345678 → '8600 1234 1234 5678'. Cosmetic only; storage stays
+    as a digits-only string."""
+    digits = "".join(c for c in (num or "") if c.isdigit())
+    if not digits:
+        return num or ""
+    chunks = [digits[i : i + 4] for i in range(0, len(digits), 4)]
+    return " ".join(chunks)
+
+
+def list_dedicated_cards(conn, active_only: bool = True) -> List[dict]:
+    """Return P2P destination cards (cards Rassvet gives to clients to wire
+    money to). active_only filters out retired cards."""
+    where = "WHERE active = 1" if active_only else ""
+    rows = conn.execute(
+        f"""SELECT id, card_number, holder_first_name, holder_last_name,
+                   active, created_at, retired_at
+              FROM dedicated_cards
+              {where}
+              ORDER BY id"""
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_dedicated_card(conn, *, card_number: str, first: str, last: str) -> dict:
+    """Insert a new dedicated card OR reactivate an existing one (matched by
+    card_number). On reactivation, holder name is updated to the latest values.
+    Returns the row id + a flag indicating whether the row was newly created
+    or reactivated.
+
+    Raises ValueError if card_number is empty / non-digit / wrong length, or
+    if first/last is empty.
+    """
+    digits = "".join(c for c in (card_number or "") if c.isdigit())
+    if len(digits) != 16:
+        raise ValueError(
+            f"Card number must be 16 digits (got {len(digits)})"
+        )
+    first = (first or "").strip()
+    last = (last or "").strip()
+    if not first or not last:
+        raise ValueError("Holder first and last name required")
+
+    cur = conn.cursor()
+    existing = cur.execute(
+        "SELECT id, active FROM dedicated_cards WHERE card_number = ?",
+        (digits,),
+    ).fetchone()
+    if existing:
+        cur.execute(
+            """UPDATE dedicated_cards
+                  SET active = 1, retired_at = NULL,
+                      holder_first_name = ?, holder_last_name = ?
+                WHERE id = ?""",
+            (first, last, existing["id"]),
+        )
+        conn.commit()
+        return {"id": existing["id"], "reactivated": True}
+
+    cur.execute(
+        """INSERT INTO dedicated_cards
+              (card_number, holder_first_name, holder_last_name)
+           VALUES (?, ?, ?)""",
+        (digits, first, last),
+    )
+    conn.commit()
+    return {"id": cur.lastrowid, "reactivated": False}
+
+
+def retire_dedicated_card(conn, card_id: int) -> bool:
+    """Soft-delete: set active=0, retired_at=now. Returns True if a row
+    actually changed (i.e., it existed and was active before)."""
+    cur = conn.cursor()
+    cur.execute(
+        """UPDATE dedicated_cards
+              SET active = 0, retired_at = datetime('now')
+            WHERE id = ? AND active = 1""",
+        (card_id,),
+    )
+    changed = cur.rowcount > 0
+    conn.commit()
+    return changed
+
+
 def list_active_categories(conn) -> List[dict]:
     """Active procurement categories for the Stage 1 dropdown of the
     legal-entity bank transfer flow. Returned in display order.

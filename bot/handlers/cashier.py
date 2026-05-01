@@ -57,6 +57,10 @@ from backend.services.payment_intake import (
     attach_agreement,
     attach_transfer_proof,
     confirm_supplier_receipt,
+    list_dedicated_cards,
+    add_dedicated_card,
+    retire_dedicated_card,
+    format_card_number,
 )
 from backend.services.client_search import search_clients
 from bot.shared import is_admin, is_admin_cb
@@ -78,6 +82,12 @@ class CashierFlow(StatesGroup):
     # Agentdan pul qabul qilish (confirm/reject queued submissions)
     queue = State()
     queue_reject_reason = State()
+
+
+class CardsAdminFlow(StatesGroup):
+    """Admin /cards CRUD — adding a new dedicated_card requires the user to
+    type the card details on the next message."""
+    awaiting_new_card = State()
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -322,6 +332,206 @@ async def cmd_cashbook(message: Message):
         conn.close()
     text, kb = _cashbook_render_rows(rows)
     await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+# ── Admin: /cards — manage P2P destination cards ────────────────────
+
+def _render_cards_panel(cards: list):
+    """Render the /cards admin panel: list + per-row delete + add button."""
+    if not cards:
+        text = (
+            "💳 <b>Bank kartalari</b>\n\n"
+            "<i>Faol karta yo'q.</i> Yangi karta qo'shing."
+        )
+    else:
+        lines = [f"💳 <b>Bank kartalari ({len(cards)} ta faol)</b>", ""]
+        for i, c in enumerate(cards, start=1):
+            num = format_card_number(c["card_number"])
+            full_name = f"{c['holder_first_name']} {c['holder_last_name']}".strip()
+            lines.append(f"{i}. <code>{num}</code> — {html_escape(full_name)}")
+        text = "\n".join(lines)
+
+    kb_rows = []
+    for c in cards:
+        full_name = f"{c['holder_first_name']} {c['holder_last_name']}".strip()
+        kb_rows.append([
+            InlineKeyboardButton(
+                text=f"✖ {full_name[:50]}",
+                callback_data=f"cards:del_ask:{c['id']}",
+            )
+        ])
+    kb_rows.append([
+        InlineKeyboardButton(text="➕ Yangi karta qo'shish", callback_data="cards:add")
+    ])
+    kb_rows.append([
+        InlineKeyboardButton(text="❌ Yopish", callback_data="cards:close")
+    ])
+    return text, InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
+@router.message(Command("cards"))
+async def cmd_cards(message: Message, state: FSMContext):
+    """Admin: list/add/remove dedicated_cards used as P2P destinations."""
+    if not is_admin(message):
+        return
+    await state.clear()  # Drop any stale CardsAdminFlow state
+    conn = get_db()
+    try:
+        cards = list_dedicated_cards(conn, active_only=True)
+    finally:
+        conn.close()
+    text, kb = _render_cards_panel(cards)
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("cards:del_ask:"))
+async def cb_cards_del_ask(cb: CallbackQuery):
+    """Delete confirmation prompt — replaces buttons with [Yes][No]."""
+    if not is_admin_cb(cb):
+        await cb.answer("Faqat admin", show_alert=True)
+        return
+    try:
+        card_id = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri ID", show_alert=True)
+        return
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT card_number, holder_first_name, holder_last_name FROM dedicated_cards WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        await cb.answer("Karta topilmadi", show_alert=True)
+        return
+    name = f"{row['holder_first_name']} {row['holder_last_name']}".strip()
+    text = (
+        f"⚠️ Kartani o'chirilsinmi?\n\n"
+        f"<code>{format_card_number(row['card_number'])}</code>\n"
+        f"{html_escape(name)}"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Ha, o'chir", callback_data=f"cards:del_yes:{card_id}"),
+        InlineKeyboardButton(text="❌ Yo'q", callback_data="cards:back"),
+    ]])
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("cards:del_yes:"))
+async def cb_cards_del_yes(cb: CallbackQuery):
+    if not is_admin_cb(cb):
+        await cb.answer("Faqat admin", show_alert=True)
+        return
+    try:
+        card_id = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri ID", show_alert=True)
+        return
+    conn = get_db()
+    try:
+        changed = retire_dedicated_card(conn, card_id)
+        cards = list_dedicated_cards(conn, active_only=True)
+    finally:
+        conn.close()
+    text, kb = _render_cards_panel(cards)
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    await cb.answer("✖ O'chirildi" if changed else "Allaqachon faol emas")
+
+
+@router.callback_query(F.data == "cards:back")
+async def cb_cards_back(cb: CallbackQuery):
+    if not is_admin_cb(cb):
+        await cb.answer()
+        return
+    conn = get_db()
+    try:
+        cards = list_dedicated_cards(conn, active_only=True)
+    finally:
+        conn.close()
+    text, kb = _render_cards_panel(cards)
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(F.data == "cards:close")
+async def cb_cards_close(cb: CallbackQuery):
+    if not is_admin_cb(cb):
+        await cb.answer()
+        return
+    try:
+        await cb.message.delete()
+    except Exception:
+        pass
+    await cb.answer()
+
+
+@router.callback_query(F.data == "cards:add")
+async def cb_cards_add(cb: CallbackQuery, state: FSMContext):
+    """Set FSM state and prompt for card details."""
+    if not is_admin_cb(cb):
+        await cb.answer("Faqat admin", show_alert=True)
+        return
+    await state.set_state(CardsAdminFlow.awaiting_new_card)
+    await state.update_data(panel_chat_id=cb.message.chat.id, panel_message_id=cb.message.message_id)
+    prompt = (
+        "➕ <b>Yangi karta qo'shish</b>\n\n"
+        "Kartani quyidagi formatda yuboring:\n"
+        "<code>karta_raqami; Ism; Familiya</code>\n\n"
+        "Masalan:\n"
+        "<code>8600123412345678; Iskandar; Ibragimov</code>\n\n"
+        "<i>Bekor qilish uchun /bekor.</i>"
+    )
+    try:
+        await cb.message.edit_text(prompt, parse_mode="HTML", reply_markup=None)
+    except Exception:
+        await cb.message.answer(prompt, parse_mode="HTML")
+    await cb.answer()
+
+
+@router.message(CardsAdminFlow.awaiting_new_card, F.text)
+async def cb_cards_add_input(message: Message, state: FSMContext):
+    """Parse the typed card details and insert."""
+    if not is_admin(message):
+        return
+    text = (message.text or "").strip()
+    parts = [p.strip() for p in text.split(";")]
+    if len(parts) != 3:
+        await message.reply(
+            "⚠️ Format noto'g'ri. Misol: <code>8600123412345678; Iskandar; Ibragimov</code>\n"
+            "Bekor qilish uchun /bekor.",
+            parse_mode="HTML",
+        )
+        return
+    num, first, last = parts
+    conn = get_db()
+    try:
+        try:
+            result = add_dedicated_card(
+                conn, card_number=num, first=first, last=last
+            )
+        except ValueError as e:
+            await message.reply(f"⚠️ {str(e)[:200]}\nBekor qilish: /bekor.")
+            return
+        cards = list_dedicated_cards(conn, active_only=True)
+    finally:
+        conn.close()
+    await state.clear()
+    label = "qayta faollashtirildi" if result["reactivated"] else "qo'shildi"
+    panel_text, panel_kb = _render_cards_panel(cards)
+    await message.reply(f"✅ Karta {label} (id={result['id']})")
+    await message.answer(panel_text, parse_mode="HTML", reply_markup=panel_kb)
 
 
 @router.callback_query(F.data.startswith("cashier:admin_cancel_"))

@@ -127,6 +127,7 @@ SPECS = {
         ("⚠️ Ehtiyotkorlik", [
             Cmd("/wipewishlists CONFIRM", "Demo wish-list ma'lumotlarini tozalash (bir martalik)"),
             Cmd("/cashbook", "Cashbook intake — oxirgi yozuvlar + bekor qilish (Session Z)"),
+            Cmd("/cards", "P2P qabul kartalari — ro'yxat + qo'shish/o'chirish (Session Z)"),
         ]),
         ("🔧 Diagnostika", [
             Cmd("/chatid", "Chat va user ID"),

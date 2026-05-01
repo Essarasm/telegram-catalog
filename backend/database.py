@@ -1235,6 +1235,9 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_dedicated_cards_active ON dedicated_cards(active)")
 
+    # Seed initial P2P destination cards (idempotent — checks card_number)
+    _seed_dedicated_cards(conn)
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS payment_intake_raw (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1562,6 +1565,32 @@ def rebuild_all_search_text(conn=None):
     if own_conn:
         conn.close()
     return count
+
+
+def _seed_dedicated_cards(conn):
+    """Seed the initial P2P destination cards. Idempotent by card_number —
+    if a row with that number exists (active or retired), don't touch it.
+    Admin can later add/retire cards via the /cards bot command without
+    init_db re-introducing retired ones.
+    """
+    initial = [
+        ("9860180107087421", "Iskandar", "Ibragimov"),
+        ("5614682417512581", "Dildora",  "Rahmatova"),
+    ]
+    for num, first, last in initial:
+        existing = conn.execute(
+            "SELECT 1 FROM dedicated_cards WHERE card_number = ? LIMIT 1",
+            (num,),
+        ).fetchone()
+        if existing:
+            continue
+        conn.execute(
+            """INSERT INTO dedicated_cards
+                  (card_number, holder_first_name, holder_last_name)
+               VALUES (?, ?, ?)""",
+            (num, first, last),
+        )
+    conn.commit()
 
 
 def _seed_locations(conn):
