@@ -380,6 +380,130 @@ def sweep_stale() -> Dict:
         conn.close()
 
 
+def sweep_missed_notifications(conn, dry_run: bool = False) -> Dict[str, int]:
+    """Triage + resolve unresolved missed_notifications rows by re-evaluating
+    each row's resolution criteria against current state.
+
+    Pre-launch-aware: does NOT retry actual delivery (avoids backdated
+    "yangi qoldiq" pings during workflow testing). Marks rows resolved
+    with descriptive `resolved_by` notes so the historical record
+    distinguishes "we caught up" from "client genuinely unreachable":
+
+      - auto_resolved_late_register : was no_telegram_bind, client has
+                                       linked TG user now (registered later)
+      - auto_resolved_balance_now   : was balance_missing, current debt
+                                       exists now
+      - auto_resolved_late_match    : was unmatched_name, name matches a
+                                       registered allowed_clients row now
+      - pre_launch_offline          : client has phone but no TG user;
+                                       common during pre-launch
+      - no_current_debt             : balance_missing + no debt anywhere
+                                       (archived in 1C / always-zero)
+      - unknown_contact             : no phone + no user link; minimal info
+
+    Idempotent — safe to re-run; rows already resolved are skipped.
+
+    Returns counts per bucket.
+    """
+    cur = conn.cursor()
+    rows = cur.execute(
+        """SELECT id, kassa_doc_no, kassa_date, client_name_1c, client_id, reason
+             FROM missed_notifications
+            WHERE resolved_at IS NULL"""
+    ).fetchall()
+
+    counts = {
+        "auto_resolved_late_register": 0,
+        "auto_resolved_balance_now": 0,
+        "auto_resolved_late_match": 0,
+        "pre_launch_offline": 0,
+        "no_current_debt": 0,
+        "unknown_contact": 0,
+    }
+
+    for r in rows:
+        bucket = None
+
+        if r["reason"] == "no_telegram_bind":
+            cid = r["client_id"]
+            if cid:
+                user = cur.execute(
+                    """SELECT telegram_id FROM users
+                        WHERE client_id = ? AND COALESCE(is_approved, 0) = 1
+                        LIMIT 1""",
+                    (cid,),
+                ).fetchone()
+                if user:
+                    bucket = "auto_resolved_late_register"
+                else:
+                    ac = cur.execute(
+                        "SELECT phone_normalized FROM allowed_clients WHERE id = ?",
+                        (cid,),
+                    ).fetchone()
+                    bucket = (
+                        "pre_launch_offline"
+                        if ac and ac["phone_normalized"]
+                        else "unknown_contact"
+                    )
+            else:
+                bucket = "unknown_contact"
+
+        elif r["reason"] == "balance_missing_after_24h":
+            cid = r["client_id"]
+            if cid:
+                # Sibling-aware debt check (multi-phone same client_id_1c)
+                ids_row = cur.execute(
+                    """SELECT id FROM allowed_clients
+                        WHERE client_id_1c = (
+                            SELECT client_id_1c FROM allowed_clients WHERE id = ?
+                        )""",
+                    (cid,),
+                ).fetchall()
+                ids = [row["id"] for row in ids_row] or [cid]
+                placeholders = ",".join("?" * len(ids))
+                debt_row = cur.execute(
+                    f"""SELECT COALESCE(SUM(debt_uzs), 0) AS u,
+                               COALESCE(SUM(debt_usd), 0) AS d
+                          FROM client_debts WHERE client_id IN ({placeholders})""",
+                    tuple(ids),
+                ).fetchone()
+                has_debt = (debt_row["u"] or 0) != 0 or (debt_row["d"] or 0) != 0
+                bucket = "auto_resolved_balance_now" if has_debt else "no_current_debt"
+            else:
+                bucket = "no_current_debt"
+
+        elif r["reason"] == "unmatched_name":
+            name = r["client_name_1c"] or ""
+            ac = cur.execute(
+                """SELECT id FROM allowed_clients
+                    WHERE LOWER(name) = LOWER(?)
+                       OR LOWER(client_id_1c) = LOWER(?)
+                    LIMIT 1""",
+                (name, name),
+            ).fetchone()
+            bucket = "auto_resolved_late_match" if ac else "unknown_contact"
+
+        else:
+            # Unknown reason — skip without changes
+            continue
+
+        counts[bucket] += 1
+
+        if not dry_run:
+            cur.execute(
+                """UPDATE missed_notifications
+                      SET resolved_at = datetime('now'),
+                          resolved_by = ?
+                    WHERE id = ?""",
+                (bucket, r["id"]),
+            )
+
+    if not dry_run:
+        conn.commit()
+
+    return counts
+
+
 def list_unresolved_missed(limit: int = 30) -> List[Dict]:
     """For the /missed admin command — latest unresolved rows."""
     conn = get_db()

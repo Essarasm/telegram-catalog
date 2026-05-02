@@ -535,6 +535,85 @@ async def cmd_missed(message: types.Message):
     await message.reply(text, parse_mode="HTML")
 
 
+@router.message(Command("sweepmissed"))
+async def cmd_sweepmissed(message: types.Message):
+    """Triage + auto-resolve unresolved missed_notifications rows by re-evaluating
+    each against current state. Pre-launch-aware: does NOT retry deliveries
+    (avoids backdated 'yangi qoldiq' pings during testing); just marks rows
+    resolved with descriptive notes for the historical record.
+
+    Usage:
+        /sweepmissed       — execute the sweep
+        /sweepmissed dry   — preview classification without writing
+    """
+    if not is_admin(message):
+        return
+    log_admin_action(message, "sweepmissed", (message.text or "").split(maxsplit=1)[-1] if len((message.text or "").split()) > 1 else "")
+
+    parts = (message.text or "").split()
+    dry_run = len(parts) > 1 and parts[1].lower() in ("dry", "preview")
+
+    from backend.services.payment_notifications import sweep_missed_notifications
+
+    conn = get_db()
+    try:
+        counts = sweep_missed_notifications(conn, dry_run=dry_run)
+    finally:
+        conn.close()
+
+    total = sum(counts.values())
+    if total == 0:
+        await message.reply(
+            "✨ Hech narsa supurib bo'lmadi — barcha bildirishnomalar allaqachon hal qilingan.",
+            parse_mode="HTML",
+        )
+        return
+
+    header = (
+        f"🧪 <b>[DRY RUN] /sweepmissed</b> — {total} ta qator klassifikatsiya qilindi"
+        if dry_run
+        else f"🧹 <b>/sweepmissed</b> — {total} ta qator hal qilindi"
+    )
+    lines = [header, ""]
+
+    # Auto-resolved (would-have-fired) buckets
+    auto_keys = (
+        "auto_resolved_late_register",
+        "auto_resolved_balance_now",
+        "auto_resolved_late_match",
+    )
+    auto_total = sum(counts.get(k, 0) for k in auto_keys)
+    if auto_total:
+        lines.append(f"<b>🟢 Avto-hal qilindi ({auto_total}):</b>")
+        for k in auto_keys:
+            n = counts.get(k, 0)
+            if n:
+                lines.append(f"  • <code>{k}</code>: {n}")
+        lines.append("")
+
+    # Permanent / pre-launch buckets
+    permanent_keys = ("pre_launch_offline", "no_current_debt", "unknown_contact")
+    perm_total = sum(counts.get(k, 0) for k in permanent_keys)
+    if perm_total:
+        lines.append(f"<b>🔴 Doimiy ({perm_total}):</b>")
+        for k in permanent_keys:
+            n = counts.get(k, 0)
+            if n:
+                lines.append(f"  • <code>{k}</code>: {n}")
+        lines.append("")
+
+    if dry_run:
+        lines.append(
+            "<i>Real ishga tushurish uchun: /sweepmissed</i>"
+        )
+    else:
+        lines.append(
+            "<i>Tugadi. /missed orqali tekshiring — yangi xatolar bo'lsa keyingi /sweepmissed ularni ham hal qiladi.</i>"
+        )
+
+    await message.reply("\n".join(lines), parse_mode="HTML")
+
+
 @router.message(Command("consistencycheck"))
 async def cmd_consistencycheck(message: types.Message):
     """On-demand trigger for the nightly consistency audit.
