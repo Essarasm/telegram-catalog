@@ -1519,16 +1519,15 @@ async def cmd_cash(message: types.Message):
         cash_item = next((i for i in ck["items"] if i["upload_type"] == "cash"), None)
         if cash_item:
             actual = cash_item.get("actual_count", 0)
-            # Reminder target (ritual) may exceed the checklist target.
-            reminder = cash_item.get("reminder_count_per_day") or \
-                       cash_item.get("expected_count_per_day", 1)
-            if actual < reminder:
+            expected = cash_item.get("expected_count_per_day", 1)
+            if actual < expected:
+                missing = expected - actual
                 lines.append(
-                    f"\n📋 Bugungi касса: {actual}/{reminder} "
-                    f"(kechqurun fayl ham kerak)"
+                    f"\n📋 Bugungi касса: {actual}/{expected} "
+                    f"(yana {missing} fayl kerak)"
                 )
             else:
-                lines.append(f"\n📋 Bugungi касса: ✅ {actual}/{reminder} tugatildi")
+                lines.append(f"\n📋 Bugungi касса: ✅ {actual}/{expected} tugatildi")
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
 
