@@ -15,7 +15,7 @@ from aiogram.types import (
     WebAppInfo,
 )
 
-from bot.shared import get_db, html_escape, BOT_TOKEN, WEBAPP_URL
+from bot.shared import get_db, html_escape, BOT_TOKEN, WEBAPP_URL, DRIVER_GROUP_CHAT_ID
 
 logger = logging.getLogger("bot")
 router = Router(name="location")
@@ -158,6 +158,12 @@ async def handle_location(message: Message):
     is ALWAYS an audit INSERT so raw data is preserved even if processing
     fails anywhere downstream.
     """
+    # Driver group has its own dedicated FSM-based handler in
+    # bot/handlers/driver_location.py with an explicit client picker.
+    # Skip here so we don't double-process pins sent inside that group.
+    if DRIVER_GROUP_CHAT_ID and message.chat.id == DRIVER_GROUP_CHAT_ID:
+        return
+
     loc = message.location
     telegram_id = message.from_user.id
 

@@ -2130,3 +2130,147 @@ async def cmd_aliases(message: types.Message):
     finally:
         conn.close()
 
+
+@router.message(Command("inspectclient"))
+async def cmd_inspectclient(message: types.Message):
+    """Diagnostic: dump full row data for any allowed_clients matching a
+    substring. Shows repr() + first-30 codepoints for `name` and
+    `client_id_1c` so hidden characters (NBSP, zero-width space, mixed
+    Latin/Cyrillic letters) that defeat GROUP BY exact-match are visible.
+    Usage: /inspectclient <substring>"""
+    if not is_admin(message):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply("Usage: /inspectclient <substring>")
+        return
+    q = parts[1].strip()
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """SELECT id, name, client_id_1c, phone_normalized, status,
+                      gps_latitude, gps_longitude, gps_address, gps_set_at,
+                      gps_set_by_name, location, matched_telegram_id
+               FROM allowed_clients
+               WHERE name LIKE ? OR client_id_1c LIKE ?
+               ORDER BY id
+               LIMIT 10""",
+            (f'%{q}%', f'%{q}%'),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        await message.reply(f"No matches for {q!r}")
+        return
+
+    blocks = []
+    for r in rows:
+        name = r['name'] or ''
+        cid = r['client_id_1c'] or ''
+        cp_name = ' '.join(f'{ord(c):04X}' for c in name[:30])
+        cp_cid = ' '.join(f'{ord(c):04X}' for c in cid[:30])
+        block = (
+            f"id={r['id']}\n"
+            f"  name = {name!r}\n"
+            f"  1c   = {cid!r}\n"
+            f"  phone = {r['phone_normalized']!r}\n"
+            f"  status = {r['status']!r}\n"
+            f"  gps = ({r['gps_latitude']}, {r['gps_longitude']}) addr={r['gps_address']!r}\n"
+            f"  gps_at = {r['gps_set_at']} by {r['gps_set_by_name']!r}\n"
+            f"  legacy.location = {r['location']!r}\n"
+            f"  tg = {r['matched_telegram_id']}\n"
+            f"  name cp[:30] = {cp_name}\n"
+            f"  1c   cp[:30] = {cp_cid}\n"
+        )
+        blocks.append(block)
+
+    body_raw = "\n".join(blocks)
+    if len(body_raw) > 3500:
+        body_raw = body_raw[:3500] + "\n... (truncated)"
+    text = (
+        f"<b>{len(rows)} match(es) for {html_escape(q)}:</b>\n\n"
+        f"<pre>{html_escape(body_raw)}</pre>"
+    )
+    await message.reply(text, parse_mode="HTML")
+
+
+@router.message(Command("fixclientws"))
+async def cmd_fixclientws(message: types.Message):
+    """Collapse internal multi-spaces in `name` + `client_id_1c` to a single
+    space for one allowed_clients row. Idempotent — re-running is a no-op
+    once the row is clean. Use after /inspectclient surfaces a row whose
+    whitespace differs invisibly from a sibling's, defeating GROUP BY
+    exact-match and the search_clients dedup keyed on client_id_1c.
+    Usage: /fixclientws <id>"""
+    if not is_admin(message):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if not arg.isdigit():
+        await message.reply("Usage: /fixclientws <id>")
+        return
+    cid = int(arg)
+    conn = get_db()
+    try:
+        before = conn.execute(
+            "SELECT id, name, client_id_1c FROM allowed_clients WHERE id = ?",
+            (cid,),
+        ).fetchone()
+        if not before:
+            await message.reply(f"id={cid} not found")
+            return
+        new_name = before["name"] or ""
+        new_cid = before["client_id_1c"] or ""
+        # Loop to handle 3+ consecutive spaces in one pass
+        while "  " in new_name:
+            new_name = new_name.replace("  ", " ")
+        while "  " in new_cid:
+            new_cid = new_cid.replace("  ", " ")
+        if new_name == (before["name"] or "") and new_cid == (before["client_id_1c"] or ""):
+            await message.reply(
+                f"id={cid} — no internal multi-spaces, nothing to fix.",
+            )
+            return
+        conn.execute(
+            "UPDATE allowed_clients SET name = ?, client_id_1c = ? WHERE id = ?",
+            (new_name, new_cid, cid),
+        )
+        conn.commit()
+        out = (
+            f"id={cid} updated:\n"
+            f"  name before = {before['name']!r}\n"
+            f"  name after  = {new_name!r}\n"
+            f"  1c   before = {before['client_id_1c']!r}\n"
+            f"  1c   after  = {new_cid!r}"
+        )
+        await message.reply(f"<pre>{html_escape(out)}</pre>", parse_mode="HTML")
+    finally:
+        conn.close()
+
+
+@router.message(Command("migrategps"))
+async def cmd_migrategps(message: types.Message):
+    """One-shot migration: reclassify `gps_set_by_role='driver'` (legacy from
+    the initial driver_location.py implementation) to `'agent'` so the
+    admin Agent Coverage dashboard's default "Agents only" filter includes
+    these pins. Idempotent — re-running is a no-op once applied."""
+    if not is_admin(message):
+        return
+    conn = get_db()
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) AS n FROM allowed_clients WHERE gps_set_by_role = 'driver'",
+        ).fetchone()["n"]
+        if n == 0:
+            await message.reply("No rows with gps_set_by_role='driver' — nothing to migrate.")
+            return
+        conn.execute(
+            "UPDATE allowed_clients SET gps_set_by_role = 'agent' WHERE gps_set_by_role = 'driver'",
+        )
+        conn.commit()
+        await message.reply(
+            f"✅ Migrated {n} row(s) from gps_set_by_role='driver' to 'agent'."
+        )
+    finally:
+        conn.close()
+

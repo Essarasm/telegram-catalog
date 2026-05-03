@@ -30,6 +30,11 @@ INVENTORY_GROUP_CHAT_ID = int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"
 # Cashier-only group (Aunt + Uncle for now). 0 = unconfigured;
 # the cashier FSM stays inert until this is set in the env.
 CASHIER_GROUP_CHAT_ID = int(os.getenv("CASHIER_GROUP_CHAT_ID", "0"))
+# Driver/agent client-location-capture group (open to anyone in the group).
+# Has its own FSM-driven handler in bot/handlers/driver_location.py with
+# explicit client picker + first-confirmed-locks semantics. The general
+# location handler in location.py skips this chat to avoid double-processing.
+DRIVER_GROUP_CHAT_ID = int(os.getenv("DRIVER_GROUP_CHAT_ID", "-4998450084"))
 
 
 def chat_context(message) -> str:
@@ -49,6 +54,8 @@ def chat_context(message) -> str:
         return 'agents'
     if CASHIER_GROUP_CHAT_ID and cid == CASHIER_GROUP_CHAT_ID:
         return 'cashier'
+    if DRIVER_GROUP_CHAT_ID and cid == DRIVER_GROUP_CHAT_ID:
+        return 'driver'
     if getattr(message, 'chat', None) and message.chat.type == 'private':
         uid = message.from_user.id if getattr(message, 'from_user', None) else None
         if uid and ADMIN_IDS and uid in ADMIN_IDS:

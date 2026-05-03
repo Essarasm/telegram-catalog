@@ -504,6 +504,7 @@ async def main():
     from bot.handlers.uploads import router as uploads_router
     from bot.handlers.score import router as score_router
     from bot.handlers.location import router as location_router
+    from bot.handlers.driver_location import router as driver_location_router
     from bot.handlers.orders import router as orders_router
     from bot.handlers.registration import router as registration_router
     from bot.handlers.support import router as support_router
@@ -512,6 +513,10 @@ async def main():
     # cashier_router first — its FSM-state filters short-circuit messages
     # in the cashier group before any catch-all router can swallow them.
     dp.include_router(cashier_router)
+    # driver_location_router before location_router so FSM-state filters
+    # in DRIVER_GROUP_CHAT_ID fire before the general F.location handler.
+    # location.py also has a scope guard skipping that chat as defence in depth.
+    dp.include_router(driver_location_router)
     dp.include_router(testclient_router)
     dp.include_router(admin_router)
     dp.include_router(uploads_router)
@@ -520,7 +525,7 @@ async def main():
     dp.include_router(location_router)
     dp.include_router(registration_router)
     dp.include_router(support_router)
-    logger.info("Loaded handler modules: cashier, testclient, admin, uploads, score, orders, location, registration, support")
+    logger.info("Loaded handler modules: cashier, driver_location, testclient, admin, uploads, score, orders, location, registration, support")
 
     # Error alerter: any uncaught exception inside a bot handler now posts
     # to Admin group with full traceback (same infrastructure as the
