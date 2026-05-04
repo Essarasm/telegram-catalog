@@ -1077,3 +1077,40 @@ def admin_cancel(payload: dict = Body(...)):
     finally:
         conn.close()
     return {"ok": True, "payment": row}
+
+
+@router.post("/legal-transfer-delete")
+def admin_delete_legal_transfer(payload: dict = Body(...)):
+    """Admin-only hard-delete of a legal_transfers row. Cascades to
+    legal_transfer_events. Files referenced by url columns are NOT
+    cleaned up — testing-period scope; sweep manually if needed.
+
+    Payload: {telegram_id: int, transfer_id: int}
+    """
+    try:
+        telegram_id = int(payload.get("telegram_id") or 0)
+        transfer_id = int(payload.get("transfer_id") or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "invalid payload"}, status_code=400)
+    if not telegram_id or not transfer_id:
+        return JSONResponse(
+            {"ok": False, "error": "telegram_id and transfer_id required"},
+            status_code=400,
+        )
+
+    conn = get_db()
+    try:
+        from backend.services.roles import role_in
+        if not role_in(conn, telegram_id, {"admin"}):
+            return JSONResponse({"ok": False, "error": "admin only"}, status_code=403)
+        cur = conn.execute(
+            "DELETE FROM legal_transfers WHERE id = ?", (transfer_id,)
+        )
+        if cur.rowcount == 0:
+            return JSONResponse(
+                {"ok": False, "error": "not found"}, status_code=404
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "deleted": transfer_id}

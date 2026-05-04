@@ -268,6 +268,19 @@ export async function fetchPendingLegalTransfers(telegramId, clientId) {
   }
 }
 
+export async function deleteLegalTransfer({ telegramId, transferId }) {
+  const res = await fetch(`${API_BASE}/payments/legal-transfer-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      telegram_id: telegramId,
+      transfer_id: transferId,
+    }),
+  });
+  const data = await res.json();
+  return { status: res.status, ...data };
+}
+
 export async function submitLegalTransferDoverennost({ telegramId, transferId, file }) {
   const fd = new FormData();
   fd.append('telegram_id', String(telegramId));

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers, submitLegalTransferDoverennost } from '../utils/api';
+import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers, submitLegalTransferDoverennost, deleteLegalTransfer } from '../utils/api';
 import { roleTheme } from '../utils/roleTheme';
 import t from '../i18n/uz.json';
 
@@ -908,6 +908,17 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     }
   };
 
+  const handleAdminDeleteLegalTx = async (transferId) => {
+    const ok = window.confirm(t.legaltx_delete_confirm || "Yuridik to'lovni o'chirasizmi? Bu amalni qaytarib bo'lmaydi.");
+    if (!ok) return;
+    const r = await deleteLegalTransfer({ telegramId: userId, transferId });
+    if (r.ok) {
+      setPendingLegalTx((prev) => prev.filter((tx) => tx.id !== transferId));
+    } else {
+      alert(r.error || t.legaltx_delete_failed || 'Xatolik');
+    }
+  };
+
   const PendingPaymentRow = ({ p }) => {
     const isCashierWaiting = p.status === 'pending_handover' || p.status === 'pending_review';
     // Stale = confirmed but 1C kassa import hasn't matched it after 48h.
@@ -1044,6 +1055,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
       if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
+    const isAdmin = userRole === 'admin';
     return (
       <div className={`${bgClass} ring-1 ${ringClass} rounded-xl px-4 py-2 min-h-[56px] flex flex-col gap-2`}>
         <div className="flex items-center gap-3">
@@ -1056,6 +1068,16 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
             <div className="text-base font-bold text-emerald-600">+{amount}</div>
             <div className="text-[10px] text-tg-hint">{fmtPendingTime(tx.created_at)}</div>
           </div>
+          {isAdmin && (
+            <button
+              onClick={(e) => { e.stopPropagation(); handleAdminDeleteLegalTx(tx.id); }}
+              className="ml-1 text-red-500 text-lg active:opacity-60 px-1"
+              aria-label={t.legaltx_delete_aria || "O'chirish"}
+              title={t.legaltx_delete_aria || "O'chirish"}
+            >
+              ✖
+            </button>
+          )}
         </div>
         {needsDoverennost && (
           <>
@@ -1422,62 +1444,48 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
       )}
 
       {/* Location card.
-           - Agents (with client linked): TWO buttons — "🗺 Navigate" (Google
-             Maps to the shop) and "📝 Yangilash" (send fresh location if
-             wrong). Separating them prevents accidental re-share when the
-             agent just wants to navigate to the shop.
-           - Regular clients: same as before (text + Yangilash button). */}
+           - GPS set → green-tinted card with prominent Yandex Navi button
+             and a small "yangilash" affordance underneath.
+           - GPS not set → yellow-tinted card with a clear "saqlanmagan"
+             header and a prominent CTA. */}
       {userLocation ? (
         (() => {
-          // API shape: userLocation = { latitude, longitude, address, region,
-          // district, updated }. The earlier buggy version referenced
-          // userLocation.gps.lat — which never existed, so the map link in
-          // production was silently broken for months.
           const lat = userLocation.latitude;
           const lng = userLocation.longitude;
           const hasGps = typeof lat === "number" && typeof lng === "number";
-          const mapsUrl = hasGps ? `https://maps.google.com/?q=${lat},${lng}` : null;
+          const yandexUrl = hasGps
+            ? `https://yandex.uz/maps/?rtext=~${lat},${lng}&rtt=auto`
+            : null;
           return (
-            <div className="bg-tg-secondary rounded-xl p-3 mb-3 flex items-center gap-2">
-              <span className="text-base">📍</span>
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium truncate">
-                  {userLocation.address || userLocation.district || "Joylashuv saqlangan"}
-                </div>
-                {hasGps && (
-                  <div className="text-[10px] text-tg-hint truncate">
-                    {lat.toFixed(5)}, {lng.toFixed(5)}
+            <div className="rounded-xl p-3 mb-3 border-2 border-green-500/40 bg-green-500/10">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-base">📍</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium truncate">
+                    {userLocation.address || userLocation.district || "Joylashuv saqlangan"}
                   </div>
-                )}
+                  {hasGps && (
+                    <div className="text-[10px] text-tg-hint truncate">
+                      {lat.toFixed(5)}, {lng.toFixed(5)}
+                    </div>
+                  )}
+                </div>
               </div>
-              {hasGps && agentStats && (
-                // Agents: prominent Navigate button opens Google Maps for routing.
+              {hasGps && (
                 <a
-                  href={mapsUrl}
+                  href={yandexUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-link text-white whitespace-nowrap font-medium"
-                  aria-label="Xaritada ko'rish"
+                  className="block w-full text-center px-3 py-2.5 rounded-lg bg-green-500 text-white font-semibold text-sm active:opacity-80"
                 >
-                  🗺 Xaritada
-                </a>
-              )}
-              {hasGps && !agentStats && (
-                <a
-                  href={mapsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-bg text-tg-link whitespace-nowrap"
-                  aria-label="Xaritada ko'rish"
-                >
-                  🗺
+                  🧭 Yandex Navigatsiya
                 </a>
               )}
               <button
                 onClick={handleShareLocation}
-                className="text-[10px] px-2.5 py-1 rounded-lg bg-tg-bg text-tg-link whitespace-nowrap"
+                className="w-full mt-1.5 text-[10px] text-tg-hint active:text-tg-link"
               >
-                {agentStats ? "📝 Yangilash" : "Yangilash"}
+                ♻️ {agentStats ? "Mijoz lokatsiyasini yangilash" : "Yangilash"}
               </button>
             </div>
           );
@@ -1485,18 +1493,20 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
       ) : (
         <button
           onClick={handleShareLocation}
-          className="w-full bg-tg-secondary rounded-xl p-3 mb-3 flex items-center gap-2 active:opacity-80 transition-opacity"
+          className="w-full rounded-xl p-3 mb-3 border-2 border-yellow-500/50 bg-yellow-500/10 active:opacity-80 transition-opacity"
         >
-          <span className="text-base">📍</span>
-          <div className="flex-1 text-left">
-            <div className="text-xs font-medium">
-              {agentStats ? "Mijoz joylashuvini saqlash" : "Joylashuvni saqlash"}
-            </div>
-            <div className="text-[10px] text-tg-hint">
-              {agentStats ? "Telegram orqali mijoz manzilini yuboring" : "Telegram orqali joylashuvingizni yuboring"}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-base">⚠️</span>
+            <div className="flex-1 text-left text-xs font-semibold text-yellow-400">
+              {agentStats ? "Mijoz joylashuvi saqlanmagan" : "Joylashuv saqlanmagan"}
             </div>
           </div>
-          <span className="text-tg-link text-xs">→</span>
+          <div className="block w-full text-center px-3 py-2.5 rounded-lg bg-yellow-500 text-tg-bg font-semibold text-sm">
+            📍 {agentStats ? "Mijoz joylashuvini saqlash" : "Joylashuvni saqlash"}
+          </div>
+          <div className="text-[10px] text-tg-hint mt-1.5 text-center">
+            {agentStats ? "Telegram orqali mijoz manzilini yuboring" : "Telegram orqali joylashuvingizni yuboring"}
+          </div>
         </button>
       )}
 
