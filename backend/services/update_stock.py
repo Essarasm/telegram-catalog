@@ -366,14 +366,26 @@ def apply_stock_updates(file_bytes: bytes, force: bool = False) -> dict:
 
             if qty_changed or status_changed:
                 if new_qty > 0:
-                    conn.execute(
-                        """UPDATE products
-                           SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now'),
-                               stock_last_positive_at = datetime('now'),
-                               stock_last_seen_at = datetime('now')
-                           WHERE id = ?""",
-                        (new_qty, new_status, product["id"]),
-                    )
+                    was_zero = old_qty is not None and float(old_qty or 0) < 1
+                    if was_zero:
+                        conn.execute(
+                            """UPDATE products
+                               SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now'),
+                                   stock_last_positive_at = datetime('now'),
+                                   stock_last_seen_at = datetime('now'),
+                                   restocked_at = datetime('now')
+                               WHERE id = ?""",
+                            (new_qty, new_status, product["id"]),
+                        )
+                    else:
+                        conn.execute(
+                            """UPDATE products
+                               SET stock_quantity = ?, stock_status = ?, stock_updated_at = datetime('now'),
+                                   stock_last_positive_at = datetime('now'),
+                                   stock_last_seen_at = datetime('now')
+                               WHERE id = ?""",
+                            (new_qty, new_status, product["id"]),
+                        )
                 else:
                     was_positive = old_qty is not None and float(old_qty or 0) > 0
                     if was_positive:

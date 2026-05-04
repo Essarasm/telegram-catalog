@@ -1675,37 +1675,47 @@ async def cmd_stockalert(message: types.Message):
 
     Usage:
       /stockalert                — summary (top 25 tugagan + top 30 kam)
-      /stockalert tugagan        — full out-of-stock list
+      /stockalert tugagan        — full out-of-stock list (all-time)
       /stockalert kam            — full running-low list
       /stockalert full           — full list of both
+      /stockalert hafta          — this week (Mon→now) cumulative TUGAGAN
     """
     if not is_admin(message):
         return
 
     raw_args = (message.text or "").split()[1:]
     args = {a.lower() for a in raw_args}
+    week_mode = bool(args & {"hafta", "week"})
     show_out_only = bool(args & {"tugagan", "out", "zero"})
     show_low_only = bool(args & {"kam", "low"})
     full_flag = "full" in args
-    # Explicit category arg implies full-for-that-category
     include_out = show_out_only or (not show_low_only)
     include_low = show_low_only or (not show_out_only)
     full = full_flag or show_out_only or show_low_only
 
     status_msg = await message.reply("⏳ Faol mahsulotlarni tekshirmoqda...")
     try:
-        from backend.services.stock_alerts import get_stock_alerts, format_stock_alert_message
-        alerts = get_stock_alerts()
-        messages = format_stock_alert_message(
-            alerts,
-            include_out=include_out,
-            include_low=include_low,
-            full=full,
+        from backend.services.stock_alerts import (
+            get_stock_alerts,
+            format_stock_alert_message,
+            format_daily_inventory_message,
         )
-        if not messages:
-            await status_msg.edit_text("📦 Hech narsa topilmadi.")
-            return
-        # First one replaces the "tekshirmoqda" status; rest are fresh messages.
+        alerts = get_stock_alerts()
+        if week_mode:
+            messages = format_daily_inventory_message(alerts)
+            if not messages:
+                await status_msg.edit_text("📦 Bu hafta hali tugagan mahsulot yo'q.")
+                return
+        else:
+            messages = format_stock_alert_message(
+                alerts,
+                include_out=include_out,
+                include_low=include_low,
+                full=full,
+            )
+            if not messages:
+                await status_msg.edit_text("📦 Hech narsa topilmadi.")
+                return
         await status_msg.edit_text(messages[0], parse_mode="HTML")
         for extra in messages[1:]:
             await message.answer(extra, parse_mode="HTML")

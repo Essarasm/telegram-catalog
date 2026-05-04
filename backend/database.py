@@ -1171,6 +1171,13 @@ def init_db():
     if "stockout_at" not in prod_cols:
         conn.execute("ALTER TABLE products ADD COLUMN stockout_at TEXT")
 
+    # Stamp the moment a product flips from 0 → positive stock. Drives the
+    # daily 09:00 "♻️ BUGUN TO'LDIRILDI" line. Same NULL-on-bootstrap rule as
+    # stockout_at — populates organically on the next /stock import that
+    # restocks an item.
+    if "restocked_at" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN restocked_at TEXT")
+
     # Product alias table: maps 1C name variants to canonical product IDs.
     # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
     # each successful fuzzy match in /stock or /prices auto-adds an alias.

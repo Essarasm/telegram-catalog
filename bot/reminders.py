@@ -42,10 +42,16 @@ async def _sleep_until(target: datetime) -> None:
         await asyncio.sleep(delay)
 
 
-def _should_send(today_date) -> tuple[bool, str | None]:
-    """Return (should_send, skip_reason)."""
+def _should_send(today_date, skip_sunday: bool = True) -> tuple[bool, str | None]:
+    """Return (should_send, skip_reason).
+
+    `skip_sunday=True` (default) preserves the original behavior for the
+    morning nudge / EOD check / weekly-unlinked etc. The stock alert opts
+    out (`skip_sunday=False`) so Saturday-evening /stock uploads surface
+    on Sunday morning before Monday's reset wipes the week.
+    """
     from backend.services.daily_uploads import is_holiday
-    if today_date.isoweekday() == 7:
+    if skip_sunday and today_date.isoweekday() == 7:
         return False, "Sunday"
     hol = is_holiday(today_date.isoformat())
     if hol:
@@ -257,34 +263,77 @@ async def _send_weekly_unlinked(bot, chat_id: int) -> None:
 
 
 async def _send_stock_alert(bot, chat_id: int) -> None:
-    """09:00 daily — work-week-cumulative inventory alert: items that ran out
-    on or after this week's Monday 00:00 Tashkent. Resets each Monday.
-    Cumulative TUGAGAN list stays available on demand via /stockalert tugagan.
-    Silent when nothing has run out this week yet (Monday-fresh)."""
+    """09:00 daily — inventory alert. Three modes by Tashkent weekday:
+
+    * **Monday**: full Mon→Sun recap of the *prior* week (currently-zero items
+      whose stockout fell in last week, plus refill count + last-week TOP-5).
+      Closes the week before the new one resets.
+    * **Tue–Sun**: delta — TODAY's new tugagan + TODAY's refills + a short
+      "earlier this week pending: Mon (3), Tue (5)…" note pointing at
+      /stockalert hafta. Sunday is allowed (work-week ends Sat evening upload).
+
+    Holidays still skip. Silent only when truly nothing to report.
+    """
     today = datetime.now(TASHKENT)
-    ok, reason = _should_send(today)
+    ok, reason = _should_send(today, skip_sunday=False)
     if not ok:
         logger.info(f"Stock alert skipped: {reason}")
         return
 
     try:
-        from backend.services.stock_alerts import get_stock_alerts, format_daily_inventory_message
+        from backend.services.stock_alerts import (
+            get_stock_alerts,
+            get_refilled_today,
+            get_last_week_recap,
+            format_daily_delta_message,
+            format_weekly_recap_message,
+        )
+
+        if today.isoweekday() == 1:  # Monday — recap mode
+            recap = get_last_week_recap()
+            if recap.get("active_count", 0) == 0:
+                logger.info("Stock alert skipped — no active products detected")
+                return
+            messages = format_weekly_recap_message(recap)
+            if not messages:
+                logger.info(
+                    f"Monday recap skipped — last week was empty "
+                    f"(out={len(recap.get('out_of_stock', []))}, "
+                    f"refilled={recap.get('refilled_count', 0)}, "
+                    f"top={len(recap.get('top_sellers', []))})"
+                )
+                return
+            for text in messages:
+                await bot.send_message(chat_id, text, parse_mode="HTML")
+            logger.info(
+                f"Monday recap sent ({len(messages)} msg): "
+                f"out={len(recap.get('out_of_stock', []))}, "
+                f"refilled={recap.get('refilled_count', 0)}, "
+                f"top={len(recap.get('top_sellers', []))}"
+            )
+            return
+
+        # Tue–Sun: delta mode
         alerts = get_stock_alerts()
         if alerts["active_count"] == 0:
             logger.info("Stock alert skipped — no active products detected")
             return
-        messages = format_daily_inventory_message(alerts)
+        refilled = get_refilled_today()
+        messages = format_daily_delta_message(alerts, refilled)
         if not messages:
             logger.info(
-                f"Stock alert skipped — nothing has run out and no sales yet this week "
-                f"(cumulative tugagan: {len(alerts['out_of_stock'])})"
+                f"Stock alert skipped — nothing new today "
+                f"(weekly_out={len(alerts['weekly_out_of_stock'])}, "
+                f"refilled_today={len(refilled)}, "
+                f"cumulative_oos={len(alerts['out_of_stock'])})"
             )
             return
         for text in messages:
             await bot.send_message(chat_id, text, parse_mode="HTML")
         logger.info(
-            f"Stock alert sent ({len(messages)} msg): "
+            f"Stock alert sent ({len(messages)} msg, delta): "
             f"weekly_out={len(alerts['weekly_out_of_stock'])}, "
+            f"refilled_today={len(refilled)}, "
             f"top_sellers={len(alerts.get('weekly_top_sellers', []))}, "
             f"cumulative_oos={len(alerts['out_of_stock'])}"
         )
