@@ -7,9 +7,13 @@ is now treated as free-text only and intentionally NOT consulted by this
 endpoint, because importers (1C/CSV/Master) overwrite it freely. Reading from
 `gps_*` is immune to those imports.
 
-Resolution order in `get_client_location`:
+Resolution order in `get_client_location` (updated 2026-05-04 by Error Log
+#31 AGENT_GPS_FALLBACK_MASKS_NULL):
   1. `allowed_clients.gps_*` — canonical client-level GPS (bot or self-share)
-  2. `users.latitude/longitude` — only when (1) is missing
+  2. `users.latitude/longitude` — fallback ONLY when `users.client_id IS NULL`
+     (no client link). Removing this guard let the agent's own self-shared
+     pin leak onto every acted-as client whose `gps_*` was NULL — green
+     cabinet card while the bot picker correctly said "no location."
 """
 from __future__ import annotations
 
@@ -78,34 +82,39 @@ def test_client_linked_user_sees_client_gps_not_own(db):
     assert data["gps"]["address"] == "Samarqand, shop"
 
 
-def test_client_linked_falls_back_to_user_row_when_client_has_no_gps(db):
-    """No gps_* on the client → fall back to requester's own users row."""
+def test_client_linked_no_canonical_gps_returns_no_gps(db):
+    """Linked client with no gps_* → endpoint returns has_gps=False.
+
+    Pre-fix this fell back to the requester's own users.latitude/longitude,
+    which leaked the agent's pin onto every acted-as client (Error Log #31
+    AGENT_GPS_FALLBACK_MASKS_NULL). The fallback is now restricted to the
+    `users.client_id IS NULL` case (covered by `test_unlinked_user_returns_own_gps`).
+    """
     _setup_client_row(db, client_id=2, client_id_1c="Legacy",
-                       location="Samarqand shahar, Titova")  # legacy free-text
+                       location="Samarqand shahar, Titova")  # legacy free-text, ignored
     _setup_user(db, telegram_id=200, client_id=2,
-                 lat=39.1234, lng=66.5678, addr="From registration")
+                 lat=39.1234, lng=66.5678, addr="Agent's own pin — must NOT leak")
 
     resp = _client(db).get("/api/client-location?telegram_id=200")
     data = resp.json()
-    assert data["has_gps"] is True
-    assert data["gps"]["latitude"] == pytest.approx(39.1234)
-    assert data["gps"]["longitude"] == pytest.approx(66.5678)
-    assert data["gps"]["address"] == "From registration"
+    assert data["has_gps"] is False
+    assert data["gps"] is None
 
 
 def test_legacy_location_string_is_ignored_for_gps(db):
     """Even if `allowed_clients.location` carries a stale "lat,lng|addr" string
     from before the schema split, we ignore it — `gps_*` is the only source of
-    truth. (Otherwise importers could re-introduce the original bug.)"""
+    truth. With the linked-client fallback removed (Error Log #31), the
+    requester's own `users.latitude/longitude` does not leak in either."""
     _setup_client_row(db, client_id=3, client_id_1c="Legacy2",
                        location="39.999,66.999|Stale shop")  # NOT trusted
     _setup_user(db, telegram_id=250, client_id=3,
-                 lat=39.1234, lng=66.5678, addr="Fallback")
+                 lat=39.1234, lng=66.5678, addr="Agent's own pin — must NOT leak")
 
     resp = _client(db).get("/api/client-location?telegram_id=250")
     data = resp.json()
-    assert data["gps"]["latitude"] == pytest.approx(39.1234)
-    assert data["gps"]["longitude"] == pytest.approx(66.5678)
+    assert data["has_gps"] is False
+    assert data["gps"] is None
 
 
 def test_unlinked_user_returns_own_gps(db):

@@ -332,7 +332,12 @@ def get_client_location(telegram_id: int = Query(...)):
                 "updated": ac_row["gps_set_at"] or "",
             }
 
-    if not has_gps and user["latitude"] and user["longitude"]:
+    # Fallback to users.latitude/longitude ONLY when the requester has no
+    # client link. Otherwise the agent's own self-shared pin would surface
+    # on every acted-as client whose canonical gps_* is NULL, painting the
+    # cabinet green while the bot picker (which reads gps_* directly) says
+    # "no location set". See Error Log #31 AGENT_GPS_FALLBACK_MASKS_NULL.
+    if not has_gps and not user["client_id"] and user["latitude"] and user["longitude"]:
         has_gps = True
         gps_data = {
             "latitude": user["latitude"],
