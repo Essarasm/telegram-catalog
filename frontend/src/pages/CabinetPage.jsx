@@ -1538,11 +1538,6 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
                           <span className="text-xs px-2 py-0.5 rounded-full bg-tg-bg text-tg-hint">
                             {STATUS_ICONS[ord.status]} {STATUS_LABELS[ord.status] || ord.status}
                           </span>
-                          {ord.has_confirmed && (
-                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 font-semibold">
-                              ✅ {t.wishlist_confirmed}
-                            </span>
-                          )}
                         </div>
                         <div className="text-xs text-tg-hint mt-1">
                           {formatDate(ord.created_at)} · {ord.item_count} {t.items_count}
