@@ -679,19 +679,35 @@ def akt_sverki(
 
 @router.get("/confirmed-order/{wishlist_order_id}")
 def confirmed_order_diff(wishlist_order_id: int, telegram_id: int = Query(...)):
-    """Diff the wishlist order against the manager-confirmed (1C) version."""
+    """Diff the wishlist order against the manager-confirmed (1C) version.
+
+    Authorization mirrors `/orders` (linked-client path + unlinked-user
+    fallback). Without the fallback, every wish-list whose `orders.client_id`
+    is NULL — placed by users not in `allowed_clients` — would surface
+    `has_confirmed=true` in the orders list (since the COUNT subquery has no
+    client filter) but fail this endpoint with "not linked", showing the
+    "kelmagan" empty state on the diff sheet.
+    """
     import json as _json
     client_ids, conn = _get_all_client_ids_for_user(telegram_id)
-    if not client_ids:
-        if conn:
-            conn.close()
-        return {"ok": False, "error": "not linked"}
 
-    placeholders = ",".join("?" * len(client_ids))
-    wish_order = conn.execute(
-        f"SELECT * FROM orders WHERE id = ? AND client_id IN ({placeholders})",
-        (wishlist_order_id,) + tuple(client_ids),
-    ).fetchone()
+    if client_ids:
+        placeholders = ",".join("?" * len(client_ids))
+        wish_order = conn.execute(
+            f"SELECT * FROM orders WHERE id = ? AND client_id IN ({placeholders})",
+            (wishlist_order_id,) + tuple(client_ids),
+        ).fetchone()
+    else:
+        # Unlinked-user fallback: wish-list belongs to this telegram_id and
+        # has client_id IS NULL. Same authorization shape as /orders path B.
+        if conn is None:
+            conn = get_db()
+        wish_order = conn.execute(
+            "SELECT * FROM orders WHERE id = ? "
+            "AND telegram_id = ? AND client_id IS NULL",
+            (wishlist_order_id, telegram_id),
+        ).fetchone()
+
     if not wish_order:
         conn.close()
         return JSONResponse({"ok": False, "error": "not your order"}, status_code=403)
