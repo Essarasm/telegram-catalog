@@ -914,6 +914,7 @@ def attach_agreement(
     cur = conn.cursor()
     row = cur.execute(
         """SELECT lt.status, lt.client_id, lt.amount_uzs, lt.legal_entity_name,
+                  lt.submitted_by_telegram_id,
                   s.name_1c AS supplier_name_1c
              FROM legal_transfers lt
              LEFT JOIN suppliers s ON s.id = lt.supplier_id
@@ -947,6 +948,7 @@ def attach_agreement(
         "amount_uzs": row["amount_uzs"],
         "legal_entity_name": row["legal_entity_name"],
         "supplier_name_1c": row["supplier_name_1c"],
+        "submitted_by_telegram_id": row["submitted_by_telegram_id"],
     }
 
 
@@ -968,7 +970,11 @@ def assign_supplier(
     """
     cur = conn.cursor()
     row = cur.execute(
-        "SELECT status FROM legal_transfers WHERE id = ?",
+        """SELECT lt.status, lt.client_id,
+                  ac.name AS client_name, ac.client_id_1c AS client_id_1c
+             FROM legal_transfers lt
+             LEFT JOIN allowed_clients ac ON ac.id = lt.client_id
+            WHERE lt.id = ?""",
         (legal_transfer_id,),
     ).fetchone()
     if not row:
@@ -999,4 +1005,10 @@ def assign_supplier(
         (legal_transfer_id, actor_telegram_id),
     )
     conn.commit()
-    return {"supplier_name_1c": sup["name_1c"], "supplier_id": sup["id"]}
+    return {
+        "supplier_name_1c": sup["name_1c"],
+        "supplier_id": sup["id"],
+        "client_id": row["client_id"],
+        "client_name": row["client_name"],
+        "client_id_1c": row["client_id_1c"],
+    }

@@ -394,7 +394,7 @@ async def submit_legal_transfer(
     Multipart form (required file):
         telegram_id, client_id, amount_uzs, category_id,
         category_freetext (required iff category.is_freetext),
-        legal_entity_name, legal_entity_inn (9 digits),
+        legal_entity_name, legal_entity_inn (9 digits for LLC/etc., 14 digits for ЯТТ/PINFL),
         extra_doc (image or PDF)
     """
     category_freetext = (category_freetext or "").strip()
@@ -416,9 +416,10 @@ async def submit_legal_transfer(
         return JSONResponse(
             {"ok": False, "error": "legal_entity_name required"}, status_code=400
         )
-    if not legal_entity_inn.isdigit() or len(legal_entity_inn) != 9:
+    if not legal_entity_inn.isdigit() or len(legal_entity_inn) not in (9, 14):
         return JSONResponse(
-            {"ok": False, "error": "legal_entity_inn must be 9 digits"}, status_code=400
+            {"ok": False, "error": "legal_entity_inn must be 9 digits (yuridik shaxs) or 14 digits (ЯТТ/PINFL)"},
+            status_code=400,
         )
 
     # Read the file (required) — must be image or PDF

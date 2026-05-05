@@ -245,6 +245,74 @@ async def cmd_bugun(message: Message, state: FSMContext):
     await message.answer(_render_summary(summary), parse_mode="HTML")
 
 
+# ── /bugunpul — full list of today's payments (read-only) ───────────
+
+_CHANNEL_LABEL = {
+    "cash_direct":    "Klientdan",
+    "cash_via_agent": "Agentdan",
+    "p2p":            "P2P",
+}
+
+_STATUS_ICON = {
+    "pending_handover": "⏳",
+    "pending_review":   "🔍",
+    "confirmed":        "✅",
+}
+
+
+def _today_intake_rows(conn):
+    """All non-rejected intake_payments submitted on today's Tashkent date,
+    newest first. Used by /bugunpul."""
+    today_tk = conn.execute("SELECT date('now', '+5 hours') AS d").fetchone()["d"]
+    rows = conn.execute(
+        """SELECT ip.id, ip.client_id, ip.amount, ip.currency, ip.channel,
+                  ip.status, ip.submitted_at, ip.confirmed_at,
+                  ac.name AS client_name, ac.client_id_1c
+           FROM intake_payments ip
+           LEFT JOIN allowed_clients ac ON ac.id = ip.client_id
+           WHERE ip.status != 'rejected'
+             AND date(ip.submitted_at, '+5 hours') = ?
+           ORDER BY ip.submitted_at DESC""",
+        (today_tk,),
+    ).fetchall()
+    return today_tk, [dict(r) for r in rows]
+
+
+def _render_today_list(date: str, rows: list) -> str:
+    if not rows:
+        return (
+            f"💼 <b>Bugungi to'lovlar — {date}</b>\n\n"
+            f"📭 Hozircha qabul qilingan to'lov yo'q."
+        )
+    lines = [f"💼 <b>Bugungi to'lovlar — {date}</b> ({len(rows)} ta)\n"]
+    for r in rows:
+        ts = (r.get("submitted_at") or "")[11:16]  # HH:MM from 'YYYY-MM-DD HH:MM:SS'
+        ch = _CHANNEL_LABEL.get(r["channel"], r["channel"] or "—")
+        cname = (r.get("client_id_1c") or r.get("client_name") or f"ID {r['client_id']}")[:30]
+        amt = _fmt_amount(r["amount"], r["currency"])
+        icon = _STATUS_ICON.get(r["status"], "•")
+        lines.append(
+            f"{icon} {ts} · {ch} · <b>{html_escape(cname)}</b> · {amt}"
+        )
+    return "\n".join(lines)
+
+
+@router.message(Command("bugunpul"))
+async def cmd_bugunpul(message: Message, state: FSMContext):
+    """Today's full intake_payments list — one line per payment, newest
+    first. Cashier group only, read-only (use /cashbook for cancel)."""
+    if not _is_cashier_chat(message):
+        return
+    if not is_cashier_or_admin(message):
+        return
+    conn = get_db()
+    try:
+        date, rows = _today_intake_rows(conn)
+    finally:
+        conn.close()
+    await message.answer(_render_today_list(date, rows), parse_mode="HTML")
+
+
 def _render_summary(s: dict) -> str:
     """Format the daily intake summary as an HTML message. Used by both
     /bugun (on-demand) and the 18:00 auto-post."""

@@ -13,9 +13,9 @@ function parseUzsInput(s) {
   return parseFloat((s || '').replace(/\s/g, '')) || 0;
 }
 
-// INN: digits only, capped at 9 chars
+// INN: digits only. 9 = yuridik shaxs (LLC etc.), 14 = ЯТТ (PINFL).
 function formatInnInput(raw) {
-  return (raw || '').replace(/[^\d]/g, '').slice(0, 9);
+  return (raw || '').replace(/[^\d]/g, '').slice(0, 14);
 }
 
 export default function LegalTransferInline({ telegramId, client, defaultOpen = false, onClose }) {
@@ -119,7 +119,7 @@ export default function LegalTransferInline({ telegramId, client, defaultOpen = 
       setFeedback({ type: 'err', text: t.legaltx_entity_required });
       return;
     }
-    if (inn.length !== 9) {
+    if (inn.length !== 9 && inn.length !== 14) {
       setFeedback({ type: 'err', text: t.legaltx_inn_required });
       return;
     }
