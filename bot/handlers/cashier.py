@@ -41,6 +41,12 @@ from bot.shared import (
     get_db,
     html_escape,
 )
+
+LEGAL_TRANSFER_GROUP_CHAT_ID = int(
+    os.getenv("LEGAL_TRANSFER_GROUP_CHAT_ID", "")
+    or os.getenv("CASHIER_GROUP_CHAT_ID", "")
+    or "0"
+)
 from backend.services.payment_intake import (
     insert_intake_raw,
     create_intake_payment,
@@ -645,22 +651,26 @@ async def cb_legaltx_pick_supplier(cb: CallbackQuery, bot: Bot):
         conn.close()
 
     supplier_name = result["supplier_name_1c"]
-    # Edit the notification in place — remove keyboard, append supplier
-    # footer + Stage 3 instruction (uncle replies with agreement file)
+    client_display = (
+        result.get("client_id_1c")
+        or result.get("client_name")
+        or f"#{result.get('client_id') or ''}"
+    )
+    # Stage-1 sends the notification as media+caption (extra_doc is required),
+    # so we edit the caption — edit_text fails silently on media messages.
     original = cb.message.html_text or cb.message.text or ""
-    new_text = (
+    new_caption = (
         original
         + f"\n\n✅ → <b>{html_escape(supplier_name)}</b>"
         + "\n📎 <i>Shartnomani shu xabarga javob qilib yuboring</i>"
     )
     try:
-        await cb.message.edit_text(
-            new_text, parse_mode="HTML", disable_web_page_preview=True
-        )
+        await cb.message.edit_caption(caption=new_caption, parse_mode="HTML")
     except Exception as e:
-        logger.warning(f"legaltx pick edit failed: {e}")
+        logger.warning(f"legaltx pick edit_caption failed: {e}")
         await cb.message.answer(
-            f"✅ #{transfer_id} → <b>{html_escape(supplier_name)}</b>\n"
+            f"✅ #{transfer_id} <b>{html_escape(client_display)}</b> → "
+            f"<b>{html_escape(supplier_name)}</b>\n"
             f"📎 <i>Shartnomani shu xabarga javob qilib yuboring</i>",
             parse_mode="HTML",
         )
@@ -682,18 +692,19 @@ def _fmt_uzs_for_msg(amount: float) -> str:
 
 
 @router.message(
-    F.document
+    (F.document | F.photo)
     & F.reply_to_message
-    & F.chat.type.in_({"group", "supergroup"})
+    & (F.chat.id == LEGAL_TRANSFER_GROUP_CHAT_ID)
 )
 async def cb_legaltx_agreement_upload(message: Message, bot: Bot):
     """Stage 3: agreement file uploaded as a reply to the Stage 1 notification.
 
-    Filters: must be in a group/supergroup (not DM — DMs are Stage 5a's
-    territory), reply to one of the bot's own messages, original message
-    must contain the legal-transfer header marker AND a #<id> token, and
-    the user must have admin/cashier role. Otherwise silently ignored —
-    the bot stays out of the way of unrelated documents in the group.
+    The chat-id filter scopes this to the legal-transfer group. Inside the
+    group we trust any member to post the agreement (supplier reps reply
+    directly with the doc/photo); the state machine in `attach_agreement`
+    rejects anything that isn't sitting at status='supplier_assigned', so a
+    stray reply on the wrong message just gets a "⚠️" back without
+    advancing state.
     """
     rt = message.reply_to_message
     if not rt or not rt.from_user or rt.from_user.id != bot.id:
@@ -708,11 +719,13 @@ async def cb_legaltx_agreement_upload(message: Message, bot: Bot):
         transfer_id = int(m.group(1))
     except ValueError:
         return
-    if not is_cashier_or_admin(message):
-        return  # Silent — not our event
 
-    file_id = message.document.file_id
-    file_name = message.document.file_name or "agreement"
+    if message.photo:
+        is_image = True
+        file_id = message.photo[-1].file_id
+    else:
+        is_image = False
+        file_id = message.document.file_id
 
     conn = get_db()
     try:
@@ -737,29 +750,41 @@ async def cb_legaltx_agreement_upload(message: Message, bot: Bot):
     original_html = original_html.replace(
         "📎 <i>Shartnomani shu xabarga javob qilib yuboring</i>", ""
     ).rstrip()
-    new_text = (
+    new_caption = (
         original_html
         + "\n📎 ✅ <b>Shartnoma yuklandi</b>"
         + "\n💰 <i>Klient to'lovni amalga oshirgandan keyin chek shu xabarga javob qilsin</i>"
     )
     try:
-        await rt.edit_text(new_text, parse_mode="HTML", disable_web_page_preview=True)
+        await rt.edit_caption(caption=new_caption, parse_mode="HTML")
     except Exception as e:
-        logger.warning(f"agreement upload edit failed: {e}")
+        logger.warning(f"agreement upload edit_caption failed: {e}")
 
     await message.reply(
-        f"✅ <b>#{transfer_id}</b> Shartnoma qabul qilindi — klientga yuborildi.",
+        f"✅ <b>#{transfer_id}</b> Shartnoma qabul qilindi.",
         parse_mode="HTML",
     )
 
-    # DM client(s) — siblings (multiple phones same client_id_1c) all get a copy
-    if not client_tg_ids:
+    # Recipient list: client siblings (all phones for the same client_id_1c)
+    # PLUS the agent submitter when an agent acted on behalf. Self-submitted
+    # requests already have submitter == one of the siblings, so dedup keeps
+    # the DM count to one.
+    recipients = list(client_tg_ids)
+    submitter_tg = result.get("submitted_by_telegram_id")
+    if submitter_tg and submitter_tg not in recipients:
+        recipients.append(submitter_tg)
+
+    if not recipients:
         await message.reply(
-            f"⚠️ Klient <b>#{result['client_id']}</b> uchun bog'langan Telegram foydalanuvchi topilmadi. "
-            f"Shartnomani qo'lda yuboring.",
+            f"⚠️ #{transfer_id}: na klient na yuboruvchi uchun Telegram topilmadi. Qo'lda yuboring.",
             parse_mode="HTML",
         )
         return
+    if not client_tg_ids:
+        await message.reply(
+            f"ℹ️ Klient <b>#{result['client_id']}</b> botda yo'q — shartnoma faqat yuboruvchiga (agent) yuborildi.",
+            parse_mode="HTML",
+        )
 
     client_caption = (
         f"🏛 <b>Yuridik shaxs to'lov #{transfer_id}</b>\n\n"
@@ -770,19 +795,24 @@ async def cb_legaltx_agreement_upload(message: Message, bot: Bot):
         f"<i>To'lov amalga oshgandan keyin bank chekini bot orqali yuboring.</i>"
     )
     sent_count = 0
-    for client_tg in client_tg_ids:
+    for tg in recipients:
         try:
-            await bot.send_document(
-                client_tg, file_id, caption=client_caption, parse_mode="HTML"
-            )
+            if is_image:
+                await bot.send_photo(
+                    tg, file_id, caption=client_caption, parse_mode="HTML"
+                )
+            else:
+                await bot.send_document(
+                    tg, file_id, caption=client_caption, parse_mode="HTML"
+                )
             sent_count += 1
         except Exception as e:
             logger.warning(
-                f"Failed to send agreement #{transfer_id} to client tg={client_tg}: {e}"
+                f"Failed to send agreement #{transfer_id} to tg={tg}: {e}"
             )
     if sent_count == 0:
         await message.reply(
-            f"⚠️ Klientga yuborib bo'lmadi (botni bloklagan bo'lishi mumkin). Qo'lda yuboring."
+            f"⚠️ Hech kimga yuborib bo'lmadi (botni bloklagan bo'lishi mumkin). Qo'lda yuboring."
         )
 
 
