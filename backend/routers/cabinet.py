@@ -746,10 +746,16 @@ def confirmed_order_diff(wishlist_order_id: int, telegram_id: int = Query(...)):
 
     confirmed_items = _json.loads(confirmed_row["items_json"] or "[]")
 
-    # Diff by normalized name. Exact cyrillic name is the stable join key
-    # between /realorders exports and the wishlist item snapshots.
+    # Diff by normalized name. Wish-list items store the display form
+    # 'Producer — 1C Name' (em-dash U+2014, see backend/routers/export.py:121),
+    # while 1C 'Реализация'/'Счет-фактура' exports give just the bare 1C
+    # name. Strip the 'Producer — ' prefix from both sides so the same item
+    # in two formats matches as 'kept' rather than (removed + added).
     def _norm(s: str) -> str:
-        return " ".join((s or "").lower().split())
+        s = (s or "").lower()
+        if " — " in s:
+            s = s.split(" — ", 1)[1]
+        return " ".join(s.split())
 
     wish_by = {}
     for it in wish_items:
