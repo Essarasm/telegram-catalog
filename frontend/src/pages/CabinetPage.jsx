@@ -2024,11 +2024,11 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
                         </div>
                       )}
                     </div>
-                    {section(d.kept, 'text-green-600', '✓', t.wishlist_diff_kept, false)}
-                    {section(d.reduced, 'text-amber-600', '↓', t.wishlist_diff_reduced, true)}
-                    {section(d.increased, 'text-blue-600', '↑', t.wishlist_diff_increased, true)}
+                    {/* Only show what the client got LESS of — removed (olib tashlandi)
+                        and reduced (kamaytirildi). Hide kept (no change), increased,
+                        and added per UX call: clients only care about shortfalls. */}
                     {section(d.removed, 'text-red-600', '✗', t.wishlist_diff_removed, false)}
-                    {section(d.added, 'text-violet-600', '+', t.wishlist_diff_added, false)}
+                    {section(d.reduced, 'text-amber-600', '↓', t.wishlist_diff_reduced, true)}
                   </>
                 );
               })()
