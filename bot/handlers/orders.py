@@ -178,7 +178,55 @@ async def handle_order_confirmation_reply(message: Message):
             )
             return
         docs = parsed["documents"]
-        first = docs[0]
+
+        # Match the wish-list's client to a document in the file. Single-
+        # invoice files have len(docs)==1; bulk Реализация files contain
+        # one entry per client uploaded today — taking docs[0] would link
+        # whichever client happens to be first in the file to *this* wish-
+        # list, regardless of who it actually belongs to.
+        wish_client = (row["client_name"] or "").strip()
+
+        def _norm_name(s: str) -> str:
+            return re.sub(r"\s+", " ", (s or "").strip()).casefold()
+
+        wish_norm = _norm_name(wish_client)
+        first = None
+        seen = []
+        for d in docs:
+            doc_client = (d.get("client_name_1c") or "").strip()
+            seen.append(doc_client)
+            if wish_norm and _norm_name(doc_client) == wish_norm:
+                first = d
+                break
+            # Phone fallback for walk-in invoices (parens-with-phone shape).
+            doc_phone = d.get("client_phone")
+            if doc_phone:
+                wish_phone_row = None
+                conn3 = _get_db()
+                try:
+                    wish_phone_row = conn3.execute(
+                        "SELECT phone FROM users WHERE telegram_id = ?",
+                        (client_tg_id,),
+                    ).fetchone() if client_tg_id else None
+                finally:
+                    conn3.close()
+                wish_phone = (wish_phone_row["phone"] if wish_phone_row else None) or ""
+                # Normalize: strip non-digits, compare last 9 digits (UZ format)
+                d_digits = re.sub(r"\D", "", doc_phone)[-9:]
+                w_digits = re.sub(r"\D", "", wish_phone)[-9:]
+                if d_digits and d_digits == w_digits:
+                    first = d
+                    break
+
+        if first is None:
+            found = ", ".join(sorted(set(s[:40] for s in seen if s))[:5]) or "—"
+            await status_msg.edit_text(
+                f"❌ Faylda <b>{html_escape(wish_client)}</b> uchun hujjat topilmadi.\n"
+                f"Topilgan: {html_escape(found)}\n"
+                f"Notog'ri xabarga javob bermayapsizmi?",
+                parse_mode="HTML",
+            )
+            return
 
         items = first.get("items") or []
         total_uzs = sum(float(it.get("total_local") or 0) for it in items)

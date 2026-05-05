@@ -312,10 +312,241 @@ def _is_header_row(sh: _Sheet, r: int) -> bool:
     return len(s) > 0
 
 
+# ── Single-invoice (Счет-фактура printable) parser ──────────────────────
+#
+# 1C exports a printable invoice form (Счет-фактура) when sotuv staff click
+# Print/Save on a single Реализация document. Layout is fundamentally
+# different from the tabular Реализация report: title row, free-text client
+# row, two-pair UZS/USD column header. We detect it by row 0 starting with
+# 'СЧЕТ-ФАКТУРА' and dispatch in `parse_real_orders_xls`.
+
+_RU_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
+    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
+    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
+
+
+def _parse_invoice_doc_date(s) -> Optional[str]:
+    """'от 5 Мая 2026 г.' → '2026-05-05'. Returns None if unparseable."""
+    if not s:
+        return None
+    s = str(s).strip().lower()
+    m = re.search(r"(\d{1,2})\s+([а-яё]+)\s+(\d{4})", s)
+    if not m:
+        return None
+    day, month_word, year = int(m.group(1)), m.group(2), int(m.group(3))
+    month = _RU_MONTHS.get(month_word)
+    if not month:
+        return None
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def _parse_invoice_client(s) -> Tuple[str, Optional[str]]:
+    """Parse the 'Клиент : ...' line from row 3.
+
+    Two real-world shapes:
+        bare 1C card name:  'Клиент : ФАХРИДДДИН /ЧЕЛЕК/'  → ('ФАХРИДДДИН /ЧЕЛЕК/', None)
+        walk-in with phone: 'Клиент : Имя (Контакт (+998…))' → ('Имя', '+998…')
+    """
+    if not s:
+        return "", None
+    s = str(s).strip()
+    m = re.match(r"\s*Клиент\s*:\s*(.+?)\s*$", s)
+    tail = m.group(1).strip() if m else s
+    phone_m = re.search(r"\+?\d{9,}", tail)
+    if phone_m:
+        before_paren = tail.split("(", 1)[0].strip()
+        return before_paren, phone_m.group(0)
+    return tail, None
+
+
+def _coerce_invoice_num(v) -> float:
+    """Like _parse_number, but also coerces the literal '-' (1C uses it for
+    'no value' in the Стоимость pair when the row is single-currency) to 0.
+    """
+    if v is None:
+        return 0.0
+    if isinstance(v, str) and v.strip() == "-":
+        return 0.0
+    return _parse_number(v)
+
+
+def _parse_invoice_layout(sh: _Sheet) -> dict:
+    """Parse a Счет-фактура printable invoice (single document).
+
+    Returns the same dict shape as `parse_real_orders_xls`: documents list
+    of length 1 plus stats. Adds `client_phone` to the document dict (None
+    for real clients; populated for walk-in entries) — used downstream in
+    the order-confirmation handler to verify the file matches the wish-list.
+    """
+    if sh.nrows < 8:
+        return {"ok": False, "error": "Invoice file too short (< 8 rows)"}
+
+    # Doc number from row 0
+    r0 = sh.cell(0, 1) or sh.cell(0, 0) or ""
+    r0_str = str(r0).strip()
+    m_num = re.search(r"№\s*(\S+)", r0_str)
+    doc_number_1c = m_num.group(1).strip() if m_num else None
+
+    # Date from row 1
+    r1 = sh.cell(1, 1) or sh.cell(1, 0) or ""
+    doc_date = _parse_invoice_doc_date(r1)
+
+    # Client from row 3
+    r3 = sh.cell(3, 1) or sh.cell(3, 0) or ""
+    client_name_1c, client_phone = _parse_invoice_client(r3)
+
+    # Find header row by scanning first ~12 rows for 'Наименование'
+    header_row = None
+    for r in range(min(sh.nrows, 12)):
+        for c in range(sh.ncols):
+            v = sh.cell(r, c)
+            if isinstance(v, str) and "наименование" in v.lower():
+                header_row = r
+                break
+        if header_row is not None:
+            break
+    if header_row is None:
+        return {
+            "ok": False,
+            "error": "Invoice header row not found (no 'Наименование' in first 12 rows)",
+            "diagnostics": _dump_first_rows(sh, 20),
+        }
+
+    # Map columns. The invoice has TWO 'Цена'/'Стоимость' pairs (UZS first,
+    # USD second). Walk in column order; the 1st price/total pair = UZS,
+    # 2nd = USD.
+    product_col = None
+    qty_col = None
+    price_cols: List[int] = []
+    total_cols: List[int] = []
+    for c in range(sh.ncols):
+        h = sh.cell(header_row, c)
+        if not isinstance(h, str):
+            continue
+        h_norm = re.sub(r"\s+", "", h).lower().replace("ё", "е")
+        if product_col is None and "наименование" in h_norm:
+            product_col = c
+        elif qty_col is None and ("кол-во" in h_norm or h_norm.startswith("кол")):
+            qty_col = c
+        elif h_norm == "цена":
+            price_cols.append(c)
+        elif h_norm.startswith("стоимость"):
+            total_cols.append(c)
+
+    if product_col is None or qty_col is None:
+        return {
+            "ok": False,
+            "error": "Invoice header missing 'Наименование' or 'Кол-во'",
+            "diagnostics": _dump_first_rows(sh, 20),
+        }
+
+    uzs_price = price_cols[0] if len(price_cols) >= 1 else None
+    uzs_total = total_cols[0] if len(total_cols) >= 1 else None
+    usd_price = price_cols[1] if len(price_cols) >= 2 else None
+    usd_total = total_cols[1] if len(total_cols) >= 2 else None
+
+    items: List[dict] = []
+    total_uzs_calc = 0.0
+    total_usd_calc = 0.0
+    line_no_seen = 0
+
+    for r in range(header_row + 1, sh.nrows):
+        # Termination: 'Итого:' appears in any cell of the row (typically col 7)
+        row_text = " ".join(
+            str(sh.cell(r, c) or "") for c in range(sh.ncols)
+        ).lower()
+        if "итого" in row_text and not (sh.cell(r, product_col) or "").__str__().strip():
+            break
+
+        product = sh.cell(r, product_col)
+        if not isinstance(product, str) or not product.strip():
+            # Skip blank-product rows (spacers, totals-in-words, footer)
+            continue
+
+        qty = _parse_number(sh.cell(r, qty_col))
+        price_uzs = _coerce_invoice_num(sh.cell(r, uzs_price)) if uzs_price is not None else 0.0
+        total_uzs = _coerce_invoice_num(sh.cell(r, uzs_total)) if uzs_total is not None else 0.0
+        price_usd = _coerce_invoice_num(sh.cell(r, usd_price)) if usd_price is not None else 0.0
+        total_usd = _coerce_invoice_num(sh.cell(r, usd_total)) if usd_total is not None else 0.0
+
+        line_no_seen += 1
+        items.append({
+            "line_no": line_no_seen,
+            "product_name_1c": product.strip(),
+            "quantity": qty,
+            "price": price_uzs,
+            "sum_local": total_uzs,
+            "vat": 0.0,
+            "total_local": total_uzs,
+            "stock_remainder": 0.0,
+            "cost": 0.0,
+            "total_cost": 0.0,
+            "sum_currency": total_usd,
+            "price_currency": price_usd,
+            "total_currency": total_usd,
+            "storage_location": None,
+            "weight_per_unit": 0.0,
+            "total_weight": 0.0,
+        })
+        total_uzs_calc += total_uzs
+        total_usd_calc += total_usd
+
+    if not items:
+        return {
+            "ok": False,
+            "error": "No item rows parsed from invoice",
+            "diagnostics": _dump_first_rows(sh, 25),
+        }
+
+    # Document dict mirrors the bulk parser's shape; `client_phone` is
+    # the only addition (None for real-client invoices).
+    if total_uzs_calc > 0 and total_usd_calc > 0:
+        currency = "MIXED"
+    elif total_usd_calc > 0:
+        currency = "USD"
+    else:
+        currency = "UZS"
+
+    document = {
+        "doc_number_1c": doc_number_1c,
+        "doc_date": doc_date,
+        "doc_time": None,
+        "client_name_1c": client_name_1c,
+        "client_phone": client_phone,
+        "contract": None,
+        "storage_location": None,
+        "payment_account": None,
+        "sale_agent": None,
+        "responsible_person": None,
+        "comment": None,
+        "currency": currency,
+        "exchange_rate": 1.0,
+        "items": items,
+    }
+
+    return {
+        "ok": True,
+        "documents": [document],
+        "stats": {
+            "doc_count": 1,
+            "item_count": len(items),
+            "total_uzs": total_uzs_calc,
+            "total_usd": total_usd_calc,
+        },
+    }
+
+
 # ── Main parser ──────────────────────────────────────────────────────────
 
 def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
     """Parse a 1C "Реализация товаров" export into structured documents.
+
+    Two layouts auto-detected:
+        - Bulk tabular Реализация report (multi-document) — original path
+        - Single-invoice Счет-фактура printable form — dispatched to
+          `_parse_invoice_layout` when row 0 starts with 'СЧЕТ-ФАКТУРА'
 
     Returns dict with keys:
         ok (bool)
@@ -326,6 +557,14 @@ def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
     sh, err = _load_workbook(file_bytes, filename_hint)
     if err:
         return {"ok": False, "error": err}
+
+    # Layout dispatch: invoice form's row 0 is 'СЧЕТ-ФАКТУРА  №  ...'
+    if sh.nrows >= 1:
+        r0 = sh.cell(0, 1)
+        if r0 is None and sh.ncols > 0:
+            r0 = sh.cell(0, 0)
+        if isinstance(r0, str) and "счет-фактура" in r0.lower():
+            return _parse_invoice_layout(sh)
 
     if sh.nrows < 5:
         return {"ok": False, "error": "File too short (< 5 rows)"}
