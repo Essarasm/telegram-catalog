@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 8  # 2026-05-01: +legal_transfers, legal_transfer_events (Cashbook Phase 2 — live transaction record for legal-entity bank transfer flow)
+SCHEMA_VERSION = 9  # 2026-05-06: supplier curation cleanup — retire 4 zero-history active suppliers, fold 2 duplicate merge-sources, set RANGLI BO'YOQ legal_name (Session N)
 
 
 def init_db():
@@ -1434,11 +1434,43 @@ def init_db():
     if "extra_doc_url" not in lt_cols:
         conn.execute("ALTER TABLE legal_transfers ADD COLUMN extra_doc_url TEXT")
 
+    # v9 (2026-05-06): supplier curation cleanup. Existing prod rows preserved
+    # for FK integrity (legal_transfers.supplier_id); only flip is_active and
+    # absorb the merged legal_name. Idempotent — guarded by current < 9.
+    if current < 9:
+        retired_curation_2026_05_06 = (
+            "EAST COLOR /BUILD TECHNO TRADE/",
+            "PAINTERA",
+            "R O Y A L",
+            "Саморез TAGERT",
+            'СП ООО "RANGLI B O\' Y O Q"',
+        )
+        conn.executemany(
+            "UPDATE suppliers SET is_active=0 WHERE name_1c=?",
+            [(n,) for n in retired_curation_2026_05_06],
+        )
+        # Detach Stage-2 picker links for both retired-this-pass and merge-source
+        # suppliers so they no longer appear in the legal-transfer dropdown.
+        detach_names = retired_curation_2026_05_06 + ("ЭКОС /КораСарой/",)
+        placeholders = ",".join(["?"] * len(detach_names))
+        conn.execute(
+            f"""DELETE FROM supplier_categories
+                WHERE supplier_id IN (
+                  SELECT id FROM suppliers WHERE name_1c IN ({placeholders})
+                )""",
+            detach_names,
+        )
+        # Absorb merged legal_name into the surviving RANGLI BO'YOQ row.
+        conn.execute(
+            "UPDATE suppliers SET legal_name=? WHERE name_1c=? AND (legal_name IS NULL OR legal_name='')",
+            ('СП ООО "RANGLI B O\' Y O Q"', "RANGLI BO'YOQ"),
+        )
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "Cashbook Phase 2: legal_transfers + legal_transfer_events (live transaction record for legal-entity bank transfer)"),
+            (SCHEMA_VERSION, "Session N supplier curation cleanup (2026-05-06): retired 4 zero-history actives, folded 2 merge sources, set RANGLI BO'YOQ legal_name"),
         )
 
     conn.commit()

@@ -44,12 +44,12 @@ CATEGORIES = [
 
 SUPPLIERS = [
     ("DELUX Самандар ака",                "Lak, bo'yoq",              None,                                                      48,  6_409_900_960,    181_712),
-    ("EAST COLOR /BUILD TECHNO TRADE/",   "Lak, bo'yoq",              None,                                                      48,  1_184_955_360,    315_644),
+    ("EAST COLOR /BUILD TECHNO TRADE/",   None,                       None,                                                      48,  1_184_955_360,    315_644),
     ("GAMMA COLOR SERVICE",               "Lak, bo'yoq",              '"GAMMA COLOR SERVICE" MCHJ',                              48,        607_200,    797_642),
     ("GOOGLE",                            "Lak, bo'yoq",              None,                                                      48,  5_596_747_080,    840_499),
     ("LAMA STANDART",                     "Lak, bo'yoq",              'СП ООО "LAMA STANDART"',                                  48,  3_398_087_064, 11_082_835),
-    ("PAINTERA",                          "Lak, bo'yoq",              None,                                                      48,    883_147_200,    336_125),
-    ("R O Y A L",                         "Lak, bo'yoq",              None,                                                      48,  4_325_678_400,     28_400),
+    ("PAINTERA",                          None,                       None,                                                      48,    883_147_200,    336_125),
+    ("R O Y A L",                         None,                       None,                                                      48,  4_325_678_400,     28_400),
     ("SILKCOAT PAINT",                    "Lak, bo'yoq",              'СП ООО «SILKCOAT PAINT»',                                 48, 10_609_796_400,  1_022_857),
     ("SIMPLEX BIZNES",                    "Lak, bo'yoq",              None,                                                      48,     13_305_600,    906_530),
     ("ZIP КОЛЛЕР",                        "Koller",                   None,                                                      48, 10_423_201_440,     12_189),
@@ -57,7 +57,6 @@ SUPPLIERS = [
     ("ДЕКОАРТ",                           "Lak, bo'yoq",              None,                                                      48,  3_526_500_400,     26_214),
     ("КАРБИД",                            "Karbid",                   'СП «ОБОД ТУРМУШ ШОВОТ»',                                  48,     41_976_000,  1_606_002),
     ("ЛИНОЛЕУМ САНФА",                    "Linoleum",                 None,                                                      48,     61_068_000,  6_620_963),
-    ("ЛОПАТКИ /РАЗНЫЕ/",                  None,                       None,                                                      48,      1_537_200,      3_600),
     ("ПРОЧИЕ",                            None,                       None,                                                      48,  5_348_283_332,    506_017),
     ("Растворитель",                      "Eritma",                   '"THE MIRAGE INVESTMENT" MCHJ',                            48,  1_155_197_400,    183_571),
     ("СЕНТИФОН",                          "Sintepon",                 'ООО "USEFUL BUSINESS GROUP"',                             48,      7_731_600,    197_240),
@@ -68,28 +67,32 @@ SUPPLIERS = [
     ("ЭМАЛЬ НЦ-132П",                     "Lak, bo'yoq",              None,                                                      48,      1_478_400,     45_203),
     ("Ташкент Трубный з-д",               "Metall mahsulot",          'СП ООО "Ташкентский трубный завод имени В.Л. Гальперина"', 42,              0,  1_236_130),
     ("САМОРЕЗ  OFM",                      "Burama mix va shuruplar",  None,                                                      38,     13_872_000,  1_519_099),
-    ("ШЛАНГ ПОЛИВНОЙ",                    None,                       None,                                                      38,     25_800_000,    129_606),
-    ("KRIPTEKS - METAL",                  None,                       None,                                                      29,     10_500_000,    544_592),
-    ("ЭКОС /КораСарой/",                  None,                       None,                                                      29,    413_007_000,     25_565),
     ("ЭЛЕРОН ЭЛИТ СЕРВИС",                "Quruq aralashma",          None,                                                      24, 39_670_408_078,          0),
-    ("НАЦИОНАЛ КЕРАМИК",                  None,                       None,                                                      24,  2_487_857_340,          0),
-    ("ЦЕМЕНТ",                            None,                       None,                                                      24,  1_053_628_100,          0),
-    ("ДЕКОПЛАСТ",                         None,                       None,                                                      24,     60_136_800,          0),
     ("СОБСАН",                            "Lak, bo'yoq",              None,                                                      24,              0,  1_857_766),
     ("PUFA MIX",                          None,                       None,                                                      24,              0,    950_635),
     ("MASHXAD",                           None,                       None,                                                      24,              0,    722_553),
     ("ПалИЖ КОЛЛЕР",                      None,                       None,                                                      24,              0,    472_292),
     ("WEBER",                             "Lak, bo'yoq",              None,                                                      24,              0,    358_313),
-    ("СОМО FIX",                          None,                       None,                                                      24,              0,    234_906),
     ("НОРА ойти",                         None,                       None,                                                      24,              0,    107_287),
     ("НЮМИКС",                            "Lak, bo'yoq",              None,                                                      24,              0,     70_464),
     ("FUBER",                             "Quruq aralashma",          None,                                                      19, 11_328_602_796,      9_167),
     ("КораСарой/ЭКОС/",                   None,                       None,                                                      19,  2_801_289_000,    361_001),
     ("ГВОЗДИ /KRIPTEKS-METAL/",           "Mixlar",                   None,                                                      19,    105_388_800,  4_409_992),
-    ("Саморез TAGERT",                    "Burama mix va shuruplar",  None,                                                      18,              0,  1_538_994),
-    ('СП ООО "RANGLI B O\' Y O Q"',       "Lak, bo'yoq",              None,                                                      15,              0,    120_423),
-    ("RANGLI BO'YOQ",                     "Lak, bo'yoq",              None,                                                       9,              0,  2_708_142),
+    ("Саморез TAGERT",                    None,                       None,                                                      18,              0,  1_538_994),
+    ("RANGLI BO'YOQ",                     "Lak, bo'yoq",              'СП ООО "RANGLI B O\' Y O Q"',                              9,              0,  2_708_142),
 ]
+# 2026-05-06 curation pass (Session N — Supplier list cleanup based on Jan-Apr 2026 supply history):
+#   Retired (mini_app_label=None): EAST COLOR, PAINTERA, R O Y A L, Саморез TAGERT
+#     (zero Jan-Apr supply lines; reactivate only if seen in future supply uploads)
+#   Removed entirely (merge sources): СП ООО "RANGLI B O' Y O Q" → folded into RANGLI BO'YOQ;
+#     ЭКОС /КораСарой/ → folded into КораСарой/ЭКОС/
+#   Removed entirely (truly retired, no activity, never used): ШЛАНГ ПОЛИВНОЙ, ЦЕМЕНТ,
+#     СОМО FIX, ЛОПАТКИ /РАЗНЫЕ/, KRIPTEKS - METAL, НАЦИОНАЛ КЕРАМИК, ДЕКОПЛАСТ
+#   RANGLI BO'YOQ now carries the formal legal_name absorbed from the merged 'СП ООО ...' row.
+# Existing prod rows for retired entries are kept (FK integrity); init_db migration v9
+# flips is_active=0 for those still marked active in prod.
+# 5 ADD_AS_NEW deferred until uncle clarifies procurement category for ПЛИНТУС, ORIGINAL
+# COLORMIX, УГОЛОК, ГУДФИКС, СЕМИКС.
 
 
 def seed_procurement(conn):

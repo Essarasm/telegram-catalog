@@ -1813,6 +1813,16 @@ async def cmd_supply(message: types.Message):
             f"💱 Валюта: {cur_text}",
         ])
 
+        retired_seen = result.get("retired_seen") or []
+        if retired_seen:
+            lines.append("")
+            lines.append(f"⚠️ <b>Pensiyaga chiqarilgan yetkazib beruvchi qaytdi ({len(retired_seen)}):</b>")
+            for name in retired_seen[:10]:
+                lines.append(f"  • <code>{name}</code>")
+            if len(retired_seen) > 10:
+                lines.append(f"  … +{len(retired_seen)-10}")
+            lines.append("<i>Reaktivatsiya qilish kerakmi? Uchqun bilan tekshiring.</i>")
+
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
 
         # Track in daily uploads
@@ -1867,6 +1877,7 @@ async def cmd_bulksupply(message: types.Message):
         total_unmatched = 0
         file_results = []
         all_unmatched_names: set = set()
+        all_retired_seen: set = set()
         supply_total = 0
         return_total = 0
         adj_total = 0
@@ -1892,6 +1903,7 @@ async def cmd_bulksupply(message: types.Message):
                 return_total += s.get("return_count", 0)
                 adj_total += s.get("adjustment_count", 0)
                 all_unmatched_names.update(r.get("unmatched_products", []))
+                all_retired_seen.update(r.get("retired_seen", []))
                 file_results.append(f"  ✅ {fname}: {ins}+{upd} док, {items} строк")
             else:
                 file_results.append(f"  ❌ {fname}: {r.get('error', '?')}")
@@ -1915,6 +1927,15 @@ async def cmd_bulksupply(message: types.Message):
             lines.extend(file_results)
         else:
             lines.append(f"\n<b>Fayllar:</b> {len(all_files)} ta (ro'yxat qisqartirildi)")
+
+        if all_retired_seen:
+            sorted_retired = sorted(all_retired_seen)
+            lines.append("")
+            lines.append(f"⚠️ <b>Pensiyaga chiqarilgan yetkazib beruvchi qaytdi ({len(sorted_retired)}):</b>")
+            for name in sorted_retired[:10]:
+                lines.append(f"  • <code>{name}</code>")
+            if len(sorted_retired) > 10:
+                lines.append(f"  … +{len(sorted_retired)-10}")
 
         text = "\n".join(lines)
         if len(text) > 4000:

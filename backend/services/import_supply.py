@@ -364,6 +364,26 @@ def apply_supply_import(
         # Unique unmatched
         unique_unmatched = sorted(set(unmatched_products))
 
+        # Retired-supplier reappearance check: counterparties imported in this
+        # batch that match suppliers we've marked is_active=0. Surfaces in the
+        # /supply reply so we can decide whether to reactivate (Session N rule
+        # 2026-05-06: "spot any in supply daily upload → flag").
+        imported_counterparties = sorted({
+            d["counterparty_name"] for d in documents
+            if d.get("doc_type") == "supply" and d.get("counterparty_name")
+        })
+        retired_seen: List[str] = []
+        if imported_counterparties:
+            placeholders = ",".join(["?"] * len(imported_counterparties))
+            retired_seen = [
+                row[0] for row in conn.execute(
+                    f"""SELECT name_1c FROM suppliers
+                        WHERE is_active = 0
+                          AND name_1c IN ({placeholders})""",
+                    imported_counterparties,
+                ).fetchall()
+            ]
+
         return {
             "ok": True,
             "inserted_docs": inserted_docs,
@@ -372,6 +392,7 @@ def apply_supply_import(
             "matched_products": matched_products,
             "unmatched_products_count": len(unique_unmatched),
             "unmatched_products": unique_unmatched[:50],  # Cap at 50 for display
+            "retired_seen": retired_seen,
             "stats": stats,
         }
     except Exception as e:
