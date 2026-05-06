@@ -1421,8 +1421,8 @@ def inventory_week_out(admin_key: str = Query(...)):
         days_out = _days_out_tashkent(r["stockout_at"])
         items.append({
             "product_id": pid,
-            "name": r["name_display"] or r["name_cyrillic"],
-            "name_cyrillic": r["name_cyrillic"],
+            "name": r["name_cyrillic"],
+            "name_display": r["name_display"],
             "producer": r["producer"],
             "unit": r["unit"] or "шт",
             "stockout_at_utc": r["stockout_at"],

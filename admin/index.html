@@ -2738,7 +2738,7 @@
             tbody.innerHTML = items.slice(0, 20).map((item, i) => `
                 <tr>
                     <td class="table-number">${i + 1}</td>
-                    <td class="table-name">${item.display_name || item.name_1c || '-'}</td>
+                    <td class="table-name">${item.name_1c || item.display_name || '-'}</td>
                     <td class="table-producer">${item.producer || '-'}</td>
                     <td>${item.stock_quantity || 0}</td>
                     <td>${item.click_count || 0}</td>
