@@ -1029,15 +1029,23 @@ def stock_status(admin_key: str = Query(...)):
             (latest_upload,)
         ).fetchall()
 
-    # Top ordered products (from app orders)
+    # Top ordered products (from app orders).
+    # Group by product_id (canonical) so display always shows Cyrillic
+    # `products.name`, regardless of how `oi.product_name` was stored at
+    # order time (frontend could ship "<producer> — <cyrillic>" or anything).
+    # NULL product_id means an orphan order_item (no product link); fall
+    # back to the stored `product_name` for those.
     top_ordered_app = conn.execute("""
-        SELECT oi.product_name, oi.producer_name,
+        SELECT COALESCE(p.name, oi.product_name) as product_name,
+               COALESCE(pr.name, oi.producer_name) as producer_name,
                SUM(oi.quantity) as total_qty,
                COUNT(DISTINCT oi.order_id) as order_count,
                oi.currency, oi.price
         FROM order_items oi
         JOIN orders o ON o.id = oi.order_id
-        GROUP BY oi.product_name
+        LEFT JOIN products p ON p.id = oi.product_id
+        LEFT JOIN producers pr ON pr.id = p.producer_id
+        GROUP BY COALESCE(p.id, oi.product_name)
         ORDER BY order_count DESC, total_qty DESC
         LIMIT 30
     """).fetchall()
@@ -1458,7 +1466,8 @@ def _aggregate_sales_by_product(conn, start_tk_date: str, end_tk_date: str, fxra
     """
     rows = conn.execute(
         """SELECT roi.product_id,
-                  COALESCE(p.name_display, p.name) as display_name,
+                  p.name as name_cyrillic,
+                  p.name_display,
                   p.unit,
                   SUM(roi.quantity) as units,
                   SUM(CASE WHEN ro.currency = 'UZS' THEN roi.total_local ELSE 0 END) as uzs_rev,
@@ -1482,7 +1491,8 @@ def _aggregate_sales_by_product(conn, start_tk_date: str, end_tk_date: str, fxra
         usd_eq = usd + (uzs / fxrate if fxrate > 0 else 0)
         out[pid] = {
             "product_id": pid,
-            "name": (r["display_name"] or "—"),
+            "name": (r["name_cyrillic"] or "—"),
+            "name_display": r["name_display"],
             "unit": r["unit"] or "шт",
             "units": float(r["units"] or 0),
             "revenue_uzs_native": uzs,
