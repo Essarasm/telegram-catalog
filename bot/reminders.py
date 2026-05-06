@@ -263,10 +263,10 @@ async def _send_weekly_unlinked(bot, chat_id: int) -> None:
 
 
 async def _send_stock_alert(bot, chat_id: int) -> None:
-    """09:00 daily — inventory alert. Three modes by Tashkent weekday:
+    """08:00 daily — inventory alert. Three modes by Tashkent weekday:
 
     * **Monday**: full Mon→Sun recap of the *prior* week (currently-zero items
-      whose stockout fell in last week, plus refill count + last-week TOP-5).
+      whose stockout fell in last week, plus refill count + last-week TOP-10).
       Closes the week before the new one resets.
     * **Tue–Sun**: delta — TODAY's new tugagan + TODAY's refills + a short
       "earlier this week pending: Mon (3), Tue (5)…" note pointing at
@@ -706,7 +706,7 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         ),
         # Daily stock alert → Inventory group.
         asyncio.create_task(
-            run_daily_reminder(bot, INVENTORY_GROUP_CHAT_ID, 9, 0, _send_stock_alert),
+            run_daily_reminder(bot, INVENTORY_GROUP_CHAT_ID, 8, 0, _send_stock_alert),
             name="daily-stock-alert",
         ),
         # Client Master weekly sync cycle (sender checks weekday internally).

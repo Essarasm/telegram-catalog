@@ -164,7 +164,7 @@ def get_active_product_ids(conn) -> set:
     return active_ids
 
 
-def _get_weekly_top_sellers(conn, week_start_tk_date: str, limit: int = 5) -> list:
+def _get_weekly_top_sellers(conn, week_start_tk_date: str, limit: int = 10) -> list:
     """Top N products by units sold since this week's Monday (Tashkent).
 
     Joins `real_order_items` × `real_orders` filtered by `doc_date >=` Monday;
@@ -221,7 +221,7 @@ def get_stock_alerts(conn=None, week_start_utc: Optional[str] = None,
             "weekly_out_of_stock": subset of out_of_stock stamped on/after this
                 week's Monday 00:00 Tashkent. Cumulative across Mon–Sat; resets
                 Monday. Restocked items drop because out_of_stock filters qty<1.
-            "weekly_top_sellers": top 5 products by units sold this week (Mon–Sat).
+            "weekly_top_sellers": top 10 products by units sold this week (Mon–Sat).
             "running_low": [{name, producer, qty, last_sold, last_supplied}, ...],
             "healthy_count": int,
         }
@@ -328,7 +328,7 @@ def get_stock_alerts(conn=None, week_start_utc: Optional[str] = None,
 
         # Top sellers this week — uses Tashkent date for `real_orders.doc_date`.
         date_cutoff = week_start_tk_date if week_start_tk_date is not None else _current_week_start_tk_date_str()
-        weekly_top_sellers = _get_weekly_top_sellers(conn, date_cutoff, limit=5)
+        weekly_top_sellers = _get_weekly_top_sellers(conn, date_cutoff, limit=10)
 
         return {
             "active_count": len(products),
@@ -382,7 +382,7 @@ def get_refilled_today(conn=None, today_start_utc: Optional[str] = None) -> list
 
 def get_last_week_recap(conn=None) -> dict:
     """Monday-morning recap: items still zero whose stockout fell in last
-    week's Mon→Sun window, plus last-week refill count and top-5 sellers.
+    week's Mon→Sun window, plus last-week refill count and top-10 sellers.
 
     Half-open window: stockout_at >= last_monday AND stockout_at < this_monday.
     """
@@ -479,7 +479,7 @@ def get_last_week_recap(conn=None) -> dict:
                      AND roi.quantity > 0
                    GROUP BY roi.product_id
                    ORDER BY units_sold DESC
-                   LIMIT 5""",
+                   LIMIT 10""",
                 (last_mon_date, this_mon_date),
             ).fetchall()
             top_sellers = [
@@ -524,12 +524,12 @@ def _chunk_lines(header: str, items_lines: list[str], max_chars: int = 3800) -> 
 
 
 def format_daily_inventory_message(alerts: dict) -> list[str]:
-    """09:00 cron message — items that ran out so far this work week (Mon–Sat)
-    plus the top 5 best-selling products this week.
+    """08:00 cron message — items that ran out so far this work week (Mon–Sat)
+    plus the top 10 best-selling products this week.
 
     The TUGAGAN list is cumulative within the week and resets Monday morning;
     restocked items drop automatically (qty<1 filter). Items are grouped under
-    `<Day> — dd/mm` subheaders, Monday → Saturday. The top-5 section reflects
+    `<Day> — dd/mm` subheaders, Monday → Saturday. The top-10 section reflects
     `real_orders` shipped since this Monday. Returns [] only when both halves
     are empty (typical Monday morning before any /stock or /realorders runs).
     """
@@ -553,7 +553,7 @@ def format_daily_inventory_message(alerts: dict) -> list[str]:
 
     # ── Top 5 sellers this week ──────────────────────────────────────
     if top_sellers:
-        top_lines = ["🔥 <b>BU HAFTA TOP-5 SOTILGAN:</b>"]
+        top_lines = ["🔥 <b>BU HAFTA TOP-10 SOTILGAN:</b>"]
         for idx, item in enumerate(top_sellers, start=1):
             q = item["units_sold"]
             qty_str = str(int(q)) if q == int(q) else f"{q:.1f}"
@@ -593,7 +593,7 @@ def format_daily_inventory_message(alerts: dict) -> list[str]:
 def format_daily_delta_message(alerts: dict, refilled_today: list,
                                 today_start_utc: Optional[str] = None) -> list[str]:
     """Tue–Sun cron — TODAY's new tugagan + TODAY's refills + earlier-week
-    pending counts (no list — full list available via /stockalert hafta).
+    full pending list grouped by weekday.
 
     "Today" = stamps on/after this Tashkent calendar day's 00:00 (parameter
     `today_start_utc` overrides for tests). Returns [] only when the day has
@@ -647,22 +647,32 @@ def format_daily_delta_message(alerts: dict, refilled_today: list,
         messages.extend(_chunk_lines(header, item_lines))
 
     if earlier_out:
-        groups: dict[int, int] = defaultdict(int)
+        groups = defaultdict(list)  # type: ignore[var-annotated]
         for item in earlier_out:
-            wd, _ = _stockout_to_tk_day(item["stockout_at"])
-            if wd < 0:
+            weekday, date_str = _stockout_to_tk_day(item["stockout_at"])
+            if weekday < 0:
                 continue
-            groups[wd] += 1
-        sorted_days = sorted(groups.keys())
-        parts = [f"{UZ_DAYS_FULL[wd]} ({groups[wd]})" for wd in sorted_days]
-        messages.append(
-            f"📋 <b>Avvalgi kunlardan to'ldirish kutilmoqda</b> ({len(earlier_out)} ta):\n"
-            f"  {', '.join(parts)}\n"
-            f"  <code>/stockalert hafta</code> — to'liq ro'yxat"
-        )
+            groups[(weekday, date_str)].append(item)
+        sorted_keys = sorted(groups.keys(), key=lambda k: k[0])
+
+        header = f"📋 <b>Avvalgi kunlardan to'ldirish kutilmoqda</b> ({len(earlier_out)} ta):"
+        item_lines = []
+        for weekday, date_str in sorted_keys:
+            day_name = UZ_DAYS_FULL[weekday]
+            day_items = groups[(weekday, date_str)]
+            item_lines.append("")
+            item_lines.append(f"<b>{day_name} — {date_str}</b> ({len(day_items)} ta):")
+            for item in day_items:
+                sold = (
+                    f" (sotilgan: {item['last_sold']})"
+                    if item.get("last_sold") and item["last_sold"] != "—"
+                    else ""
+                )
+                item_lines.append(f"  • {item['name']}{sold}")
+        messages.extend(_chunk_lines(header, item_lines))
 
     if top_sellers:
-        top_lines = ["🔥 <b>BU HAFTA TOP-5 SOTILGAN:</b>"]
+        top_lines = ["🔥 <b>BU HAFTA TOP-10 SOTILGAN:</b>"]
         for idx, item in enumerate(top_sellers, start=1):
             q = item["units_sold"]
             qty_str = str(int(q)) if q == int(q) else f"{q:.1f}"
@@ -696,7 +706,7 @@ def format_weekly_recap_message(recap: dict) -> list[str]:
     messages = ["\n".join(summary_parts)]
 
     if top_sellers:
-        top_lines = ["🔥 <b>O'TGAN HAFTA TOP-5 SOTILGAN:</b>"]
+        top_lines = ["🔥 <b>O'TGAN HAFTA TOP-10 SOTILGAN:</b>"]
         for idx, item in enumerate(top_sellers, start=1):
             q = item["units_sold"]
             qty_str = str(int(q)) if q == int(q) else f"{q:.1f}"

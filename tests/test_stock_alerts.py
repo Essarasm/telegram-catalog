@@ -298,14 +298,14 @@ class TestWeeklyTopSellers:
         )
         msgs = format_daily_inventory_message(alerts)
         combined = "\n".join(msgs)
-        assert "TOP-5 SOTILGAN" in combined
+        assert "TOP-10 SOTILGAN" in combined
         assert "🔥" in combined
         # Top-ranked item appears before second-ranked
         assert "1." in combined and "2." in combined
 
     def test_message_sent_when_only_sales_no_stockouts(self, seed_products):
         """Tuesday morning case: nothing ran out yet, but sales happened —
-        message should still go out (top-5 section alone is enough)."""
+        message should still go out (top-10 section alone is enough)."""
         db = seed_products
         self._add_order(db, 1, "2026-04-27", [(1, 5)])
         alerts = get_stock_alerts(
@@ -319,5 +319,5 @@ class TestWeeklyTopSellers:
         msgs = format_daily_inventory_message(alerts)
         assert msgs != []
         combined = "\n".join(msgs)
-        assert "TOP-5 SOTILGAN" in combined
+        assert "TOP-10 SOTILGAN" in combined
         assert "BU HAFTA TUGAGAN" not in combined
