@@ -915,6 +915,35 @@
                         </div>
                     </div>
 
+                    <!-- 🧾 Debtors List — manager's printed report (per-client current debt) -->
+                    <div class="section-title collapsible" onclick="toggleSection('debtorsListSection')" style="margin-top: 24px;">
+                        🧾 Qarzdorlar Ro'yxati <span id="debtorsListMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        <span class="toggle-arrow" id="debtorsListSection-arrow">▾</span>
+                    </div>
+                    <div id="debtorsListSection" class="collapsible-content">
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Per-client current debt from latest 1C 'Дебиторская задолженность' upload. Real clients only (pseudo-accounts excluded). Sorted by combined USD-equivalent debt. <strong>Days since</strong> = today − <code>last_transaction_date</code>; large values indicate stuck debt.
+                        </div>
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Client</th>
+                                            <th>Last deal</th>
+                                            <th>Days since</th>
+                                            <th style="text-align: right;">UZS</th>
+                                            <th style="text-align: right;">USD</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="debtorsListBody"></tbody>
+                                    <tfoot id="debtorsListFooter" style="border-top: 2px solid #2a2d3a; font-weight: 600;"></tfoot>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- 🔥 Top 20 Sotilgan — work-week, USD-equivalent ranking with WoW comparison -->
                     <div class="section-title collapsible" onclick="toggleSection('topSellersSection')" style="margin-top: 24px;">
                         🔥 Top 20 Sotilgan (Bu Hafta) <span id="topSellersMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
@@ -1876,9 +1905,69 @@
             drawRevenueChart();
             drawCollectionChart(collData);
             drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
+            loadDebtorsList();
             loadTopSellersWoW();
             loadTopSellersPeriod('last_week', 'topSellersLastWeekBody', 'topSellersLastWeekMeta');
             loadTopSellersPeriod('yesterday', 'topSellersYesterdayBody', 'topSellersYesterdayMeta');
+        }
+
+        async function loadDebtorsList() {
+            try {
+                const data = await apiCall('debtors-list');
+                renderDebtorsList(data);
+            } catch (e) {
+                console.warn('debtors-list load failed', e);
+            }
+        }
+
+        function renderDebtorsList(data) {
+            const body = document.getElementById('debtorsListBody');
+            const foot = document.getElementById('debtorsListFooter');
+            const meta = document.getElementById('debtorsListMeta');
+            if (!body) return;
+            const items = (data && data.items) || [];
+            const asOf = (data && data.as_of) || '—';
+            if (meta) {
+                meta.textContent = items.length
+                    ? `${items.length} ta · as of ${asOf}`
+                    : `as of ${asOf} · qarzdorlar yo'q`;
+            }
+            if (!items.length) {
+                body.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
+                if (foot) foot.innerHTML = '';
+                return;
+            }
+            body.innerHTML = items.map(it => {
+                const days = it.days_since_last_tx;
+                let daysCell;
+                if (days === null || days === undefined) {
+                    daysCell = '<span style="color:#8b8fa3;">—</span>';
+                } else if (days >= 90) {
+                    daysCell = `<span style="color:#ef4444; font-weight:600;">${days}</span>`;
+                } else if (days >= 30) {
+                    daysCell = `<span style="color:#f59e0b;">${days}</span>`;
+                } else {
+                    daysCell = `<span>${days}</span>`;
+                }
+                const uzs = it.debt_uzs > 0 ? fmt(Math.round(it.debt_uzs)) : '—';
+                const usd = it.debt_usd > 0 ? `$${fmt(Math.round(it.debt_usd))}` : '—';
+                return `<tr>
+                    <td class="table-number">${it.rank}</td>
+                    <td>${escapeHtml(it.client_name)}</td>
+                    <td style="font-size:11px;">${escapeHtml(it.last_transaction_date || '—')}</td>
+                    <td>${daysCell}</td>
+                    <td style="text-align:right;">${uzs}</td>
+                    <td style="text-align:right;">${usd}</td>
+                </tr>`;
+            }).join('');
+            if (foot) {
+                foot.innerHTML = `<tr style="background: rgba(255,255,255,0.03);">
+                    <td></td>
+                    <td colspan="3">JAMI · ${data.count} ta</td>
+                    <td style="text-align:right;">${fmt(Math.round(data.total_uzs))}</td>
+                    <td style="text-align:right;">$${fmt(Math.round(data.total_usd))}</td>
+                </tr>`;
+            }
         }
 
         async function loadTopSellersWoW() {

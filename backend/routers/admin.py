@@ -726,6 +726,112 @@ def receivables(
     }
 
 
+@router.get("/debtors-list")
+def debtors_list(admin_key: str = Query(...)):
+    """Per-client debtors list — mirrors the manager's printed report.
+
+    Latest `client_debts` snapshot, real clients only (pseudo-accounts
+    excluded via `pseudo_clients.SYSTEM_NON_CLIENT_NAMES`). Sorted by
+    combined USD-equivalent debt DESC. Includes `last_transaction_date`
+    and computed `days_since_last_tx` so the manager can spot stuck debt.
+
+    Footer totals (count, sum_uzs, sum_usd) are returned alongside the
+    rows for paper-list reconciliation.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause, sql_exclusion_params,
+    )
+
+    _check_admin(admin_key)
+    conn = get_db()
+
+    report_date = conn.execute(
+        "SELECT MAX(report_date) FROM client_debts"
+    ).fetchone()[0]
+
+    if not report_date:
+        conn.close()
+        return {
+            "ok": True,
+            "as_of": None,
+            "fxrate_used": 0,
+            "count": 0,
+            "total_uzs": 0,
+            "total_usd": 0,
+            "items": [],
+        }
+
+    fxrate = _latest_fxrate(conn)
+    excl_clause = sql_exclusion_clause("client_name_1c")
+
+    rows = conn.execute(
+        f"""SELECT client_name_1c, client_id, debt_uzs, debt_usd,
+                   last_transaction_date, last_transaction_no,
+                   aging_0_30, aging_31_60, aging_61_90,
+                   aging_91_120, aging_120_plus
+              FROM client_debts
+             WHERE report_date = ?
+               AND (debt_uzs > 0 OR debt_usd > 0)
+               AND {excl_clause}""",
+        (report_date, *sql_exclusion_params()),
+    ).fetchall()
+    conn.close()
+
+    today_tk = datetime.now(ZoneInfo("Asia/Tashkent")).date()
+
+    def _days_since(date_str):
+        if not date_str:
+            return None
+        try:
+            return (today_tk - datetime.strptime(date_str, "%Y-%m-%d").date()).days
+        except (ValueError, TypeError):
+            return None
+
+    items = []
+    total_uzs = 0.0
+    total_usd = 0.0
+    for r in rows:
+        debt_uzs = float(r["debt_uzs"] or 0)
+        debt_usd = float(r["debt_usd"] or 0)
+        usd_eq = debt_usd + (debt_uzs / fxrate if fxrate > 0 else 0)
+        total_uzs += debt_uzs
+        total_usd += debt_usd
+        items.append({
+            "client_name": r["client_name_1c"],
+            "client_id": r["client_id"],
+            "debt_uzs": round(debt_uzs, 2),
+            "debt_usd": round(debt_usd, 2),
+            "debt_usd_eq": round(usd_eq, 2),
+            "last_transaction_date": r["last_transaction_date"],
+            "last_transaction_no": r["last_transaction_no"],
+            "days_since_last_tx": _days_since(r["last_transaction_date"]),
+            "aging_uzs": {
+                "0_30": round(r["aging_0_30"] or 0, 2),
+                "31_60": round(r["aging_31_60"] or 0, 2),
+                "61_90": round(r["aging_61_90"] or 0, 2),
+                "91_120": round(r["aging_91_120"] or 0, 2),
+                "120_plus": round(r["aging_120_plus"] or 0, 2),
+            },
+        })
+
+    # Sort by combined USD-eq debt DESC
+    items.sort(key=lambda x: x["debt_usd_eq"], reverse=True)
+    for idx, it in enumerate(items, start=1):
+        it["rank"] = idx
+
+    return {
+        "ok": True,
+        "as_of": report_date,
+        "fxrate_used": fxrate,
+        "count": len(items),
+        "total_uzs": round(total_uzs, 2),
+        "total_usd": round(total_usd, 2),
+        "items": items,
+    }
+
+
 @router.get("/receivables-trend")
 def receivables_trend(
     admin_key: str = Query(...),

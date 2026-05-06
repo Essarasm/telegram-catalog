@@ -499,6 +499,95 @@ class TestReceivables:
         assert r.status_code == 401
 
 
+# ── /debtors-list — manager's printed report ─────────────────────
+
+
+class TestDebtorsList:
+    def test_lists_all_real_clients_with_totals(self, db):
+        _seed_debt(db, "Реал A", debt_uzs=10_000, debt_usd=200,
+                   last_tx="2026-04-30")
+        _seed_debt(db, "Реал B", debt_uzs=5_000,
+                   last_tx="2026-05-01")
+        _seed_debt(db, "Реал C", debt_usd=300, last_tx="2026-04-25")
+        # Pseudo-account that should be filtered out
+        _seed_debt(db, "Наличка №1", debt_uzs=99_000_000, b120p=99_000_000,
+                   last_tx="2026-05-05")
+        # Seed an fxrate so combined sort key works
+        db.execute(
+            "INSERT INTO daily_fx_rates (rate_date, currency_pair, rate, source) "
+            "VALUES ('2026-05-05', 'USD_UZS', 12000, 'manual')"
+        )
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/debtors-list", params={"admin_key": ADMIN_KEY})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 3
+        assert body["total_uzs"] == 15_000
+        assert body["total_usd"] == 500
+        names = [it["client_name"] for it in body["items"]]
+        assert "Наличка №1" not in names
+        assert set(names) == {"Реал A", "Реал B", "Реал C"}
+        # Each row carries rank starting at 1
+        assert body["items"][0]["rank"] == 1
+
+    def test_sorted_by_combined_usd_eq_desc(self, db):
+        _seed_debt(db, "Small UZS", debt_uzs=1_000, last_tx="2026-05-01")
+        _seed_debt(db, "Big USD", debt_usd=500, last_tx="2026-05-01")
+        _seed_debt(db, "Mixed", debt_uzs=100_000, debt_usd=100,
+                   last_tx="2026-05-01")
+        db.execute(
+            "INSERT INTO daily_fx_rates (rate_date, currency_pair, rate, source) "
+            "VALUES ('2026-05-05', 'USD_UZS', 12000, 'manual')"
+        )
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/debtors-list", params={"admin_key": ADMIN_KEY})
+        body = r.json()
+        usd_eqs = [it["debt_usd_eq"] for it in body["items"]]
+        assert usd_eqs == sorted(usd_eqs, reverse=True)
+        # Big USD ($500) > Mixed ($100 + ~8.3) > Small UZS (~$0.08)
+        assert body["items"][0]["client_name"] == "Big USD"
+
+    def test_days_since_last_tx_computed(self, db):
+        from datetime import date, timedelta
+        recent = (date.today() - timedelta(days=3)).isoformat()
+        old = (date.today() - timedelta(days=120)).isoformat()
+        _seed_debt(db, "Recent", debt_uzs=1_000, last_tx=recent)
+        _seed_debt(db, "Old", debt_uzs=1_000, last_tx=old)
+        _seed_debt(db, "NoDate", debt_uzs=1_000, last_tx=None)
+        db.execute(
+            "INSERT INTO daily_fx_rates (rate_date, currency_pair, rate, source) "
+            "VALUES ('2026-05-05', 'USD_UZS', 12000, 'manual')"
+        )
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        by_name = {it["client_name"]: it for it in body["items"]}
+        assert by_name["Recent"]["days_since_last_tx"] == 3
+        assert by_name["Old"]["days_since_last_tx"] == 120
+        assert by_name["NoDate"]["days_since_last_tx"] is None
+
+    def test_empty_db_returns_zero_count(self, db):
+        c = _client(db)
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        assert body["ok"] is True
+        assert body["count"] == 0
+        assert body["as_of"] is None
+        assert body["total_uzs"] == 0
+        assert body["total_usd"] == 0
+
+    def test_unauthorized(self, db):
+        c = _client(db)
+        r = c.get("/api/admin/debtors-list", params={"admin_key": "nope"})
+        assert r.status_code == 401
+
+
 # ── Pseudo-client filter sweep — /revenue, /collections, /top-clients,
 # ── /receivables-trend, /entities now use pseudo_clients.SYSTEM_NON_CLIENT_NAMES
 # ── instead of the legacy <5%-collection heuristic. See
