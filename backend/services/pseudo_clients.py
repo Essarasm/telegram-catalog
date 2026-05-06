@@ -122,6 +122,18 @@ SYSTEM_NON_CLIENT_NAMES = [
     "Саморез TAGERT",
     "СП ООО \"RANGLI B O' Y O Q\"",
     "RANGLI BO'YOQ",
+
+    # 2026-05-06 admin filter sweep — surfaced by diff between the legacy
+    # admin.py heuristic (`_ENTITY_FILTER_CTE`, <5% collection rate) and
+    # this canonical list. Confirmed via cross-check (zero recent orders
+    # AND zero current debt) with Ulugbek. See
+    # `obsidian-vault/audits/2026-05-06_admin_filter_sweep.md`.
+    "ORIGINAL COLORMIX",                    # paint supplier brand (largest contamination — 9.3B UZS)
+    "УГОЛОК",                               # product/supplier (corner brackets)
+    "COLOREX",                              # paint brand supplier
+    "ФИРДАВС 3 D НАЛИВН ПОЛ УСТО",          # service supplier (3D liquid floor master)
+    "БЕКЗОД ПАНДЖОБ /Маг Авто Запчасть/",   # auto parts retailer/supplier
+    "40.12",                                # 1C account code (foreign currency, sibling of 40.10/40.11)
 ]
 
 _NORMALIZED = frozenset(_normalize(s) for s in SYSTEM_NON_CLIENT_NAMES)

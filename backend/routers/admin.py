@@ -18,27 +18,15 @@ def _check_admin(admin_key: str):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-# ── Supplier Detection ───────────────────────────────────────────
-
-# SQL CTE that identifies suppliers/accounting entries
-# Rule: entities where lifetime collection rate < 5% are not real clients
-_ENTITY_FILTER_CTE = """
-    entity_rates AS (
-        SELECT client_name_1c,
-               SUM(period_debit) as total_debit,
-               SUM(period_credit) as total_credit,
-               CASE
-                   WHEN SUM(period_debit) = 0 THEN 'inactive'
-                   WHEN SUM(period_credit) * 100.0 / SUM(period_debit) < 5.0 THEN 'supplier'
-                   ELSE 'client'
-               END as entity_type
-        FROM client_balances
-        GROUP BY client_name_1c
-    )
-"""
-
-_CLIENTS_ONLY = "entity_rates.entity_type = 'client'"
-_SUPPLIERS_ONLY = "entity_rates.entity_type IN ('supplier', 'inactive')"
+# ── Pseudo-account exclusion ─────────────────────────────────────
+#
+# Real-client filtering uses `pseudo_clients.SYSTEM_NON_CLIENT_NAMES` —
+# a curated list maintained from human-validated reviews (Группа2/3
+# проверка, finances_client_merge_map.md). This replaces the legacy
+# `_ENTITY_FILTER_CTE` heuristic that bucketed by <5% collection rate;
+# the heuristic missed structural accounts that cycle credits (Наличка,
+# СТРОЙКА) and wrongly silenced real clients with bad payment behavior.
+# See `obsidian-vault/audits/2026-05-06_admin_filter_sweep.md`.
 
 # Filter out cumulative records (pre-2025) and end-of-month partials (day != 01)
 _PERIOD_FILTER = "cb.period_start >= '2025-01-01' AND strftime('%d', cb.period_start) = '01'"
@@ -308,39 +296,44 @@ def rotate_images_batch(
 
 @router.get("/entities")
 def entity_classification(admin_key: str = Query(...)):
-    """List all entities with their auto-detected type (client/supplier/inactive).
-    Used for the review screen where admin can verify classifications.
+    """List entities split by `pseudo_clients.SYSTEM_NON_CLIENT_NAMES`.
+
+    Real clients vs pseudo-accounts (cash registers, structural ledger
+    accounts, supplier-bonus accumulators, return markers, defunct cards).
+    Used for the review screen where admin can spot newly-introduced
+    pseudo-account names that haven't been added to the curated list yet.
     """
+    from backend.services.pseudo_clients import is_pseudo_client
+
     _check_admin(admin_key)
     conn = get_db()
 
-    rows = conn.execute(f"""
-        WITH {_ENTITY_FILTER_CTE}
-        SELECT er.client_name_1c as name,
-               er.entity_type,
-               er.total_debit,
-               er.total_credit,
-               ROUND(er.total_credit * 100.0 / NULLIF(er.total_debit, 0), 1) as pay_pct,
+    rows = conn.execute("""
+        SELECT cb.client_name_1c as name,
+               SUM(cb.period_debit) as total_debit,
+               SUM(cb.period_credit) as total_credit,
+               ROUND(SUM(cb.period_credit) * 100.0 / NULLIF(SUM(cb.period_debit), 0), 1) as pay_pct,
                COUNT(DISTINCT cb.period_start) as months_active,
                COUNT(DISTINCT cb.currency) as currencies
-        FROM entity_rates er
-        JOIN client_balances cb ON cb.client_name_1c = er.client_name_1c
-        GROUP BY er.client_name_1c
-        ORDER BY er.total_debit DESC
+          FROM client_balances cb
+         GROUP BY cb.client_name_1c
+         ORDER BY total_debit DESC
     """).fetchall()
-
     conn.close()
 
-    suppliers = [dict(r) for r in rows if r["entity_type"] in ("supplier", "inactive")]
-    clients = [dict(r) for r in rows if r["entity_type"] == "client"]
+    pseudo, real = [], []
+    for r in rows:
+        rec = dict(r)
+        rec["is_pseudo"] = is_pseudo_client(r["name"])
+        (pseudo if rec["is_pseudo"] else real).append(rec)
 
     return {
         "ok": True,
         "total_entities": len(rows),
-        "clients_count": len(clients),
-        "suppliers_count": len(suppliers),
-        "suppliers": suppliers,
-        "top_clients": clients[:30],
+        "clients_count": len(real),
+        "pseudo_count": len(pseudo),
+        "pseudo_accounts": pseudo,
+        "top_clients": real[:30],
     }
 
 
@@ -355,25 +348,28 @@ def revenue_trend(
     """Monthly revenue trend: SUM(period_debit) by month, by currency.
     Excludes suppliers by default.
     """
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause, sql_exclusion_params,
+    )
+
     _check_admin(admin_key)
     conn = get_db()
 
-    filter_clause = "" if include_suppliers else f"AND {_CLIENTS_ONLY}"
+    excl_clause = "" if include_suppliers else f" AND {sql_exclusion_clause('cb.client_name_1c')}"
+    excl_params = () if include_suppliers else sql_exclusion_params()
 
     rows = conn.execute(f"""
-        WITH {_ENTITY_FILTER_CTE}
         SELECT cb.period_start, cb.currency,
                SUM(cb.period_debit) as total_shipments,
                SUM(cb.period_credit) as total_collections,
                COUNT(DISTINCT cb.client_name_1c) as active_clients
-        FROM client_balances cb
-        JOIN entity_rates ON entity_rates.client_name_1c = cb.client_name_1c
-        WHERE (cb.period_debit > 0 OR cb.period_credit > 0)
-              AND {_PERIOD_FILTER}
-              {filter_clause}
-        GROUP BY cb.period_start, cb.currency
-        ORDER BY cb.period_start ASC
-    """).fetchall()
+          FROM client_balances cb
+         WHERE (cb.period_debit > 0 OR cb.period_credit > 0)
+               AND {_PERIOD_FILTER}
+               {excl_clause}
+         GROUP BY cb.period_start, cb.currency
+         ORDER BY cb.period_start ASC
+    """, excl_params).fetchall()
 
     conn.close()
 
@@ -433,22 +429,25 @@ def collection_rate(
     include_suppliers: bool = Query(False),
 ):
     """Collection rate by month — excludes suppliers by default."""
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause, sql_exclusion_params,
+    )
+
     _check_admin(admin_key)
     conn = get_db()
 
-    filter_clause = "" if include_suppliers else f"AND {_CLIENTS_ONLY}"
+    excl_clause = "" if include_suppliers else f" AND {sql_exclusion_clause('cb.client_name_1c')}"
+    excl_params = () if include_suppliers else sql_exclusion_params()
 
     rows = conn.execute(f"""
-        WITH {_ENTITY_FILTER_CTE}
         SELECT cb.period_start, cb.currency,
                SUM(cb.period_debit) as total_debit,
                SUM(cb.period_credit) as total_credit
-        FROM client_balances cb
-        JOIN entity_rates ON entity_rates.client_name_1c = cb.client_name_1c
-        WHERE {_PERIOD_FILTER} {filter_clause}
-        GROUP BY cb.period_start, cb.currency
-        ORDER BY cb.period_start ASC
-    """).fetchall()
+          FROM client_balances cb
+         WHERE {_PERIOD_FILTER} {excl_clause}
+         GROUP BY cb.period_start, cb.currency
+         ORDER BY cb.period_start ASC
+    """, excl_params).fetchall()
 
     conn.close()
 
@@ -480,26 +479,28 @@ def top_clients(
     limit: int = Query(50, ge=1, le=200),
     include_suppliers: bool = Query(False),
 ):
-    """Top clients ranked by total shipments — excludes suppliers by default."""
+    """Top clients ranked by total shipments — excludes pseudo-accounts by default."""
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause, sql_exclusion_params,
+    )
+
     _check_admin(admin_key)
     conn = get_db()
 
-    filter_clause = "" if include_suppliers else f"AND {_CLIENTS_ONLY}"
+    excl_clause = "" if include_suppliers else f" AND {sql_exclusion_clause('cb.client_name_1c')}"
+    excl_params = () if include_suppliers else sql_exclusion_params()
 
     rows = conn.execute(f"""
-        WITH {_ENTITY_FILTER_CTE}
         SELECT cb.client_name_1c,
                SUM(cb.period_debit) as total_shipped,
                SUM(cb.period_credit) as total_paid,
-               COUNT(DISTINCT cb.period_start) as months_active,
-               entity_rates.entity_type
-        FROM client_balances cb
-        JOIN entity_rates ON entity_rates.client_name_1c = cb.client_name_1c
-        WHERE cb.currency = ? {filter_clause}
-        GROUP BY cb.client_name_1c
-        ORDER BY total_shipped DESC
-        LIMIT ?
-    """, (currency, limit)).fetchall()
+               COUNT(DISTINCT cb.period_start) as months_active
+          FROM client_balances cb
+         WHERE cb.currency = ? {excl_clause}
+         GROUP BY cb.client_name_1c
+         ORDER BY total_shipped DESC
+         LIMIT ?
+    """, (currency, *excl_params, limit)).fetchall()
 
     clients = []
     for r in rows:
@@ -561,7 +562,6 @@ def top_clients(
             "latest_period": latest_period,
             "segment": segment,
             "pay_pct": pay_pct,
-            "entity_type": r["entity_type"],
         })
 
     conn.close()
@@ -737,10 +737,14 @@ def receivables_trend(
     period_start. Negative closings (client overpayments / credits) are netted
     against positive ones to give the true trade-receivable figure.
     """
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause, sql_exclusion_params,
+    )
+
     _check_admin(admin_key)
     conn = get_db()
+    excl_clause = sql_exclusion_clause('cb.client_name_1c')
     rows = conn.execute(f"""
-        WITH {_ENTITY_FILTER_CTE}
         SELECT cb.period_start,
                SUM(cb.closing_debit - cb.closing_credit) AS net_receivable,
                SUM(CASE WHEN (cb.closing_debit - cb.closing_credit) > 0
@@ -748,14 +752,13 @@ def receivables_trend(
                SUM(cb.period_debit) AS shipments,
                SUM(cb.period_credit) AS collections,
                COUNT(DISTINCT cb.client_name_1c) AS clients_with_row
-        FROM client_balances cb
-        JOIN entity_rates ON entity_rates.client_name_1c = cb.client_name_1c
-        WHERE cb.currency = ?
-          AND entity_rates.entity_type = 'client'
-          AND cb.period_start >= '2025-01-01'
-        GROUP BY cb.period_start
-        ORDER BY cb.period_start ASC
-    """, (currency,)).fetchall()
+          FROM client_balances cb
+         WHERE cb.currency = ?
+           AND cb.period_start >= '2025-01-01'
+           AND {excl_clause}
+         GROUP BY cb.period_start
+         ORDER BY cb.period_start ASC
+    """, (currency, *sql_exclusion_params())).fetchall()
     conn.close()
 
     from datetime import date
@@ -1078,15 +1081,21 @@ def stock_status(admin_key: str = Query(...)):
         LIMIT 20
     """).fetchall()
 
-    # Identified suppliers from 1C (entities flagged as suppliers)
+    # Pseudo-accounts found in 1C balances (curated list — cash registers,
+    # supplier-bonus accumulators, structural ledger accounts).
+    from backend.services.pseudo_clients import (
+        sql_exclusion_params,
+    )
+    placeholders = ",".join("?" * len(sql_exclusion_params()))
     suppliers_1c = conn.execute(f"""
-        WITH {_ENTITY_FILTER_CTE}
         SELECT client_name_1c as name,
-               total_debit, total_credit
-        FROM entity_rates
-        WHERE entity_type = 'supplier'
-        ORDER BY total_debit DESC
-    """).fetchall()
+               SUM(period_debit) as total_debit,
+               SUM(period_credit) as total_credit
+          FROM client_balances
+         WHERE client_name_1c IN ({placeholders})
+         GROUP BY client_name_1c
+         ORDER BY total_debit DESC
+    """, sql_exclusion_params()).fetchall()
 
     # App producers for comparison
     app_producers = conn.execute("""

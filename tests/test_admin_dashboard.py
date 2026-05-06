@@ -376,3 +376,123 @@ class TestReceivables:
         c = _client(db)
         r = c.get("/api/admin/receivables", params={"admin_key": "nope"})
         assert r.status_code == 401
+
+
+# ── Pseudo-client filter sweep — /revenue, /collections, /top-clients,
+# ── /receivables-trend, /entities now use pseudo_clients.SYSTEM_NON_CLIENT_NAMES
+# ── instead of the legacy <5%-collection heuristic. See
+# ── obsidian-vault/audits/2026-05-06_admin_filter_sweep.md.
+
+
+def _seed_balance(db, name, *, period="2025-01-01", currency="UZS",
+                  shipped=0, paid=0, closing_debit=None, closing_credit=None):
+    cd = closing_debit if closing_debit is not None else shipped - paid
+    cc = closing_credit if closing_credit is not None else 0
+    db.execute(
+        """INSERT INTO client_balances
+           (client_name_1c, currency, period_start, period_end,
+            opening_debit, opening_credit, period_debit, period_credit,
+            closing_debit, closing_credit)
+           VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?)""",
+        (name, currency, period, period[:7] + "-" + str(int(period[8:]) + 27),
+         shipped, paid, cd, cc),
+    )
+
+
+class TestPseudoFilterSweep:
+    def test_top_clients_excludes_pseudo_accounts(self, db):
+        # Pseudo-accounts that legacy heuristic would have classified as 'client'
+        # because they cycle credits (high pay rate).
+        _seed_balance(db, "Наличка №1", shipped=1_000_000_000, paid=1_000_000_000)
+        _seed_balance(db, "СТРОЙКА",     shipped=500_000_000, paid=500_000_000)
+        _seed_balance(db, "ORIGINAL COLORMIX", shipped=9_000_000_000, paid=0)
+        # Real clients
+        _seed_balance(db, "Реал клиент A", shipped=10_000_000, paid=5_000_000)
+        _seed_balance(db, "Реал клиент B", shipped=8_000_000, paid=2_000_000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/top-clients",
+                  params={"admin_key": ADMIN_KEY, "currency": "UZS"})
+        body = r.json()
+        names = {x["name"] for x in body["clients"]}
+        assert "Наличка №1" not in names
+        assert "СТРОЙКА" not in names
+        assert "ORIGINAL COLORMIX" not in names  # added 2026-05-06
+        assert "Реал клиент A" in names
+        assert "Реал клиент B" in names
+        # entity_type field has been dropped
+        assert "entity_type" not in body["clients"][0]
+
+    def test_top_clients_include_suppliers_returns_pseudo_too(self, db):
+        _seed_balance(db, "Наличка №1", shipped=1_000_000_000, paid=1_000_000_000)
+        _seed_balance(db, "Реал клиент A", shipped=10_000_000, paid=5_000_000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/top-clients",
+                  params={"admin_key": ADMIN_KEY, "currency": "UZS",
+                          "include_suppliers": "true"})
+        body = r.json()
+        names = {x["name"] for x in body["clients"]}
+        assert "Наличка №1" in names
+        assert "Реал клиент A" in names
+
+    def test_revenue_excludes_pseudo_accounts(self, db):
+        _seed_balance(db, "Наличка №3", shipped=900_000_000, paid=100_000_000)
+        _seed_balance(db, "Реал клиент A", shipped=20_000_000, paid=10_000_000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/revenue", params={"admin_key": ADMIN_KEY})
+        uzs = r.json()["data"]["UZS"]
+        # Single period, single bucket sum — should reflect only real client
+        assert len(uzs) == 1
+        assert uzs[0]["shipments"] == 20_000_000
+        assert uzs[0]["collections"] == 10_000_000
+        assert uzs[0]["active_clients"] == 1
+
+    def test_collections_excludes_pseudo_accounts(self, db):
+        _seed_balance(db, "Наличка СКЛАД", shipped=3_000_000_000, paid=2_500_000_000)
+        _seed_balance(db, "Реал клиент A", shipped=10_000_000, paid=4_000_000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/collections", params={"admin_key": ADMIN_KEY})
+        uzs = r.json()["data"]["UZS"]
+        assert len(uzs) == 1
+        # 4M / 10M = 40%, not contaminated by Наличка's 83%
+        assert uzs[0]["collection_rate"] == 40.0
+
+    def test_entities_endpoint_splits_pseudo_vs_real(self, db):
+        _seed_balance(db, "Наличка №2", shipped=500_000_000, paid=400_000_000)
+        _seed_balance(db, "Реал клиент A", shipped=10_000_000, paid=5_000_000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/entities", params={"admin_key": ADMIN_KEY})
+        body = r.json()
+        pseudo_names = {x["name"] for x in body["pseudo_accounts"]}
+        real_names = {x["name"] for x in body["top_clients"]}
+        assert "Наличка №2" in pseudo_names
+        assert "Реал клиент A" in real_names
+        # New fields (replaces 'suppliers' / 'suppliers_count')
+        assert body["pseudo_count"] == 1
+        assert body["clients_count"] == 1
+        # Each row carries is_pseudo flag
+        assert all("is_pseudo" in x for x in body["pseudo_accounts"])
+
+    def test_newly_added_pseudo_names_dropped(self, db):
+        # The 6 names added on 2026-05-06 should all be excluded
+        for n in ("ORIGINAL COLORMIX", "УГОЛОК", "COLOREX",
+                  "ФИРДАВС 3 D НАЛИВН ПОЛ УСТО",
+                  "БЕКЗОД ПАНДЖОБ /Маг Авто Запчасть/", "40.12"):
+            _seed_balance(db, n, shipped=100_000, paid=0)
+        _seed_balance(db, "Реал клиент A", shipped=1_000, paid=0)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/top-clients",
+                  params={"admin_key": ADMIN_KEY, "currency": "UZS"})
+        names = {x["name"] for x in r.json()["clients"]}
+        assert names == {"Реал клиент A"}
