@@ -731,6 +731,126 @@ async def cmd_supplycoverage(message: types.Message):
         conn.close()
 
 
+@router.message(Command("producercoverage"))
+async def cmd_producercoverage(message: types.Message):
+    """One-shot audit: producer field coverage on active products + how
+    cleanly producers map to suppliers.name_1c. Sizes the producer-based
+    supplier-resolution strategy (Session N, 2026-05-06)."""
+    if not is_admin(message):
+        return
+    log_admin_action(message, "producercoverage")
+    status = await message.reply("⏳ Producer coverage hisoblanmoqda...")
+    conn = get_db()
+    try:
+        active_total = conn.execute(
+            "SELECT COUNT(*) FROM products WHERE is_active=1"
+        ).fetchone()[0]
+        with_producer = conn.execute(
+            "SELECT COUNT(*) FROM products WHERE is_active=1 AND producer_id IS NOT NULL"
+        ).fetchone()[0]
+
+        distinct_producers = conn.execute(
+            """SELECT COUNT(DISTINCT producer_id)
+               FROM products
+               WHERE is_active=1 AND producer_id IS NOT NULL"""
+        ).fetchone()[0]
+
+        # Auto-match: producer.name == suppliers.name_1c (case/space normalized)
+        auto_match = conn.execute(
+            """SELECT COUNT(DISTINCT pr.id)
+               FROM producers pr
+               JOIN suppliers s
+                 ON LOWER(TRIM(s.name_1c)) = LOWER(TRIM(pr.name))
+               WHERE pr.id IN (
+                 SELECT DISTINCT producer_id FROM products
+                 WHERE is_active=1 AND producer_id IS NOT NULL
+               )"""
+        ).fetchone()[0]
+
+        # Top producers by active-product count
+        top_producers = conn.execute(
+            """SELECT pr.name, COUNT(*) AS n,
+                      EXISTS(SELECT 1 FROM suppliers s
+                             WHERE LOWER(TRIM(s.name_1c)) = LOWER(TRIM(pr.name))
+                            ) AS matched
+               FROM products p
+               JOIN producers pr ON pr.id = p.producer_id
+               WHERE p.is_active=1
+               GROUP BY pr.id
+               ORDER BY n DESC
+               LIMIT 15"""
+        ).fetchall()
+
+        # Producers in active products that DO NOT match any supplier
+        unmatched_producers = conn.execute(
+            """SELECT pr.name, COUNT(*) AS n
+               FROM products p
+               JOIN producers pr ON pr.id = p.producer_id
+               WHERE p.is_active=1
+                 AND NOT EXISTS(SELECT 1 FROM suppliers s
+                                WHERE LOWER(TRIM(s.name_1c)) = LOWER(TRIM(pr.name)))
+               GROUP BY pr.id
+               ORDER BY n DESC
+               LIMIT 15"""
+        ).fetchall()
+
+        # Sample products with NULL producer
+        no_producer = conn.execute(
+            """SELECT name FROM products
+               WHERE is_active=1 AND producer_id IS NULL
+               LIMIT 10"""
+        ).fetchall()
+
+        prod_pct = (with_producer / active_total * 100) if active_total else 0.0
+        auto_match_pct = (auto_match / distinct_producers * 100) if distinct_producers else 0.0
+
+        # How many ACTIVE PRODUCTS resolve to a supplier via producer auto-match?
+        products_resolved = conn.execute(
+            """SELECT COUNT(*) FROM products p
+               JOIN producers pr ON pr.id = p.producer_id
+               JOIN suppliers s ON LOWER(TRIM(s.name_1c)) = LOWER(TRIM(pr.name))
+               WHERE p.is_active=1"""
+        ).fetchone()[0]
+        resolved_pct = (products_resolved / active_total * 100) if active_total else 0.0
+
+        lines = [
+            "<b>🏭 Producer coverage audit</b>\n",
+            f"Faol mahsulotlar: <b>{active_total}</b>",
+            f"Producer field to'ldirilgan: <b>{with_producer}</b> ({prod_pct:.1f}%)",
+            f"Distinct producers (faol mahsulotlarda): <b>{distinct_producers}</b>",
+            "",
+            f"<b>Producer ↔ supplier auto-match:</b>",
+            f"  Avtomatik mos kelgan producers: <b>{auto_match}</b> / {distinct_producers} ({auto_match_pct:.1f}%)",
+            f"  Producer orqali supplier-ga yetadigan mahsulotlar: <b>{products_resolved}</b> / {active_total} ({resolved_pct:.1f}%)",
+        ]
+
+        if top_producers:
+            lines.append("")
+            lines.append("<b>Top producers (faol mahsulotlar bo'yicha):</b>")
+            for r in top_producers:
+                tick = "✅" if r["matched"] else "❌"
+                lines.append(f"  {tick} <code>{html_escape(r['name'])}</code> — {r['n']} ta")
+
+        if unmatched_producers:
+            lines.append("")
+            lines.append(f"<b>❌ Suppliers jadvaliga mos kelmagan top producers:</b>")
+            for r in unmatched_producers:
+                lines.append(f"  • <code>{html_escape(r['name'])}</code> — {r['n']} ta mahsulot")
+
+        if no_producer:
+            lines.append("")
+            lines.append(f"<b>📭 Producer yo'q (sample):</b>")
+            for r in no_producer:
+                lines.append(f"  • {html_escape((r['name'] or '')[:60])}")
+
+        await status.edit_text("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/producercoverage error: {e}")
+        await status.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+    finally:
+        conn.close()
+
+
 @router.message(Command("audit"))
 async def cmd_audit(message: types.Message):
     """Show recent admin actions. Usage: /audit [days]  (default 7)
