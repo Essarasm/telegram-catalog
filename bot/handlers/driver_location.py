@@ -211,15 +211,26 @@ async def handle_driver_location(message: Message, state: FSMContext):
 
     conn = get_db()
     try:
-        # Re-check at write time — state could be stale if the canonical pin
-        # was set between pick and location-share by a parallel writer.
+        # Atomic conditional UPDATE — closes the SELECT/UPDATE TOCTOU window
+        # where two parallel writers could both read NULL and both UPDATE,
+        # silently overwriting the first-confirmed pin. The WHERE clause
+        # makes SQLite serialize on the write lock and only mutate the row
+        # if it is still NULL at lock-acquisition time. rowcount tells us
+        # which branch we ended up in.
         cur = conn.execute(
-            "SELECT gps_latitude FROM allowed_clients WHERE id = ?",
-            (client_id,),
-        ).fetchone()
-        still_locked = cur and cur["gps_latitude"] is not None
+            "UPDATE allowed_clients SET "
+            "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "
+            "gps_region = ?, gps_district = ?, gps_set_at = datetime('now'), "
+            "gps_set_by_tg_id = ?, gps_set_by_name = ?, gps_set_by_role = ? "
+            "WHERE id = ? AND gps_latitude IS NULL",
+            (loc.latitude, loc.longitude, geo["address"], geo["region"],
+             geo["district"], message.from_user.id, setter_name, setter_role,
+             client_id),
+        )
+        conn.commit()
+        saved = cur.rowcount > 0
 
-        if still_locked:
+        if not saved:
             _audit_finalize(
                 conn, audit_id, ok=False,
                 error="client_already_has_gps",
@@ -234,17 +245,6 @@ async def handle_driver_location(message: Message, state: FSMContext):
                 parse_mode="HTML",
             )
         else:
-            conn.execute(
-                "UPDATE allowed_clients SET "
-                "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "
-                "gps_region = ?, gps_district = ?, gps_set_at = datetime('now'), "
-                "gps_set_by_tg_id = ?, gps_set_by_name = ?, gps_set_by_role = ? "
-                "WHERE id = ?",
-                (loc.latitude, loc.longitude, geo["address"], geo["region"],
-                 geo["district"], message.from_user.id, setter_name, setter_role,
-                 client_id),
-            )
-            conn.commit()
             _audit_finalize(
                 conn, audit_id, ok=True,
                 geocode_dict=geo,
@@ -278,6 +278,28 @@ async def handle_driver_location(message: Message, state: FSMContext):
     # Auto-loop: prompt for the next client immediately so backfill / batch
     # entry doesn't require typing /lokatsiya between each.
     await _prompt_client_search(message, state, is_continuation=True)
+
+
+# ── Orphan pin (driver group, no active FSM) ─────────────────────────
+
+@router.message(F.location, F.chat.id == DRIVER_GROUP_CHAT_ID)
+async def handle_orphan_location(message: Message):
+    """Catch driver-group pins from users who haven't run /lokatsiya yet.
+    Without this, location.py's chat-scope guard returns early for
+    DRIVER_GROUP_CHAT_ID and the pin is silently dropped — no audit row,
+    raw lat/lng lost. Zero-data-loss rule requires every inbound location
+    to land in `location_attempts` first. Declared after handle_driver_location
+    so the FSM-filtered handler wins for users mid-flow."""
+    audit_conn = get_db()
+    audit_id = _audit_insert(audit_conn, message)
+    _audit_finalize(audit_conn, audit_id, ok=False, error="no_active_fsm")
+    audit_conn.close()
+    await message.reply(
+        "📍 Lokatsiya qabul qilindi (audit).\n\n"
+        "Mijozga bog'lash uchun avval <b>/lokatsiya</b> yuboring, "
+        "mijozni tanlang, keyin lokatsiyani qaytadan jo'nating.",
+        parse_mode="HTML",
+    )
 
 
 # ── Cancel ───────────────────────────────────────────────────────────
