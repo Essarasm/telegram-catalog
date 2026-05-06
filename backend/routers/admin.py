@@ -571,99 +571,157 @@ def top_clients(
 # ── Receivables (clean) ─────────────────────────────────────────
 
 
+_AGING_BUCKETS_UZS = ("0_30", "31_60", "61_90", "91_120", "120_plus")
+
+
 @router.get("/receivables")
 def receivables(
     admin_key: str = Query(...),
     currency: str = Query("UZS"),
 ):
-    """Total receivables + aging — excludes suppliers automatically."""
+    """Receivables + aging from 1C `client_debts` (debtor report).
+
+    Source: latest `/debtors` snapshot in `client_debts`. Real day-aged
+    buckets are taken straight from 1C for UZS. USD has no aging in the
+    1C report — only a total.
+
+    Pseudo-account exclusion (cash registers, structural ledger accounts,
+    return markers, etc.) is applied via `pseudo_clients`.
+    """
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause,
+        sql_exclusion_params,
+    )
+
     _check_admin(admin_key)
     conn = get_db()
 
-    latest_period = conn.execute(
-        "SELECT MAX(period_start) FROM client_balances WHERE currency = ?",
-        (currency,)
+    report_date = conn.execute(
+        "SELECT MAX(report_date) FROM client_debts"
     ).fetchone()[0]
 
-    if not latest_period:
+    if not report_date:
         conn.close()
-        return {"ok": True, "total_receivable": 0, "aging": {}, "currency": currency}
+        return {
+            "ok": True,
+            "currency": currency,
+            "as_of": None,
+            "total_receivable": 0,
+            "total_clients_with_debt": 0,
+            "aging": {},
+            "aging_client_count": {},
+            "aging_top_clients": {},
+            "usd_total": 0,
+            "usd_client_count": 0,
+            "usd_aging_available": False,
+            "methodology": "No /debtors data imported yet.",
+        }
 
-    # Only real clients with positive balance
-    rows = conn.execute(f"""
-        WITH {_ENTITY_FILTER_CTE}
-        SELECT cb.client_name_1c,
-               cb.closing_debit - cb.closing_credit as balance
-        FROM client_balances cb
-        JOIN entity_rates ON entity_rates.client_name_1c = cb.client_name_1c
-        WHERE cb.period_start = ? AND cb.currency = ?
-          AND (cb.closing_debit - cb.closing_credit) > 0
-          AND {_CLIENTS_ONLY}
-        ORDER BY balance DESC
-    """, (latest_period, currency)).fetchall()
+    excl_clause = sql_exclusion_clause("client_name_1c")
+    excl_params = sql_exclusion_params()
 
-    total_receivable = 0
-    aging = {"current": 0, "30_60": 0, "60_90": 0, "90_plus": 0}
-    client_count = {"current": 0, "30_60": 0, "60_90": 0, "90_plus": 0}
-    aging_clients = {"current": [], "30_60": [], "60_90": [], "90_plus": []}
+    if currency == "USD":
+        # USD has no aging in /debtors — return totals + top clients only.
+        rows = conn.execute(
+            f"""SELECT client_name_1c, debt_usd
+                  FROM client_debts
+                 WHERE report_date = ? AND debt_usd > 0 AND {excl_clause}
+                 ORDER BY debt_usd DESC""",
+            (report_date, *excl_params),
+        ).fetchall()
+        total = sum(r["debt_usd"] for r in rows)
+        top = [
+            {"name": r["client_name_1c"], "balance": round(r["debt_usd"], 2)}
+            for r in rows[:10]
+        ]
+        conn.close()
+        return {
+            "ok": True,
+            "currency": "USD",
+            "as_of": report_date,
+            "total_receivable": round(total, 2),
+            "total_clients_with_debt": len(rows),
+            "aging": {},
+            "aging_client_count": {},
+            "aging_top_clients": {"all": top},
+            "usd_total": round(total, 2),
+            "usd_client_count": len(rows),
+            "usd_aging_available": False,
+            "methodology": (
+                "USD totals from latest 1C debtor report. 1C does not provide "
+                "per-bucket aging for USD — only total outstanding per client."
+            ),
+        }
 
+    # UZS path — real aging buckets from 1C
+    rows = conn.execute(
+        f"""SELECT client_name_1c, debt_uzs, debt_usd, last_transaction_date,
+                   aging_0_30, aging_31_60, aging_61_90, aging_91_120, aging_120_plus
+              FROM client_debts
+             WHERE report_date = ? AND debt_uzs > 0 AND {excl_clause}
+             ORDER BY debt_uzs DESC""",
+        (report_date, *excl_params),
+    ).fetchall()
+
+    aging = {b: 0.0 for b in _AGING_BUCKETS_UZS}
+    client_count = {b: 0 for b in _AGING_BUCKETS_UZS}
+    bucket_clients: dict[str, list[dict]] = {b: [] for b in _AGING_BUCKETS_UZS}
+    bucket_col = {
+        "0_30": "aging_0_30",
+        "31_60": "aging_31_60",
+        "61_90": "aging_61_90",
+        "91_120": "aging_91_120",
+        "120_plus": "aging_120_plus",
+    }
+    total_receivable = 0.0
     for r in rows:
-        balance = r["balance"]
-        total_receivable += balance
-        client_name = r["client_name_1c"]
+        total_receivable += r["debt_uzs"]
+        for b, col in bucket_col.items():
+            amt = r[col] or 0
+            if amt > 0:
+                aging[b] += amt
+                client_count[b] += 1
+                bucket_clients[b].append({
+                    "name": r["client_name_1c"],
+                    "balance": round(amt, 2),
+                    "total_debt": round(r["debt_uzs"], 2),
+                    "last_tx": r["last_transaction_date"],
+                })
 
-        months_unpaid = 0
-        history = conn.execute("""
-            SELECT period_start, period_credit
-            FROM client_balances
-            WHERE client_name_1c = ? AND currency = ?
-            ORDER BY period_start DESC LIMIT 6
-        """, (client_name, currency)).fetchall()
-
-        for h in history:
-            if (h["period_credit"] or 0) == 0:
-                months_unpaid += 1
-            else:
-                break
-
-        if months_unpaid <= 1:
-            bucket = "current"
-        elif months_unpaid <= 2:
-            bucket = "30_60"
-        elif months_unpaid <= 3:
-            bucket = "60_90"
-        else:
-            bucket = "90_plus"
-
-        aging[bucket] += balance
-        client_count[bucket] += 1
-        aging_clients[bucket].append({
-            "name": client_name,
-            "balance": round(balance, 2),
-            "months_unpaid": months_unpaid,
-        })
+    # USD side-panel summary (computed even on UZS calls so frontend can show it)
+    usd_rows = conn.execute(
+        f"""SELECT client_name_1c, debt_usd
+              FROM client_debts
+             WHERE report_date = ? AND debt_usd > 0 AND {excl_clause}
+             ORDER BY debt_usd DESC""",
+        (report_date, *excl_params),
+    ).fetchall()
+    usd_total = sum(r["debt_usd"] for r in usd_rows)
 
     conn.close()
 
-    # Sort each bucket by balance descending and keep top 10
-    for bucket in aging_clients:
-        aging_clients[bucket].sort(key=lambda x: x["balance"], reverse=True)
-        aging_clients[bucket] = aging_clients[bucket][:10]
+    # Top 10 per bucket (by amount in that bucket)
+    for b in bucket_clients:
+        bucket_clients[b].sort(key=lambda x: x["balance"], reverse=True)
+        bucket_clients[b] = bucket_clients[b][:10]
 
     return {
         "ok": True,
-        "currency": currency,
-        "latest_period": latest_period,
+        "currency": "UZS",
+        "as_of": report_date,
         "total_receivable": round(total_receivable, 2),
         "total_clients_with_debt": len(rows),
         "aging": {k: round(v, 2) for k, v in aging.items()},
         "aging_client_count": client_count,
-        "aging_top_clients": aging_clients,
+        "aging_top_clients": bucket_clients,
+        "usd_total": round(usd_total, 2),
+        "usd_client_count": len(usd_rows),
+        "usd_aging_available": False,
         "methodology": (
-            "Aging buckets are based on consecutive months without any payment "
-            "(period_credit = 0). 'Current' = paid within last month. '30-60' = "
-            "1-2 months without payments. '60-90' = 2-3 months. '90+' = 3+ months. "
-            "Calculated from monthly 1C 'оборотно-сальдовая' data, not invoice dates."
+            "Aging from 1C 'Дебиторская задолженность' report (per-day FIFO "
+            "bucketed by 1C). UZS only — 1C does not provide USD aging. "
+            "Pseudo-accounts (cash registers, structural ledger entries, "
+            "return markers) excluded via pseudo_clients.SYSTEM_NON_CLIENT_NAMES."
         ),
     }
 

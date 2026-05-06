@@ -257,3 +257,122 @@ class TestTopSellersWoW:
         # Wrong admin_key
         r = c.get("/api/admin/top-sellers-wow", params={"admin_key": "nope"})
         assert r.status_code == 401
+
+
+# ── /receivables (rebuilt to read from client_debts) ────────────────
+
+
+def _seed_debt(db, name, *, debt_uzs=0, debt_usd=0,
+               b0_30=0, b31_60=0, b61_90=0, b91_120=0, b120p=0,
+               last_tx="2026-05-01", report_date="2026-05-05"):
+    db.execute(
+        """INSERT INTO client_debts
+           (client_name_1c, client_id, debt_uzs, debt_usd,
+            last_transaction_date, last_transaction_no,
+            aging_0_30, aging_31_60, aging_61_90, aging_91_120, aging_120_plus,
+            report_date)
+           VALUES (?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
+        (name, debt_uzs, debt_usd, last_tx,
+         b0_30, b31_60, b61_90, b91_120, b120p, report_date),
+    )
+
+
+class TestReceivables:
+    def test_uzs_buckets_match_1c(self, db):
+        _seed_debt(db, "Реал клиент A", debt_uzs=10000, b0_30=10000)
+        _seed_debt(db, "Реал клиент B", debt_uzs=5000, b31_60=5000)
+        _seed_debt(db, "Реал клиент C", debt_uzs=8000, b0_30=3000, b91_120=5000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/receivables", params={"admin_key": ADMIN_KEY})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["currency"] == "UZS"
+        assert body["as_of"] == "2026-05-05"
+        assert body["total_receivable"] == 23000
+        assert body["total_clients_with_debt"] == 3
+        assert body["aging"]["0_30"] == 13000  # A's 10k + C's 3k
+        assert body["aging"]["31_60"] == 5000   # B's 5k
+        assert body["aging"]["91_120"] == 5000  # C's 5k
+        assert body["aging"]["61_90"] == 0
+        assert body["aging"]["120_plus"] == 0
+        # C contributes to two buckets, so client counts in those = 2 (A+C) and 1 (C)
+        assert body["aging_client_count"]["0_30"] == 2
+        assert body["aging_client_count"]["91_120"] == 1
+
+    def test_pseudo_clients_excluded(self, db):
+        # These should be silently dropped
+        _seed_debt(db, "Наличка №1", debt_uzs=100000, b120p=100000)
+        _seed_debt(db, "СТРОЙКА", debt_uzs=200000, b120p=200000)
+        _seed_debt(db, "В О З В Р А Т ПОСТАВЩИКУ", debt_uzs=50000, b120p=50000)
+        # This is a real client
+        _seed_debt(db, "Асад ака", debt_uzs=7000, b0_30=7000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/receivables", params={"admin_key": ADMIN_KEY})
+        body = r.json()
+        assert body["total_receivable"] == 7000
+        assert body["total_clients_with_debt"] == 1
+        # 120+ should NOT have the structural debt
+        assert body["aging"]["120_plus"] == 0
+
+    def test_usd_response_omits_aging(self, db):
+        _seed_debt(db, "USD клиент", debt_usd=4000)
+        _seed_debt(db, "Mixed клиент", debt_uzs=1000, debt_usd=2000, b0_30=1000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/receivables",
+                  params={"admin_key": ADMIN_KEY, "currency": "USD"})
+        body = r.json()
+        assert body["currency"] == "USD"
+        assert body["total_receivable"] == 6000
+        assert body["total_clients_with_debt"] == 2
+        assert body["aging"] == {}
+        assert body["usd_aging_available"] is False
+        # Top-USD list under the synthetic 'all' bucket
+        assert "all" in body["aging_top_clients"]
+        assert body["aging_top_clients"]["all"][0]["balance"] == 4000
+
+    def test_uzs_response_carries_usd_sidepanel_total(self, db):
+        _seed_debt(db, "UZS клиент", debt_uzs=10000, b0_30=10000)
+        _seed_debt(db, "USD клиент", debt_usd=3000)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/receivables", params={"admin_key": ADMIN_KEY})
+        body = r.json()
+        assert body["total_receivable"] == 10000
+        assert body["usd_total"] == 3000
+        assert body["usd_client_count"] == 1
+        assert body["usd_aging_available"] is False
+
+    def test_only_latest_report_date_used(self, db):
+        # Older snapshot
+        _seed_debt(db, "Старый клиент", debt_uzs=99999, b0_30=99999,
+                   report_date="2026-05-01")
+        # Latest snapshot (different client)
+        _seed_debt(db, "Новый клиент", debt_uzs=4000, b0_30=4000,
+                   report_date="2026-05-05")
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/receivables", params={"admin_key": ADMIN_KEY})
+        body = r.json()
+        assert body["as_of"] == "2026-05-05"
+        assert body["total_receivable"] == 4000
+
+    def test_empty_db_returns_zero(self, db):
+        c = _client(db)
+        r = c.get("/api/admin/receivables", params={"admin_key": ADMIN_KEY})
+        body = r.json()
+        assert body["ok"] is True
+        assert body["total_receivable"] == 0
+        assert body["as_of"] is None
+
+    def test_unauthorized(self, db):
+        c = _client(db)
+        r = c.get("/api/admin/receivables", params={"admin_key": "nope"})
+        assert r.status_code == 401

@@ -279,6 +279,27 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_debts_client_id ON client_debts(client_id);
         CREATE INDEX IF NOT EXISTS idx_client_debts_report_date ON client_debts(report_date);
 
+        -- Daily aggregated snapshot of debtors. Written after every /debtors
+        -- import. Per-client client_debts is truncate-replace; this preserves
+        -- aggregate history for trend charts.
+        --   *_total = raw 1C debt (includes structural pseudo-accounts)
+        --   *_real  = after pseudo_clients.SYSTEM_NON_CLIENT_NAMES exclusion
+        CREATE TABLE IF NOT EXISTS client_debt_snapshots_daily (
+            report_date TEXT PRIMARY KEY,
+            n_clients_total INTEGER DEFAULT 0,
+            n_clients_real INTEGER DEFAULT 0,
+            debt_uzs_total REAL DEFAULT 0,
+            debt_usd_total REAL DEFAULT 0,
+            debt_uzs_real REAL DEFAULT 0,
+            debt_usd_real REAL DEFAULT 0,
+            aging_uzs_0_30 REAL DEFAULT 0,
+            aging_uzs_31_60 REAL DEFAULT 0,
+            aging_uzs_61_90 REAL DEFAULT 0,
+            aging_uzs_91_120 REAL DEFAULT 0,
+            aging_uzs_120_plus REAL DEFAULT 0,
+            snapshot_at TEXT DEFAULT (datetime('now'))
+        );
+
         -- Collection-attempt log: every dispatcher phone call to a debtor
         -- before/while a truck heads out. Snapshots debt + aging at call time
         -- so history survives later debt-table reimports.

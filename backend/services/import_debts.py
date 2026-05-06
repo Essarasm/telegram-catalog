@@ -17,6 +17,7 @@ from typing import Optional
 
 from backend.database import get_db
 from backend.services import client_identity
+from backend.services.pseudo_clients import is_pseudo_client
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,30 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
     # Post-import orphan heal — re-homed to client_identity.py (Session F
     # refactor phase 4). Idempotent; only touches client_id IS NULL rows.
     orphans_healed = client_identity.heal_finance_orphans(conn, "client_debts")
+
+    # Aggregated daily snapshot — preserves history across truncate-replace.
+    n_total = len(clients)
+    real = [c for c in clients if not is_pseudo_client(c["client_name_1c"])]
+    n_real = len(real)
+    real_uzs = sum(c["debt_uzs"] for c in real)
+    real_usd = sum(c["debt_usd"] for c in real)
+    age_0_30 = sum(c["aging_0_30"] for c in real)
+    age_31_60 = sum(c["aging_31_60"] for c in real)
+    age_61_90 = sum(c["aging_61_90"] for c in real)
+    age_91_120 = sum(c["aging_91_120"] for c in real)
+    age_120p = sum(c["aging_120_plus"] for c in real)
+
+    conn.execute(
+        """INSERT OR REPLACE INTO client_debt_snapshots_daily
+           (report_date, n_clients_total, n_clients_real,
+            debt_uzs_total, debt_usd_total, debt_uzs_real, debt_usd_real,
+            aging_uzs_0_30, aging_uzs_31_60, aging_uzs_61_90,
+            aging_uzs_91_120, aging_uzs_120_plus)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (report_date, n_total, n_real,
+         total_uzs, total_usd, real_uzs, real_usd,
+         age_0_30, age_31_60, age_61_90, age_91_120, age_120p),
+    )
 
     conn.commit()
     conn.close()

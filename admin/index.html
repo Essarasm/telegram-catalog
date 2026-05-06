@@ -2121,13 +2121,20 @@
 
             const counts = (receivables && receivables.aging_client_count) || {};
             const agingLabels = [
-                `Current (${counts.current || 0})`,
-                `30-60d (${counts['30_60'] || 0})`,
-                `60-90d (${counts['60_90'] || 0})`,
-                `90+d (${counts['90_plus'] || 0})`,
+                `0-30d (${counts['0_30'] || 0})`,
+                `31-60d (${counts['31_60'] || 0})`,
+                `61-90d (${counts['61_90'] || 0})`,
+                `91-120d (${counts['91_120'] || 0})`,
+                `120+d (${counts['120_plus'] || 0})`,
             ];
-            const agingValues = [aging.current || 0, aging['30_60'] || 0, aging['60_90'] || 0, aging['90_plus'] || 0];
-            const colors = ['#22c55e', '#f59e0b', '#ef7f1e', '#ef4444'];
+            const agingValues = [
+                aging['0_30'] || 0,
+                aging['31_60'] || 0,
+                aging['61_90'] || 0,
+                aging['91_120'] || 0,
+                aging['120_plus'] || 0,
+            ];
+            const colors = ['#22c55e', '#84cc16', '#f59e0b', '#ef7f1e', '#ef4444'];
             const total = agingValues.reduce((a, b) => a + b, 0);
 
             charts.aging = new Chart(ctx, {
@@ -2162,9 +2169,13 @@
             if (receivables) {
                 const meta = document.getElementById('agingMeta');
                 if (meta) {
-                    const period = receivables.latest_period || '—';
+                    const asOf = receivables.as_of || '—';
                     const numClients = receivables.total_clients_with_debt || 0;
-                    meta.innerHTML = `${numClients} clients with outstanding debt &nbsp;·&nbsp; as of ${period}`;
+                    let usdNote = '';
+                    if (CURRENCY === 'UZS' && (receivables.usd_total || 0) > 0) {
+                        usdNote = ` &nbsp;·&nbsp; <span style="color:#94a3b8;">+$${fmt(receivables.usd_total)} USD owed (no aging from 1C)</span>`;
+                    }
+                    meta.innerHTML = `${numClients} clients with outstanding debt &nbsp;·&nbsp; as of ${asOf}${usdNote}`;
                 }
                 const infoIcon = document.getElementById('agingInfoIcon');
                 if (infoIcon && receivables.methodology) {
@@ -2178,12 +2189,16 @@
             const container = document.getElementById('agingTopClients');
             if (!container) return;
             const topByBucket = receivables.aging_top_clients || {};
-            const buckets = [
-                { key: 'current', label: 'Current (paid recently)', color: '#22c55e' },
-                { key: '30_60', label: '30-60 days silent', color: '#f59e0b' },
-                { key: '60_90', label: '60-90 days silent', color: '#ef7f1e' },
-                { key: '90_plus', label: '90+ days silent', color: '#ef4444' },
-            ];
+            const isUsd = receivables.currency === 'USD';
+            const buckets = isUsd
+                ? [{ key: 'all', label: 'Top USD debtors (no aging from 1C)', color: '#94a3b8' }]
+                : [
+                    { key: '0_30', label: '0-30 days', color: '#22c55e' },
+                    { key: '31_60', label: '31-60 days', color: '#84cc16' },
+                    { key: '61_90', label: '61-90 days', color: '#f59e0b' },
+                    { key: '91_120', label: '91-120 days', color: '#ef7f1e' },
+                    { key: '120_plus', label: '120+ days', color: '#ef4444' },
+                ];
             let html = '';
             buckets.forEach(b => {
                 const list = topByBucket[b.key] || [];
