@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 9  # 2026-05-06: supplier curation cleanup — retire 4 zero-history active suppliers, fold 2 duplicate merge-sources, set RANGLI BO'YOQ legal_name (Session N)
+SCHEMA_VERSION = 10  # 2026-05-06: decouple suppliers.is_active from mini_app_label — kept-but-untagged suppliers stay active so they don't false-trigger the retired_seen supply alert (Session N)
 
 
 def init_db():
@@ -1466,11 +1466,30 @@ def init_db():
             ('СП ООО "RANGLI B O\' Y O Q"', "RANGLI BO'YOQ"),
         )
 
+    # v10 (2026-05-06): decouple is_active from mini_app_label. Kept-but-
+    # untagged suppliers (real inventory contributors with no Stage-2 picker
+    # exposure) should stay is_active=1 so they don't false-trigger the
+    # retired_seen alert in import_supply. is_active=0 now means truly retired.
+    if current < 10:
+        kept_active_2026_05_06 = (
+            "PUFA MIX",
+            "ПРОЧИЕ",
+            "КораСарой/ЭКОС/",
+            "ШЛИФ ШКУРКА",
+            "ПалИЖ КОЛЛЕР",
+            "НОРА ойти",
+            "MASHXAD",
+        )
+        conn.executemany(
+            "UPDATE suppliers SET is_active=1 WHERE name_1c=?",
+            [(n,) for n in kept_active_2026_05_06],
+        )
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "Session N supplier curation cleanup (2026-05-06): retired 4 zero-history actives, folded 2 merge sources, set RANGLI BO'YOQ legal_name"),
+            (SCHEMA_VERSION, "Session N (2026-05-06): supplier curation cleanup + decoupled is_active from mini_app_label so retired_seen alert doesn't false-trigger on kept-but-untagged suppliers"),
         )
 
     conn.commit()

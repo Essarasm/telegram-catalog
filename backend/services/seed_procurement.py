@@ -81,6 +81,19 @@ SUPPLIERS = [
     ("Саморез TAGERT",                    None,                       None,                                                      18,              0,  1_538_994),
     ("RANGLI BO'YOQ",                     "Lak, bo'yoq",              'СП ООО "RANGLI B O\' Y O Q"',                              9,              0,  2_708_142),
 ]
+# Suppliers we've permanently retired. Used to drive is_active=0 explicitly,
+# decoupling "truly retired" from "kept but not in Stage-2 picker". The
+# retired_seen alert in import_supply hooks into is_active=0 — so kept-but-
+# untagged suppliers (PUFA MIX, ПРОЧИЕ, etc.) must NOT be in this set or
+# they'll false-trigger every supply upload.
+RETIRED_NAMES = frozenset({
+    "EAST COLOR /BUILD TECHNO TRADE/",
+    "PAINTERA",
+    "R O Y A L",
+    "Саморез TAGERT",
+})
+
+
 # 2026-05-06 curation pass (Session N — Supplier list cleanup based on Jan-Apr 2026 supply history):
 #   Retired (mini_app_label=None): EAST COLOR, PAINTERA, R O Y A L, Саморез TAGERT
 #     (zero Jan-Apr supply lines; reactivate only if seen in future supply uploads)
@@ -120,9 +133,11 @@ def seed_procurement(conn):
         for row in cur.execute("SELECT id, label_uz FROM procurement_categories").fetchall()
     }
 
-    # 2. Suppliers
+    # 2. Suppliers — is_active driven by RETIRED_NAMES set (not mini_app_label),
+    # so kept-but-untagged suppliers stay is_active=1 and won't trigger the
+    # retired_seen alert in import_supply on every supply upload.
     for name_1c, mini_app_label, legal_name, periods, uzs, usd in SUPPLIERS:
-        is_active = 1 if mini_app_label else 0
+        is_active = 0 if name_1c in RETIRED_NAMES else 1
         cur.execute(
             """
             INSERT OR IGNORE INTO suppliers
