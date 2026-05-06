@@ -1648,7 +1648,7 @@
             if (!p) return '-';
             const date = new Date(p + 'T00:00:00Z');
             const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-            return months[date.getUTCMonth()] + ' ' + date.getUTCFullYear().toString().slice(2);
+            return months[date.getUTCMonth()] + ' ' + date.getUTCFullYear();
         }
 
         function getCurrencyLabel() {
