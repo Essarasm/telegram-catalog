@@ -635,6 +635,102 @@ async def cmd_consistencycheck(message: types.Message):
         await status.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+@router.message(Command("supplycoverage"))
+async def cmd_supplycoverage(message: types.Message):
+    """One-shot audit: how many active products have a derivable supplier
+    via supply history. Used to scope the supplier-resolution strategy for
+    the inventory-by-supplier grouping (Session N, 2026-05-06)."""
+    if not is_admin(message):
+        return
+    log_admin_action(message, "supplycoverage")
+    status = await message.reply("⏳ Coverage hisoblanmoqda...")
+    conn = get_db()
+    try:
+        active_total = conn.execute(
+            "SELECT COUNT(*) FROM products WHERE is_active=1"
+        ).fetchone()[0]
+
+        with_history = conn.execute(
+            """SELECT COUNT(DISTINCT soi.matched_product_id)
+               FROM supply_order_items soi
+               JOIN supply_orders so ON so.id = soi.supply_order_id
+               JOIN products p ON p.id = soi.matched_product_id
+               WHERE so.doc_type = 'supply'
+                 AND p.is_active = 1
+                 AND soi.matched_product_id IS NOT NULL"""
+        ).fetchone()[0]
+
+        with_clean_match = conn.execute(
+            """SELECT COUNT(DISTINCT soi.matched_product_id)
+               FROM supply_order_items soi
+               JOIN supply_orders so ON so.id = soi.supply_order_id
+               JOIN products p ON p.id = soi.matched_product_id
+               JOIN suppliers s ON s.name_1c = so.counterparty_name
+               WHERE so.doc_type = 'supply'
+                 AND p.is_active = 1
+                 AND soi.matched_product_id IS NOT NULL"""
+        ).fetchone()[0]
+
+        unmatched_counterparties = conn.execute(
+            """SELECT so.counterparty_name, COUNT(*) AS docs
+               FROM supply_orders so
+               LEFT JOIN suppliers s ON s.name_1c = so.counterparty_name
+               WHERE so.doc_type = 'supply' AND s.id IS NULL
+               GROUP BY so.counterparty_name
+               ORDER BY docs DESC
+               LIMIT 15"""
+        ).fetchall()
+
+        orphan_suppliers = conn.execute(
+            """SELECT s.name_1c
+               FROM suppliers s
+               LEFT JOIN supply_orders so ON so.counterparty_name = s.name_1c
+                                         AND so.doc_type = 'supply'
+               WHERE s.is_active = 1 AND so.id IS NULL
+               ORDER BY s.name_1c"""
+        ).fetchall()
+
+        supply_doc_count = conn.execute(
+            "SELECT COUNT(*) FROM supply_orders WHERE doc_type='supply'"
+        ).fetchone()[0]
+
+        gap = with_history - with_clean_match
+        coverage_pct = (with_clean_match / active_total * 100) if active_total else 0.0
+        history_pct = (with_history / active_total * 100) if active_total else 0.0
+
+        lines = [
+            "<b>📦 Supply coverage audit</b>\n",
+            f"Faol mahsulotlar: <b>{active_total}</b>",
+            f"Supply hujjatlari (doc_type=supply): <b>{supply_doc_count}</b>",
+            "",
+            f"Supply tarixiga ega: <b>{with_history}</b> ({history_pct:.1f}%)",
+            f"Toza supplier mos kelgan: <b>{with_clean_match}</b> ({coverage_pct:.1f}%)",
+            f"Tafovut (nom normalizatsiyasi kerak): <b>{gap}</b>",
+            "",
+            f"Suppliers jadvalida ({conn.execute('SELECT COUNT(*) FROM suppliers WHERE is_active=1').fetchone()[0]} ta) — supply tarixisiz: <b>{len(orphan_suppliers)}</b>",
+        ]
+
+        if unmatched_counterparties:
+            lines.append("")
+            lines.append("<b>⚠️ Top mos kelmagan counterparty nomlari:</b>")
+            for r in unmatched_counterparties:
+                lines.append(f"  • <code>{html_escape(r['counterparty_name'])}</code> — {r['docs']} hujjat")
+
+        if orphan_suppliers:
+            lines.append("")
+            lines.append(f"<b>📭 Supply tarixisiz suppliers ({len(orphan_suppliers)} ta):</b>")
+            sample = ", ".join(f"<code>{html_escape(r['name_1c'])}</code>" for r in orphan_suppliers[:10])
+            tail = f" … (+{len(orphan_suppliers)-10})" if len(orphan_suppliers) > 10 else ""
+            lines.append(f"  {sample}{tail}")
+
+        await status.edit_text("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"/supplycoverage error: {e}")
+        await status.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+    finally:
+        conn.close()
+
+
 @router.message(Command("audit"))
 async def cmd_audit(message: types.Message):
     """Show recent admin actions. Usage: /audit [days]  (default 7)
