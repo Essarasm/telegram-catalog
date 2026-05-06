@@ -259,6 +259,127 @@ class TestTopSellersWoW:
         assert r.status_code == 401
 
 
+# ── /top-sellers-period — closed-period rankings (last_week / yesterday) ─
+
+
+class TestTopSellersPeriod:
+    def test_last_week_returns_closed_period_ranking(self, seed_products):
+        from datetime import date, timedelta
+        db = seed_products
+        # Seed orders for last calendar week (Mon-Sun fully completed)
+        mon_tk = _this_monday_tk().date()
+        last_mon = mon_tk - timedelta(days=7)
+        last_wed = last_mon + timedelta(days=2)
+        _seed_orders(db, [
+            {"id": 300, "doc_date": last_mon.isoformat(), "currency": "UZS",
+             "exchange_rate": 12000,
+             "items": [(1, 7, 700_000), (2, 4, 400_000)]},
+            {"id": 301, "doc_date": last_wed.isoformat(), "currency": "USD",
+             "exchange_rate": 12000,
+             "items": [(1, 2, 50)]},
+        ])
+        # Also seed THIS week — must NOT appear in last_week
+        _seed_orders(db, [
+            {"id": 400, "doc_date": mon_tk.isoformat(), "currency": "UZS",
+             "exchange_rate": 12050,
+             "items": [(3, 99, 99_000_000)]},
+        ])
+        _seed_fxrate(db, rate=12050.0, rate_date=mon_tk.isoformat())
+
+        c = _client(db)
+        r = c.get("/api/admin/top-sellers-period",
+                  params={"admin_key": ADMIN_KEY, "period": "last_week"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["period"] == "last_week"
+        assert body["start_date"] == last_mon.isoformat()
+        ids = {it["product_id"] for it in body["items"]}
+        # Last-week products
+        assert 1 in ids
+        assert 2 in ids
+        # This-week's pid=3 must NOT leak in
+        assert 3 not in ids
+        # Ranked DESC by usd_eq
+        usd_eqs = [it["revenue_usd_eq"] for it in body["items"]]
+        assert usd_eqs == sorted(usd_eqs, reverse=True)
+
+    def test_yesterday_returns_single_day(self, seed_products):
+        from datetime import datetime, timedelta
+        db = seed_products
+        yesterday = (datetime.now(TASHKENT) - timedelta(days=1)).date()
+        two_days_ago = yesterday - timedelta(days=1)
+        _seed_orders(db, [
+            {"id": 500, "doc_date": yesterday.isoformat(), "currency": "UZS",
+             "exchange_rate": 12000,
+             "items": [(1, 5, 500_000)]},
+            {"id": 501, "doc_date": two_days_ago.isoformat(), "currency": "UZS",
+             "exchange_rate": 12000,
+             "items": [(2, 99, 99_000_000)]},
+        ])
+        _seed_fxrate(db, rate=12000.0, rate_date=yesterday.isoformat())
+
+        c = _client(db)
+        r = c.get("/api/admin/top-sellers-period",
+                  params={"admin_key": ADMIN_KEY, "period": "yesterday"})
+        body = r.json()
+        assert body["period"] == "yesterday"
+        assert body["start_date"] == body["end_date"] == yesterday.isoformat()
+        ids = {it["product_id"] for it in body["items"]}
+        assert 1 in ids
+        # Two-days-ago must NOT show up
+        assert 2 not in ids
+
+    def test_returns_native_uzs_and_usd_per_row(self, seed_products):
+        from datetime import datetime, timedelta
+        db = seed_products
+        yesterday = (datetime.now(TASHKENT) - timedelta(days=1)).date()
+        _seed_orders(db, [
+            {"id": 600, "doc_date": yesterday.isoformat(), "currency": "UZS",
+             "exchange_rate": 12000,
+             "items": [(1, 4, 400_000)]},
+            {"id": 601, "doc_date": yesterday.isoformat(), "currency": "USD",
+             "exchange_rate": 12000,
+             "items": [(1, 2, 30)]},
+        ])
+        _seed_fxrate(db, rate=12000.0, rate_date=yesterday.isoformat())
+
+        c = _client(db)
+        r = c.get("/api/admin/top-sellers-period",
+                  params={"admin_key": ADMIN_KEY, "period": "yesterday"})
+        pid1 = next((i for i in r.json()["items"] if i["product_id"] == 1), None)
+        assert pid1 is not None
+        assert pid1["revenue_uzs_native"] == 400_000
+        assert pid1["revenue_usd_native"] == 30
+
+    def test_invalid_period_rejected(self, seed_products):
+        c = _client(seed_products)
+        r = c.get("/api/admin/top-sellers-period",
+                  params={"admin_key": ADMIN_KEY, "period": "this_year"})
+        assert r.status_code == 400
+
+    def test_uses_cyrillic_name(self, seed_products):
+        from datetime import datetime, timedelta
+        db = seed_products
+        yesterday = (datetime.now(TASHKENT) - timedelta(days=1)).date()
+        _seed_orders(db, [
+            {"id": 700, "doc_date": yesterday.isoformat(), "currency": "UZS",
+             "exchange_rate": 12000,
+             "items": [(1, 1, 100_000)]},
+        ])
+        _seed_fxrate(db, rate=12000.0, rate_date=yesterday.isoformat())
+
+        c = _client(db)
+        r = c.get("/api/admin/top-sellers-period",
+                  params={"admin_key": ADMIN_KEY, "period": "yesterday"})
+        items = r.json()["items"]
+        assert items
+        # seed_products[1] has name="ВЭБЕР в/э ВНУТР СТАНДАРТ /10 кг/" (Cyrillic)
+        # name_display="Standart Oq" (Latin) — endpoint must emit Cyrillic primary
+        pid1 = next(i for i in items if i["product_id"] == 1)
+        assert "ВЭБЕР" in pid1["name"]
+        assert pid1["name_display"] == "Standart Oq"
+
+
 # ── /receivables (rebuilt to read from client_debts) ────────────────
 
 

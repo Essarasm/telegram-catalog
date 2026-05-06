@@ -943,6 +943,58 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- 🗓 Top 20 Sotilgan — Otgan Hafta (last fully-closed Mon-Sun) -->
+                    <div class="section-title collapsible" onclick="toggleSection('topSellersLastWeekSection')" style="margin-top: 24px;">
+                        🗓 Top 20 Sotilgan (Otgan Hafta) <span id="topSellersLastWeekMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        <span class="toggle-arrow" id="topSellersLastWeekSection-arrow">▾</span>
+                    </div>
+                    <div id="topSellersLastWeekSection" class="collapsible-content">
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Closed period — Monday to Sunday of the previous week (Tashkent). Ranked by USD-equivalent revenue (UZS converted via latest <code>daily_fx_rates</code> for sort key only).
+                        </div>
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Product</th>
+                                            <th>Units</th>
+                                            <th>Revenue USD-eq</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="topSellersLastWeekBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 📅 Top 20 Sotilgan — Kecha (yesterday) -->
+                    <div class="section-title collapsible" onclick="toggleSection('topSellersYesterdaySection')" style="margin-top: 24px;">
+                        📅 Top 20 Sotilgan (Kecha) <span id="topSellersYesterdayMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        <span class="toggle-arrow" id="topSellersYesterdaySection-arrow">▾</span>
+                    </div>
+                    <div id="topSellersYesterdaySection" class="collapsible-content">
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Yesterday's sales (Tashkent calendar day). Ranked by USD-equivalent revenue.
+                        </div>
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Product</th>
+                                            <th>Units</th>
+                                            <th>Revenue USD-eq</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="topSellersYesterdayBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Client Portfolio Tab -->
@@ -1825,6 +1877,8 @@
             drawCollectionChart(collData);
             drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
             loadTopSellersWoW();
+            loadTopSellersPeriod('last_week', 'topSellersLastWeekBody', 'topSellersLastWeekMeta');
+            loadTopSellersPeriod('yesterday', 'topSellersYesterdayBody', 'topSellersYesterdayMeta');
         }
 
         async function loadTopSellersWoW() {
@@ -1834,6 +1888,47 @@
             } catch (e) {
                 console.warn('top-sellers-wow load failed', e);
             }
+        }
+
+        async function loadTopSellersPeriod(period, bodyId, metaId) {
+            try {
+                const data = await apiCall(`top-sellers-period?period=${period}&limit=20`);
+                renderTopSellersPeriod(data, bodyId, metaId);
+            } catch (e) {
+                console.warn(`top-sellers-period (${period}) load failed`, e);
+            }
+        }
+
+        function renderTopSellersPeriod(data, bodyId, metaId) {
+            const body = document.getElementById(bodyId);
+            const meta = document.getElementById(metaId);
+            if (!body) return;
+            const items = (data && data.items) || [];
+            const periodLabel = (data && data.period_label) || '';
+            const fxrate = data && data.fxrate_used;
+            if (meta) {
+                meta.textContent = items.length
+                    ? `${periodLabel} · ${items.length} ta · USD-eq @ ${fxrate ? fmt(fxrate) : '?'} so'm`
+                    : `${periodLabel} · sotuvlar yo'q`;
+            }
+            if (!items.length) {
+                body.innerHTML = `<tr><td colspan="4" style="text-align:center; color:#8b8fa3; padding:16px;">Bu davrda sotuvlar yo'q</td></tr>`;
+                return;
+            }
+            body.innerHTML = items.map(it => {
+                const usdEq = it.revenue_usd_eq || 0;
+                const nativeNote = (it.revenue_uzs_native > 0 && it.revenue_usd_native > 0)
+                    ? ` <span style="font-size:10px; color:#8b8fa3;">(UZS+USD)</span>`
+                    : (it.revenue_usd_native > 0
+                        ? ` <span style="font-size:10px; color:#8b8fa3;">(USD)</span>`
+                        : '');
+                return `<tr>
+                    <td class="table-number">${it.rank}</td>
+                    <td>${escapeHtml(it.name)}</td>
+                    <td>${fmt(it.units)} ${escapeHtml(it.unit)}</td>
+                    <td>$${fmt(Math.round(usdEq))}${nativeNote}</td>
+                </tr>`;
+            }).join('');
         }
 
         function renderTopSellers(data) {

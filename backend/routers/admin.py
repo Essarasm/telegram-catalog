@@ -1585,6 +1585,78 @@ def top_sellers_wow(
     }
 
 
+@router.get("/top-sellers-period")
+def top_sellers_period(
+    admin_key: str = Query(...),
+    period: str = Query("last_week"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Top N products by USD-equivalent revenue for a closed period.
+
+    period:
+      - 'last_week' → Monday to Sunday of the previous fully-completed
+        week (Tashkent). Stable, doesn't shift during the day.
+      - 'yesterday' → single Tashkent calendar day immediately before today.
+
+    Pure ranking — no week-over-week comparison. UZS revenue is converted
+    via latest `daily_fx_rates.rate` for the sort key only; native UZS /
+    USD revenues are preserved per row (dual-currency rule).
+    """
+    if period not in ("last_week", "yesterday"):
+        raise HTTPException(
+            status_code=400,
+            detail="period must be 'last_week' or 'yesterday'",
+        )
+
+    _check_admin(admin_key)
+    conn = get_db()
+
+    fxrate = _latest_fxrate(conn)
+
+    if period == "last_week":
+        _, start_tk, end_tk = _week_bounds_tashkent(1)
+        period_label = f"{start_tk} — {end_tk}"
+    else:
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+        yesterday_tk = (
+            datetime.now(ZoneInfo("Asia/Tashkent")) - timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        start_tk = end_tk = yesterday_tk
+        period_label = yesterday_tk
+
+    agg = _aggregate_sales_by_product(conn, start_tk, end_tk, fxrate)
+    conn.close()
+
+    ranked = sorted(
+        agg.values(), key=lambda r: r["revenue_usd_eq"], reverse=True
+    )[:limit]
+    items = [
+        {
+            "rank": idx + 1,
+            "product_id": r["product_id"],
+            "name": r["name"],
+            "name_display": r["name_display"],
+            "unit": r["unit"],
+            "units": r["units"],
+            "revenue_uzs_native": r["revenue_uzs_native"],
+            "revenue_usd_native": r["revenue_usd_native"],
+            "revenue_usd_eq": round(r["revenue_usd_eq"], 2),
+        }
+        for idx, r in enumerate(ranked)
+    ]
+    return {
+        "ok": True,
+        "period": period,
+        "period_label": period_label,
+        "start_date": start_tk,
+        "end_date": end_tk,
+        "fxrate_used": fxrate,
+        "count": len(items),
+        "items": items,
+    }
+
+
 @router.post("/upload-images")
 async def upload_images(
     file: UploadFile = File(...),
