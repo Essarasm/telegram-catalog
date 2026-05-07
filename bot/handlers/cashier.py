@@ -292,15 +292,34 @@ def _render_today_list(date: str, rows: list) -> str:
         amt = _fmt_amount(r["amount"], r["currency"])
         icon = _STATUS_ICON.get(r["status"], "•")
         lines.append(
-            f"{icon} {ts} · {ch} · <b>{html_escape(cname)}</b> · {amt}"
+            f"{icon} {ts} · #{r['id']} · {ch} · <b>{html_escape(cname)}</b> · {amt}"
         )
+    lines.append("\n<i>Noto'g'ri yozuvni bekor qilish uchun pastdagi tugmani bosing.</i>")
     return "\n".join(lines)
+
+
+def _today_list_keyboard(rows: list, max_buttons: int = 25) -> Optional[InlineKeyboardMarkup]:
+    """One ✖ Bekor button per row (newest first), capped at max_buttons."""
+    if not rows:
+        return None
+    kb_rows = []
+    for r in rows[:max_buttons]:
+        amt = _fmt_amount(r["amount"], r["currency"])
+        cname = (r.get("client_id_1c") or r.get("client_name") or "")[:18]
+        label = f"✖ #{r['id']} · {cname} · {amt}"
+        kb_rows.append([InlineKeyboardButton(
+            text=label[:60],
+            callback_data=f"cashier:user_cancel_{r['id']}",
+        )])
+    if not kb_rows:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
 
 @router.message(Command("bugunpul"))
 async def cmd_bugunpul(message: Message, state: FSMContext):
-    """Today's full intake_payments list — one line per payment, newest
-    first. Cashier group only, read-only (use /cashbook for cancel)."""
+    """Today's full intake_payments list with a Bekor button per row.
+    Cashier group only — cashier or admin can cancel."""
     if not _is_cashier_chat(message):
         return
     if not is_cashier_or_admin(message):
@@ -310,7 +329,11 @@ async def cmd_bugunpul(message: Message, state: FSMContext):
         date, rows = _today_intake_rows(conn)
     finally:
         conn.close()
-    await message.answer(_render_today_list(date, rows), parse_mode="HTML")
+    await message.answer(
+        _render_today_list(date, rows),
+        parse_mode="HTML",
+        reply_markup=_today_list_keyboard(rows),
+    )
 
 
 def _render_summary(s: dict) -> str:
@@ -666,6 +689,49 @@ async def cb_admin_cancel(cb: CallbackQuery, bot: Bot):
     cname = row.get("client_id_1c") or row.get("client_name") or ""
     await cb.answer(
         f"✖ Bekor qilindi: #{row['id']} — {_fmt_amount(row['amount'], row['currency'])} ({cname})"[:200]
+    )
+
+
+@router.callback_query(F.data.startswith("cashier:user_cancel_"))
+async def cb_user_cancel(cb: CallbackQuery, bot: Bot):
+    """Cashier-side soft cancel from /bugunpul. Same soft-cancel as
+    /cashbook (status flip to rejected, audit row preserved) but
+    available to cashiers, not just admins."""
+    if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
+        await cb.answer("Faqat kassir/admin", show_alert=True)
+        return
+    try:
+        payment_id = int(cb.data.rsplit("_", 1)[1])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri ID", show_alert=True)
+        return
+    conn = get_db()
+    try:
+        try:
+            row = admin_cancel_payment(
+                conn, payment_id, cb.from_user.id, "cashier_cancelled_via_bugunpul"
+            )
+        except ValueError as e:
+            conn.rollback()
+            await cb.answer(str(e), show_alert=True)
+            return
+        conn.commit()
+        date, rows = _today_intake_rows(conn)
+    finally:
+        conn.close()
+    text = _render_today_list(date, rows)
+    kb = _today_list_keyboard(rows)
+    try:
+        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception:
+        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    cname = row.get("client_id_1c") or row.get("client_name") or ""
+    amt_str = _fmt_amount(row["amount"], row["currency"])
+    await cb.answer(
+        f"✖ Bekor qilindi: #{row['id']} — {amt_str} ({cname})"[:200]
+    )
+    await _notify_client_cancelled(
+        bot, row["client_id"], cname, row["currency"], row["amount"]
     )
 
 
@@ -1877,3 +1943,35 @@ async def _notify_client_confirmed(
             await bot.send_message(tid, text, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"client confirm notification to {tid} failed: {e}")
+
+
+async def _notify_client_cancelled(
+    bot: Bot,
+    client_id: int,
+    client_name: str,
+    currency: str,
+    amount: float,
+):
+    """Send a cancellation receipt to every approved telegram_id linked to
+    this client. Best-effort — never raises."""
+    try:
+        conn = get_db()
+        try:
+            recipients = resolve_client_telegram_ids(conn, client_id)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"resolve recipients for client {client_id} failed: {e}")
+        return
+    if not recipients:
+        return
+    text = (
+        f"✖ <b>Avvalgi qabul bekor qilindi</b>\n"
+        f"💵 {_fmt_amount(amount, currency)}\n"
+        f"👤 {html_escape(client_name)}"
+    )
+    for tid in recipients:
+        try:
+            await bot.send_message(tid, text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"client cancel notification to {tid} failed: {e}")

@@ -162,7 +162,7 @@ SPECS = {
         ("💼 Kassa amallari", [
             Cmd("/qabul", "Yangi to'lov qabul qilish — Klientdan yoki Agentdan"),
             Cmd("/bugun", "Bugungi qabul qilingan to'lovlar — yig'ma jadval"),
-            Cmd("/bugunpul", "Bugungi barcha to'lovlar ro'yxati — vaqt + kanal + mijoz + summa"),
+            Cmd("/bugunpul", "Bugungi to'lovlar ro'yxati — har bir yozuvda ✖ Bekor tugmasi"),
             Cmd("/bekor", "Joriy sessiyani bekor qilish"),
             Cmd("/chatid", "Chat va user ID"),
         ]),
