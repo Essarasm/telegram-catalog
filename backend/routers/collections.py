@@ -27,7 +27,7 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.database import get_db
-from backend.admin_auth import check_admin_key
+from backend.admin_auth import check_admin_key, resolve_auth
 
 router = APIRouter(prefix="/api/collections", tags=["collections"])
 
@@ -188,6 +188,59 @@ def tumans_with_centroids(admin_key: str = Query(...)):
     ).fetchall()
     conn.close()
     return {"tumans": [dict(r) for r in rows]}
+
+
+# ── Debt-by-client (Agent Coverage map overlay) ──────────────
+
+@router.get("/debt-by-client")
+def get_debt_by_client(admin_key: str = Query(...)):
+    """Lightweight debt map keyed by `allowed_clients.id`.
+
+    Returns one entry per client with positive debt in the latest
+    `client_debts` snapshot, including the most-aged non-zero bucket.
+    Used by the Agent Coverage map to color GPS pins by debt tier.
+    """
+    auth = resolve_auth(admin_key)
+    if not auth or auth["role"] not in ("admin", "agent"):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT cd.client_id, cd.debt_uzs, cd.debt_usd, cd.report_date,
+               cd.aging_0_30, cd.aging_31_60, cd.aging_61_90,
+               cd.aging_91_120, cd.aging_120_plus
+        FROM client_debts cd
+        JOIN (
+            SELECT client_id, MAX(report_date) AS rd
+            FROM client_debts
+            WHERE client_id IS NOT NULL
+            GROUP BY client_id
+        ) latest ON cd.client_id = latest.client_id AND cd.report_date = latest.rd
+        WHERE (cd.debt_uzs > 0 OR cd.debt_usd > 0)
+        """
+    ).fetchall()
+    conn.close()
+
+    by_client: dict = {}
+    snapshot_dates: set = set()
+    for r in rows:
+        oldest = _oldest_aging_bucket(r)
+        if oldest is None:
+            continue
+        by_client[r["client_id"]] = {
+            "debt_uzs": float(r["debt_uzs"] or 0),
+            "debt_usd": float(r["debt_usd"] or 0),
+            "oldest_aging": oldest,
+        }
+        if r["report_date"]:
+            snapshot_dates.add(r["report_date"])
+
+    return {
+        "by_client": by_client,
+        "snapshot_date": max(snapshot_dates) if snapshot_dates else None,
+        "total": len(by_client),
+    }
 
 
 # ── Candidates endpoint ──────────────────────────────────────

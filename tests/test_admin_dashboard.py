@@ -25,9 +25,11 @@ from fastapi.testclient import TestClient
 TASHKENT = ZoneInfo("Asia/Tashkent")
 
 
-# admin_auth captures ADMIN_API_KEY at import time, so the fallback key
-# "rassvet2026" is what's in effect for tests (same as prod fallback).
-ADMIN_KEY = "rassvet2026"
+# admin_auth captures ADMIN_API_KEY at import time. Use whatever the env
+# advertises if present (matches what the backend will see), else fall back
+# to the legacy string for shells with no explicit key.
+import os as _os
+ADMIN_KEY = _os.getenv("ADMIN_API_KEY") or "rassvet2026"
 
 
 def _client(db) -> TestClient:

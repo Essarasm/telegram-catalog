@@ -944,6 +944,32 @@
                         </div>
                     </div>
 
+                    <!-- 📅 Top 20 Sotilgan — Kecha (yesterday) -->
+                    <div class="section-title collapsible" onclick="toggleSection('topSellersYesterdaySection')" style="margin-top: 24px;">
+                        📅 Top 20 Sotilgan (Kecha) <span id="topSellersYesterdayMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        <span class="toggle-arrow" id="topSellersYesterdaySection-arrow">▾</span>
+                    </div>
+                    <div id="topSellersYesterdaySection" class="collapsible-content">
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Yesterday's sales (Tashkent calendar day). Ranked by USD-equivalent revenue.
+                        </div>
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Product</th>
+                                            <th>Units</th>
+                                            <th>Revenue USD-eq</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="topSellersYesterdayBody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- 🔥 Top 20 Sotilgan — work-week, USD-equivalent ranking with WoW comparison -->
                     <div class="section-title collapsible" onclick="toggleSection('topSellersSection')" style="margin-top: 24px;">
                         🔥 Top 20 Sotilgan (Bu Hafta) <span id="topSellersMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
@@ -994,32 +1020,6 @@
                                         </tr>
                                     </thead>
                                     <tbody id="topSellersLastWeekBody"></tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- 📅 Top 20 Sotilgan — Kecha (yesterday) -->
-                    <div class="section-title collapsible" onclick="toggleSection('topSellersYesterdaySection')" style="margin-top: 24px;">
-                        📅 Top 20 Sotilgan (Kecha) <span id="topSellersYesterdayMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
-                        <span class="toggle-arrow" id="topSellersYesterdaySection-arrow">▾</span>
-                    </div>
-                    <div id="topSellersYesterdaySection" class="collapsible-content">
-                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
-                            Yesterday's sales (Tashkent calendar day). Ranked by USD-equivalent revenue.
-                        </div>
-                        <div class="table-container">
-                            <div class="table-wrapper">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th class="table-number">#</th>
-                                            <th>Product</th>
-                                            <th>Units</th>
-                                            <th>Revenue USD-eq</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="topSellersYesterdayBody"></tbody>
                                 </table>
                             </div>
                         </div>

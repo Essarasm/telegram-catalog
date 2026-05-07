@@ -106,6 +106,45 @@ async def cmd_chatid(message: types.Message):
     )
 
 
+@dp.message(Command("dashboard"))
+async def cmd_dashboard(message: types.Message):
+    """Open the admin dashboard as a Telegram WebApp. The dashboard derives
+    the user's role (admin/agent/cashier/worker) from `users.agent_role`
+    and shows only the tabs that role is allowed to see."""
+    if message.chat.type != "private":
+        await message.answer("Open /dashboard in a private chat with the bot.")
+        return
+
+    from backend.services.roles import get_role
+    conn = get_db()
+    role = get_role(conn, message.from_user.id)
+    conn.close()
+
+    if not role:
+        await message.answer(
+            "🔒 You don't have a panel role yet. Ask an admin to grant you one."
+        )
+        return
+
+    # WEBAPP_URL may carry a cache-buster query (e.g. `?v=16`); strip path/query
+    # and rebuild from the host so the dashboard URL is unambiguous.
+    from urllib.parse import urlsplit, urlunsplit
+    _u = urlsplit(WEBAPP_URL)
+    dash_url = urlunsplit((_u.scheme, _u.netloc, "/admin/", "", ""))
+    await message.answer(
+        f"📊 <b>Dashboard</b>\nRole: <code>{_h(role)}</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="📊 Open dashboard",
+                    web_app=WebAppInfo(url=dash_url),
+                )
+            ]]
+        ),
+    )
+
+
 # ───────────────────────────────────────────
 # Admin commands
 # ───────────────────────────────────────────

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
-from backend.admin_auth import check_admin_key
+from backend.admin_auth import check_admin_key, resolve_auth
 
 router = APIRouter(prefix="/api/locations", tags=["locations"])
 
@@ -140,7 +140,8 @@ def get_agent_heatmap(
                 the dashboard's per-agent filter dropdown
         total:  count of points
     """
-    if not check_admin_key(admin_key):
+    auth = resolve_auth(admin_key)
+    if not auth or auth["role"] not in ("admin", "agent"):
         raise HTTPException(status_code=403, detail="Invalid admin key")
 
     conn = get_db()
