@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rassvet Admin Dashboard</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
@@ -728,51 +729,65 @@
             }
         }
 
+        /* Mobile: nav becomes a slide-in drawer overlay. Hamburger button in
+           the content header is always visible and is the only way to open it.
+           Tapping a tab auto-closes the drawer (see switchTab in JS). */
+        .nav-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.55);
+            z-index: 49;
+            display: none;
+        }
+        .nav-backdrop.visible {
+            display: block;
+        }
+
         @media (max-width: 768px) {
             .dashboard {
                 flex-direction: column;
             }
 
             .nav {
-                width: 100%;
-                height: auto;
-                max-height: 60px;
-                overflow-x: auto;
-                flex-direction: row;
-                border-right: none;
-                border-bottom: 1px solid #2a2d3a;
-            }
-
-            .nav-header {
-                padding: 0 20px;
-                border: none;
-                display: flex;
-                align-items: center;
-                white-space: nowrap;
-                min-width: 150px;
+                position: fixed;
+                top: 0;
+                left: 0;
+                height: 100vh;
+                width: 260px;
+                min-width: 260px;
+                z-index: 50;
+                box-shadow: 2px 0 18px rgba(0, 0, 0, 0.6);
                 border-right: 1px solid #2a2d3a;
+                border-bottom: none;
+            }
+            .nav.collapsed {
+                width: 0;
+                min-width: 0;
+                box-shadow: none;
             }
 
-            .nav-tabs {
-                display: flex;
-                overflow-x: auto;
-                flex: 1;
+            .sidebar-open-btn {
+                display: inline-flex !important;
             }
 
-            .nav-tab {
+            .content-header {
                 padding: 16px 20px;
-                border-left: none;
-                border-bottom: 3px solid transparent;
-                white-space: nowrap;
             }
-
-            .nav-tab.active {
-                border-left: none;
-                border-bottom-color: #6366f1;
+            .content-header h1 {
+                font-size: 20px;
+            }
+            .content-area {
+                padding: 16px;
             }
 
             .kpi-grid {
                 grid-template-columns: repeat(2, 1fr);
+            }
+
+            #coverageMap, #collectionsMap {
+                height: 60vh !important;
+                max-height: 420px;
+                min-height: 300px;
             }
         }
     </style>
@@ -797,6 +812,8 @@
 
     <!-- Dashboard -->
     <div id="dashboard" class="dashboard hidden">
+        <!-- Mobile drawer backdrop -->
+        <div id="navBackdrop" class="nav-backdrop" onclick="toggleSidebar()"></div>
         <!-- Navigation -->
         <div class="nav" id="sidebarNav">
             <div class="nav-header">
@@ -1546,6 +1563,17 @@
                         </div>
                     </div>
 
+                    <div id="coverageDebtLegend" style="display:none; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:14px; padding:10px 14px; background:#0f1117; border:1px solid #2a2d3a; border-radius:8px; font-size:11px; color:#8b8fa3;">
+                        <span style="color:#e4e4e7; font-weight:600;">Debt aging:</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#dc2626; margin-right:4px; vertical-align:middle;"></span>120+ days</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#ea580c; margin-right:4px; vertical-align:middle;"></span>91-120</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#facc15; margin-right:4px; vertical-align:middle;"></span>61-90</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#a855f7; margin-right:4px; vertical-align:middle;"></span>31-60</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#10b981; margin-right:4px; vertical-align:middle;"></span>0-30</span>
+                        <span style="margin-left:8px;"><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#2A81CB; margin-right:4px; vertical-align:middle;"></span>no debt (default)</span>
+                        <span style="margin-left:auto; color:#22d3ee; font-size:10px;" id="coverageDebtSnapshotLabel"></span>
+                    </div>
+
                     <div class="kpi-grid">
                         <div class="kpi-card">
                             <div class="kpi-label">Total Pins</div>
@@ -1694,6 +1722,9 @@
         // ==================== GLOBALS ====================
         let CURRENCY = 'UZS';
         let ADMIN_KEY = '';
+        let DASHBOARD_ROLE = 'admin';   // 'admin' | 'agent' | 'cashier' | 'worker'
+        let ALLOWED_TABS = null;        // null = all (admin); array = restricted set
+        let DASHBOARD_USER_NAME = null; // set on Telegram-WebApp auth
         let charts = {};
 
         // ==================== HELPERS ====================
@@ -1757,21 +1788,81 @@
         }
 
         function logout() {
+            // Best-effort revoke for Telegram-issued session tokens.
+            if (ADMIN_KEY && ADMIN_KEY.startsWith('dash_')) {
+                fetch('/api/admin/auth/logout', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_token: ADMIN_KEY }),
+                }).catch(() => { /* ignore */ });
+            }
             ADMIN_KEY = '';
+            DASHBOARD_ROLE = 'admin';
+            ALLOWED_TABS = null;
+            DASHBOARD_USER_NAME = null;
             document.getElementById('dashboard').classList.add('hidden');
             document.getElementById('authScreen').classList.remove('hidden');
             document.getElementById('authKey').value = '';
             document.getElementById('authError').textContent = '';
+            document.querySelectorAll('.nav-tab').forEach(el => el.style.display = '');
         }
 
-        // Check URL params
-        window.addEventListener('load', () => {
+        // Hide nav tabs not in `allowed` (when allowed is non-null). If only
+        // one tab is permitted, jump straight to it.
+        function applyRoleScopedUI(allowed) {
+            ALLOWED_TABS = Array.isArray(allowed) && allowed.length ? allowed : null;
+            const tabs = document.querySelectorAll('.nav-tab');
+            tabs.forEach(el => {
+                const t = el.getAttribute('data-tab');
+                el.style.display = (!ALLOWED_TABS || ALLOWED_TABS.includes(t)) ? '' : 'none';
+            });
+            if (ALLOWED_TABS && ALLOWED_TABS.length === 1) {
+                switchTab(ALLOWED_TABS[0]);
+            }
+        }
+
+        // Telegram WebApp auth: if we're inside Telegram and have signed
+        // initData, skip the admin-key form and auth via the bot's identity.
+        async function tryTelegramAuth() {
+            const tg = window.Telegram && window.Telegram.WebApp;
+            if (!tg || !tg.initData) return false;
+            try { tg.ready(); tg.expand && tg.expand(); } catch (_) { /* not fatal */ }
+            try {
+                const r = await fetch('/api/admin/auth/telegram', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ init_data: tg.initData }),
+                });
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({ detail: 'auth failed' }));
+                    showAuthError('Telegram auth: ' + (err.detail || 'failed'));
+                    return false;
+                }
+                const data = await r.json();
+                ADMIN_KEY = data.session_token;
+                DASHBOARD_ROLE = data.role;
+                DASHBOARD_USER_NAME = data.name || null;
+                applyRoleScopedUI(data.allowed_tabs);
+                document.getElementById('authScreen').classList.add('hidden');
+                document.getElementById('dashboard').classList.remove('hidden');
+                loadAllData();
+                return true;
+            } catch (e) {
+                console.error('telegram auth error', e);
+                return false;
+            }
+        }
+
+        // Check URL params + Telegram WebApp on load.
+        window.addEventListener('load', async () => {
             const params = new URLSearchParams(window.location.search);
             const keyParam = params.get('admin_key') || params.get('key');
             if (keyParam) {
                 document.getElementById('authKey').value = keyParam;
                 authenticate();
+                return;
             }
+            await tryTelegramAuth();
         });
 
         // ==================== API ====================
@@ -1784,20 +1875,59 @@
         }
 
         // ==================== SIDEBAR TOGGLE ====================
+        function isMobileViewport() {
+            return window.innerWidth <= 768;
+        }
+
         function toggleSidebar() {
             const nav = document.getElementById('sidebarNav');
             const openBtn = document.getElementById('sidebarOpenBtn');
+            const backdrop = document.getElementById('navBackdrop');
             nav.classList.toggle('collapsed');
-            if (nav.classList.contains('collapsed')) {
-                openBtn.classList.add('visible');
-            } else {
+            const isOpen = !nav.classList.contains('collapsed');
+            if (isOpen) {
                 openBtn.classList.remove('visible');
+            } else {
+                openBtn.classList.add('visible');
             }
-            // Resize charts after transition
+            if (backdrop) backdrop.classList.toggle('visible', isOpen && isMobileViewport());
             setTimeout(() => {
                 Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
             }, 300);
         }
+
+        // Normalize nav drawer + map sizing whenever the viewport mode flips
+        // (initial load, resize, rotation). Mobile = collapsed drawer + visible
+        // hamburger; desktop = always-shown sidebar + hidden hamburger.
+        function applyViewportLayout() {
+            const nav = document.getElementById('sidebarNav');
+            const openBtn = document.getElementById('sidebarOpenBtn');
+            const backdrop = document.getElementById('navBackdrop');
+            if (!nav || !openBtn) return;
+            if (isMobileViewport()) {
+                if (!nav.classList.contains('collapsed')) {
+                    nav.classList.add('collapsed');
+                }
+                openBtn.classList.add('visible');
+            } else {
+                nav.classList.remove('collapsed');
+                openBtn.classList.remove('visible');
+                if (backdrop) backdrop.classList.remove('visible');
+            }
+            setTimeout(() => {
+                if (typeof coverageMap !== 'undefined' && coverageMap) coverageMap.invalidateSize();
+                if (typeof collectionsMap !== 'undefined' && collectionsMap) collectionsMap.invalidateSize();
+                Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
+            }, 200);
+        }
+        document.addEventListener('DOMContentLoaded', applyViewportLayout);
+        let _viewportTimer = null;
+        function _onViewportChange() {
+            clearTimeout(_viewportTimer);
+            _viewportTimer = setTimeout(applyViewportLayout, 150);
+        }
+        window.addEventListener('resize', _onViewportChange);
+        window.addEventListener('orientationchange', _onViewportChange);
 
         // ==================== TAB SWITCHING ====================
         function switchTab(tabName) {
@@ -1817,6 +1947,18 @@
                 collections: 'Collection Route Planner'
             };
             document.getElementById('pageTitle').textContent = titles[tabName];
+
+            // On mobile, auto-close the drawer after picking a tab.
+            if (isMobileViewport()) {
+                const nav = document.getElementById('sidebarNav');
+                const openBtn = document.getElementById('sidebarOpenBtn');
+                const backdrop = document.getElementById('navBackdrop');
+                if (nav && !nav.classList.contains('collapsed')) {
+                    nav.classList.add('collapsed');
+                    if (openBtn) openBtn.classList.add('visible');
+                    if (backdrop) backdrop.classList.remove('visible');
+                }
+            }
 
             // Trigger chart resize
             setTimeout(() => {
@@ -1842,15 +1984,21 @@
 
         // ==================== DATA LOADING ====================
         async function loadAllData() {
+            // Role-scoped: skip loaders whose tab isn't in ALLOWED_TABS.
+            // Admins (ALLOWED_TABS === null) load everything.
+            const loaders = [
+                ['overview', loadOverviewData],
+                ['clients', loadClientsData],
+                ['inventory', loadInventoryData],
+                ['health', loadHealthData],
+                ['search', loadSearchData],
+                ['coverage', loadCoverageData],
+            ];
+            const enabled = loaders
+                .filter(([tab]) => !ALLOWED_TABS || ALLOWED_TABS.includes(tab))
+                .map(([, fn]) => fn());
             try {
-                await Promise.all([
-                    loadOverviewData(),
-                    loadClientsData(),
-                    loadInventoryData(),
-                    loadHealthData(),
-                    /* BEGIN Phase 3 */ loadSearchData() /* END Phase 3 */,
-                    loadCoverageData()
-                ]);
+                await Promise.all(enabled);
             } catch (err) {
                 console.error('Data load error:', err);
                 showAuthError('Failed to load data. Check your key.');
@@ -3227,6 +3375,8 @@
         let coverageClusterLayer = null;
         let coverageLayer = 'heat';   // 'heat' | 'cluster' | 'both'
         let coveragePoints = [];      // last loaded points (full result for current role+date filter)
+        let coverageDebtByClient = {}; // { client_id: { debt_uzs, debt_usd, oldest_aging } } — latest snapshot
+        let coverageDebtSnapshot = null; // ISO date string of the snapshot powering the debt overlay
 
         function setCoverageLayer(mode) {
             coverageLayer = mode;
@@ -3237,7 +3387,7 @@
 
         function ensureCoverageMap() {
             if (coverageMap) return coverageMap;
-            coverageMap = L.map('coverageMap', { zoomControl: true }).setView([41.31, 69.27], 11); // Tashkent default
+            coverageMap = L.map('coverageMap', { zoomControl: true }).setView([39.6542, 66.9597], 11); // Samarkand default
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '© OpenStreetMap',
                 maxZoom: 19
@@ -3259,10 +3409,21 @@
                 const params = new URLSearchParams({ admin_key: ADMIN_KEY, role });
                 if (from) params.set('from', from);
                 if (to) params.set('to', to);
-                const res = await fetch(`/api/locations/heatmap?${params.toString()}`);
+                const [res, debtRes] = await Promise.all([
+                    fetch(`/api/locations/heatmap?${params.toString()}`),
+                    fetch(`/api/collections/debt-by-client?admin_key=${encodeURIComponent(ADMIN_KEY)}`),
+                ]);
                 if (!res.ok) throw new Error(`heatmap ${res.status}`);
                 const data = await res.json();
                 coveragePoints = data.points || [];
+                if (debtRes.ok) {
+                    const dd = await debtRes.json();
+                    coverageDebtByClient = dd.by_client || {};
+                    coverageDebtSnapshot = dd.snapshot_date || null;
+                } else {
+                    coverageDebtByClient = {};
+                    coverageDebtSnapshot = null;
+                }
 
                 // Populate setter dropdown (preserve current selection if still valid)
                 const sel = document.getElementById('coverageAgent');
@@ -3327,7 +3488,60 @@
                 }).addTo(coverageMap);
             }
 
-            if (coverageLayer === 'cluster' || coverageLayer === 'both') {
+            // Toggle debt legend: only meaningful in pins-only mode
+            const legend = document.getElementById('coverageDebtLegend');
+            if (legend) {
+                legend.style.display = coverageLayer === 'cluster' ? 'flex' : 'none';
+                const snapLabel = document.getElementById('coverageDebtSnapshotLabel');
+                if (snapLabel) {
+                    snapLabel.textContent = coverageDebtSnapshot
+                        ? `debt snapshot: ${coverageDebtSnapshot}`
+                        : '';
+                }
+            }
+
+            if (coverageLayer === 'cluster') {
+                // Pins-only mode: keep the default teardrop pin shape; tint debtors
+                // by aging tier, leave non-debtors as the default Leaflet pin.
+                coverageClusterLayer = L.markerClusterGroup({ chunkedLoading: true });
+                pts.forEach(p => {
+                    const debt = coverageDebtByClient[p.client_id];
+                    const aging = debt ? debt.oldest_aging : null;
+                    const color = aging ? AGING_COLORS[aging] : null;
+                    let marker;
+                    if (color) {
+                        const svg =
+                            `<svg width="28" height="44" viewBox="0 0 28 44" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(0 2px 3px rgba(0,0,0,0.45));">` +
+                            `<path d="M14 0C6.3 0 0 6.3 0 14c0 9.3 14 30 14 30s14-20.7 14-30C28 6.3 21.7 0 14 0z" fill="${color}" stroke="white" stroke-width="2.5"/>` +
+                            `<circle cx="14" cy="14" r="5" fill="white"/>` +
+                            `</svg>`;
+                        marker = L.marker([p.lat, p.lng], {
+                            icon: L.divIcon({ html: svg, className: '', iconSize: [28, 44], iconAnchor: [14, 44], popupAnchor: [0, -38] })
+                        });
+                    } else {
+                        marker = L.marker([p.lat, p.lng]);
+                    }
+                    const when = p.set_at ? p.set_at.slice(0, 16).replace('T', ' ') : '—';
+                    const debtBlock = debt
+                        ? `<div style="margin-top:6px; padding:6px 8px; background:${color}22; border-left:3px solid ${color}; border-radius:4px; color:#222;">` +
+                          `<div style="font-weight:600;">Debt: ${fmtSomCompact(debt.debt_uzs)} UZS / $${(debt.debt_usd || 0).toFixed(0)}</div>` +
+                          `<div style="margin-top:2px;"><span style="background:${color}; color:white; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600;">${aging} days</span></div>` +
+                          `</div>`
+                        : `<div style="margin-top:6px; color:#16a34a; font-size:11px;">✓ no outstanding debt</div>`;
+                    const popup =
+                        `<div style="font-size:13px; line-height:1.5;">` +
+                        `<div style="font-weight:600; margin-bottom:4px;">${escHtml(p.client_label)}</div>` +
+                        debtBlock +
+                        `<div style="color:#555; margin-top:6px;">Setter: ${escHtml(p.agent_name || '—')} <span style="color:#999;">(${escHtml(p.role || '—')})</span></div>` +
+                        `<div style="color:#555;">When: ${escHtml(when)}</div>` +
+                        (p.address ? `<div style="color:#555; margin-top:4px;">${escHtml(p.address)}</div>` : '') +
+                        `<div style="margin-top:6px;"><a href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Open in Google Maps</a></div>` +
+                        `</div>`;
+                    marker.bindPopup(popup);
+                    marker.addTo(coverageClusterLayer);
+                });
+                coverageMap.addLayer(coverageClusterLayer);
+            } else if (coverageLayer === 'both') {
                 coverageClusterLayer = L.markerClusterGroup({ chunkedLoading: true });
                 pts.forEach(p => {
                     const when = p.set_at ? p.set_at.slice(0, 16).replace('T', ' ') : '—';
@@ -3354,7 +3568,7 @@
         // ==================== COLLECTIONS / ROUTE PLANNER ====================
         const WAREHOUSE = { lat: 39.6455, lng: 66.9392 }; // 39°38'43.7"N 66°56'21.0"E (Samarkand main)
         const ROUTE_COLORS = ['#3b82f6', '#f59e0b', '#22c55e', '#ec4899', '#a855f7'];
-        const AGING_COLORS = { '120+': '#ef4444', '91-120': '#f97316', '61-90': '#eab308', '31-60': '#3b82f6', '0-30': '#6b7280' };
+        const AGING_COLORS = { '120+': '#dc2626', '91-120': '#ea580c', '61-90': '#facc15', '31-60': '#a855f7', '0-30': '#10b981' };
 
         let collectionsMap = null;
         let collTumans = [];           // [{tuman_id, name, viloyat_name, lat, lng, pin_count}]
