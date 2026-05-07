@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 10  # 2026-05-06: decouple suppliers.is_active from mini_app_label — kept-but-untagged suppliers stay active so they don't false-trigger the retired_seen supply alert (Session N)
+SCHEMA_VERSION = 13  # 2026-05-07: 4 synthetic country-of-origin suppliers (Саморез КИТАЙ, ЛИНОЛЕУМ РОССИЯ, ЛИНОЛЕУМ КАЗАХСТАН, Гвозди /БУХОРО/) + re-run v12 backfill so ~130 products fold from (noma'lum) into named buckets in /zakazlar (Session N)
 
 
 def init_db():
@@ -1199,6 +1199,17 @@ def init_db():
     if "restocked_at" not in prod_cols:
         conn.execute("ALTER TABLE products ADD COLUMN restocked_at TEXT")
 
+    # Latest supplier per product — drives /zakazlar Phase 1 (per-supplier
+    # reorder view in inventory group). Stamped during /supply import (the
+    # most recent counterparty seen for each matched product). Backfilled in
+    # v12 migration block from supply_order_items + counterparty_name lookup.
+    # NULL = product never appeared in any /supply import (~65% of catalog
+    # at v12 launch — surfaces in /zakazlar under "(noma'lum supplier)" bucket).
+    if "latest_supplier_id" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN latest_supplier_id INTEGER")
+    if "latest_supplied_at" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN latest_supplied_at TEXT")
+
     # Product alias table: maps 1C name variants to canonical product IDs.
     # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
     # each successful fuzzy match in /stock or /prices auto-adds an alias.
@@ -1485,11 +1496,77 @@ def init_db():
             [(n,) for n in kept_active_2026_05_06],
         )
 
+    # v11 (2026-05-07): seed 5 ADD_AS_NEW suppliers (ПЛИНТУС, ORIGINAL COLORMIX,
+    # УГОЛОК, ГУДФИКС, СЕМИКС). seed_procurement() does the INSERT OR IGNORE
+    # automatically on init_db; no explicit migration UPDATE needed.
+
+    # v12 (2026-05-07): backfill products.latest_supplier_id + latest_supplied_at
+    # from supply_order_items + supply_orders.counterparty_name. ROW_NUMBER()
+    # window function picks the most-recent doc per product so the supplier_id
+    # ties back to the right doc_date (a plain GROUP BY would pick an arbitrary
+    # supplier when a product has multiple supply sources). Re-runs harmlessly
+    # on every init.
+    if current < 12:
+        conn.execute(
+            """
+            UPDATE products
+               SET latest_supplier_id = sub.supplier_id,
+                   latest_supplied_at = sub.last_date
+              FROM (
+                SELECT pid, supplier_id, last_date FROM (
+                  SELECT soi.matched_product_id AS pid,
+                         s.id AS supplier_id,
+                         so.doc_date AS last_date,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY soi.matched_product_id
+                             ORDER BY so.doc_date DESC, so.id DESC
+                         ) AS rn
+                    FROM supply_order_items soi
+                    JOIN supply_orders so ON so.id = soi.supply_order_id
+                    JOIN suppliers s ON s.name_1c = so.counterparty_name
+                   WHERE soi.matched_product_id IS NOT NULL
+                ) WHERE rn = 1
+              ) AS sub
+             WHERE products.id = sub.pid
+            """
+        )
+
+    # v13 (2026-05-07 afternoon): 4 synthetic country-of-origin suppliers added
+    # to seed (Саморез КИТАЙ, ЛИНОЛЕУМ РОССИЯ, ЛИНОЛЕУМ КАЗАХСТАН, Гвозди /БУХОРО/).
+    # seed_procurement() inserts them via INSERT OR IGNORE on this init. We then
+    # re-run the same backfill UPDATE as v12 so products supplied through these
+    # channels (~130 across the 4) get stamped with their new latest_supplier_id
+    # and surface in /zakazlar named buckets instead of (noma'lum). Idempotent.
+    if current < 13:
+        conn.execute(
+            """
+            UPDATE products
+               SET latest_supplier_id = sub.supplier_id,
+                   latest_supplied_at = sub.last_date
+              FROM (
+                SELECT pid, supplier_id, last_date FROM (
+                  SELECT soi.matched_product_id AS pid,
+                         s.id AS supplier_id,
+                         so.doc_date AS last_date,
+                         ROW_NUMBER() OVER (
+                             PARTITION BY soi.matched_product_id
+                             ORDER BY so.doc_date DESC, so.id DESC
+                         ) AS rn
+                    FROM supply_order_items soi
+                    JOIN supply_orders so ON so.id = soi.supply_order_id
+                    JOIN suppliers s ON s.name_1c = so.counterparty_name
+                   WHERE soi.matched_product_id IS NOT NULL
+                ) WHERE rn = 1
+              ) AS sub
+             WHERE products.id = sub.pid
+            """
+        )
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "Session N (2026-05-06): supplier curation cleanup + decoupled is_active from mini_app_label so retired_seen alert doesn't false-trigger on kept-but-untagged suppliers"),
+            (SCHEMA_VERSION, "Session N (2026-05-07 afternoon): 4 synthetic country-of-origin suppliers (Саморез КИТАЙ, ЛИНОЛЕУМ РОССИЯ, ЛИНОЛЕУМ КАЗАХСТАН, Гвозди /БУХОРО/) + re-run v12 backfill UPDATE — folds ~130 products from (noma'lum) into named /zakazlar buckets"),
         )
 
     conn.commit()

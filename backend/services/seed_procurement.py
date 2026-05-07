@@ -80,6 +80,25 @@ SUPPLIERS = [
     ("ГВОЗДИ /KRIPTEKS-METAL/",           "Mixlar",                   None,                                                      19,    105_388_800,  4_409_992),
     ("Саморез TAGERT",                    None,                       None,                                                      18,              0,  1_538_994),
     ("RANGLI BO'YOQ",                     "Lak, bo'yoq",              'СП ООО "RANGLI B O\' Y O Q"',                              9,              0,  2_708_142),
+    # 2026-05-07: 5 ADD_AS_NEW seeded (Session N). mini_app_label=None — categories
+    # deferred pending uncle's clarification. is_active=1 (not in RETIRED_NAMES).
+    # Periods + turnover from Jan 2025 – Apr 2026 supply history.
+    ("ORIGINAL COLORMIX",                 None,                       None,                                                      15,  1_103_548_020,     92_684),
+    ("УГОЛОК",                            None,                       None,                                                      11,              0,     78_322),
+    ("ПЛИНТУС",                           None,                       None,                                                       5,              0,     31_062),
+    ("ГУДФИКС",                           None,                       None,                                                       2,              0,     11_640),
+    ("СЕМИКС",                            None,                       None,                                                       2,      2_302_800,          0),
+    # 2026-05-07 (afternoon): 4 synthetic country-of-origin suppliers (Session N
+    # /zakazlar coverage push). These are not formal suppliers but counterparty
+    # tags used in 1C for "imported from <country>" or regional channels. Adding
+    # them as suppliers lets the ~130 products that source from these channels
+    # appear in /zakazlar instead of getting lost in the (noma'lum) bucket.
+    # name_1c MUST exactly match the counterparty_name string in supply_orders
+    # (note: 'Саморез  КИТАЙ' has a double space — preserved verbatim from 1C).
+    ("Саморез  КИТАЙ",                    None,                       None,                                                       3,              0,  1_577_982),
+    ("ЛИНОЛЕУМ РОССИЯ",                   None,                       None,                                                       3,              0,  1_233_784),
+    ("ЛИНОЛЕУМ КАЗАХСТАН",                None,                       None,                                                       2,              0,    196_137),
+    ("Гвозди /БУХОРО/",                   None,                       None,                                                       1,              0,     41_100),
 ]
 # Suppliers we've permanently retired. Used to drive is_active=0 explicitly,
 # decoupling "truly retired" from "kept but not in Stage-2 picker". The
@@ -104,8 +123,10 @@ RETIRED_NAMES = frozenset({
 #   RANGLI BO'YOQ now carries the formal legal_name absorbed from the merged 'СП ООО ...' row.
 # Existing prod rows for retired entries are kept (FK integrity); init_db migration v9
 # flips is_active=0 for those still marked active in prod.
-# 5 ADD_AS_NEW deferred until uncle clarifies procurement category for ПЛИНТУС, ORIGINAL
-# COLORMIX, УГОЛОК, ГУДФИКС, СЕМИКС.
+# 2026-05-07: 5 ADD_AS_NEW (ПЛИНТУС, ORIGINAL COLORMIX, УГОЛОК, ГУДФИКС, СЕМИКС) seeded
+# with mini_app_label=None pending uncle's category approval. is_active=1 so they
+# appear in /zakazlar (when built) and in retired_seen alert checks, but excluded
+# from cashbook Stage-2 picker until categories are assigned.
 
 
 def seed_procurement(conn):

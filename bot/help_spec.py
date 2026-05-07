@@ -150,6 +150,7 @@ SPECS = {
             Cmd("/stockalert kam", "Faqat KAM QOLDI (to'liq ro'yxat)"),
             Cmd("/stockalert full", "Ikkalasi ham, to'liq"),
             Cmd("/stockalert hafta", "Bu hafta (Du→hozir) tugagan, kunlar bo'yicha"),
+            Cmd("/zakazlar", "Yetkazib beruvchi bo'yicha buyurtma tavsiyasi (90d sotuv × 30d bufer − qoldiq)"),
             Cmd("/cleanupinactive [N]", f"Faol bo'lmagan mahsulotlarni preview (def 60d)"),
             Cmd("/cleanupinactive [N] confirm", "Qo'llash — is_active=0 ga o'tkazadi"),
             Cmd("/demand [kunlar]", "Tugagan mahsulotlarga mijoz talabi"),
@@ -161,6 +162,7 @@ SPECS = {
         ("💼 Kassa amallari", [
             Cmd("/qabul", "Yangi to'lov qabul qilish — Klientdan yoki Agentdan"),
             Cmd("/bugun", "Bugungi qabul qilingan to'lovlar — yig'ma jadval"),
+            Cmd("/bugunpul", "Bugungi barcha to'lovlar ro'yxati — vaqt + kanal + mijoz + summa"),
             Cmd("/bekor", "Joriy sessiyani bekor qilish"),
             Cmd("/chatid", "Chat va user ID"),
         ]),

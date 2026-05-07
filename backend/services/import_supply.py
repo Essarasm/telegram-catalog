@@ -359,6 +359,43 @@ def apply_supply_import(
                 )
                 total_items += 1
 
+        # Stamp products.latest_supplier_id + latest_supplied_at for products
+        # touched by this batch (only "supply" docs — returns/adjustments don't
+        # imply a supplier relationship). Powers /zakazlar Phase 1. Uses the
+        # most-recent doc_date per product across this batch only — older
+        # supplier mappings stay unless overridden by a newer doc.
+        stamp_rows = []
+        supplier_cache: Dict[str, Optional[int]] = {}
+        for d in documents:
+            if d.get("doc_type") != "supply":
+                continue
+            cp = d.get("counterparty_name")
+            if not cp:
+                continue
+            if cp not in supplier_cache:
+                row = conn.execute(
+                    "SELECT id FROM suppliers WHERE name_1c = ?", (cp,)
+                ).fetchone()
+                supplier_cache[cp] = row[0] if row else None
+            sid = supplier_cache[cp]
+            if sid is None:
+                continue
+            for it in d["items"]:
+                pid = _try_match_product(it["product_name_raw"], conn)
+                if pid is not None:
+                    stamp_rows.append((sid, d["doc_date"], pid, d["doc_date"]))
+        if stamp_rows:
+            # Only update if the new doc_date is >= existing (or NULL) — preserves
+            # most-recent-wins semantics across multiple imports.
+            conn.executemany(
+                """UPDATE products
+                      SET latest_supplier_id = ?,
+                          latest_supplied_at = ?
+                    WHERE id = ?
+                      AND (latest_supplied_at IS NULL OR latest_supplied_at <= ?)""",
+                stamp_rows,
+            )
+
         conn.commit()
 
         # Unique unmatched
