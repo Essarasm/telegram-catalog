@@ -20,7 +20,16 @@ from __future__ import annotations
 import logging
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+# Fixed offset — Uzbekistan has no DST. Avoids dependency on tzdata in the
+# Railway container.
+TASHKENT_TZ = timezone(timedelta(hours=5))
+
+
+def _now_tashkent_hhmm() -> str:
+    return datetime.now(TASHKENT_TZ).strftime("%H:%M")
 
 from aiogram import Router, F, Bot, types
 from aiogram.filters import Command
@@ -59,6 +68,7 @@ from backend.services.payment_intake import (
     list_pending_for_cashier,
     resolve_client_telegram_ids,
     admin_cancel_payment,
+    edit_payment_amount,
     assign_supplier,
     attach_agreement,
     attach_transfer_proof,
@@ -94,6 +104,10 @@ class CashierFlow(StatesGroup):
     # in v1 — Agentdan menu now jumps to agent_pick instead of queue).
     queue = State()
     queue_reject_reason = State()
+    # O'zgartirish — amount-only edit of an already-confirmed payment.
+    # Soft-cancels old + inserts new linked via replaces_payment_id.
+    edit_amount = State()
+    edit_amount_confirm = State()
 
 
 class CardsAdminFlow(StatesGroup):
@@ -262,11 +276,14 @@ _STATUS_ICON = {
 
 def _today_intake_rows(conn):
     """All non-rejected intake_payments submitted on today's Tashkent date,
-    newest first. Used by /bugunpul."""
+    newest first. Used by /bugunpul. submitted_hhmm_tk is HH:MM in
+    Tashkent (UTC+5) — display-ready, no Python-side timezone math needed.
+    notes carries 'agent: <name>' for cash_via_agent rows."""
     today_tk = conn.execute("SELECT date('now', '+5 hours') AS d").fetchone()["d"]
     rows = conn.execute(
         """SELECT ip.id, ip.client_id, ip.amount, ip.currency, ip.channel,
-                  ip.status, ip.submitted_at, ip.confirmed_at,
+                  ip.status, ip.submitted_at, ip.confirmed_at, ip.notes,
+                  strftime('%H:%M', ip.submitted_at, '+5 hours') AS submitted_hhmm_tk,
                   ac.name AS client_name, ac.client_id_1c
            FROM intake_payments ip
            LEFT JOIN allowed_clients ac ON ac.id = ip.client_id
@@ -278,6 +295,14 @@ def _today_intake_rows(conn):
     return today_tk, [dict(r) for r in rows]
 
 
+def _agent_from_notes(notes: Optional[str]) -> Optional[str]:
+    """Extract agent name from notes column. Stored as 'agent: <name>' for
+    cash_via_agent rows; None for cash_direct/p2p."""
+    if notes and notes.startswith("agent: "):
+        return notes[7:].strip() or None
+    return None
+
+
 def _render_today_list(date: str, rows: list) -> str:
     if not rows:
         return (
@@ -286,34 +311,74 @@ def _render_today_list(date: str, rows: list) -> str:
         )
     lines = [f"💼 <b>Bugungi to'lovlar — {date}</b> ({len(rows)} ta)\n"]
     for r in rows:
-        ts = (r.get("submitted_at") or "")[11:16]  # HH:MM from 'YYYY-MM-DD HH:MM:SS'
+        ts = r.get("submitted_hhmm_tk") or ""  # HH:MM Tashkent (UTC+5)
         ch = _CHANNEL_LABEL.get(r["channel"], r["channel"] or "—")
         cname = (r.get("client_id_1c") or r.get("client_name") or f"ID {r['client_id']}")[:30]
         amt = _fmt_amount(r["amount"], r["currency"])
         icon = _STATUS_ICON.get(r["status"], "•")
+        agent = _agent_from_notes(r.get("notes"))
+        agent_seg = f" · 👨‍💼 {html_escape(agent)}" if agent else ""
         lines.append(
-            f"{icon} {ts} · #{r['id']} · {ch} · <b>{html_escape(cname)}</b> · {amt}"
+            f"{icon} {ts} · #{r['id']} · <b>{html_escape(cname)}</b>{agent_seg} · {ch} · {amt}"
         )
-    lines.append("\n<i>Noto'g'ri yozuvni bekor qilish uchun pastdagi tugmani bosing.</i>")
+    lines.append("\n<i>Pastdagi tugmalar: ✏️ — summani o'zgartirish · ✖ — yozuvni bekor qilish.</i>")
     return "\n".join(lines)
 
 
-def _today_list_keyboard(rows: list, max_buttons: int = 25) -> Optional[InlineKeyboardMarkup]:
-    """One ✖ Bekor button per row (newest first), capped at max_buttons."""
+def _today_list_keyboard(rows: list, max_records: int = 15) -> Optional[InlineKeyboardMarkup]:
+    """Three full-width keyboard-rows per record (client name prioritized):
+        [#id · CLIENT · HH:MM · 👨‍💼 agent · amount]   ← tap shows full info
+        [✏️ #id · O'zgartirish]
+        [✖ #id · Bekor]
+    Capped at max_records (newest first). Data row is a no-data toggle
+    pair below — keeps client name front-and-center per user feedback."""
     if not rows:
         return None
     kb_rows = []
-    for r in rows[:max_buttons]:
+    for r in rows[:max_records]:
+        ts = r.get("submitted_hhmm_tk") or ""
         amt = _fmt_amount(r["amount"], r["currency"])
-        cname = (r.get("client_id_1c") or r.get("client_name") or "")[:18]
-        label = f"✖ #{r['id']} · {cname} · {amt}"
+        cname = (r.get("client_id_1c") or r.get("client_name") or f"ID {r['client_id']}")[:24]
+        agent = _agent_from_notes(r.get("notes"))
+        agent_seg = f" · 👨‍💼 {agent}" if agent else ""
+        data_label = f"#{r['id']} · {cname} · {ts}{agent_seg} · {amt}"[:60]
         kb_rows.append([InlineKeyboardButton(
-            text=label[:60],
+            text=data_label,
+            callback_data=f"cashier:user_info_{r['id']}",
+        )])
+        kb_rows.append([InlineKeyboardButton(
+            text=f"✏️ #{r['id']} · O'zgartirish",
+            callback_data=f"cashier:user_edit_{r['id']}",
+        )])
+        kb_rows.append([InlineKeyboardButton(
+            text=f"✖ #{r['id']} · Bekor",
             callback_data=f"cashier:user_cancel_{r['id']}",
         )])
     if not kb_rows:
         return None
     return InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
+def _confirm_row_keyboard(payment_id: int) -> InlineKeyboardMarkup:
+    """Buttons attached to the fresh '✅ Qabul qilindi' message — one
+    confirmation = one payment leg = one keyboard row of [✏️] [✖]."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✏️ O'zgartirish",
+            callback_data=f"cashier:user_edit_{payment_id}",
+        ),
+        InlineKeyboardButton(
+            text="✖ Bekor",
+            callback_data=f"cashier:user_cancel_{payment_id}",
+        ),
+    ]])
+
+
+def _edit_amount_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Saqlash", callback_data="cashier:edit_save")],
+        [InlineKeyboardButton(text="❌ Bekor",   callback_data="cashier:edit_cancel")],
+    ])
 
 
 @router.message(Command("bugunpul"))
@@ -733,6 +798,209 @@ async def cb_user_cancel(cb: CallbackQuery, bot: Bot):
     await _notify_client_cancelled(
         bot, row["client_id"], cname, row["currency"], row["amount"]
     )
+
+
+@router.callback_query(F.data.startswith("cashier:user_info_"))
+async def cb_user_info(cb: CallbackQuery):
+    """Data-row tap on /bugunpul — shows the full untruncated record details
+    in a popup alert. Useful when the button label gets cut off."""
+    if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
+        await cb.answer()
+        return
+    try:
+        payment_id = int(cb.data.rsplit("_", 1)[1])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri ID", show_alert=True)
+        return
+    conn = get_db()
+    try:
+        try:
+            row = get_payment(conn, payment_id)
+        except ValueError:
+            await cb.answer("Yozuv topilmadi", show_alert=True)
+            return
+    finally:
+        conn.close()
+    cname = row.get("client_id_1c") or row.get("client_name") or f"ID {row['client_id']}"
+    agent = _agent_from_notes(row.get("notes"))
+    ch = _CHANNEL_LABEL.get(row["channel"], row["channel"] or "—")
+    # Telegram show_alert popups are plain text, no HTML — strip tags.
+    submitted_at = (row.get("submitted_at") or "")[11:16]
+    # Convert UTC HH:MM → Tashkent inline (no SQL handle here)
+    try:
+        h, m = submitted_at.split(":")
+        tk_h = (int(h) + 5) % 24
+        tk_hhmm = f"{tk_h:02d}:{m}"
+    except ValueError:
+        tk_hhmm = submitted_at
+    lines = [
+        f"#{row['id']}",
+        f"👤 {cname}",
+        f"🕒 {tk_hhmm}",
+    ]
+    if agent:
+        lines.append(f"👨‍💼 Agent: {agent}")
+    lines.append(f"📥 {ch}")
+    lines.append(f"💵 {_fmt_amount(row['amount'], row['currency'])}")
+    await cb.answer("\n".join(lines)[:200], show_alert=True)
+
+
+@router.callback_query(F.data.startswith("cashier:user_edit_"))
+async def cb_user_edit(cb: CallbackQuery, state: FSMContext):
+    """Cashier-side O'zgartirish — entry point. Loads the payment, refuses
+    if not confirmed, prompts for the new amount."""
+    if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
+        await cb.answer("Faqat kassir/admin", show_alert=True)
+        return
+    try:
+        payment_id = int(cb.data.rsplit("_", 1)[1])
+    except (ValueError, IndexError):
+        await cb.answer("Noto'g'ri ID", show_alert=True)
+        return
+    # Don't trample an in-flight /qabul flow
+    cur_state = await state.get_state()
+    if cur_state and cur_state not in (
+        CashierFlow.edit_amount.state,
+        CashierFlow.edit_amount_confirm.state,
+    ):
+        await cb.answer(
+            "Avval /qabul ni tugating yoki /bekor bilan to'xtating",
+            show_alert=True,
+        )
+        return
+    conn = get_db()
+    try:
+        try:
+            row = get_payment(conn, payment_id)
+        except ValueError:
+            await cb.answer("Yozuv topilmadi", show_alert=True)
+            return
+    finally:
+        conn.close()
+    if row["status"] != "confirmed":
+        await cb.answer(
+            "Bu yozuv allaqachon bekor qilingan yoki o'zgartirilgan",
+            show_alert=True,
+        )
+        return
+    cname = row.get("client_id_1c") or row.get("client_name") or ""
+    await state.set_state(CashierFlow.edit_amount)
+    await state.update_data(
+        edit_payment_id=payment_id,
+        edit_old_amount=float(row["amount"]),
+        edit_currency=row["currency"],
+        edit_client_id=row["client_id"],
+        edit_client_name=cname,
+    )
+    cur_amt = _fmt_amount(row["amount"], row["currency"])
+    hint = "(masalan: 500000)" if row["currency"] == "UZS" else "(masalan: 200)"
+    await cb.message.answer(
+        f"✏️ <b>#{payment_id} — {html_escape(cname)}</b>\n"
+        f"Joriy summa: <b>{cur_amt}</b>\n\n"
+        f"Yangi summani kiriting {hint}.",
+        parse_mode="HTML",
+        reply_markup=_cancel_keyboard(),
+    )
+    await cb.answer()
+
+
+@router.message(CashierFlow.edit_amount, F.text)
+async def edit_amount_input(message: Message, state: FSMContext):
+    if not _is_cashier_chat(message):
+        return
+    new_amt = _parse_amount(message.text or "")
+    if new_amt is None:
+        await message.answer(
+            "Raqam kiriting yoki ❌ Bekor.",
+            reply_markup=_cancel_keyboard(),
+        )
+        return
+    data = await state.get_data()
+    old_amt = float(data.get("edit_old_amount") or 0)
+    currency = data.get("edit_currency") or "UZS"
+    if abs(new_amt - old_amt) < 0.005:
+        await message.answer(
+            f"Summa o'zgarmagan ({_fmt_amount(old_amt, currency)}). Boshqa raqam kiriting yoki ❌ Bekor.",
+            reply_markup=_cancel_keyboard(),
+        )
+        return
+    await state.update_data(edit_new_amount=new_amt)
+    await state.set_state(CashierFlow.edit_amount_confirm)
+    pid = data.get("edit_payment_id")
+    cname = data.get("edit_client_name") or ""
+    await message.answer(
+        f"Tasdiqlash: #{pid} — <b>{html_escape(cname)}</b>\n"
+        f"<b>{_fmt_amount(old_amt, currency)}</b> → <b>{_fmt_amount(new_amt, currency)}</b>",
+        parse_mode="HTML",
+        reply_markup=_edit_amount_confirm_keyboard(),
+    )
+
+
+@router.callback_query(CashierFlow.edit_amount_confirm, F.data == "cashier:edit_cancel")
+async def cb_edit_cancel(cb: CallbackQuery, state: FSMContext):
+    if not _is_cashier_chat(cb):
+        await cb.answer()
+        return
+    await state.clear()
+    await cb.message.answer("❌ O'zgartirish bekor qilindi.")
+    await _send_kassa_menu(cb.message)
+    await cb.answer()
+
+
+@router.callback_query(CashierFlow.edit_amount_confirm, F.data == "cashier:edit_save")
+async def cb_edit_save(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
+        await cb.answer("Faqat kassir/admin", show_alert=True)
+        return
+    data = await state.get_data()
+    payment_id = data.get("edit_payment_id")
+    new_amt = data.get("edit_new_amount")
+    if payment_id is None or new_amt is None:
+        await state.clear()
+        await cb.answer("Holat yo'qolgan, qaytadan urinib ko'ring", show_alert=True)
+        return
+    conn = get_db()
+    try:
+        try:
+            result = edit_payment_amount(
+                conn,
+                int(payment_id),
+                float(new_amt),
+                cb.from_user.id,
+            )
+        except ValueError as e:
+            conn.rollback()
+            await state.clear()
+            await cb.answer(str(e)[:200], show_alert=True)
+            return
+        conn.commit()
+    finally:
+        conn.close()
+    await state.clear()
+    old_row = result["old"]
+    new_row = result["new"]
+    currency = new_row["currency"]
+    old_amt = float(old_row["amount"])
+    new_amt_f = float(new_row["amount"])
+    cname = new_row.get("client_id_1c") or new_row.get("client_name") or ""
+    # Strip the now-stale [✅ Saqlash] [❌ Bekor] buttons from the preview
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    # In-group transparency note (cashiers rotate — Aunt + Uncle)
+    await cb.message.answer(
+        f"✏️ Tuzatildi: #{old_row['id']} → #{new_row['id']} · 🕒 {_now_tashkent_hhmm()}\n"
+        f"<b>{_fmt_amount(old_amt, currency)}</b> → <b>{_fmt_amount(new_amt_f, currency)}</b>\n"
+        f"👤 {html_escape(cname)}",
+        parse_mode="HTML",
+        reply_markup=_confirm_row_keyboard(new_row["id"]),
+    )
+    await cb.answer(f"✏️ Saqlandi: #{new_row['id']}"[:200])
+    await _notify_client_edited(
+        bot, new_row["client_id"], cname, currency, old_amt, new_amt_f
+    )
+    await _send_kassa_menu(cb.message)
 
 
 @router.callback_query(F.data == "cashier:admin_close")
@@ -1689,21 +1957,25 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
     finally:
         conn.close()
 
-    # Confirmation to the cashier in the group
-    legs = " + ".join(_fmt_amount(amt, cur) for _, cur, amt in payments_created)
-    confirm_lines = [
-        f"✅ Qabul qilindi: <b>{legs}</b>",
-        f"👤 {html_escape(client_name)}",
-    ]
-    if agent_name:
-        confirm_lines.append(f"👨‍💼 {html_escape(agent_name)} orqali")
-    await message.answer(
-        "\n".join(confirm_lines),
-        parse_mode="HTML",
-    )
+    # Confirmation to the cashier in the group — one message per leg so
+    # each gets its own [✏️ #id] [✖ #id] keyboard scoped to that payment.
+    now_hhmm = _now_tashkent_hhmm()
+    for pid, cur, amt in payments_created:
+        confirm_lines = [
+            f"✅ Qabul qilindi #{pid}: <b>{_fmt_amount(amt, cur)}</b>",
+            f"👤 {html_escape(client_name)}",
+            f"🕒 {now_hhmm}",
+        ]
+        if agent_name:
+            confirm_lines.append(f"👨‍💼 {html_escape(agent_name)} orqali")
+        await message.answer(
+            "\n".join(confirm_lines),
+            parse_mode="HTML",
+            reply_markup=_confirm_row_keyboard(pid),
+        )
 
     # Notify the client (best-effort, swallow errors)
-    await _notify_client_confirmed(bot, client_id, client_name, payments_created)
+    await _notify_client_confirmed(bot, client_id, client_name, payments_created, agent_name)
     await state.clear()
     await _send_kassa_menu(message)
 
@@ -1918,6 +2190,7 @@ async def _notify_client_confirmed(
     client_id: int,
     client_name: str,
     legs,
+    agent_name: Optional[str] = None,
 ):
     """Send a TG receipt to every approved telegram_id linked to this client
     or its multi-phone siblings. Best-effort — never raises."""
@@ -1933,11 +2206,15 @@ async def _notify_client_confirmed(
     if not recipients:
         return
     legs_text = ", ".join(_fmt_amount(amt, cur) for _, cur, amt in legs)
-    text = (
-        f"✅ <b>To'lov qabul qilindi</b>\n"
-        f"💵 {legs_text}\n"
-        f"👤 {html_escape(client_name)}"
-    )
+    lines = [
+        f"✅ <b>To'lov qabul qilindi</b>",
+        f"💵 {legs_text}",
+        f"👤 {html_escape(client_name)}",
+    ]
+    if agent_name:
+        lines.append(f"👨‍💼 Agent: {html_escape(agent_name)}")
+    lines.append(f"🕒 {_now_tashkent_hhmm()}")
+    text = "\n".join(lines)
     for tid in recipients:
         try:
             await bot.send_message(tid, text, parse_mode="HTML")
@@ -1968,10 +2245,44 @@ async def _notify_client_cancelled(
     text = (
         f"✖ <b>Avvalgi qabul bekor qilindi</b>\n"
         f"💵 {_fmt_amount(amount, currency)}\n"
-        f"👤 {html_escape(client_name)}"
+        f"👤 {html_escape(client_name)}\n"
+        f"🕒 {_now_tashkent_hhmm()}"
     )
     for tid in recipients:
         try:
             await bot.send_message(tid, text, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"client cancel notification to {tid} failed: {e}")
+
+
+async def _notify_client_edited(
+    bot: Bot,
+    client_id: int,
+    client_name: str,
+    currency: str,
+    old_amount: float,
+    new_amount: float,
+):
+    """Corrective DM after a cashier amount-edit. Best-effort; never raises."""
+    try:
+        conn = get_db()
+        try:
+            recipients = resolve_client_telegram_ids(conn, client_id)
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning(f"resolve recipients for client {client_id} failed: {e}")
+        return
+    if not recipients:
+        return
+    text = (
+        f"✏️ <b>Avvalgi qabul tuzatildi</b>\n"
+        f"💵 {_fmt_amount(old_amount, currency)} → <b>{_fmt_amount(new_amount, currency)}</b>\n"
+        f"👤 {html_escape(client_name)}\n"
+        f"🕒 {_now_tashkent_hhmm()}"
+    )
+    for tid in recipients:
+        try:
+            await bot.send_message(tid, text, parse_mode="HTML")
+        except Exception as e:
+            logger.warning(f"client edit notification to {tid} failed: {e}")

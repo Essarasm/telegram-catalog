@@ -268,6 +268,87 @@ def get_payment(conn, payment_id: int) -> dict:
     return dict(row)
 
 
+def edit_payment_amount(
+    conn,
+    payment_id: int,
+    new_amount: float,
+    editor_telegram_id: int,
+    reason: str = "cashier_edited_via_ozgartirish",
+) -> dict:
+    """Soft-cancel old + insert-new linked by replaces_payment_id. Single
+    transaction; caller commits on success. Refuses on non-confirmed rows
+    or no-op edits. Currency, client, channel, agent stay the same — only
+    amount changes."""
+    if new_amount is None or float(new_amount) <= 0:
+        raise ValueError(f"new_amount must be > 0, got {new_amount}")
+    old = conn.execute(
+        """SELECT id, client_id, amount, currency, channel, card_id,
+                  handover_agent_id, screenshot_file_id, notes, status,
+                  submitter_telegram_id, submitter_role
+           FROM intake_payments WHERE id = ?""",
+        (payment_id,),
+    ).fetchone()
+    if not old:
+        raise ValueError(f"payment {payment_id} not found")
+    if old["status"] != "confirmed":
+        raise ValueError(f"faqat tasdiqlangan yozuvni o'zgartirish mumkin (joriy: {old['status']})")
+    if abs(float(old["amount"]) - float(new_amount)) < 0.005:
+        raise ValueError("summa o'zgarmagan")
+
+    cur = conn.execute(
+        """UPDATE intake_payments
+           SET status = 'rejected',
+               rejected_at = datetime('now'),
+               confirmed_by_telegram_id = ?,
+               reject_reason = ?
+           WHERE id = ? AND status = 'confirmed'""",
+        (editor_telegram_id, reason, payment_id),
+    )
+    if cur.rowcount == 0:
+        # status flipped between SELECT and UPDATE — abort to avoid creating
+        # an orphan replacement row (Error Log #37 pattern)
+        raise ValueError("yozuv holati o'zgargan, qaytadan urinib ko'ring")
+
+    payload = {
+        "channel": old["channel"],
+        "client_id": old["client_id"],
+        "amount": float(new_amount),
+        "currency": old["currency"],
+        "edits_payment_id": payment_id,
+    }
+    raw_id = insert_intake_raw(
+        conn,
+        submitter_telegram_id=editor_telegram_id,
+        submitter_role="cashier",
+        payload=payload,
+        notes=f"edits #{payment_id}",
+    )
+    new_pid = create_intake_payment(
+        conn,
+        raw_id=raw_id,
+        client_id=old["client_id"],
+        amount=float(new_amount),
+        currency=old["currency"],
+        channel=old["channel"],
+        status="confirmed",
+        submitter_telegram_id=old["submitter_telegram_id"],
+        submitter_role=old["submitter_role"],
+        handover_agent_id=old["handover_agent_id"],
+        card_id=old["card_id"],
+        screenshot_file_id=old["screenshot_file_id"],
+        confirmed_by_telegram_id=editor_telegram_id,
+        notes=old["notes"],
+    )
+    conn.execute(
+        "UPDATE intake_payments SET replaces_payment_id = ? WHERE id = ?",
+        (payment_id, new_pid),
+    )
+    return {
+        "old": get_payment(conn, payment_id),
+        "new": get_payment(conn, new_pid),
+    }
+
+
 # ── Queues ──────────────────────────────────────────────────────────
 
 def list_pending_for_cashier(conn, limit: int = 50) -> List[dict]:

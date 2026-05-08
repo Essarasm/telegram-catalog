@@ -1210,6 +1210,21 @@ def init_db():
     if "latest_supplied_at" not in prod_cols:
         conn.execute("ALTER TABLE products ADD COLUMN latest_supplied_at TEXT")
 
+    # When this product row was inserted. Stamped by /prices auto-add and
+    # /realorders ingest_unmatched_skus. NULL on rows that pre-date this
+    # column — those legacy rows are still surfaced in the admin
+    # "Yangi mahsulotlar" review queue but with "import date unknown".
+    if "created_at" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN created_at TEXT")
+
+    # 1 when the (category, producer) was assigned by brand-prefix match
+    # (backend.services.product_classifier); 0 when the importer fell back
+    # to "Yangi mahsulotlar" + "Boshqa". Cleared to 0 when an admin
+    # manually reassigns the product (review-queue flow). Used to sort
+    # the review queue: unclassified rows go first.
+    if "auto_classified" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN auto_classified INTEGER DEFAULT 0")
+
     # Product alias table: maps 1C name variants to canonical product IDs.
     # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
     # each successful fuzzy match in /stock or /prices auto-adds an alias.
@@ -1321,6 +1336,14 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_submitter ON intake_payments(submitter_telegram_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_submitted ON intake_payments(submitted_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_confirmed ON intake_payments(confirmed_at)")
+
+    # 2026-05-08: cashier-side O'zgartirish (edit). Soft-cancel-old +
+    # insert-new linked by replaces_payment_id; only set when a row
+    # supersedes a prior one.
+    ip_cols = {row[1] for row in conn.execute("PRAGMA table_info(intake_payments)").fetchall()}
+    if "replaces_payment_id" not in ip_cols:
+        conn.execute("ALTER TABLE intake_payments ADD COLUMN replaces_payment_id INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_replaces ON intake_payments(replaces_payment_id)")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS payment_reconciliation (
