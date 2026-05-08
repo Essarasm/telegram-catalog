@@ -1,8 +1,14 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
+from backend.admin_auth import check_admin_key
 from backend.database import get_db, transliterate_to_latin, transliterate_to_cyrillic, normalize_uzbek
 
 router = APIRouter(prefix="/api/search", tags=["search"])
+
+
+def _check_admin(admin_key: str):
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=401, detail="Invalid admin key")
 
 
 @router.post("/log")
@@ -162,8 +168,10 @@ def interest_click(
 def top_queries(
     days: int = Query(7, ge=1, le=365),
     limit: int = Query(20, ge=1, le=100),
+    admin_key: str = Query(...),
 ):
     """Most frequent search queries in the last N days."""
+    _check_admin(admin_key)
     conn = get_db()
     rows = conn.execute(
         """SELECT query, COUNT(*) as search_count,
@@ -184,9 +192,11 @@ def top_queries(
 def zero_results(
     days: int = Query(30, ge=1, le=365),
     limit: int = Query(50, ge=1, le=200),
+    admin_key: str = Query(...),
 ):
     """Searches that returned zero results — unmet demand signals.
     Ranked by frequency (most wanted products clients can't find)."""
+    _check_admin(admin_key)
     conn = get_db()
     rows = conn.execute(
         """SELECT query, COUNT(*) as search_count,
@@ -205,8 +215,12 @@ def zero_results(
 
 
 @router.get("/stats/funnel")
-def search_funnel(days: int = Query(7, ge=1, le=365)):
+def search_funnel(
+    days: int = Query(7, ge=1, le=365),
+    admin_key: str = Query(...),
+):
     """Search-to-cart conversion funnel for the last N days."""
+    _check_admin(admin_key)
     conn = get_db()
 
     total_searches = conn.execute(
@@ -247,8 +261,12 @@ def search_funnel(days: int = Query(7, ge=1, le=365)):
 
 
 @router.get("/stats/recent")
-def recent_searches(limit: int = Query(50, ge=1, le=200)):
+def recent_searches(
+    limit: int = Query(50, ge=1, le=200),
+    admin_key: str = Query(...),
+):
     """Most recent search queries with user info."""
+    _check_admin(admin_key)
     conn = get_db()
     rows = conn.execute(
         """SELECT sl.id, sl.query, sl.results_count, sl.created_at,
@@ -269,8 +287,10 @@ def recent_searches(limit: int = Query(50, ge=1, le=200)):
 def per_client_searches(
     days: int = Query(30, ge=1, le=365),
     limit: int = Query(20, ge=1, le=100),
+    admin_key: str = Query(...),
 ):
     """Search activity per client — who's searching the most and for what."""
+    _check_admin(admin_key)
     conn = get_db()
     rows = conn.execute(
         """SELECT sl.telegram_id,
@@ -293,8 +313,12 @@ def per_client_searches(
 
 
 @router.get("/stats/summary")
-def search_summary(days: int = Query(7, ge=1, le=365)):
+def search_summary(
+    days: int = Query(7, ge=1, le=365),
+    admin_key: str = Query(...),
+):
     """Quick overview stats for bot command / dashboard header."""
+    _check_admin(admin_key)
     conn = get_db()
 
     total = conn.execute(

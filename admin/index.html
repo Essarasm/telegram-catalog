@@ -3260,7 +3260,8 @@
         let SEARCH_RANGE = 30;
 
         async function searchFetch(path) {
-            const res = await fetch('/api/search' + path);
+            const sep = path.includes('?') ? '&' : '?';
+            const res = await fetch('/api/search' + path + sep + 'admin_key=' + encodeURIComponent(ADMIN_KEY));
             if (!res.ok) throw new Error('search API ' + res.status);
             return res.json();
         }
