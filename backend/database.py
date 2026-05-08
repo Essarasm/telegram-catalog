@@ -781,6 +781,29 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_unmatched_status ON unmatched_registrations(status)")
 
+    # Audit-first table for agent-initiated new-shop registrations from the
+    # agent panel. Per the zero-data-loss rule, every attempt is inserted
+    # here BEFORE allowed_clients is touched; status flips to 'created' or
+    # 'linked_existing' once the path resolves. Phone-collision links to the
+    # already-whitelisted row instead of creating a duplicate.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_client_registrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_telegram_id INTEGER NOT NULL,
+            shop_name TEXT NOT NULL,
+            phone_raw TEXT,
+            phone_normalized TEXT,
+            gps_latitude REAL,
+            gps_longitude REAL,
+            status TEXT DEFAULT 'pending',
+            linked_client_id INTEGER,
+            error_message TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_reg_agent ON agent_client_registrations(agent_telegram_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_reg_phone ON agent_client_registrations(phone_normalized)")
+
     # Migrations: add columns if missing (safe for existing DBs)
     existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     for col, coltype in [("latitude", "REAL"), ("longitude", "REAL"),
@@ -1312,7 +1335,7 @@ def init_db():
             client_id INTEGER NOT NULL,
             amount REAL NOT NULL,
             currency TEXT NOT NULL CHECK(currency IN ('UZS', 'USD')),
-            channel TEXT NOT NULL CHECK(channel IN ('cash_direct', 'cash_via_agent', 'p2p')),
+            channel TEXT NOT NULL,
             card_id INTEGER,
             handover_agent_id INTEGER,
             submitter_telegram_id INTEGER NOT NULL,
@@ -1326,6 +1349,10 @@ def init_db():
             screenshot_file_id TEXT,
             notes TEXT,
             source_intake_raw_id INTEGER NOT NULL,
+            replaces_payment_id INTEGER,
+            gross_uzs REAL,
+            accepted_pct REAL,
+            fx_rate_uzs_per_usd REAL,
             FOREIGN KEY (client_id) REFERENCES allowed_clients(id),
             FOREIGN KEY (card_id) REFERENCES dedicated_cards(id),
             FOREIGN KEY (source_intake_raw_id) REFERENCES payment_intake_raw(id)
@@ -1337,12 +1364,98 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_submitted ON intake_payments(submitted_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_confirmed ON intake_payments(confirmed_at)")
 
-    # 2026-05-08: cashier-side O'zgartirish (edit). Soft-cancel-old +
-    # insert-new linked by replaces_payment_id; only set when a row
-    # supersedes a prior one.
+    # 2026-05-08 — bank-transfer migration. The original schema had
+    # CHECK(channel IN ('cash_direct','cash_via_agent','p2p')) which
+    # rejects 'bank_transfer'. SQLite has no DROP CONSTRAINT, so existing
+    # DBs need a one-time table rebuild. Channel validation now lives in
+    # backend/services/payment_intake.py. Also adds three columns for the
+    # bank-transfer flow: gross UZS, accepted %, FX rate. This is the only
+    # place we deviate from CLAUDE.md's "additive ALTER only" rule —
+    # logged in obsidian-vault/🚨 Rule Violations.md.
+    existing_ip_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='intake_payments'"
+    ).fetchone()
+    existing_ip_sql_text = (existing_ip_sql["sql"] if existing_ip_sql else "") or ""
+    needs_channel_check_drop = (
+        "CHECK(channel IN ('cash_direct', 'cash_via_agent', 'p2p'))" in existing_ip_sql_text
+    )
     ip_cols = {row[1] for row in conn.execute("PRAGMA table_info(intake_payments)").fetchall()}
-    if "replaces_payment_id" not in ip_cols:
-        conn.execute("ALTER TABLE intake_payments ADD COLUMN replaces_payment_id INTEGER")
+
+    if needs_channel_check_drop:
+        pre_count = conn.execute("SELECT COUNT(*) AS n FROM intake_payments").fetchone()["n"]
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("""
+            CREATE TABLE intake_payments_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                currency TEXT NOT NULL CHECK(currency IN ('UZS', 'USD')),
+                channel TEXT NOT NULL,
+                card_id INTEGER,
+                handover_agent_id INTEGER,
+                submitter_telegram_id INTEGER NOT NULL,
+                submitter_role TEXT NOT NULL,
+                confirmed_by_telegram_id INTEGER,
+                submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+                confirmed_at TEXT,
+                rejected_at TEXT,
+                reject_reason TEXT,
+                status TEXT NOT NULL CHECK(status IN ('pending_handover', 'pending_review', 'confirmed', 'rejected')),
+                screenshot_file_id TEXT,
+                notes TEXT,
+                source_intake_raw_id INTEGER NOT NULL,
+                replaces_payment_id INTEGER,
+                gross_uzs REAL,
+                accepted_pct REAL,
+                fx_rate_uzs_per_usd REAL,
+                FOREIGN KEY (client_id) REFERENCES allowed_clients(id),
+                FOREIGN KEY (card_id) REFERENCES dedicated_cards(id),
+                FOREIGN KEY (source_intake_raw_id) REFERENCES payment_intake_raw(id)
+            )
+        """)
+        legacy_cols = [
+            "id", "client_id", "amount", "currency", "channel", "card_id",
+            "handover_agent_id", "submitter_telegram_id", "submitter_role",
+            "confirmed_by_telegram_id", "submitted_at", "confirmed_at",
+            "rejected_at", "reject_reason", "status", "screenshot_file_id",
+            "notes", "source_intake_raw_id",
+        ]
+        if "replaces_payment_id" in ip_cols:
+            legacy_cols.append("replaces_payment_id")
+        cols_csv = ", ".join(legacy_cols)
+        conn.execute(
+            f"INSERT INTO intake_payments_new ({cols_csv}) "
+            f"SELECT {cols_csv} FROM intake_payments"
+        )
+        post_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM intake_payments_new"
+        ).fetchone()["n"]
+        if post_count != pre_count:
+            conn.execute("DROP TABLE intake_payments_new")
+            conn.execute("PRAGMA foreign_keys=ON")
+            raise RuntimeError(
+                f"intake_payments rebuild aborted: row count mismatch "
+                f"(was {pre_count}, copied {post_count})"
+            )
+        conn.execute("DROP TABLE intake_payments")
+        conn.execute("ALTER TABLE intake_payments_new RENAME TO intake_payments")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_status ON intake_payments(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_client ON intake_payments(client_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_submitter ON intake_payments(submitter_telegram_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_submitted ON intake_payments(submitted_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_confirmed ON intake_payments(confirmed_at)")
+        conn.execute("PRAGMA foreign_keys=ON")
+        ip_cols = {row[1] for row in conn.execute("PRAGMA table_info(intake_payments)").fetchall()}
+    else:
+        if "replaces_payment_id" not in ip_cols:
+            conn.execute("ALTER TABLE intake_payments ADD COLUMN replaces_payment_id INTEGER")
+        if "gross_uzs" not in ip_cols:
+            conn.execute("ALTER TABLE intake_payments ADD COLUMN gross_uzs REAL")
+        if "accepted_pct" not in ip_cols:
+            conn.execute("ALTER TABLE intake_payments ADD COLUMN accepted_pct REAL")
+        if "fx_rate_uzs_per_usd" not in ip_cols:
+            conn.execute("ALTER TABLE intake_payments ADD COLUMN fx_rate_uzs_per_usd REAL")
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_replaces ON intake_payments(replaces_payment_id)")
 
     conn.execute("""

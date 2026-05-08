@@ -169,6 +169,15 @@ export async function switchAgentClient(payload) {
   return res.json();
 }
 
+export async function registerNewShop(payload) {
+  const res = await fetch(`${API_BASE}/agent/register-client`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
 export async function fetchRecentAgentClients(telegramId) {
   try {
     const res = await fetch(`${API_BASE}/agent/recent-clients?telegram_id=${telegramId}`);

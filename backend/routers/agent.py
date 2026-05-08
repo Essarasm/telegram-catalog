@@ -15,6 +15,7 @@ from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
 
 from backend.database import get_db
+from backend.services.agent_register import register_new_shop
 from backend.services.client_search import (
     create_and_link_new_1c_client,
     relink_orphan_finance_rows,
@@ -212,6 +213,89 @@ def agent_switch_client(payload: dict = Body(...)):
         conn.commit()
         return {
             "ok": True,
+            "client": {
+                "id": target["id"],
+                "name": target["name"],
+                "client_id_1c": target["client_id_1c"],
+                "phone": target["phone_normalized"] or "",
+            },
+            "relinked": relink_counts,
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/register-client")
+def agent_register_client(payload: dict = Body(...)):
+    """Register a brand-new shop and immediately switch the agent into
+    acting-as it. One round trip — registration + switch are atomic.
+
+    Payload:
+        {telegram_id: int, shop_name: str, phone: str,
+         lat: float, lng: float}
+
+    Roles: admin / cashier / agent. Workers are blocked — they don't
+    register clients per the Agent charter's no-money-flow rule.
+
+    Returns on success:
+        {ok: True, registration_status: "created"|"linked_existing",
+         client: {id, name, client_id_1c, phone}, relinked: {...}}
+
+    Phone collision (any of phone_normalized / raqam_02 / raqam_03 on an
+    existing allowed_clients row) → registration_status="linked_existing"
+    and we switch into the pre-existing shop instead of creating a dupe.
+    """
+    telegram_id = payload.get("telegram_id")
+    shop_name = payload.get("shop_name")
+    phone = payload.get("phone")
+    lat = payload.get("lat")
+    lng = payload.get("lng")
+
+    if not isinstance(telegram_id, int):
+        return JSONResponse(
+            {"ok": False, "error": "telegram_id required"}, status_code=400
+        )
+
+    conn = get_db()
+    try:
+        if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
+            return JSONResponse(
+                {"ok": False, "error": "not allowed"}, status_code=403
+            )
+
+        result = register_new_shop(
+            conn, telegram_id, shop_name or "", phone or "", lat, lng
+        )
+        if result["status"] == "failed":
+            return JSONResponse(
+                {"ok": False, "error": result["error"]}, status_code=400
+            )
+
+        client_id = result["client_id"]
+        target = conn.execute(
+            "SELECT id, name, client_id_1c, phone_normalized "
+            "FROM allowed_clients WHERE id = ?",
+            (client_id,),
+        ).fetchone()
+
+        conn.execute(
+            "UPDATE users SET client_id = ? WHERE telegram_id = ?",
+            (client_id, telegram_id),
+        )
+        conn.execute(
+            "INSERT INTO agent_client_switches (agent_telegram_id, client_id) "
+            "VALUES (?, ?)",
+            (telegram_id, client_id),
+        )
+        relink_counts = {}
+        if target["client_id_1c"]:
+            relink_counts = relink_orphan_finance_rows(
+                conn, client_id, target["client_id_1c"]
+            )
+        conn.commit()
+        return {
+            "ok": True,
+            "registration_status": result["status"],
             "client": {
                 "id": target["id"],
                 "name": target["name"],

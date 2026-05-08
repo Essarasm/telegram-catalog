@@ -3,10 +3,188 @@ import t from '../i18n/uz.json';
 import {
   fetchFxRateToday,
   fetchRecentAgentClients,
+  registerNewShop,
   searchAgentClients,
   switchAgentClient,
 } from '../utils/api';
 import { roleTheme } from '../utils/roleTheme';
+
+function getShopLocation() {
+  return new Promise((resolve, reject) => {
+    const tg = window.Telegram?.WebApp;
+    const browserGeo = () => {
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+          () => reject(),
+          { timeout: 15000, enableHighAccuracy: true }
+        );
+      } else {
+        reject();
+      }
+    };
+    if (tg?.LocationManager) {
+      tg.LocationManager.init(() => {
+        if (tg.LocationManager.isInited && tg.LocationManager.isLocationAvailable) {
+          tg.LocationManager.getLocation((loc) => {
+            if (loc && loc.latitude) resolve({ lat: loc.latitude, lng: loc.longitude });
+            else browserGeo();
+          });
+        } else {
+          browserGeo();
+        }
+      });
+    } else {
+      browserGeo();
+    }
+  });
+}
+
+function RegisterShopForm({ uid, onRegistered, onCancel }) {
+  const [shopName, setShopName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [coords, setCoords] = useState(null);
+  const [locating, setLocating] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+  const [collision, setCollision] = useState(null);
+
+  const captureLocation = async () => {
+    setLocating(true);
+    setError(null);
+    try {
+      const c = await getShopLocation();
+      setCoords(c);
+    } catch {
+      setError(t.register_shop_location_failed);
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  const submit = async () => {
+    if (shopName.trim().length < 2) {
+      setError(t.register_shop_validation_name);
+      return;
+    }
+    if ((phone.match(/\d/g) || []).length < 9) {
+      setError(t.register_shop_validation_phone);
+      return;
+    }
+    if (!coords) {
+      setError(t.register_shop_validation_location);
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    const r = await registerNewShop({
+      telegram_id: uid,
+      shop_name: shopName.trim(),
+      phone,
+      lat: coords.lat,
+      lng: coords.lng,
+    });
+    setSubmitting(false);
+    if (!r.ok) {
+      setError(r.error || 'Xatolik');
+      return;
+    }
+    if (r.registration_status === 'linked_existing') {
+      setCollision(r.client);
+      return;
+    }
+    onRegistered(r.client);
+  };
+
+  if (collision) {
+    return (
+      <div className="rounded-xl border border-yellow-500/40 bg-yellow-500/10 p-3 space-y-2">
+        <div className="text-sm font-semibold text-yellow-300">
+          {t.register_shop_collision_title}
+        </div>
+        <div className="text-sm text-tg-text">
+          {collision.name}{collision.client_id_1c ? ` · ${collision.client_id_1c}` : ''}
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => onRegistered(collision)}
+            className="flex-1 bg-tg-button text-tg-button-text font-semibold rounded-lg px-3 py-2 text-sm"
+          >
+            {t.register_shop_collision_action}
+          </button>
+          <button
+            onClick={onCancel}
+            className="px-3 py-2 text-sm text-tg-hint"
+          >
+            {t.register_shop_cancel}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl bg-tg-secondary p-3 space-y-3 border border-tg-hint/20">
+      <div className="text-sm font-semibold">{t.register_shop_title}</div>
+      <div>
+        <label className="block text-xs text-tg-hint mb-1">{t.register_shop_name_label}</label>
+        <input
+          type="text"
+          value={shopName}
+          onChange={(e) => setShopName(e.target.value)}
+          placeholder={t.register_shop_name_placeholder}
+          className="w-full bg-tg-bg rounded-lg px-3 py-2 text-sm outline-none border border-tg-hint/20 focus:border-tg-link"
+        />
+      </div>
+      <div>
+        <label className="block text-xs text-tg-hint mb-1">{t.register_shop_phone_label}</label>
+        <input
+          type="tel"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          placeholder={t.register_shop_phone_placeholder}
+          className="w-full bg-tg-bg rounded-lg px-3 py-2 text-sm outline-none border border-tg-hint/20 focus:border-tg-link"
+        />
+      </div>
+      <div>
+        <label className="block text-xs text-tg-hint mb-1">{t.register_shop_location_label}</label>
+        {coords ? (
+          <div className="text-sm text-green-400">
+            {t.register_shop_location_ok}
+            <span className="text-xs text-tg-hint ml-2">
+              {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)}
+            </span>
+          </div>
+        ) : (
+          <button
+            onClick={captureLocation}
+            disabled={locating}
+            className="w-full bg-tg-bg border border-tg-hint/20 rounded-lg px-3 py-2 text-sm active:bg-tg-bg/70 disabled:opacity-50"
+          >
+            {locating ? t.register_shop_location_pending : t.register_shop_location_action}
+          </button>
+        )}
+      </div>
+      {error && <div className="text-xs text-red-400">{error}</div>}
+      <div className="flex gap-2 pt-1">
+        <button
+          onClick={submit}
+          disabled={submitting}
+          className="flex-1 bg-tg-button text-tg-button-text font-semibold rounded-lg px-3 py-2 text-sm active:scale-[0.98] disabled:opacity-50"
+        >
+          {submitting ? t.register_shop_submitting : t.register_shop_submit}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={submitting}
+          className="px-3 py-2 text-sm text-tg-hint disabled:opacity-50"
+        >
+          {t.register_shop_cancel}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function getTelegramUserId() {
   return window.Telegram?.WebApp?.initDataUnsafe?.user?.id || 0;
@@ -135,7 +313,10 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
   const [results, setResults] = useState(null);
   const [searching, setSearching] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [registerOpen, setRegisterOpen] = useState(false);
   const debounceRef = useRef(null);
+
+  const canRegister = userRole !== 'worker';
 
   // Initial load: FX + recent
   useEffect(() => {
@@ -212,6 +393,26 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         </button>
       )}
       <FxRateBanner data={fx} />
+
+      {/* Register new shop — non-workers only */}
+      {canRegister && !registerOpen && (
+        <button
+          onClick={() => setRegisterOpen(true)}
+          className="w-full rounded-xl bg-tg-button/15 border border-tg-button/40 px-3 py-2 text-sm font-semibold text-tg-button active:bg-tg-button/25"
+        >
+          {t.register_shop_button}
+        </button>
+      )}
+      {canRegister && registerOpen && (
+        <RegisterShopForm
+          uid={uid}
+          onRegistered={(client) => {
+            setRegisterOpen(false);
+            onClientSwitched(client);
+          }}
+          onCancel={() => setRegisterOpen(false)}
+        />
+      )}
 
       {/* Search bar */}
       <div className="relative">
