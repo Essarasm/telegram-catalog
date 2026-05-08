@@ -20,6 +20,7 @@ from datetime import datetime
 
 import pandas as pd
 from backend.database import get_db, build_search_text
+from backend.services.product_classifier import classify_or_default
 
 logger = logging.getLogger(__name__)
 
@@ -195,19 +196,28 @@ def _ensure_producer(conn, producer_name):
     ).fetchone()["id"]
 
 
-def _auto_add_product(conn, cyrillic_name, price_data, category_id, producer_id):
+def _auto_add_product(conn, cyrillic_name, price_data, category_id, producer_id, auto_classified):
     """Add a new product to the database with auto-generated display name.
 
     Uses the same name standardization pipeline as the initial import.
+
+    auto_classified=1 means the (category, producer) came from a brand-prefix
+    match in product_classifier; 0 means we fell back to "Yangi mahsulotlar"
+    + "Boshqa". The flag drives the admin "Needs Review" queue — admins
+    promote matched products quickly and reassign unmatched ones manually.
     """
     from backend.services.import_products import generate_display_name
 
-    # Generate clean display name from Cyrillic
-    display_name = generate_display_name(cyrillic_name, "")
+    # Look up the producer's Cyrillic name so search_text indexes the right
+    # brand even when the classifier picked a non-default producer.
+    prod_row = conn.execute(
+        "SELECT name FROM producers WHERE id = ?", (producer_id,)
+    ).fetchone()
+    producer_cyrillic = prod_row["name"] if prod_row else DEFAULT_PRODUCER
 
-    # Build search text for cross-language search
+    display_name = generate_display_name(cyrillic_name, producer_cyrillic)
     search_text = build_search_text(
-        cyrillic_name, display_name, DEFAULT_PRODUCER
+        cyrillic_name, display_name, producer_cyrillic
     )
 
     now = datetime.utcnow().isoformat()
@@ -216,8 +226,9 @@ def _auto_add_product(conn, cyrillic_name, price_data, category_id, producer_id)
         """INSERT INTO products
            (name, name_display, category_id, producer_id, unit,
             price_usd, price_uzs, weight, is_active,
-            stock_quantity, stock_status, stock_updated_at, search_text)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'in_stock', ?, ?)""",
+            stock_quantity, stock_status, stock_updated_at, search_text,
+            created_at, auto_classified)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'in_stock', ?, ?, ?, ?)""",
         (
             cyrillic_name,
             display_name,
@@ -229,6 +240,8 @@ def _auto_add_product(conn, cyrillic_name, price_data, category_id, producer_id)
             price_data.get('weight'),
             now,
             search_text,
+            now,
+            1 if auto_classified else 0,
         )
     )
 
@@ -339,25 +352,34 @@ def apply_price_updates(file_bytes: bytes) -> dict:
 
     # ── Auto-add new products (in Excel but not in DB) ──────────────
     new_products = []
+    auto_classified_count = 0
     unmatched_excel = []
     for name in excel_prices:
         if name not in matched_excel_names:
             unmatched_excel.append(name)
 
     if unmatched_excel:
-        # Ensure "Yangi mahsulotlar" category and default producer exist
+        # Ensure "Yangi mahsulotlar" category and default producer exist —
+        # they're the fallback when no brand-prefix match is found.
         new_cat_id = _ensure_category(conn, NEW_ARRIVALS_CATEGORY)
         new_prod_id = _ensure_producer(conn, DEFAULT_PRODUCER)
 
+        auto_classified_count = 0
         for cyrillic_name in unmatched_excel:
             try:
+                cat_id, prod_id, was_classified = classify_or_default(
+                    conn, cyrillic_name, new_cat_id, new_prod_id
+                )
                 display_name = _auto_add_product(
                     conn, cyrillic_name, excel_prices[cyrillic_name],
-                    new_cat_id, new_prod_id
+                    cat_id, prod_id, was_classified
                 )
+                if was_classified:
+                    auto_classified_count += 1
                 new_products.append({
                     "cyrillic": cyrillic_name[:60],
                     "display": display_name[:40],
+                    "auto_classified": was_classified,
                 })
             except Exception as e:
                 logger.error(f"Failed to auto-add product '{cyrillic_name}': {e}")
@@ -376,7 +398,11 @@ def apply_price_updates(file_bytes: bytes) -> dict:
             )
         """)
         conn.commit()
-        logger.info(f"Auto-added {len(new_products)} new products to '{NEW_ARRIVALS_CATEGORY}'")
+        logger.info(
+            f"Auto-added {len(new_products)} new products "
+            f"({auto_classified_count} brand-classified, "
+            f"{len(new_products) - auto_classified_count} → '{NEW_ARRIVALS_CATEGORY}')"
+        )
 
     # NOTE: previous versions of this importer marked every DB product
     # absent from the prices file as out_of_stock with qty=0. That was
@@ -397,6 +423,7 @@ def apply_price_updates(file_bytes: bytes) -> dict:
         # New products auto-added
         "new_products": new_products[:30],
         "new_products_total": len(new_products),
+        "new_products_classified": auto_classified_count,
         # Products in the DB that were not in this prices file. No longer
         # marked out_of_stock — /stock owns that status.
         "out_of_stock_count": 0,

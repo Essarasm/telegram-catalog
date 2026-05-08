@@ -1640,54 +1640,20 @@ def get_real_order_sample_for_client(client_substring: str) -> dict:
 
 # ── Ingest unmatched SKUs into products table + relink ─────────────
 
-# Brand family → (category_id, producer_id) mapping.
-# Determined by inspecting existing products for each brand in prod DB.
-_BRAND_FAMILY_MAP = {
-    # OSCAR products: Лак, Жидкое стекло, Олиф
-    "БТ Лак OSCAR":    (10, 21),   # Laklar & Oliflar, Oscar
-    "Жидкое стекло OSCAR": (10, 21),
-    "Олиф OSCAR":      (10, 21),
-    # ДЕЛЮКС water emulsions
-    "ДЕЛЮКС в/э":      (17, 4),    # Suv Emulsiya & Gruntovka, De Luxe
-    "ДЕЛЮКС ЧЕРНЫЙ":   (17, 4),
-    # ДекоАРТ Эмаль variants
-    "ДекоАРТ Эмаль":   (1, 5),     # Bo'yoq & Emal, Dekoart
-    "Декор Лак":        (10, 5),    # Laklar & Oliflar, Dekoart
-    "Декор DEKOCENTO":  (14, 5),    # Qorishma & Suvoq, Dekoart (decorative coating)
-    # ДЕКОАРТ Универсал Эмульсия
-    "ДЕКОАРТ Универсал": (17, 5),   # Suv Emulsiya & Gruntovka, Dekoart
-    "ДЕКОАРТ СТРОНГ ФАСАД": (17, 5),
-    "ДЕКОАРТ KF":       (17, 5),
-    # ДЕКАСТАР
-    "ДЕКАСТАР":         (17, 5),    # Suv Emulsiya & Gruntovka, Dekoart
-    # Скоч Травертин
-    "Скоч Травертин":   (15, 21),   # Qurilish Mollari, Oscar
-    # АНТИМОРОЗ
-    "АНТИМОРОЗ":        (3, 12),    # Boshqa Mahsulot, Gogle
-    # Электрод MONOLIT
-    "Электрод  MONOLIT": (7, 36),   # Elektrodlar, Xitoy
-    # Кафель
-    "Кафель":           (3, 36),    # Boshqa Mahsulot, Xitoy
-    # ЛЕСКА-ЖИЛКА
-    "ЛЕСКА-ЖИЛКА":      (3, 36),    # Boshqa Mahsulot, Xitoy
-    # СИЛКОАТ
-    "СИЛКОАТ":          (14, 30),   # Qorishma & Suvoq, Silkcoat
-}
+from backend.services.product_classifier import classify_by_prefix, classify_or_default
 
 
 def _classify_product(name_1c: str) -> Tuple[int, int]:
     """Return (category_id, producer_id) for an unmatched 1C product name.
 
-    Tries longest-prefix match against _BRAND_FAMILY_MAP keys.
-    Falls back to category 20 (Yangi mahsulotlar) + producer 21 (Oscar)
-    if no match found — the fallback is safe because these will be
+    Delegates to the shared classifier (backend.services.product_classifier).
+    Falls back to category 20 (Yangi mahsulotlar) + producer 21 (Oscar) when
+    no brand prefix matches — the fallback is safe because these will be
     manually reviewed anyway.
     """
-    # Sort by key length descending for longest-prefix-first matching
-    for prefix in sorted(_BRAND_FAMILY_MAP.keys(), key=len, reverse=True):
-        if name_1c.upper().startswith(prefix.upper()):
-            return _BRAND_FAMILY_MAP[prefix]
-    # Fallback: "Yangi mahsulotlar" (new products) category
+    hit = classify_by_prefix(name_1c)
+    if hit is not None:
+        return hit
     return (20, 21)
 
 
@@ -1755,8 +1721,10 @@ def ingest_unmatched_skus() -> dict:
             })
             continue
 
-        # Step 2: Classify
-        cat_id, prod_id = _classify_product(name_1c)
+        # Step 2: Classify (with auto_classified flag for the review queue)
+        cat_id, prod_id, was_classified = classify_or_default(
+            conn, name_1c, default_cat_id=20, default_prod_id=21
+        )
 
         # Step 3: Generate display name
         # Get the producer's Cyrillic name for stripping
@@ -1776,12 +1744,16 @@ def ingest_unmatched_skus() -> dict:
         )
 
         # INSERT
+        from datetime import datetime as _dt
+        now_iso = _dt.utcnow().isoformat()
         cursor = conn.execute(
             """INSERT INTO products
                (name, name_display, category_id, producer_id, unit,
-                price_usd, price_uzs, weight, is_active, search_text)
-               VALUES (?, ?, ?, ?, 'sht', 0, 0, ?, 1, ?)""",
-            (name_1c, display_name, cat_id, prod_id, weight, search_text)
+                price_usd, price_uzs, weight, is_active, search_text,
+                created_at, auto_classified)
+               VALUES (?, ?, ?, ?, 'sht', 0, 0, ?, 1, ?, ?, ?)""",
+            (name_1c, display_name, cat_id, prod_id, weight, search_text,
+             now_iso, 1 if was_classified else 0)
         )
         new_pid = cursor.lastrowid
         added += 1

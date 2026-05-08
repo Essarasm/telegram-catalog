@@ -1860,3 +1860,143 @@ def get_unmatched_names(admin_key: str = Query(...)):
     ).fetchall()
     conn.close()
     return {"ok": True, "count": len(rows), "names": [dict(r) for r in rows]}
+
+
+# ── New-products review queue ────────────────────────────────────
+#
+# Surfaces items in "Yangi mahsulotlar" so admins can promote them
+# (or anything still flagged auto_classified=1) to their correct
+# category/producer. Without this, items dumped into the new-arrivals
+# bucket by /prices auto-add or /realorders SKU ingest accumulate
+# silently — no aging, no expiry. See product_classifier.py.
+
+@router.get("/new-products-pending")
+def new_products_pending(
+    admin_key: str = Query(...),
+    include_classified: int = Query(0),
+):
+    """Products that need review.
+
+    Default: items currently sitting in "Yangi mahsulotlar" (no brand-prefix
+    match → fell back to the new-arrivals bucket).
+
+    include_classified=1: also include products auto-classified to a brand
+    family but never confirmed by an admin (auto_classified=1). These were
+    placed by prefix match — usually correct but worth a glance.
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+
+    new_cat = conn.execute(
+        "SELECT id FROM categories WHERE name = ?", ("Yangi mahsulotlar",)
+    ).fetchone()
+    new_cat_id = new_cat["id"] if new_cat else None
+
+    where_parts = ["p.is_active = 1"]
+    if include_classified:
+        # Items in Yangi mahsulotlar OR auto-classified anywhere
+        if new_cat_id is not None:
+            where_parts.append(
+                f"(p.category_id = {new_cat_id} OR p.auto_classified = 1)"
+            )
+        else:
+            where_parts.append("p.auto_classified = 1")
+    else:
+        if new_cat_id is None:
+            conn.close()
+            return {"ok": True, "count": 0, "products": [], "categories": [], "producers": []}
+        where_parts.append(f"p.category_id = {new_cat_id}")
+
+    where_sql = " AND ".join(where_parts)
+
+    rows = conn.execute(f"""
+        SELECT p.id, p.name, p.name_display, p.created_at, p.auto_classified,
+               p.price_usd, p.price_uzs, p.stock_status,
+               p.category_id, p.producer_id,
+               c.name AS category_name, pr.name AS producer_name
+        FROM products p
+        LEFT JOIN categories c ON c.id = p.category_id
+        LEFT JOIN producers pr ON pr.id = p.producer_id
+        WHERE {where_sql}
+        ORDER BY (p.created_at IS NULL), p.created_at DESC, p.id DESC
+        LIMIT 500
+    """).fetchall()
+
+    # Side cache: full lists so the UI can render reassign dropdowns
+    categories = conn.execute(
+        "SELECT id, name FROM categories ORDER BY name"
+    ).fetchall()
+    producers = conn.execute(
+        "SELECT id, name FROM producers ORDER BY name"
+    ).fetchall()
+
+    conn.close()
+    return {
+        "ok": True,
+        "count": len(rows),
+        "new_arrivals_category_id": new_cat_id,
+        "products": [dict(r) for r in rows],
+        "categories": [dict(c) for c in categories],
+        "producers": [dict(p) for p in producers],
+    }
+
+
+@router.post("/reassign-product")
+def reassign_product(
+    product_id: int = Form(...),
+    category_id: int = Form(...),
+    producer_id: int = Form(...),
+    admin_key: str = Form(...),
+):
+    """Move a product to a different category/producer and clear the
+    auto_classified flag so it leaves the review queue.
+
+    Both IDs must reference existing rows; the endpoint refuses partials
+    rather than silently leaving the product mis-assigned.
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+
+    prod = conn.execute(
+        "SELECT id, category_id, producer_id FROM products WHERE id = ?",
+        (product_id,),
+    ).fetchone()
+    if not prod:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    cat_ok = conn.execute(
+        "SELECT 1 FROM categories WHERE id = ?", (category_id,)
+    ).fetchone()
+    prod_ok = conn.execute(
+        "SELECT 1 FROM producers WHERE id = ?", (producer_id,)
+    ).fetchone()
+    if not cat_ok:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Invalid category_id")
+    if not prod_ok:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Invalid producer_id")
+
+    conn.execute(
+        "UPDATE products SET category_id = ?, producer_id = ?, auto_classified = 0 "
+        "WHERE id = ?",
+        (category_id, producer_id, product_id),
+    )
+    # Refresh denorm counts on the affected categories/producers
+    conn.execute("""
+        UPDATE categories SET product_count = (
+            SELECT COUNT(*) FROM products
+            WHERE products.category_id = categories.id AND is_active = 1
+        )
+    """)
+    conn.execute("""
+        UPDATE producers SET product_count = (
+            SELECT COUNT(*) FROM products
+            WHERE products.producer_id = producers.id AND is_active = 1
+        )
+    """)
+    conn.commit()
+    conn.close()
+    return {"ok": True, "product_id": product_id,
+            "category_id": category_id, "producer_id": producer_id}

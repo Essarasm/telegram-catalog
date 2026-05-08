@@ -1257,6 +1257,38 @@
                         </div>
                     </div>
 
+                    <div class="section-title collapsible" onclick="toggleSection('newProductsSection')">New Products — Needs Review <span id="newProductsBadge" style="margin-left:8px; padding:2px 8px; border-radius:10px; background:#f59e0b; color:white; font-size:11px; display:none;">0</span> <span class="toggle-arrow" id="newProductsSection-arrow">▾</span></div>
+                    <div id="newProductsSection" class="collapsible-content">
+                        <div style="padding:8px 12px; font-size:12px; color:#6b7280;">
+                            Items dropped into <b>Yangi mahsulotlar</b> by /prices auto-add or /realorders ingest.
+                            Pick the correct category + producer and click <b>Save</b> — the product moves and the row falls off the queue.
+                            <label style="float:right; cursor:pointer;">
+                                <input type="checkbox" id="newProductsIncludeClassified" onchange="loadNewProductsPending()" style="vertical-align:middle;">
+                                Include auto-classified
+                            </label>
+                        </div>
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Name (1C / display)</th>
+                                            <th>Current Category</th>
+                                            <th>Current Producer</th>
+                                            <th>Reassign Category</th>
+                                            <th>Reassign Producer</th>
+                                            <th>Age</th>
+                                            <th></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="newProductsBody">
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="section-title collapsible" onclick="toggleSection('productRequestsSection')">Product Requests (Can't Find) <span class="toggle-arrow" id="productRequestsSection-arrow">▾</span></div>
                     <div id="productRequestsSection" class="collapsible-content">
                         <div class="table-container">
@@ -2803,7 +2835,123 @@
             populateProductRequests();
             populateSuppliers();
             populateTopClicked();
+            loadNewProductsPending();
         }
+
+        async function loadNewProductsPending() {
+            const includeClassified = document.getElementById('newProductsIncludeClassified')?.checked ? 1 : 0;
+            const data = await apiCall(`new-products-pending?include_classified=${includeClassified}`);
+            const products = data.products || [];
+            const categories = data.categories || [];
+            const producers = data.producers || [];
+
+            const badge = document.getElementById('newProductsBadge');
+            if (badge) {
+                badge.textContent = products.length;
+                badge.style.display = products.length > 0 ? 'inline-block' : 'none';
+            }
+
+            const catOptions = categories.map(c =>
+                `<option value="${c.id}">${escapeHtml(c.name)}</option>`
+            ).join('');
+            const prodOptions = producers.map(p =>
+                `<option value="${p.id}">${escapeHtml(p.name)}</option>`
+            ).join('');
+
+            const tbody = document.getElementById('newProductsBody');
+            if (products.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:20px; color:#6b7280;">No products awaiting review.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = products.map((p, i) => {
+                const age = p.created_at ? formatAge(p.created_at) : '—';
+                const flag = p.auto_classified ? ' <span style="background:#d1fae5; color:#065f46; padding:1px 6px; border-radius:8px; font-size:10px;">auto</span>' : '';
+                return `
+                    <tr data-product-id="${p.id}">
+                        <td class="table-number">${i + 1}</td>
+                        <td class="table-name">
+                            <div>${escapeHtml(p.name_display || p.name || '-')}</div>
+                            <div style="font-size:11px; color:#9ca3af;">${escapeHtml(p.name || '')}</div>
+                        </td>
+                        <td class="table-category">${escapeHtml(p.category_name || '-')}${flag}</td>
+                        <td class="table-producer">${escapeHtml(p.producer_name || '-')}</td>
+                        <td>
+                            <select class="reassign-cat" style="max-width:160px;">
+                                <option value="">— pick —</option>
+                                ${catOptions}
+                            </select>
+                        </td>
+                        <td>
+                            <select class="reassign-prod" style="max-width:160px;">
+                                <option value="">— pick —</option>
+                                ${prodOptions}
+                            </select>
+                        </td>
+                        <td style="font-size:11px; color:#6b7280;">${age}</td>
+                        <td>
+                            <button class="auth-button" style="padding:4px 10px; font-size:12px;" onclick="reassignProduct(${p.id}, this)">Save</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+
+            // Pre-select current category/producer in the dropdowns so a Save
+            // without changes is a no-op confirmation rather than a misroute.
+            tbody.querySelectorAll('tr[data-product-id]').forEach(row => {
+                const pid = parseInt(row.dataset.productId, 10);
+                const p = products.find(x => x.id === pid);
+                if (!p) return;
+                const catSel = row.querySelector('.reassign-cat');
+                const prodSel = row.querySelector('.reassign-prod');
+                if (catSel && p.category_id) catSel.value = String(p.category_id);
+                if (prodSel && p.producer_id) prodSel.value = String(p.producer_id);
+            });
+        }
+
+        async function reassignProduct(productId, btn) {
+            const row = btn.closest('tr');
+            const catId = row.querySelector('.reassign-cat').value;
+            const prodId = row.querySelector('.reassign-prod').value;
+            if (!catId || !prodId) {
+                alert('Pick both a category and a producer.');
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Saving…';
+            try {
+                const body = new FormData();
+                body.append('product_id', productId);
+                body.append('category_id', catId);
+                body.append('producer_id', prodId);
+                body.append('admin_key', ADMIN_KEY);
+                const r = await fetch('/api/admin/reassign-product', { method: 'POST', body });
+                const data = await r.json();
+                if (!data.ok) throw new Error(data.detail || 'Reassign failed');
+                row.style.transition = 'opacity 0.3s';
+                row.style.opacity = '0';
+                setTimeout(() => loadNewProductsPending(), 350);
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = 'Save';
+                alert('Failed: ' + e.message);
+            }
+        }
+
+        function formatAge(iso) {
+            if (!iso) return '—';
+            const t = new Date(iso.replace(' ', 'T'));
+            if (isNaN(t)) return iso;
+            const ms = Date.now() - t.getTime();
+            const days = Math.floor(ms / 86400000);
+            if (days < 1) return 'today';
+            if (days === 1) return '1d';
+            if (days < 30) return days + 'd';
+            const months = Math.floor(days / 30);
+            if (months < 12) return months + 'mo';
+            return Math.floor(days / 365) + 'y';
+        }
+
 
         function populateActiveAlerts(alerts) {
             if (!alerts || alerts.active_count === 0) {

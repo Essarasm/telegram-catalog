@@ -105,12 +105,18 @@ async def cmd_prices(message: types.Message):
         # New products auto-added
         new_total = result.get('new_products_total', 0)
         if new_total > 0:
+            classified = result.get('new_products_classified', 0)
+            unclassified = new_total - classified
             lines.append(f"\n🆕 <b>Yangi mahsulotlar qo'shildi: {new_total} ta</b>")
-            lines.append(f"📁 Kategoriya: \"Yangi mahsulotlar\"")
+            if classified > 0:
+                lines.append(f"  ✅ Brend bo'yicha: {classified} ta")
+            if unclassified > 0:
+                lines.append(f"  📁 \"Yangi mahsulotlar\" → admin tekshiradi: {unclassified} ta")
             for np in result.get('new_products', [])[:10]:
                 cyr = html_escape(np['cyrillic'])
                 disp = html_escape(np['display'])
-                lines.append(f"  • {cyr} → <i>{disp}</i>")
+                tag = " ✅" if np.get('auto_classified') else ""
+                lines.append(f"  • {cyr} → <i>{disp}</i>{tag}")
             if new_total > 10:
                 lines.append(f"  ... va yana {new_total - 10} ta")
 
