@@ -157,9 +157,14 @@ def register_user(user: UserRegister):
     conn = get_db()
     phone_norm = normalize_phone(user.phone)
 
-    # Check if phone is in allowed_clients
+    # Check if phone is in allowed_clients. Filter out merged rows so that
+    # after the May 2026 dedup migration the login lookup never resolves to
+    # a tombstoned duplicate (would return wrong client_id_1c / no master
+    # sync). See `tools/dedup_allowed_clients.py` for the migration context.
     client_row = conn.execute(
-        "SELECT id, name, location, client_id_1c FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+        "SELECT id, name, location, client_id_1c FROM allowed_clients "
+        "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+        "ORDER BY id LIMIT 1",
         (phone_norm,),
     ).fetchone()
 

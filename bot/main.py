@@ -182,7 +182,9 @@ async def cmd_add(message: types.Message):
     conn = get_db()
 
     existing = conn.execute(
-        "SELECT id, name FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+        "SELECT id, name FROM allowed_clients "
+        "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+        "ORDER BY id LIMIT 1",
         (phone_norm,),
     ).fetchone()
 
@@ -207,7 +209,9 @@ async def cmd_add(message: types.Message):
     for u in all_users:
         if normalize_phone(u["phone"]) == phone_norm:
             client_id = conn.execute(
-                "SELECT id FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+                "SELECT id FROM allowed_clients "
+                "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+                "ORDER BY id LIMIT 1",
                 (phone_norm,),
             ).fetchone()["id"]
             conn.execute(
@@ -273,7 +277,9 @@ async def cmd_approve(message: types.Message):
 
     phone_norm = normalize_phone(user["phone"])
     existing_client = conn.execute(
-        "SELECT id FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+        "SELECT id FROM allowed_clients "
+        "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+        "ORDER BY id LIMIT 1",
         (phone_norm,),
     ).fetchone()
 
@@ -413,7 +419,9 @@ async def cmd_link(message: types.Message):
 
     user_phone_norm = normalize_phone(user["phone"])
     existing_row = conn.execute(
-        "SELECT id, client_id_1c FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+        "SELECT id, client_id_1c FROM allowed_clients "
+        "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+        "ORDER BY id LIMIT 1",
         (user_phone_norm,),
     ).fetchone()
 

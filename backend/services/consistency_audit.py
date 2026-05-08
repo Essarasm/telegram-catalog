@@ -18,6 +18,10 @@ bot/reminders.py `_run_consistency_audit`.
 from __future__ import annotations
 
 from backend.database import get_db
+from backend.services.pseudo_clients import (
+    sql_exclusion_clause,
+    sql_exclusion_params,
+)
 
 
 def run_audit(fix: bool = False) -> dict:
@@ -57,19 +61,26 @@ def run_audit(fix: bool = False) -> dict:
                 "sample": [dict(r) for r in dups[:5]],
             }
 
-        # 2. Orphaned real_orders — clients in real_orders but not in allowed_clients
+        # 2. Orphaned real_orders — clients in real_orders but not in
+        # allowed_clients. Pseudo-clients (Наличка / supplier-bonus / etc.)
+        # are NOT real customers and are filtered upstream — without this
+        # exclusion the audit re-flags them every night even though they're
+        # already canonically listed in pseudo_clients.SYSTEM_NON_CLIENT_NAMES.
+        pseudo_clause = sql_exclusion_clause("ro.client_name_1c")
         orphans = conn.execute(
-            """SELECT client_name_1c, COUNT(*) AS n
+            f"""SELECT client_name_1c, COUNT(*) AS n
                FROM real_orders ro
                WHERE ro.client_name_1c != ''
                  AND ro.client_id IS NULL
+                 AND {pseudo_clause}
                  AND NOT EXISTS (
                    SELECT 1 FROM allowed_clients ac
                    WHERE ac.client_id_1c = ro.client_name_1c
                  )
                GROUP BY client_name_1c
                ORDER BY n DESC
-               LIMIT 20"""
+               LIMIT 20""",
+            sql_exclusion_params(),
         ).fetchall()
         if orphans:
             result["orphaned_real_orders"] = {
@@ -131,10 +142,14 @@ def run_audit(fix: bool = False) -> dict:
         if recent_phones and recent_phones["n"]:
             result["recent_phone_changes_7d"] = {"count": recent_phones["n"]}
 
-        # 7. DB size snapshot for trend tracking
+        # 7. DB size snapshot for trend tracking. `clients` counts only
+        # active rows so the daily summary reflects the canonical client
+        # base (~2.2k post-dedup), not the soft-deleted tombstone count
+        # (~38.7k merged rows from the May 2026 dedup migration).
         size_row = conn.execute(
             """SELECT
-                 (SELECT COUNT(*) FROM allowed_clients) AS clients,
+                 (SELECT COUNT(*) FROM allowed_clients
+                   WHERE COALESCE(status,'active')='active') AS clients,
                  (SELECT COUNT(*) FROM real_orders) AS real_orders,
                  (SELECT COUNT(*) FROM product_interest_clicks) AS interest_clicks,
                  (SELECT COUNT(*) FROM search_logs) AS searches"""

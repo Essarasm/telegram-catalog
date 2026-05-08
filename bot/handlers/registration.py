@@ -56,7 +56,9 @@ async def handle_registration_reply(message: Message):
             phone_norm = normalize_phone(phone)
             if phone_norm:
                 existing = conn.execute(
-                    "SELECT id FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+                    "SELECT id FROM allowed_clients "
+                    "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+                    "ORDER BY id LIMIT 1",
                     (phone_norm,),
                 ).fetchone()
                 if not existing:

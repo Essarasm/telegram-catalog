@@ -102,15 +102,17 @@ def import_clients():
             client_id_1c = row.get("client_id_1c", "").strip()
             company_name = row.get("company_name", "").strip()
 
-            # Check if this phone already exists (skip merged records for updates)
+            # Check if this phone already exists. Filter out merged rows at
+            # the SELECT level — without ORDER BY + status filter, LIMIT 1
+            # could return any of the post-dedup tombstones for this phone,
+            # causing the importer to either skip the client (false "merged"
+            # branch below) or update the wrong row.
             existing = conn.execute(
-                "SELECT id, COALESCE(status, 'active') as status FROM allowed_clients WHERE phone_normalized = ? LIMIT 1",
+                "SELECT id, COALESCE(status, 'active') as status FROM allowed_clients "
+                "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+                "ORDER BY id LIMIT 1",
                 (phone,),
             ).fetchone()
-
-            if existing and existing[1] == 'merged':
-                # Skip merged records — don't override dedup decisions
-                continue
 
             if existing:
                 # Update existing record with new data (preserving non-empty fields)
@@ -380,15 +382,15 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
         if not cid_1c and client_name and not client_name.isdigit():
             cid_1c = client_name
 
+        # Same merged-aware filter as the CSV path above. Without it, after
+        # the May 2026 dedup migration, LIMIT 1 could pick up a tombstoned
+        # duplicate and the importer would skip the upsert entirely.
         existing = conn.execute(
             "SELECT id, COALESCE(status, 'active') FROM allowed_clients "
-            "WHERE phone_normalized = ? LIMIT 1",
+            "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+            "ORDER BY id LIMIT 1",
             (phone,),
         ).fetchone()
-
-        if existing and existing[1] == "merged":
-            skipped += 1
-            continue
 
         if existing:
             updates, params = [], []
