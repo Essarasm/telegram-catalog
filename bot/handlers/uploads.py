@@ -1451,6 +1451,9 @@ async def cmd_cash(message: types.Message):
         await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
         return
 
+    trigger_text = (message.caption or message.text or "").lower()
+    force_flag = "force" in trigger_text.split()
+
     status_msg = await message.reply("⏳ Касса yuklanmoqda...")
 
     try:
@@ -1468,12 +1471,26 @@ async def cmd_cash(message: types.Message):
             resp = await client.post(
                 api_url,
                 files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
-                data={"admin_key": get_admin_key()},
+                data={"admin_key": get_admin_key(), "force": str(force_flag).lower()},
             )
             result = resp.json()
 
         if not result.get("ok"):
             err = result.get("error", "Unknown")
+            if err == "date_range_exceeded":
+                st = result.get("stats", {})
+                d_min = st.get("date_min") or "?"
+                d_max = st.get("date_max") or "?"
+                span = result.get("span_days", "?")
+                await status_msg.edit_text(
+                    "❌ <b>Касса rad etildi</b>\n\n"
+                    f"📅 Faylda davr: {d_min} — {d_max} ({span} kun)\n"
+                    "⚠️ Kutilgan: bir kunlik fayl (1 sana).\n\n"
+                    "Agar bu atayin bo'lsa, faylga javob sifatida\n"
+                    "<code>/cash force</code> yozing.",
+                    parse_mode="HTML",
+                )
+                return
             diag = result.get("diagnostics")
             msg_lines = [f"❌ Xatolik: {err}"]
             if diag:

@@ -155,11 +155,15 @@ async def import_real_orders(
 async def import_cash(
     file: UploadFile = File(...),
     admin_key: str = Form(""),
+    force: bool = Form(False),
 ):
     """Import Касса (cash receipts journal) from 1C.
 
     Used by the /cash bot command. Idempotent on doc_number_1c — morning
     and evening files have disjoint numbers so both sets persist.
+
+    Aborts before any DB write if the file's date span exceeds
+    MAX_DATE_SPAN_DAYS unless force=True.
     """
     if not check_admin_key(admin_key):
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
@@ -168,7 +172,7 @@ async def import_cash(
     if not file_bytes:
         return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
 
-    result = apply_cash_import(file_bytes, filename_hint=file.filename or "")
+    result = apply_cash_import(file_bytes, filename_hint=file.filename or "", force=force)
     return result
 
 

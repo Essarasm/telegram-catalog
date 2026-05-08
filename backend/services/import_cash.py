@@ -227,12 +227,19 @@ def _str_or_none(v) -> Optional[str]:
     return s if s else None
 
 
-def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
+MAX_DATE_SPAN_DAYS = 0  # max (date_max - date_min).days; 0 = single calendar day
+
+
+def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = False) -> dict:
     """Parse a Касса file and upsert every payment row.
 
     Idempotent on doc_number_1c. Re-uploading the same file is a no-op at
     the row level (INSERT OR REPLACE). Morning and evening files have
     disjoint document numbers so both sets of rows persist.
+
+    Guards against the May 6 2026 incident where a 31-day range was
+    uploaded instead of a single day: aborts before any DB write if the
+    file's date span exceeds MAX_DATE_SPAN_DAYS. Override with force=True.
     """
     parsed = parse_cash_xls(file_bytes, filename_hint)
     if not parsed.get("ok"):
@@ -243,6 +250,23 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "") -> dict:
 
     if not payments:
         return {"ok": False, "error": "No payment rows found in file"}
+
+    if not force:
+        date_min = stats.get("date_min")
+        date_max = stats.get("date_max")
+        if date_min and date_max:
+            try:
+                span_days = (datetime.fromisoformat(date_max) - datetime.fromisoformat(date_min)).days
+            except ValueError:
+                span_days = None
+            if span_days is not None and span_days > MAX_DATE_SPAN_DAYS:
+                return {
+                    "ok": False,
+                    "error": "date_range_exceeded",
+                    "stats": stats,
+                    "span_days": span_days,
+                    "max_span_days": MAX_DATE_SPAN_DAYS,
+                }
 
     conn = get_db()
     try:
