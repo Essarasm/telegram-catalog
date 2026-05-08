@@ -30,7 +30,11 @@ import json
 import time
 import urllib.parse
 
-ADMIN_KEY = os.getenv("ADMIN_API_KEY") or "rassvet2026"
+ADMIN_KEY = os.getenv("ADMIN_API_KEY")
+if not ADMIN_KEY:
+    print("❌ ADMIN_API_KEY env var not set — required (admin endpoints 401 without it).", file=sys.stderr)
+    print("   Set in .claude/settings.local.json env block, or export inline.", file=sys.stderr)
+    sys.exit(1)
 TEST_CLIENT_1C_NAME = os.getenv("TEST_CLIENT_1C_NAME")
 TEST_CLIENT_TG = os.getenv("TEST_CLIENT_TG")
 
