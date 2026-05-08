@@ -45,6 +45,12 @@ OBJECTIVES = {
         "kelayotgan to'lovlarni tasdiqlash. /qabul — yangi sessiya. "
         "Qog'oz daftar — zaxira nusxa (saqlanadi)."
     ),
+    'bank_transfer': (
+        "📨 <b>Bank perevod</b>\n\n"
+        "Maqsad: klientlardan kelayotgan bank perevodlarini ro'yxatga olish. "
+        "/perevod — yangi yozuv (mijoz → summa → foiz → kurs). "
+        "/perevodlar — bugungi yozuvlar (✏️ O'zgartirish · ✖ Bekor)."
+    ),
 }
 
 # ── Command lists per chat role ─────────────────────────────────────
@@ -163,6 +169,14 @@ SPECS = {
             Cmd("/qabul", "Yangi to'lov qabul qilish — Klientdan yoki Agentdan"),
             Cmd("/bugun", "Bugungi qabul qilingan to'lovlar — yig'ma jadval"),
             Cmd("/bugunpul", "Bugungi to'lovlar — har bir yozuvda ✏️ O'zgartirish va ✖ Bekor"),
+            Cmd("/bekor", "Joriy sessiyani bekor qilish"),
+            Cmd("/chatid", "Chat va user ID"),
+        ]),
+    ],
+    'bank_transfer': [
+        ("📨 Perevod amallari", [
+            Cmd("/perevod", "Yangi bank perevod yozuvi — mijoz, summa, foiz, kurs"),
+            Cmd("/perevodlar", "Bugungi perevodlar — har bir yozuvda ✏️ va ✖"),
             Cmd("/bekor", "Joriy sessiyani bekor qilish"),
             Cmd("/chatid", "Chat va user ID"),
         ]),

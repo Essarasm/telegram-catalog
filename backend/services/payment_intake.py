@@ -65,14 +65,21 @@ def create_intake_payment(
     screenshot_file_id: Optional[str] = None,
     confirmed_by_telegram_id: Optional[int] = None,
     notes: Optional[str] = None,
+    gross_uzs: Optional[float] = None,
+    accepted_pct: Optional[float] = None,
+    fx_rate_uzs_per_usd: Optional[float] = None,
 ) -> int:
     """Create the canonical intake_payments row and back-link the audit row.
-    Caller is responsible for the transaction (commit on success)."""
+    Caller is responsible for the transaction (commit on success).
+
+    For channel='bank_transfer', pass gross_uzs/accepted_pct/fx_rate_uzs_per_usd
+    alongside `amount` (the net UZS = gross × pct/100). Other channels leave
+    these three as None."""
     if amount <= 0:
         raise ValueError(f"amount must be > 0, got {amount}")
     if currency not in ("UZS", "USD"):
         raise ValueError(f"currency must be UZS or USD, got {currency}")
-    if channel not in ("cash_direct", "cash_via_agent", "p2p"):
+    if channel not in ("cash_direct", "cash_via_agent", "p2p", "bank_transfer"):
         raise ValueError(f"unknown channel: {channel}")
     if status not in ("pending_handover", "pending_review", "confirmed", "rejected"):
         raise ValueError(f"unknown status: {status}")
@@ -83,10 +90,10 @@ def create_intake_payment(
            (client_id, amount, currency, channel, card_id, handover_agent_id,
             submitter_telegram_id, submitter_role, confirmed_by_telegram_id,
             confirmed_at, status, screenshot_file_id, notes,
-            source_intake_raw_id)
+            source_intake_raw_id, gross_uzs, accepted_pct, fx_rate_uzs_per_usd)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, """
         + ("datetime('now')" if confirmed_at else "NULL")
-        + """, ?, ?, ?, ?)""",
+        + """, ?, ?, ?, ?, ?, ?, ?)""",
         (
             client_id,
             float(amount),
@@ -101,6 +108,9 @@ def create_intake_payment(
             screenshot_file_id,
             notes,
             raw_id,
+            float(gross_uzs) if gross_uzs is not None else None,
+            float(accepted_pct) if accepted_pct is not None else None,
+            float(fx_rate_uzs_per_usd) if fx_rate_uzs_per_usd is not None else None,
         ),
     )
     payment_id = cur.lastrowid
@@ -109,6 +119,157 @@ def create_intake_payment(
         (payment_id, raw_id),
     )
     return payment_id
+
+
+# ── Bank-transfer helpers ───────────────────────────────────────────
+
+def compute_bank_transfer_net(gross_uzs: float, accepted_pct: float) -> float:
+    """net_uzs = gross × pct/100, rounded to whole so'm. The pct is what we
+    accept as payment; the rest is left in the bank for other use."""
+    if gross_uzs is None or float(gross_uzs) <= 0:
+        raise ValueError(f"gross_uzs must be > 0, got {gross_uzs}")
+    if accepted_pct is None or float(accepted_pct) <= 0 or float(accepted_pct) > 100:
+        raise ValueError(f"accepted_pct must be in (0, 100], got {accepted_pct}")
+    return round(float(gross_uzs) * float(accepted_pct) / 100.0)
+
+
+def create_bank_transfer_payment(
+    conn,
+    *,
+    client_id: int,
+    gross_uzs: float,
+    accepted_pct: float,
+    fx_rate_uzs_per_usd: float,
+    submitter_telegram_id: int,
+    submitter_role: str = "bank_transfer",
+    notes: Optional[str] = None,
+) -> int:
+    """End-to-end bank-transfer write: audit row + canonical row, auto-confirmed.
+    Caller commits the transaction. Returns the payment_id."""
+    if fx_rate_uzs_per_usd is None or float(fx_rate_uzs_per_usd) <= 0:
+        raise ValueError(f"fx_rate_uzs_per_usd must be > 0, got {fx_rate_uzs_per_usd}")
+    net_uzs = compute_bank_transfer_net(gross_uzs, accepted_pct)
+    payload = {
+        "channel": "bank_transfer",
+        "client_id": client_id,
+        "gross_uzs": float(gross_uzs),
+        "accepted_pct": float(accepted_pct),
+        "fx_rate_uzs_per_usd": float(fx_rate_uzs_per_usd),
+        "net_uzs": net_uzs,
+    }
+    raw_id = insert_intake_raw(
+        conn,
+        submitter_telegram_id=submitter_telegram_id,
+        submitter_role=submitter_role,
+        payload=payload,
+    )
+    return create_intake_payment(
+        conn,
+        raw_id=raw_id,
+        client_id=client_id,
+        amount=net_uzs,
+        currency="UZS",
+        channel="bank_transfer",
+        status="confirmed",
+        submitter_telegram_id=submitter_telegram_id,
+        submitter_role=submitter_role,
+        confirmed_by_telegram_id=submitter_telegram_id,
+        notes=notes,
+        gross_uzs=float(gross_uzs),
+        accepted_pct=float(accepted_pct),
+        fx_rate_uzs_per_usd=float(fx_rate_uzs_per_usd),
+    )
+
+
+def edit_bank_transfer_payment(
+    conn,
+    payment_id: int,
+    *,
+    new_gross_uzs: float,
+    new_accepted_pct: float,
+    new_fx_rate_uzs_per_usd: float,
+    editor_telegram_id: int,
+    reason: str = "bank_transfer_edited_via_ozgartirish",
+) -> dict:
+    """Soft-cancel old + insert-new linked by replaces_payment_id, mirroring
+    edit_payment_amount but for the three-field bank-transfer record. Refuses
+    on non-confirmed rows or no-op edits. Caller commits."""
+    old = conn.execute(
+        """SELECT id, client_id, amount, currency, channel, status,
+                  submitter_telegram_id, submitter_role, notes,
+                  gross_uzs, accepted_pct, fx_rate_uzs_per_usd
+           FROM intake_payments WHERE id = ?""",
+        (payment_id,),
+    ).fetchone()
+    if not old:
+        raise ValueError(f"payment {payment_id} not found")
+    if old["channel"] != "bank_transfer":
+        raise ValueError(f"payment {payment_id} is not a bank_transfer record")
+    if old["status"] != "confirmed":
+        raise ValueError(
+            f"faqat tasdiqlangan yozuvni o'zgartirish mumkin (joriy: {old['status']})"
+        )
+
+    new_net = compute_bank_transfer_net(new_gross_uzs, new_accepted_pct)
+    if (
+        abs(float(old["gross_uzs"] or 0) - float(new_gross_uzs)) < 0.005
+        and abs(float(old["accepted_pct"] or 0) - float(new_accepted_pct)) < 0.005
+        and abs(float(old["fx_rate_uzs_per_usd"] or 0) - float(new_fx_rate_uzs_per_usd)) < 0.005
+    ):
+        raise ValueError("yozuv o'zgarmagan")
+
+    cur = conn.execute(
+        """UPDATE intake_payments
+           SET status = 'rejected',
+               rejected_at = datetime('now'),
+               confirmed_by_telegram_id = ?,
+               reject_reason = ?
+           WHERE id = ? AND status = 'confirmed'""",
+        (editor_telegram_id, reason, payment_id),
+    )
+    if cur.rowcount == 0:
+        raise ValueError("yozuv holati o'zgargan, qaytadan urinib ko'ring")
+
+    payload = {
+        "channel": "bank_transfer",
+        "client_id": old["client_id"],
+        "gross_uzs": float(new_gross_uzs),
+        "accepted_pct": float(new_accepted_pct),
+        "fx_rate_uzs_per_usd": float(new_fx_rate_uzs_per_usd),
+        "net_uzs": new_net,
+        "edits_payment_id": payment_id,
+    }
+    raw_id = insert_intake_raw(
+        conn,
+        submitter_telegram_id=editor_telegram_id,
+        submitter_role="bank_transfer",
+        payload=payload,
+        notes=f"edits #{payment_id}",
+    )
+    new_pid = create_intake_payment(
+        conn,
+        raw_id=raw_id,
+        client_id=old["client_id"],
+        amount=new_net,
+        currency="UZS",
+        channel="bank_transfer",
+        status="confirmed",
+        submitter_telegram_id=old["submitter_telegram_id"],
+        submitter_role=old["submitter_role"] or "bank_transfer",
+        confirmed_by_telegram_id=editor_telegram_id,
+        notes=old["notes"],
+        gross_uzs=float(new_gross_uzs),
+        accepted_pct=float(new_accepted_pct),
+        fx_rate_uzs_per_usd=float(new_fx_rate_uzs_per_usd),
+    )
+    conn.execute(
+        "UPDATE intake_payments SET replaces_payment_id = ? WHERE id = ?",
+        (payment_id, new_pid),
+    )
+    return {
+        "old": get_payment(conn, payment_id),
+        "new": get_payment(conn, new_pid),
+    }
 
 
 # ── Debt lookup ─────────────────────────────────────────────────────
@@ -474,12 +635,16 @@ def summarize_today_intake(conn) -> dict:
         "SELECT date('now', '+5 hours') AS d"
     ).fetchone()["d"]
 
+    # Cashier-scope only — bank_transfer rows live in their own surface
+    # (/perevodlar). Including them here would pollute Aunt's UZS/USD
+    # totals with net-after-percentage values.
     confirmed = conn.execute(
         """SELECT ip.id, ip.amount, ip.currency, ip.channel, ip.client_id,
                   ac.client_id_1c, ac.name AS ac_name
            FROM intake_payments ip
            LEFT JOIN allowed_clients ac ON ac.id = ip.client_id
            WHERE ip.status = 'confirmed'
+             AND ip.channel IN ('cash_direct', 'cash_via_agent', 'p2p')
              AND date(ip.confirmed_at, '+5 hours') = ?""",
         (today_tk,),
     ).fetchall()

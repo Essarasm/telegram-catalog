@@ -30,6 +30,9 @@ INVENTORY_GROUP_CHAT_ID = int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"
 # Cashier-only group (Aunt + Uncle for now). 0 = unconfigured;
 # the cashier FSM stays inert until this is set in the env.
 CASHIER_GROUP_CHAT_ID = int(os.getenv("CASHIER_GROUP_CHAT_ID", "0"))
+# Bank-transfer group (Uchqun + Shuhrat). Sister to the cashier group but
+# routes through bot/handlers/bank_transfer.py. 0 = unconfigured.
+BANK_TRANSFER_GROUP_CHAT_ID = int(os.getenv("BANK_TRANSFER_GROUP_CHAT_ID", "0"))
 # Driver/agent client-location-capture group (open to anyone in the group).
 # Has its own FSM-driven handler in bot/handlers/driver_location.py with
 # explicit client picker + first-confirmed-locks semantics. The general
@@ -54,6 +57,8 @@ def chat_context(message) -> str:
         return 'agents'
     if CASHIER_GROUP_CHAT_ID and cid == CASHIER_GROUP_CHAT_ID:
         return 'cashier'
+    if BANK_TRANSFER_GROUP_CHAT_ID and cid == BANK_TRANSFER_GROUP_CHAT_ID:
+        return 'bank_transfer'
     if DRIVER_GROUP_CHAT_ID and cid == DRIVER_GROUP_CHAT_ID:
         return 'driver'
     if getattr(message, 'chat', None) and message.chat.type == 'private':
@@ -75,6 +80,13 @@ CASHIER_IDS: set[int] = set()
 _cashier_env = os.getenv("CASHIER_IDS", "")
 if _cashier_env:
     CASHIER_IDS = {int(x.strip()) for x in _cashier_env.split(",") if x.strip().isdigit()}
+
+# Bank-transfer whitelist — Uchqun + Shuhrat. Same env-or-group-or-DB-role
+# pattern as CASHIER_IDS.
+BANK_TRANSFER_IDS: set[int] = set()
+_bank_transfer_env = os.getenv("BANK_TRANSFER_IDS", "")
+if _bank_transfer_env:
+    BANK_TRANSFER_IDS = {int(x.strip()) for x in _bank_transfer_env.split(",") if x.strip().isdigit()}
 
 TESTCLIENT_PROMPT = "🔎 Qidirish uchun mijoz ismini yozing"
 
@@ -221,6 +233,40 @@ def is_cashier_or_admin_cb(cb) -> bool:
     return False
 
 
+def is_bank_transfer(message) -> bool:
+    """User is whitelisted for bank-transfer entry (BANK_TRANSFER_IDS),
+    message is from the dedicated bank-transfer group, or DB role is
+    'bank_transfer'/'admin'. Mirrors is_cashier."""
+    uid = message.from_user.id if getattr(message, 'from_user', None) else None
+    if BANK_TRANSFER_IDS and uid and uid in BANK_TRANSFER_IDS:
+        return True
+    cid = message.chat.id if hasattr(message, 'chat') else None
+    if BANK_TRANSFER_GROUP_CHAT_ID and cid == BANK_TRANSFER_GROUP_CHAT_ID:
+        return True
+    if uid and _db_role_check(uid, {"admin", "bank_transfer"}):
+        return True
+    return False
+
+
+def is_bank_transfer_or_admin(message) -> bool:
+    return is_admin(message) or is_bank_transfer(message)
+
+
+def is_bank_transfer_or_admin_cb(cb) -> bool:
+    if ADMIN_IDS and cb.from_user and cb.from_user.id in ADMIN_IDS:
+        return True
+    if BANK_TRANSFER_IDS and cb.from_user and cb.from_user.id in BANK_TRANSFER_IDS:
+        return True
+    chat_id = cb.message.chat.id if cb.message else None
+    if chat_id in (ADMIN_GROUP_CHAT_ID,) or (
+        BANK_TRANSFER_GROUP_CHAT_ID and chat_id == BANK_TRANSFER_GROUP_CHAT_ID
+    ):
+        return True
+    if cb.from_user and _db_role_check(cb.from_user.id, {"admin", "bank_transfer"}):
+        return True
+    return False
+
+
 def get_user_role(message):
     """Return the most-privileged role that applies. Used for audit and
     role tagging on intake records. Returns None if no recognized role."""
@@ -228,6 +274,8 @@ def get_user_role(message):
         return "admin"
     if is_cashier(message):
         return "cashier"
+    if is_bank_transfer(message):
+        return "bank_transfer"
     if is_agent_or_admin(message):
         return "agent"
     return None
