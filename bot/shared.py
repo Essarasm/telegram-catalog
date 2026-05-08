@@ -154,6 +154,12 @@ def is_agent_or_admin(message) -> bool:
         return True
     if hasattr(message, 'chat') and message.chat.id == AGENTS_GROUP_CHAT_ID:
         return True
+    # DB role fallback so a /makeagent-promoted agent can use /testclient
+    # and /panel from DM (not only from the AGENTS group). Mirrors the
+    # is_admin_cb DB-role pattern.
+    uid = message.from_user.id if getattr(message, 'from_user', None) else None
+    if uid and _db_role_check(uid, {"admin", "cashier", "agent"}):
+        return True
     return False
 
 
@@ -161,7 +167,16 @@ def is_agent_or_admin_cb(cb) -> bool:
     chat_id = cb.message.chat.id if cb.message else None
     if ADMIN_IDS and cb.from_user and cb.from_user.id in ADMIN_IDS:
         return True
-    if chat_id in (ORDER_GROUP_CHAT_ID, ADMIN_GROUP_CHAT_ID, AGENTS_GROUP_CHAT_ID):
+    # Mirror is_admin's group whitelist (ADMIN/DAILY/INVENTORY) plus the
+    # agent-specific groups (ORDER/AGENTS). Without DAILY+INVENTORY here,
+    # tapping a /testclient inline button in the daily-uploads group
+    # silently refused — even though /testclient itself works there
+    # because is_agent_or_admin (message variant) accepts daily via is_admin.
+    if chat_id in (ORDER_GROUP_CHAT_ID, ADMIN_GROUP_CHAT_ID, AGENTS_GROUP_CHAT_ID,
+                   DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID):
+        return True
+    # DB role fallback — covers DM use by /makeagent-promoted agents.
+    if cb.from_user and _db_role_check(cb.from_user.id, {"admin", "cashier", "agent"}):
         return True
     return False
 
