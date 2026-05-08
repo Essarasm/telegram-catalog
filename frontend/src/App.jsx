@@ -109,9 +109,15 @@ export default function App() {
           setApproved(data.approved || false);
           setIsAgent(data.is_agent || false);
           setUserRole(data.role || null);
-          // Always refresh client linkage — actingAsClient now drives the
-        // client-self-submit Pay flow too, not just agent acting-as.
-        refreshActingAs();
+          if (data.is_agent) {
+            // Agents always cold-load to AgentHomePage — clear any leftover
+            // acting-as so Katalog opens on the agent's home, not the last client.
+            await switchAgentClient({ telegram_id: uid, clear: true });
+            setActingAsClient(null);
+          } else {
+            // Non-agents: actingAsClient drives the client-self-submit Pay flow.
+            refreshActingAs();
+          }
         } else {
           // Server lost user data — try silent re-registration from cache
           const result = await silentReRegister(uid);
@@ -120,7 +126,12 @@ export default function App() {
             setApproved(result.approved || false);
             setIsAgent(result.is_agent || false);
             setUserRole(result.role || null);
-            refreshActingAs();
+            if (result.is_agent) {
+              await switchAgentClient({ telegram_id: uid, clear: true });
+              setActingAsClient(null);
+            } else {
+              refreshActingAs();
+            }
           } else {
             // No cache or re-register failed — show RegisterPage
             setRegistered(false);
