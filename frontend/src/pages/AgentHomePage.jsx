@@ -41,7 +41,9 @@ function getShopLocation() {
 }
 
 function RegisterShopForm({ uid, onRegistered, onCancel }) {
-  const [shopName, setShopName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [venue, setVenue] = useState('');
   const [phone, setPhone] = useState('');
   const [coords, setCoords] = useState(null);
   const [locating, setLocating] = useState(false);
@@ -63,8 +65,16 @@ function RegisterShopForm({ uid, onRegistered, onCancel }) {
   };
 
   const submit = async () => {
-    if (shopName.trim().length < 2) {
-      setError(t.register_shop_validation_name);
+    if (firstName.trim().length < 2) {
+      setError(t.register_shop_validation_first_name);
+      return;
+    }
+    if (lastName.trim().length < 2) {
+      setError(t.register_shop_validation_last_name);
+      return;
+    }
+    if (venue.trim().length < 2) {
+      setError(t.register_shop_validation_venue);
       return;
     }
     if ((phone.match(/\d/g) || []).length < 9) {
@@ -79,7 +89,9 @@ function RegisterShopForm({ uid, onRegistered, onCancel }) {
     setError(null);
     const r = await registerNewShop({
       telegram_id: uid,
-      shop_name: shopName.trim(),
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      venue: venue.trim(),
       phone,
       lat: coords.lat,
       lng: coords.lng,
@@ -127,12 +139,32 @@ function RegisterShopForm({ uid, onRegistered, onCancel }) {
     <div className="rounded-xl bg-tg-secondary p-3 space-y-3 border border-tg-hint/20">
       <div className="text-sm font-semibold">{t.register_shop_title}</div>
       <div>
-        <label className="block text-xs text-tg-hint mb-1">{t.register_shop_name_label}</label>
+        <label className="block text-xs text-tg-hint mb-1">{t.register_shop_first_name_label}</label>
         <input
           type="text"
-          value={shopName}
-          onChange={(e) => setShopName(e.target.value)}
-          placeholder={t.register_shop_name_placeholder}
+          value={firstName}
+          onChange={(e) => setFirstName(e.target.value)}
+          placeholder={t.register_shop_first_name_placeholder}
+          className="w-full bg-tg-bg rounded-lg px-3 py-2 text-sm outline-none border border-tg-hint/20 focus:border-tg-link"
+        />
+      </div>
+      <div>
+        <label className="block text-xs text-tg-hint mb-1">{t.register_shop_last_name_label}</label>
+        <input
+          type="text"
+          value={lastName}
+          onChange={(e) => setLastName(e.target.value)}
+          placeholder={t.register_shop_last_name_placeholder}
+          className="w-full bg-tg-bg rounded-lg px-3 py-2 text-sm outline-none border border-tg-hint/20 focus:border-tg-link"
+        />
+      </div>
+      <div>
+        <label className="block text-xs text-tg-hint mb-1">{t.register_shop_venue_label}</label>
+        <input
+          type="text"
+          value={venue}
+          onChange={(e) => setVenue(e.target.value)}
+          placeholder={t.register_shop_venue_placeholder}
           className="w-full bg-tg-bg rounded-lg px-3 py-2 text-sm outline-none border border-tg-hint/20 focus:border-tg-link"
         />
       </div>

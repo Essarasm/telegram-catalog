@@ -231,8 +231,8 @@ def agent_register_client(payload: dict = Body(...)):
     acting-as it. One round trip — registration + switch are atomic.
 
     Payload:
-        {telegram_id: int, shop_name: str, phone: str,
-         lat: float, lng: float}
+        {telegram_id: int, first_name: str, last_name: str, venue: str,
+         phone: str, lat: float, lng: float}
 
     Roles: admin / cashier / agent. Workers are blocked — they don't
     register clients per the Agent charter's no-money-flow rule.
@@ -246,7 +246,9 @@ def agent_register_client(payload: dict = Body(...)):
     and we switch into the pre-existing shop instead of creating a dupe.
     """
     telegram_id = payload.get("telegram_id")
-    shop_name = payload.get("shop_name")
+    first_name = payload.get("first_name")
+    last_name = payload.get("last_name")
+    venue = payload.get("venue")
     phone = payload.get("phone")
     lat = payload.get("lat")
     lng = payload.get("lng")
@@ -264,7 +266,9 @@ def agent_register_client(payload: dict = Body(...)):
             )
 
         result = register_new_shop(
-            conn, telegram_id, shop_name or "", phone or "", lat, lng
+            conn, telegram_id,
+            first_name or "", last_name or "", venue or "",
+            phone or "", lat, lng,
         )
         if result["status"] == "failed":
             return JSONResponse(

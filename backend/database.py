@@ -791,6 +791,9 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             agent_telegram_id INTEGER NOT NULL,
             shop_name TEXT NOT NULL,
+            first_name TEXT,
+            last_name TEXT,
+            venue TEXT,
             phone_raw TEXT,
             phone_normalized TEXT,
             gps_latitude REAL,
@@ -801,6 +804,11 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    # Additive migration for DBs created with the v1 schema (shop_name only).
+    acr_cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_client_registrations)").fetchall()}
+    for col, coltype in [("first_name", "TEXT"), ("last_name", "TEXT"), ("venue", "TEXT")]:
+        if col not in acr_cols:
+            conn.execute(f"ALTER TABLE agent_client_registrations ADD COLUMN {col} {coltype}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_reg_agent ON agent_client_registrations(agent_telegram_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_reg_phone ON agent_client_registrations(phone_normalized)")
 
