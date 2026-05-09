@@ -113,6 +113,114 @@ def agent_stats(telegram_id: int = Query(...)):
         conn.close()
 
 
+# ── Agent panel: commission (Phase 1: flat 0.5%) ─────────────────────────
+
+# Flat placeholder rate for Phase 1. Per-supplier tiered calc (0.5/1/2%) is
+# blocked on Session T's "Walk all 43 active suppliers + assign supplier→tier"
+# TODO — see `obsidian-vault/session-logs/Session T — log.md`. Don't move
+# this constant into env or DB until Phase 2 lands; keeping it inline + grep-
+# able makes the placeholder-vs-tiered pivot a single-PR change.
+_PHASE1_COMMISSION_RATE = 0.005
+
+
+@router.get("/commission")
+def agent_commission(telegram_id: int = Query(...)):
+    """Phase 1: flat 0.5% on collected money from this agent's registered
+    shops, current month (Tashkent).
+
+    Attribution: payments rows in `intake_payments` (status='confirmed') for
+    any `client_id` that this agent registered via `agent_client_registrations`
+    (status='created', linked_client_id NOT NULL). Legacy agents (Шерзод /
+    Дилшод / Шухрат) with no panel-registered shops will see zero until an
+    `agent_client_assignments` table is populated — captured as a follow-up.
+
+    Returns dual-currency totals + a per-channel breakdown so the agent can
+    see which intake stream (cash-handover / P2P / bank-transfer / legal-
+    transfer) drove their commission this month.
+    """
+    conn = get_db()
+    try:
+        if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
+            return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
+
+        today = date.today()
+        period_start = today.replace(day=1).isoformat()  # YYYY-MM-01
+        period_label = today.strftime("%Y-%m")
+
+        client_ids = [
+            row["linked_client_id"]
+            for row in conn.execute(
+                "SELECT linked_client_id FROM agent_client_registrations "
+                "WHERE agent_telegram_id = ? "
+                "  AND linked_client_id IS NOT NULL "
+                "  AND status = 'created'",
+                (telegram_id,),
+            ).fetchall()
+        ]
+
+        if not client_ids:
+            return {
+                "ok": True,
+                "period": period_label,
+                "rate_pct": _PHASE1_COMMISSION_RATE * 100,
+                "rate_basis": "phase1_flat",
+                "client_count": 0,
+                "collected_uzs": 0,
+                "collected_usd": 0.0,
+                "commission_uzs": 0,
+                "commission_usd": 0.0,
+                "by_channel": [],
+            }
+
+        placeholders = ",".join("?" * len(client_ids))
+        rows = conn.execute(
+            f"""SELECT channel, currency, COALESCE(SUM(amount), 0) AS total
+                FROM intake_payments
+                WHERE status = 'confirmed'
+                  AND date(COALESCE(confirmed_at, submitted_at)) >= ?
+                  AND client_id IN ({placeholders})
+                GROUP BY channel, currency""",
+            [period_start, *client_ids],
+        ).fetchall()
+
+        collected_uzs = 0.0
+        collected_usd = 0.0
+        per_channel: dict = {}
+        for r in rows:
+            ch = r["channel"]
+            cur = r["currency"]
+            total = float(r["total"] or 0)
+            slot = per_channel.setdefault(ch, {"uzs": 0.0, "usd": 0.0})
+            if cur == "UZS":
+                slot["uzs"] += total
+                collected_uzs += total
+            else:
+                slot["usd"] += total
+                collected_usd += total
+
+        return {
+            "ok": True,
+            "period": period_label,
+            "rate_pct": _PHASE1_COMMISSION_RATE * 100,
+            "rate_basis": "phase1_flat",
+            "client_count": len(client_ids),
+            "collected_uzs": round(collected_uzs),
+            "collected_usd": round(collected_usd, 2),
+            "commission_uzs": round(collected_uzs * _PHASE1_COMMISSION_RATE),
+            "commission_usd": round(collected_usd * _PHASE1_COMMISSION_RATE, 2),
+            "by_channel": [
+                {
+                    "channel": ch,
+                    "uzs": round(v["uzs"]),
+                    "usd": round(v["usd"], 2),
+                }
+                for ch, v in sorted(per_channel.items())
+            ],
+        }
+    finally:
+        conn.close()
+
+
 # ── Agent panel: client switcher ─────────────────────────────────────────
 
 @router.get("/search-clients")

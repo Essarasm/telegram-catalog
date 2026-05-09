@@ -336,6 +336,15 @@ export async function fetchP2PCards(telegramId) {
   }
 }
 
+export async function fetchAgentCommission(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/agent/commission?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false };
+  }
+}
+
 export async function submitP2P({ telegramId, clientId, amountUzs, cardId, screenshot }) {
   const fd = new FormData();
   fd.append('telegram_id', String(telegramId));

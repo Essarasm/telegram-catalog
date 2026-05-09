@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import t from '../i18n/uz.json';
 import {
+  fetchAgentCommission,
   fetchFxRateToday,
   fetchRecentAgentClients,
   registerNewShop,
@@ -315,6 +316,76 @@ function FxRateBanner({ data }) {
   );
 }
 
+function CommissionCard({ data, userRole }) {
+  // Workers don't see money-flow surfaces (Agent charter Active risk #3).
+  // Defensive: AgentHomePage isn't rendered for workers anyway, but keep the
+  // gate here so if routing changes the card stays hidden by role.
+  if (userRole === 'worker') return null;
+
+  if (!data) {
+    return (
+      <div className="rounded-xl bg-tg-secondary p-3 animate-pulse border border-tg-hint/20">
+        <div className="text-sm text-tg-hint">{t.agent_commission_title}</div>
+      </div>
+    );
+  }
+  if (!data.ok) return null;
+
+  const fmtUzs = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v || 0));
+  const fmtUsd = (v) => new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(v || 0);
+  const channelLabel = (ch) => t[`agent_commission_channel_${ch}`] || ch;
+  const hasCollections = (data.collected_uzs || 0) > 0 || (data.collected_usd || 0) > 0;
+
+  return (
+    <div className="rounded-xl bg-tg-secondary p-3 border border-tg-hint/20 space-y-2">
+      <div className="flex items-baseline justify-between">
+        <div className="text-sm font-semibold">{t.agent_commission_title}</div>
+        <div className="text-[11px] text-tg-hint font-mono">{data.period}</div>
+      </div>
+
+      {data.client_count === 0 ? (
+        <div className="text-xs text-tg-hint py-2">{t.agent_commission_no_clients}</div>
+      ) : !hasCollections ? (
+        <div className="text-xs text-tg-hint py-2">{t.agent_commission_no_payments}</div>
+      ) : (
+        <>
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="text-2xl font-bold">{fmtUzs(data.commission_uzs)}</span>
+            <span className="text-xs text-tg-hint">so'm</span>
+            {data.commission_usd > 0 && (
+              <span className="text-xl font-bold ml-1">+ ${fmtUsd(data.commission_usd)}</span>
+            )}
+            <span className="text-[11px] text-tg-hint ml-auto bg-tg-button/15 px-1.5 py-0.5 rounded">
+              {t.agent_commission_rate_badge}
+            </span>
+          </div>
+          <div className="text-xs text-tg-hint">
+            {t.agent_commission_collected_label}: {fmtUzs(data.collected_uzs)} so'm
+            {data.collected_usd > 0 && ` · $${fmtUsd(data.collected_usd)}`}
+          </div>
+          {data.by_channel && data.by_channel.length > 0 && (
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-tg-hint pt-1">
+              {data.by_channel.map((c) => (
+                <span key={c.channel}>
+                  {channelLabel(c.channel)}: {fmtUzs(c.uzs)}
+                  {c.usd > 0 && ` · $${fmtUsd(c.usd)}`}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      <div className="text-[10px] text-tg-hint/70 italic">
+        {t.agent_commission_phase1_note}
+      </div>
+    </div>
+  );
+}
+
 function ClientRow({ label, sub, onClick, isNew }) {
   return (
     <button
@@ -340,6 +411,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
     userRole === 'worker' ? t.worker_panel_home_title :
     t.agent_panel_home_title;
   const [fx, setFx] = useState(null);
+  const [commission, setCommission] = useState(null);
   const [recent, setRecent] = useState([]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
@@ -350,13 +422,14 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
 
   const canRegister = userRole !== 'worker';
 
-  // Initial load: FX + recent
+  // Initial load: FX + recent + commission
   useEffect(() => {
     fetchFxRateToday().then(setFx);
     if (uid) {
       fetchRecentAgentClients(uid).then(r => {
         if (r.ok) setRecent(r.recent || []);
       });
+      fetchAgentCommission(uid).then(setCommission);
     }
   }, [uid]);
 
@@ -425,6 +498,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         </button>
       )}
       <FxRateBanner data={fx} />
+      <CommissionCard data={commission} userRole={userRole} />
 
       {/* Register new shop — non-workers only */}
       {canRegister && !registerOpen && (
