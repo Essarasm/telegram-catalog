@@ -2094,6 +2094,10 @@ def clear_agent_application(payload: dict = Body(...), admin_key: str = Query(..
                 (telegram_id,),
             )
             users_action = "deleted"
+            # Also wipe the JSON backup; otherwise /api/users/check's
+            # fallback path re-inserts the user from there on next call.
+            from backend.services.backup_users import remove_user_from_backup
+            backup_removed = remove_user_from_backup(telegram_id)
         else:
             cur2 = conn.execute(
                 "UPDATE users SET agent_role = NULL, is_agent = 0 "
@@ -2101,6 +2105,7 @@ def clear_agent_application(payload: dict = Body(...), admin_key: str = Query(..
                 (telegram_id,),
             )
             users_action = "agent_role_cleared"
+            backup_removed = False
         conn.commit()
         return {
             "ok": True,
@@ -2109,6 +2114,7 @@ def clear_agent_application(payload: dict = Body(...), admin_key: str = Query(..
             "pending_deleted": cur1.rowcount,
             "users_action": users_action,
             "users_affected": cur2.rowcount,
+            "backup_removed": backup_removed,
         }
     finally:
         conn.close()

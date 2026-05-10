@@ -144,6 +144,45 @@ def restore():
     print(f"[backup_users] Restored {restored} users from backup.")
 
 
+def remove_user_from_backup(telegram_id: int) -> bool:
+    """Delete a single user from the JSON backup file. Returns True if a
+    row was removed. Used by the admin /clear-agent-application full_reset
+    path so that DELETE FROM users isn't immediately undone by the
+    /api/users/check backup-fallback restore."""
+    import tempfile
+
+    if not os.path.exists(BACKUP_PATH):
+        return False
+    try:
+        with open(BACKUP_PATH, 'r') as f:
+            existing = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return False
+
+    keep = [u for u in existing if u.get('telegram_id') != telegram_id]
+    if len(keep) == len(existing):
+        return False  # Not present.
+
+    backup_dir = os.path.dirname(BACKUP_PATH)
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=backup_dir or '/data',
+        suffix='.json.tmp',
+    )
+    try:
+        with os.fdopen(tmp_fd, 'w') as f:
+            json.dump(keep, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, BACKUP_PATH)
+        print(f"[backup_users] Removed user {telegram_id} from backup ({len(keep)} remain)")
+        return True
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        print(f"[backup_users] remove_user_from_backup failed: {e}")
+        return False
+
+
 def save_user_to_backup(user_dict):
     """Immediately persist a single user to the backup file.
 
