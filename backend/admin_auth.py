@@ -1,13 +1,5 @@
 """Shared admin-API-key check for internal endpoints.
 
-Replaces the legacy hardcoded string `"rassvet2026"` with an env-var-
-driven value. If `ADMIN_API_KEY` is not set, falls back to the legacy
-string so prod doesn't break during rotation. To rotate:
-  1. Set `ADMIN_API_KEY=<new_random_value>` on Railway
-  2. Redeploy
-  3. After confirming endpoints work, this fallback can be removed
-     (and you can eventually move all bot calls to read the same env var)
-
 `resolve_auth` is the role-aware variant: it accepts either the env-var
 admin key (→ admin role) or a dashboard session token issued by the
 Telegram-WebApp auth flow (→ whatever role the user has). Endpoints that
@@ -19,8 +11,7 @@ from typing import Optional
 
 from backend.services.dashboard_auth import resolve_session
 
-_FALLBACK = "rassvet2026"
-_CURRENT = os.getenv("ADMIN_API_KEY") or _FALLBACK
+_CURRENT = os.getenv("ADMIN_API_KEY")
 
 
 def check_admin_key(key: str) -> bool:
@@ -38,7 +29,7 @@ def check_admin_key(key: str) -> bool:
     """
     if not key:
         return False
-    if key == _CURRENT:
+    if _CURRENT and key == _CURRENT:
         return True
     sess = resolve_session(key)
     return bool(sess and sess.get("role") == "admin")
@@ -47,13 +38,10 @@ def check_admin_key(key: str) -> bool:
 def get_admin_key() -> str:
     """Return the current admin key for internal bot-to-API calls.
     Bot handlers should pass this as the `admin_key` form field instead
-    of hardcoding a string."""
+    of hardcoding a string. Raises if `ADMIN_API_KEY` is unset."""
+    if not _CURRENT:
+        raise RuntimeError("ADMIN_API_KEY env var is not set")
     return _CURRENT
-
-
-def using_fallback() -> bool:
-    """True if ADMIN_API_KEY env var is unset (legacy string in use)."""
-    return os.getenv("ADMIN_API_KEY") is None
 
 
 def resolve_auth(key: Optional[str]) -> Optional[dict]:

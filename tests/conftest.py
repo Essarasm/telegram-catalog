@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 _test_dir = tempfile.mkdtemp()
 os.environ["DATABASE_PATH"] = os.path.join(_test_dir, "test.db")
+os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
 
 _counter = 0
 

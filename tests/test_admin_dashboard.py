@@ -25,11 +25,9 @@ from fastapi.testclient import TestClient
 TASHKENT = ZoneInfo("Asia/Tashkent")
 
 
-# admin_auth captures ADMIN_API_KEY at import time. Use whatever the env
-# advertises if present (matches what the backend will see), else fall back
-# to the legacy string for shells with no explicit key.
-import os as _os
-ADMIN_KEY = _os.getenv("ADMIN_API_KEY") or "rassvet2026"
+# admin_auth captures ADMIN_API_KEY at import time. conftest.py sets a
+# deterministic test value before any backend imports run.
+ADMIN_KEY = os.environ["ADMIN_API_KEY"]
 
 
 def _client(db) -> TestClient:
