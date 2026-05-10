@@ -67,9 +67,25 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
     try:
         api_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+        # Inline keyboard with dispatch button — admin taps to assign a
+        # delivery agent. Handler in bot/handlers/order_dispatch.py picks
+        # up the `disp:pick:<order_id>` callback. Skip the button when no
+        # order_id (shouldn't happen post-Block-A but defensive).
+        send_payload = {
+            "chat_id": ORDER_GROUP_CHAT_ID,
+            "text": message_text,
+            "parse_mode": "HTML",
+        }
+        if order_id:
+            send_payload["reply_markup"] = {
+                "inline_keyboard": [[
+                    {"text": "🚚 Agent ga biriktirish",
+                     "callback_data": f"disp:pick:{order_id}"}
+                ]]
+            }
         text_resp = httpx.post(
             f"{api_url}/sendMessage",
-            json={"chat_id": ORDER_GROUP_CHAT_ID, "text": message_text, "parse_mode": "HTML"},
+            json=send_payload,
             timeout=10,
         )
         text_mid = None
