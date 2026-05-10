@@ -19,10 +19,26 @@ No separate HTTP endpoint — bot is the sole entrypoint for v1.
 from aiogram import Router, F, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.shared import get_db, html_escape, is_admin_cb, logger
+from bot.shared import ADMIN_IDS, _db_role_check, get_db, html_escape, logger
 
 
 router = Router()
+
+
+def _is_dispatcher(cb: types.CallbackQuery) -> bool:
+    """Admin-only auth that — unlike `is_admin_cb` — does NOT short-circuit
+    on ORDER_GROUP_CHAT_ID. The dispatch button lives on the order PDF
+    posted in the sales group; that group is silenced for generic /admin
+    commands but the dispatch flow is admin-scoped by construction (only
+    admins see the button as actionable). Accept admin via either ADMIN_IDS
+    env or `users.agent_role='admin'` (DB).
+    """
+    uid = cb.from_user.id if cb.from_user else None
+    if not uid:
+        return False
+    if ADMIN_IDS and uid in ADMIN_IDS:
+        return True
+    return _db_role_check(uid, {"admin"})
 
 
 def _agent_label(first_name: str | None, vehicle: str | None) -> str:
@@ -34,7 +50,7 @@ def _agent_label(first_name: str | None, vehicle: str | None) -> str:
 
 @router.callback_query(F.data.startswith("disp:pick:"))
 async def on_dispatch_pick(cb: types.CallbackQuery):
-    if not is_admin_cb(cb):
+    if not _is_dispatcher(cb):
         await cb.answer("Ruxsat yo'q", show_alert=False)
         return
 
@@ -94,7 +110,7 @@ async def on_dispatch_pick(cb: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("disp:assign:"))
 async def on_dispatch_assign(cb: types.CallbackQuery):
-    if not is_admin_cb(cb):
+    if not _is_dispatcher(cb):
         await cb.answer("Ruxsat yo'q", show_alert=False)
         return
 
@@ -180,7 +196,7 @@ async def on_dispatch_assign(cb: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("disp:cancel:"))
 async def on_dispatch_cancel(cb: types.CallbackQuery):
-    if not is_admin_cb(cb):
+    if not _is_dispatcher(cb):
         await cb.answer("Ruxsat yo'q", show_alert=False)
         return
 
