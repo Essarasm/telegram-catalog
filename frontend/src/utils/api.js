@@ -345,6 +345,37 @@ export async function fetchAgentCommission(telegramId) {
   }
 }
 
+export async function fetchAgentVehicle(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/agent/vehicle?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, vehicle: '' };
+  }
+}
+
+export async function setAgentVehicle(telegramId, vehicle) {
+  try {
+    const res = await fetch(`${API_BASE}/agent/vehicle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telegram_id: telegramId, vehicle }),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false };
+  }
+}
+
+export async function fetchAgentMyDeliveries(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/agent/my-deliveries?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, active: [], history: [] };
+  }
+}
+
 export async function submitP2P({ telegramId, clientId, amountUzs, cardId, screenshot }) {
   const fd = new FormData();
   fd.append('telegram_id', String(telegramId));

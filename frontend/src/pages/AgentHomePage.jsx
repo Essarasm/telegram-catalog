@@ -2,10 +2,13 @@ import { useState, useEffect, useRef } from 'react';
 import t from '../i18n/uz.json';
 import {
   fetchAgentCommission,
+  fetchAgentMyDeliveries,
+  fetchAgentVehicle,
   fetchFxRateToday,
   fetchRecentAgentClients,
   registerNewShop,
   searchAgentClients,
+  setAgentVehicle,
   switchAgentClient,
 } from '../utils/api';
 import { roleTheme } from '../utils/roleTheme';
@@ -386,6 +389,123 @@ function CommissionCard({ data, userRole }) {
   );
 }
 
+function VehicleProfile({ uid, userRole, value, onChange }) {
+  // Workers don't see agent profile surfaces.
+  if (userRole === 'worker') return null;
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value || '');
+  const [saving, setSaving] = useState(false);
+
+  const startEdit = () => { setDraft(value || ''); setEditing(true); };
+  const save = async () => {
+    setSaving(true);
+    const r = await setAgentVehicle(uid, draft);
+    setSaving(false);
+    if (r.ok) { onChange(r.vehicle || ''); setEditing(false); }
+  };
+
+  if (editing) {
+    return (
+      <div className="rounded-xl bg-tg-secondary p-3 border border-tg-hint/20 space-y-2">
+        <div className="text-xs text-tg-hint">{t.agent_vehicle_label}</div>
+        <input
+          className="w-full bg-tg-bg rounded px-2 py-1.5 text-sm"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          maxLength={60}
+          placeholder={t.agent_vehicle_placeholder}
+          autoFocus
+        />
+        <div className="flex gap-2">
+          <button
+            onClick={save}
+            disabled={saving}
+            className="flex-1 rounded bg-tg-button text-tg-button-text text-sm py-1.5 font-semibold disabled:opacity-50"
+          >
+            {t.agent_vehicle_save}
+          </button>
+          <button
+            onClick={() => setEditing(false)}
+            className="rounded bg-tg-bg text-sm px-3 py-1.5"
+          >
+            {t.agent_vehicle_cancel}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={startEdit}
+      className="w-full rounded-xl bg-tg-secondary px-3 py-2 border border-tg-hint/20 flex items-center gap-2 active:bg-tg-secondary/70"
+    >
+      <span className="text-xs text-tg-hint">{t.agent_vehicle_label}:</span>
+      <span className="text-sm font-medium flex-1 text-left truncate">
+        {value || t.agent_vehicle_none}
+      </span>
+      <span className="text-xs text-tg-link">{t.agent_vehicle_edit}</span>
+    </button>
+  );
+}
+
+function MyDeliveriesSection({ data }) {
+  if (!data || !data.ok) return null;
+  const { active = [], history = [] } = data;
+  const total = active.length + history.length;
+  if (total === 0) return null;
+
+  const fmtUzs = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v || 0));
+  const statusLabel = (s) => t[`agent_delivery_status_${s}`] || s;
+  const statusBadgeClass = (s) => {
+    if (s === 'in_transit') return 'bg-blue-500/20 text-blue-300';
+    if (s === 'assigned') return 'bg-yellow-500/20 text-yellow-300';
+    if (s === 'delivered') return 'bg-green-500/20 text-green-300';
+    return 'bg-tg-hint/20 text-tg-hint';
+  };
+
+  const Row = ({ d }) => (
+    <div className="bg-tg-bg/50 rounded-lg p-2.5 space-y-1">
+      <div className="flex items-baseline gap-2">
+        <span className="text-sm font-medium flex-1 truncate">
+          {d.client_1c || d.client_name}
+        </span>
+        <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusBadgeClass(d.delivery_status)}`}>
+          {statusLabel(d.delivery_status)}
+        </span>
+      </div>
+      <div className="text-xs text-tg-hint flex gap-3 flex-wrap">
+        <span>#{d.order_id}</span>
+        <span>{d.item_count} mahsulot</span>
+        <span>{fmtUzs(d.total_uzs)} so'm</span>
+        {d.total_usd > 0 && <span>${d.total_usd}</span>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="rounded-xl bg-tg-secondary p-3 border border-tg-hint/20 space-y-2">
+      <div className="text-sm font-semibold">{t.agent_my_deliveries_title}</div>
+      {active.length === 0 ? (
+        <div className="text-xs text-tg-hint">{t.agent_my_deliveries_empty}</div>
+      ) : (
+        <div className="space-y-2">
+          {active.map((d) => <Row key={d.order_id} d={d} />)}
+        </div>
+      )}
+      {history.length > 0 && (
+        <>
+          <div className="text-xs text-tg-hint pt-1">{t.agent_my_deliveries_history_title}</div>
+          <div className="space-y-2">
+            {history.map((d) => <Row key={d.order_id} d={d} />)}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function ClientRow({ label, sub, onClick, isNew }) {
   return (
     <button
@@ -412,6 +532,8 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
     t.agent_panel_home_title;
   const [fx, setFx] = useState(null);
   const [commission, setCommission] = useState(null);
+  const [vehicle, setVehicle] = useState('');
+  const [deliveries, setDeliveries] = useState(null);
   const [recent, setRecent] = useState([]);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState(null);
@@ -422,7 +544,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
 
   const canRegister = userRole !== 'worker';
 
-  // Initial load: FX + recent + commission
+  // Initial load: FX + recent + commission + vehicle + deliveries
   useEffect(() => {
     fetchFxRateToday().then(setFx);
     if (uid) {
@@ -430,6 +552,10 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         if (r.ok) setRecent(r.recent || []);
       });
       fetchAgentCommission(uid).then(setCommission);
+      fetchAgentVehicle(uid).then(r => {
+        if (r.ok) setVehicle(r.vehicle || '');
+      });
+      fetchAgentMyDeliveries(uid).then(setDeliveries);
     }
   }, [uid]);
 
@@ -498,7 +624,9 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         </button>
       )}
       <FxRateBanner data={fx} />
+      <VehicleProfile uid={uid} userRole={userRole} value={vehicle} onChange={setVehicle} />
       <CommissionCard data={commission} userRole={userRole} />
+      <MyDeliveriesSection data={deliveries} />
 
       {/* Register new shop — non-workers only */}
       {canRegister && !registerOpen && (

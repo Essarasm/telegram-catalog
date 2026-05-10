@@ -21,7 +21,7 @@ from backend.services.client_search import (
     relink_orphan_finance_rows,
     search_clients,
 )
-from backend.services.roles import get_role, role_in
+from backend.services.roles import role_in
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -217,6 +217,106 @@ def agent_commission(telegram_id: int = Query(...)):
                 for ch, v in sorted(per_channel.items())
             ],
         }
+    finally:
+        conn.close()
+
+
+# ── Agent panel: vehicle profile (Block A) ───────────────────────────────
+
+@router.get("/vehicle")
+def agent_vehicle_get(telegram_id: int = Query(...)):
+    """Return this agent's vehicle string (free-text). Empty/null = office-
+    only agent (no delivery vehicle). Workers blocked."""
+    conn = get_db()
+    try:
+        if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
+            return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
+        row = conn.execute(
+            "SELECT vehicle FROM users WHERE telegram_id = ?", (telegram_id,)
+        ).fetchone()
+        return {"ok": True, "vehicle": (row["vehicle"] if row else "") or ""}
+    finally:
+        conn.close()
+
+
+@router.post("/vehicle")
+def agent_vehicle_set(payload: dict = Body(...)):
+    """Agent updates their own vehicle descriptor. Free-text, max 60 chars.
+    Empty string clears the field (office-only)."""
+    telegram_id = payload.get("telegram_id")
+    if not isinstance(telegram_id, int):
+        return JSONResponse({"ok": False, "error": "telegram_id required"}, status_code=400)
+    vehicle = (payload.get("vehicle") or "").strip()[:60]
+    conn = get_db()
+    try:
+        if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
+            return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
+        conn.execute(
+            "UPDATE users SET vehicle = ? WHERE telegram_id = ?",
+            (vehicle or None, telegram_id),
+        )
+        conn.commit()
+        return {"ok": True, "vehicle": vehicle}
+    finally:
+        conn.close()
+
+
+# ── Agent panel: my deliveries (Block A — read-only; dispatch ships in Block B) ──
+
+@router.get("/my-deliveries")
+def agent_my_deliveries(telegram_id: int = Query(...)):
+    """List orders dispatched to this agent. Active = assigned/in_transit;
+    History = recent delivered/cancelled (last 30 days). Workers blocked.
+    """
+    conn = get_db()
+    try:
+        if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
+            return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
+
+        rows = conn.execute(
+            """SELECT o.id, o.client_name, o.client_phone, o.item_count,
+                      o.total_uzs, o.total_usd, o.delivery_status,
+                      o.assigned_at, o.created_at,
+                      ac.name AS whitelist_name, ac.client_id_1c
+               FROM orders o
+               LEFT JOIN allowed_clients ac ON ac.id = o.client_id
+               WHERE o.assigned_agent_id = ?
+                 AND o.delivery_status IN ('assigned', 'in_transit',
+                                           'delivered', 'cancelled')
+                 AND (o.delivery_status IN ('assigned', 'in_transit')
+                      OR date(o.assigned_at) >= date('now', '-30 days'))
+               ORDER BY
+                 CASE o.delivery_status
+                   WHEN 'in_transit' THEN 0
+                   WHEN 'assigned' THEN 1
+                   WHEN 'delivered' THEN 2
+                   WHEN 'cancelled' THEN 3
+                 END,
+                 o.assigned_at DESC""",
+            (telegram_id,),
+        ).fetchall()
+
+        active = []
+        history = []
+        for r in rows:
+            entry = {
+                "order_id": r["id"],
+                "client_name": (r["whitelist_name"] or r["client_name"] or "—"),
+                "client_1c": r["client_id_1c"] or None,
+                "client_phone": r["client_phone"] or "",
+                "item_count": r["item_count"] or 0,
+                "total_uzs": round(float(r["total_uzs"]) or 0),
+                "total_usd": round(float(r["total_usd"]) or 0, 2),
+                "delivery_status": r["delivery_status"],
+                "assigned_at": r["assigned_at"],
+                "created_at": r["created_at"],
+            }
+            if r["delivery_status"] in ("assigned", "in_transit"):
+                active.append(entry)
+            else:
+                history.append(entry)
+
+        return {"ok": True, "active": active, "history": history}
     finally:
         conn.close()
 

@@ -1151,6 +1151,46 @@ def init_db():
         "ON orders(placed_by_telegram_id)"
     )
 
+    # Block A — agent vehicle profile (free-text) + delivery dispatch schema.
+    # vehicle: free-text descriptor (Labo / Жигули / JAC / Foton / Isuzu /
+    # boshqa). Optional/nullable — blank for office-only agents (Шухрат).
+    # Backfill is operational: admin sets via the agent vehicle endpoint or
+    # direct SQL; no hardcoded telegram_ids in this migration.
+    user_cols_vehicle = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "vehicle" not in user_cols_vehicle:
+        conn.execute("ALTER TABLE users ADD COLUMN vehicle TEXT")
+
+    # orders.assigned_agent_id / assigned_at / delivery_status — Block A
+    # adds the schema only; admin dispatch flow ships in Block B. Atomic
+    # claim via WHERE delivery_status='open' (TOCTOU_FIRST_WRITE_WINS,
+    # Error Log #37). Existing orders are tagged 'legacy' so they don't
+    # appear in the dispatch queue; new orders default to 'open'.
+    order_cols_dispatch = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    if "assigned_agent_id" not in order_cols_dispatch:
+        conn.execute("ALTER TABLE orders ADD COLUMN assigned_agent_id INTEGER")
+    if "assigned_at" not in order_cols_dispatch:
+        conn.execute("ALTER TABLE orders ADD COLUMN assigned_at TEXT")
+    if "delivery_status" not in order_cols_dispatch:
+        # SQLite ALTER TABLE doesn't support CHECK; the application enforces
+        # the enum {open, assigned, in_transit, delivered, cancelled}.
+        conn.execute(
+            "ALTER TABLE orders ADD COLUMN delivery_status TEXT DEFAULT 'open'"
+        )
+        # Backfill historical orders to 'legacy' so they don't pollute the
+        # dispatch queue. Only orders created after this migration get 'open'.
+        conn.execute(
+            "UPDATE orders SET delivery_status = 'legacy' "
+            "WHERE delivery_status IS NULL OR delivery_status = 'open'"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orders_delivery_status "
+        "ON orders(delivery_status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_orders_assigned_agent "
+        "ON orders(assigned_agent_id)"
+    )
+
     # One-time backfill: seed daily_fx_rate_events from existing daily_fx_rates
     # so the agent FX banner has history from day one. Runs only when the
     # events table is empty; subsequent /fxrate sets append normally.
