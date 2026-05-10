@@ -165,6 +165,9 @@ def install_aiogram_handler(dp) -> None:
                 hint_bits.append(f"chat={chat_id}")
             if user_id is not None:
                 hint_bits.append(f"user={user_id}")
+            migrate_to = getattr(exc, "migrate_to_chat_id", None)
+            if migrate_to is not None:
+                hint_bits.append(f"migrate_to={migrate_to}")
             send_error_alert(
                 source=source,
                 exc_type=type(exc).__name__,

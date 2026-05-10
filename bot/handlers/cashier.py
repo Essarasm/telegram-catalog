@@ -288,6 +288,7 @@ def _today_intake_rows(conn):
            FROM intake_payments ip
            LEFT JOIN allowed_clients ac ON ac.id = ip.client_id
            WHERE ip.status != 'rejected'
+             AND ip.channel IN ('cash_direct', 'cash_via_agent', 'p2p')
              AND date(ip.submitted_at, '+5 hours') = ?
            ORDER BY ip.submitted_at DESC""",
         (today_tk,),
