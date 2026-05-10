@@ -68,7 +68,10 @@ def import_offline(files):
 
 def import_online(files, api_url, admin_key=None):
     if admin_key is None:
-        admin_key = os.getenv("ADMIN_API_KEY") or "rassvet2026"
+        admin_key = os.getenv("ADMIN_API_KEY")
+        if not admin_key:
+            print("ERROR: ADMIN_API_KEY env var is not set", file=sys.stderr)
+            sys.exit(1)
     """Import files via the live API endpoint."""
     try:
         import httpx
