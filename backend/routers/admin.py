@@ -2062,6 +2062,42 @@ def approve_agent(payload: dict = Body(...), admin_key: str = Query(...)):
         conn.close()
 
 
+@router.post("/clear-agent-application")
+def clear_agent_application(payload: dict = Body(...), admin_key: str = Query(...)):
+    """Reset all agent-application state for a telegram_id so the user can
+    re-submit fresh. Deletes their `pending_agents` rows (any status) and
+    clears `users.agent_role` + `is_agent`. Idempotent — safe to call
+    repeatedly. Body: {telegram_id: int}.
+    """
+    _check_admin(admin_key)
+    telegram_id = payload.get("telegram_id")
+    if not isinstance(telegram_id, int):
+        return JSONResponse(
+            {"ok": False, "error": "telegram_id required"},
+            status_code=400,
+        )
+    conn = get_db()
+    try:
+        cur1 = conn.execute(
+            "DELETE FROM pending_agents WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        cur2 = conn.execute(
+            "UPDATE users SET agent_role = NULL, is_agent = 0 "
+            "WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        conn.commit()
+        return {
+            "ok": True,
+            "telegram_id": telegram_id,
+            "pending_deleted": cur1.rowcount,
+            "users_reset": cur2.rowcount > 0,
+        }
+    finally:
+        conn.close()
+
+
 @router.post("/reject-agent")
 def reject_agent(payload: dict = Body(...), admin_key: str = Query(...)):
     """Reject an agent application. Admin-key gated."""
