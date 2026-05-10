@@ -1,0 +1,118 @@
+#!/bin/bash
+# Pre-commit hook: foundation guards + Python syntax + pytest + frontend build sync.
+#
+# Foundation guards (added 2026-05-10 after the foundation renovation):
+#   1. Schema DDL (CREATE/ALTER TABLE, CREATE INDEX) must live in
+#      backend/database.py — never in routers/services. Closes the
+#      manual-migration-endpoint debt class (Error Log #20, #46).
+#   2. Chat-ID env-getters with hardcoded fallbacks must live in
+#      backend/services/group_config.py — never duplicated across files.
+#      Closes the WRONG_FALLBACK_FROM_COPY_PASTE class (Error Log #46).
+#
+# Override env vars for the rare legitimate exception:
+#   SKIP_SCHEMA_CHECK=1   — bypass the schema-DDL guard
+#   SKIP_CHATID_CHECK=1   — bypass the chat-ID guard
+#   SKIP_FRONTEND_BUILD=1 — skip the frontend rebuild
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit 1
+
+# ── Python syntax ─────────────────────────────────────────────────────────
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$')
+
+if [ -n "$STAGED_PY" ]; then
+    echo "🔍 Checking Python syntax..."
+    for f in $STAGED_PY; do
+        if [ -f "$f" ]; then
+            python3 -m py_compile "$f" 2>&1
+            if [ $? -ne 0 ]; then
+                echo "❌ Syntax error in $f"
+                exit 1
+            fi
+        fi
+    done
+    echo "✅ Syntax OK"
+fi
+
+# ── Foundation guard 1: schema-change discipline ──────────────────────────
+# Allowlist: backend/database.py (canonical schema home), tools/ (one-off ops).
+if [ "$SKIP_SCHEMA_CHECK" != "1" ]; then
+    BAD_SCHEMA=""
+    for f in $(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' | grep -v -E '^(backend/database\.py|tools/)'); do
+        if [ -f "$f" ] && git diff --cached -- "$f" | grep -qE '^\+[^#]*\b(CREATE TABLE|ALTER TABLE|CREATE INDEX|CREATE UNIQUE INDEX)\b'; then
+            BAD_SCHEMA="$BAD_SCHEMA $f"
+        fi
+    done
+    if [ -n "$BAD_SCHEMA" ]; then
+        echo "❌ Schema DDL added outside backend/database.py:"
+        for f in $BAD_SCHEMA; do echo "    $f"; done
+        echo ""
+        echo "   Schema changes belong in backend/database.py:init_db() under"
+        echo "   an 'if current < N' migration block, with SCHEMA_VERSION bumped."
+        echo "   This prevents the manual-migration-endpoint debt class"
+        echo "   (Error Log #20 client_payments, #46 real_orders)."
+        echo "   Override (rare): SKIP_SCHEMA_CHECK=1 git commit ..."
+        exit 1
+    fi
+fi
+
+# ── Foundation guard 2: chat-ID centralization ────────────────────────────
+# Allowlist: backend/services/group_config.py (canonical home).
+# Pattern matched: os.getenv("..._CHAT_ID", "fallback-with-content")
+# A presence check like os.getenv("X_CHAT_ID") is not None is fine — only
+# fallback-with-string-content triggers (that's the duplication source).
+if [ "$SKIP_CHATID_CHECK" != "1" ]; then
+    BAD_CHATID=""
+    for f in $(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' | grep -v -E '^backend/services/group_config\.py$'); do
+        if [ -f "$f" ] && git diff --cached -- "$f" | grep -qE '^\+[^#]*os\.getenv\("[A-Z_]*CHAT_ID"[[:space:]]*,[[:space:]]*"[^"]+"\)'; then
+            BAD_CHATID="$BAD_CHATID $f"
+        fi
+    done
+    if [ -n "$BAD_CHATID" ]; then
+        echo "❌ Chat-ID env-getter with hardcoded fallback outside group_config.py:"
+        for f in $BAD_CHATID; do echo "    $f"; done
+        echo ""
+        echo "   Add the constant to backend/services/group_config.py with a"
+        echo "   _env_int(...) call, then import it where you need it."
+        echo "   This prevents the WRONG_FALLBACK_FROM_COPY_PASTE class"
+        echo "   (Error Log #46 — location.py shipped to wrong group via copy-paste)."
+        echo "   Override (rare): SKIP_CHATID_CHECK=1 git commit ..."
+        exit 1
+    fi
+fi
+
+# ── Pytest ────────────────────────────────────────────────────────────────
+# pytest.ini's testpaths covers both tests/ and backend/tests/, so a plain
+# `pytest -q` runs both suites — the auth-fallback rot from 2026-05-10 is now
+# loud rather than hiding behind manual invocation.
+echo "🧪 Running tests..."
+python3 -m pytest -q --tb=short 2>&1
+if [ $? -ne 0 ]; then
+    echo "❌ Tests failed. Fix before committing."
+    exit 1
+fi
+
+# ── Frontend build freshness ──────────────────────────────────────────────
+# If any frontend/src file is staged but frontend/dist is NOT also staged,
+# the committed bundle will drift from source. Rebuild + restage.
+# Skip with SKIP_FRONTEND_BUILD=1 for docs-only or emergency commits.
+STAGED_FE_SRC=$(git diff --cached --name-only --diff-filter=ACM \
+    | grep -E '^frontend/(src|index\.html|vite\.config|package\.json)')
+
+if [ -n "$STAGED_FE_SRC" ] && [ "$SKIP_FRONTEND_BUILD" != "1" ]; then
+    echo "🏗  Frontend source changed — rebuilding dist/..."
+    if [ ! -d "frontend/node_modules" ]; then
+        echo "❌ frontend/node_modules missing. Run: cd frontend && npm install"
+        exit 1
+    fi
+    (cd frontend && ./node_modules/.bin/vite build) >/dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "❌ Frontend build failed. Run 'cd frontend && npm run build' to see the error."
+        exit 1
+    fi
+    # Re-stage the updated dist so the commit reflects the new bundle
+    git add frontend/dist
+    echo "✅ Frontend rebuilt & dist/ re-staged"
+fi
+
+echo "✅ All checks passed"
