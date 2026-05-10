@@ -260,7 +260,12 @@ async def handle_location(message: Message):
     if had_location:
         try:
             import httpx as _httpx
-            ERRORS_CHAT = os.getenv("ERRORS_GROUP_CHAT_ID", "-5085083917")
+            # Pre-renovation, the fallback was -5085083917 — that's actually
+            # REPORT_GROUP_CHAT_ID, not ERRORS_GROUP_CHAT_ID. The location
+            # overwrite alerts were silently shipping to the wrong group when
+            # the env var was unset. Audit-caught and fixed 2026-05-10.
+            from bot.shared import ERRORS_GROUP_CHAT_ID
+            ERRORS_CHAT = ERRORS_GROUP_CHAT_ID
             client_label = client_1c_name or setter_name
             prev_maps = f"https://maps.google.com/?q={prev_lat},{prev_lng}" if prev_lat else "—"
             new_maps = f"https://maps.google.com/?q={loc.latitude},{loc.longitude}"

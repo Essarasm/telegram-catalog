@@ -1,9 +1,11 @@
 #!/bin/bash
 # Start both the FastAPI server and Telegram bot
 
-# Import/refresh products from xlsx on every deploy
-# This ensures Rassvet_Master changes reach the app database immediately
-FORCE_REIMPORT=1 python -m backend.services.import_products || echo "WARNING: Product import failed"
+# Import/refresh products from xlsx on every deploy (additive — matches railway.toml).
+# DO NOT add FORCE_REIMPORT=1 here: it triggers DELETE FROM products/producers/categories
+# in import_products.py:252, which breaks server-side cart persistence (cart_items.product_id
+# becomes orphaned). Live deploys via railway.toml run this without the flag — keep parity.
+python -m backend.services.import_products || echo "WARNING: Product import failed"
 
 # Start FastAPI in background
 python -m uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000} &

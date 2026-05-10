@@ -12,7 +12,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051")
+from backend.services.group_config import ADMIN_GROUP_CHAT_ID
 
 # Rate-limit: don't re-alert the same error signature within N seconds.
 _SUPPRESS_WINDOW_SEC = 300  # 5 minutes

@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 13  # 2026-05-07: 4 synthetic country-of-origin suppliers (Саморез КИТАЙ, ЛИНОЛЕУМ РОССИЯ, ЛИНОЛЕУМ КАЗАХСТАН, Гвозди /БУХОРО/) + re-run v12 backfill so ~130 products fold from (noma'lum) into named buckets in /zakazlar (Session N)
+SCHEMA_VERSION = 15  # 2026-05-10: foundation-renovation pass — v14 added three missing indexes (orders.client_id, users.client_id, allowed_clients.phone_normalized partial UNIQUE); v15 rebuilds real_orders + client_payments with composite UNIQUE(doc_number_1c, doc_date) to fix the 1C year-rollover collision class (client_payments was previously only patched via the manual /api/finance/migrate-payments-unique HTTP endpoint; real_orders had the same latent bug with no migration shipped)
 
 
 def init_db():
@@ -1784,11 +1784,183 @@ def init_db():
             """
         )
 
+    # v15 (2026-05-10): rebuild real_orders + client_payments to swap
+    # column-level UNIQUE(doc_number_1c) -> composite UNIQUE(doc_number_1c, doc_date).
+    # 1C cycles document numbers per year, so the column-level UNIQUE was a
+    # latent IntegrityError waiting on a year-rollover collision (Error Log #20).
+    # client_payments was previously fixed only via the manual /api/finance/
+    # migrate-payments-unique endpoint; real_orders had the same bug with no
+    # migration shipped. Both fixed here, idempotently. Detection via
+    # sqlite_master.sql introspection — already-migrated tables no-op.
+    # foreign_keys=OFF is critical: real_order_items references real_orders(id)
+    # ON DELETE CASCADE, so dropping real_orders without it would wipe items.
+    if current < 15:
+        ro_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='real_orders'"
+        ).fetchone()
+        cp_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='client_payments'"
+        ).fetchone()
+        ro_sql = (ro_row["sql"] if ro_row else "") or ""
+        cp_sql = (cp_row["sql"] if cp_row else "") or ""
+        ro_needs = (
+            "doc_number_1c TEXT NOT NULL UNIQUE" in ro_sql
+            and "UNIQUE(doc_number_1c, doc_date)" not in ro_sql
+        )
+        cp_needs = (
+            "doc_number_1c TEXT NOT NULL UNIQUE" in cp_sql
+            and "UNIQUE(doc_number_1c, doc_date)" not in cp_sql
+        )
+
+        if ro_needs or cp_needs:
+            conn.execute("PRAGMA foreign_keys=OFF")
+            try:
+                if ro_needs:
+                    pre = conn.execute("SELECT COUNT(*) AS n FROM real_orders").fetchone()["n"]
+                    conn.execute("""
+                        CREATE TABLE real_orders_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            doc_number_1c TEXT NOT NULL,
+                            doc_date TEXT NOT NULL,
+                            doc_time TEXT,
+                            client_name_1c TEXT NOT NULL,
+                            client_id INTEGER,
+                            contract TEXT,
+                            storage_location TEXT,
+                            payment_account TEXT,
+                            sale_agent TEXT,
+                            responsible_person TEXT,
+                            comment TEXT,
+                            currency TEXT DEFAULT 'UZS',
+                            exchange_rate REAL DEFAULT 1,
+                            total_sum REAL DEFAULT 0,
+                            total_sum_currency REAL DEFAULT 0,
+                            total_weight REAL DEFAULT 0,
+                            item_count INTEGER DEFAULT 0,
+                            imported_at TEXT DEFAULT (datetime('now')),
+                            UNIQUE(doc_number_1c, doc_date)
+                        )
+                    """)
+                    ro_cols = (
+                        "id, doc_number_1c, doc_date, doc_time, client_name_1c, "
+                        "client_id, contract, storage_location, payment_account, "
+                        "sale_agent, responsible_person, comment, currency, "
+                        "exchange_rate, total_sum, total_sum_currency, total_weight, "
+                        "item_count, imported_at"
+                    )
+                    conn.execute(
+                        f"INSERT INTO real_orders_new ({ro_cols}) "
+                        f"SELECT {ro_cols} FROM real_orders"
+                    )
+                    post = conn.execute("SELECT COUNT(*) AS n FROM real_orders_new").fetchone()["n"]
+                    if post != pre:
+                        conn.execute("DROP TABLE real_orders_new")
+                        raise RuntimeError(
+                            f"real_orders rebuild aborted: row count mismatch "
+                            f"(was {pre}, copied {post})"
+                        )
+                    conn.execute("DROP TABLE real_orders")
+                    conn.execute("ALTER TABLE real_orders_new RENAME TO real_orders")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_real_orders_client_id ON real_orders(client_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_real_orders_client_name ON real_orders(client_name_1c)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_real_orders_doc_date ON real_orders(doc_date)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_real_orders_doc_number ON real_orders(doc_number_1c)")
+                    print(f"[init_db v15] real_orders rebuilt with composite UNIQUE: {pre} rows preserved")
+
+                if cp_needs:
+                    pre = conn.execute("SELECT COUNT(*) AS n FROM client_payments").fetchone()["n"]
+                    conn.execute("""
+                        CREATE TABLE client_payments_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            doc_number_1c TEXT NOT NULL,
+                            doc_date TEXT NOT NULL,
+                            doc_time TEXT,
+                            author TEXT,
+                            received_from TEXT,
+                            basis TEXT,
+                            attachment TEXT,
+                            corr_account TEXT,
+                            client_name_1c TEXT,
+                            client_id INTEGER,
+                            subconto2 TEXT,
+                            subconto3 TEXT,
+                            currency TEXT DEFAULT 'UZS',
+                            amount_local REAL DEFAULT 0,
+                            amount_currency REAL DEFAULT 0,
+                            fx_rate REAL DEFAULT 0,
+                            cashflow_category TEXT,
+                            imported_at TEXT DEFAULT (datetime('now')),
+                            UNIQUE(doc_number_1c, doc_date)
+                        )
+                    """)
+                    cp_cols = (
+                        "id, doc_number_1c, doc_date, doc_time, author, received_from, "
+                        "basis, attachment, corr_account, client_name_1c, client_id, "
+                        "subconto2, subconto3, currency, amount_local, amount_currency, "
+                        "fx_rate, cashflow_category, imported_at"
+                    )
+                    conn.execute(
+                        f"INSERT INTO client_payments_new ({cp_cols}) "
+                        f"SELECT {cp_cols} FROM client_payments"
+                    )
+                    post = conn.execute("SELECT COUNT(*) AS n FROM client_payments_new").fetchone()["n"]
+                    if post != pre:
+                        conn.execute("DROP TABLE client_payments_new")
+                        raise RuntimeError(
+                            f"client_payments rebuild aborted: row count mismatch "
+                            f"(was {pre}, copied {post})"
+                        )
+                    conn.execute("DROP TABLE client_payments")
+                    conn.execute("ALTER TABLE client_payments_new RENAME TO client_payments")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_payments_doc_date ON client_payments(doc_date)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_payments_client_name ON client_payments(client_name_1c)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_payments_client_id ON client_payments(client_id)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_payments_currency ON client_payments(currency)")
+                    print(f"[init_db v15] client_payments rebuilt with composite UNIQUE: {pre} rows preserved")
+            finally:
+                conn.execute("PRAGMA foreign_keys=ON")
+
+    # v14 (2026-05-10): three missing indexes the foundation audit surfaced.
+    # All additive — no rows touched, easily droppable if anything goes sideways.
+    #  - orders.client_id: every cabinet load full-scans without it
+    #  - users.client_id: used in import-loop joins, latent quadratic risk
+    #  - allowed_clients.phone_normalized UNIQUE partial: previously created
+    #    only by tools/dedup_allowed_clients.py (Error Log #41). Fresh deploys
+    #    that skipped the tool re-accumulated dupes silently. If active dupes
+    #    still exist, we skip the unique index and log loudly — operator must
+    #    run the dedup tool before retrying. Better than IntegrityError on init.
+    if current < 14:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_client_id ON orders(client_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_client_id ON users(client_id)")
+        dupe = conn.execute(
+            "SELECT phone_normalized, COUNT(*) AS n "
+            "FROM allowed_clients "
+            "WHERE phone_normalized IS NOT NULL "
+            "  AND phone_normalized != '' "
+            "  AND COALESCE(status,'active') = 'active' "
+            "GROUP BY phone_normalized HAVING n > 1 "
+            "LIMIT 1"
+        ).fetchone()
+        if dupe is None:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_allowed_phone_unique "
+                "ON allowed_clients(phone_normalized) "
+                "WHERE phone_normalized IS NOT NULL "
+                "  AND phone_normalized != '' "
+                "  AND COALESCE(status,'active') = 'active'"
+            )
+        else:
+            print(
+                f"[init_db v14] WARNING: skipping idx_allowed_phone_unique — "
+                f"duplicate active rows exist (e.g. phone={dupe[0]!r}, count={dupe[1]}). "
+                f"Run tools/dedup_allowed_clients.py and redeploy to land the unique index."
+            )
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "Session N (2026-05-07 afternoon): 4 synthetic country-of-origin suppliers (Саморез КИТАЙ, ЛИНОЛЕУМ РОССИЯ, ЛИНОЛЕУМ КАЗАХСТАН, Гвозди /БУХОРО/) + re-run v12 backfill UPDATE — folds ~130 products from (noma'lum) into named /zakazlar buckets"),
+            (SCHEMA_VERSION, "Foundation renovation 2026-05-10: v14 = three missing indexes (orders.client_id, users.client_id, allowed_clients.phone_normalized partial UNIQUE folded into init_db from tools/dedup_allowed_clients.py); v15 = real_orders + client_payments rebuilt with composite UNIQUE(doc_number_1c, doc_date) to fix 1C year-rollover collision class (Error Log #20)"),
         )
 
     conn.commit()

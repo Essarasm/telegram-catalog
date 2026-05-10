@@ -21,28 +21,24 @@ _BASE_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.rail
 WEBAPP_URL = f"{_BASE_URL}?v=16"
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 
-ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
-ADMIN_GROUP_CHAT_ID = int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))
-AGENTS_GROUP_CHAT_ID = int(os.getenv("AGENTS_GROUP_CHAT_ID", "-1003922400481"))
-DAILY_GROUP_CHAT_ID = int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))
-INVENTORY_GROUP_CHAT_ID = int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))
-# Cashier-only group (Aunt + Uncle for now). 0 = unconfigured;
-# the cashier FSM stays inert until this is set in the env.
-CASHIER_GROUP_CHAT_ID = int(os.getenv("CASHIER_GROUP_CHAT_ID", "0"))
-# Bank-transfer group (Uchqun + Shuhrat). Sister to the cashier group but
-# routes through bot/handlers/bank_transfer.py. 0 = unconfigured.
-BANK_TRANSFER_GROUP_CHAT_ID = int(os.getenv("BANK_TRANSFER_GROUP_CHAT_ID", "0"))
-# Driver/agent client-location-capture group (open to anyone in the group).
-# Has its own FSM-driven handler in bot/handlers/driver_location.py with
-# explicit client picker + first-confirmed-locks semantics. The general
-# location handler in location.py skips this chat to avoid double-processing.
-DRIVER_GROUP_CHAT_ID = int(os.getenv("DRIVER_GROUP_CHAT_ID", "-4998450084"))
-# Agent-approval group — receives Block C's agent self-registration
-# applications and is the canonical home for role-related admin work
-# (future: /makeagent moves here from the general ADMIN_GROUP). Bot must
-# have admin status in this supergroup for inline-button callbacks to
-# deliver — see memory `feedback_telegram_bot_supergroup_admin.md`.
-AGENT_APPROVAL_GROUP_CHAT_ID = int(os.getenv("AGENT_APPROVAL_GROUP_CHAT_ID", "-1003967758004"))
+# Group chat IDs — canonical home is backend/services/group_config.py.
+# Re-exported here so existing `from bot.shared import ADMIN_GROUP_CHAT_ID`
+# imports keep working without changes across all handler modules.
+from backend.services.group_config import (
+    ORDER_GROUP_CHAT_ID,
+    ADMIN_GROUP_CHAT_ID,
+    AGENTS_GROUP_CHAT_ID,
+    DAILY_GROUP_CHAT_ID,
+    INVENTORY_GROUP_CHAT_ID,
+    CASHIER_GROUP_CHAT_ID,
+    BANK_TRANSFER_GROUP_CHAT_ID,
+    DRIVER_GROUP_CHAT_ID,
+    AGENT_APPROVAL_GROUP_CHAT_ID,
+    ERRORS_GROUP_CHAT_ID,
+    REPORT_GROUP_CHAT_ID,
+    LEGAL_TRANSFER_GROUP_CHAT_ID,
+    MANAGER_CHAT_ID,
+)
 
 
 def chat_context(message) -> str:

@@ -49,12 +49,9 @@ from bot.shared import (
     get_db,
     html_escape,
 )
+from backend.services.group_config import legal_transfer_target
 
-LEGAL_TRANSFER_GROUP_CHAT_ID = int(
-    os.getenv("LEGAL_TRANSFER_GROUP_CHAT_ID", "")
-    or os.getenv("CASHIER_GROUP_CHAT_ID", "")
-    or "0"
-)
+LEGAL_TRANSFER_GROUP_CHAT_ID = legal_transfer_target()
 from backend.services.payment_intake import (
     insert_intake_raw,
     create_intake_payment,
@@ -1311,10 +1308,7 @@ async def cb_legaltx_transfer_proof_upload(message: Message, bot: Bot):
     )
 
     # Forward the proof to the legal-transfer group with a Stage-5b button
-    group_id = (
-        os.getenv("LEGAL_TRANSFER_GROUP_CHAT_ID", "")
-        or os.getenv("CASHIER_GROUP_CHAT_ID", "")
-    )
+    group_id = legal_transfer_target()
     if not group_id:
         logger.warning("No LEGAL_TRANSFER_GROUP_CHAT_ID — skipping Stage 5a forward")
         return

@@ -11,7 +11,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-INVENTORY_GROUP_CHAT_ID = os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411")
+from backend.services.group_config import INVENTORY_GROUP_CHAT_ID
 
 
 def send_interest_alert(product_name: str, lifecycle: str, distinct_users: int,

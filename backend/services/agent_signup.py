@@ -30,9 +30,7 @@ from backend.services.phone_slots import _normalize
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-# Dedicated agent-approval / role-assignment group. Distinct from the
-# general ADMIN_GROUP. Mirrors `bot/shared.py::AGENT_APPROVAL_GROUP_CHAT_ID`.
-AGENT_APPROVAL_GROUP_CHAT_ID = os.getenv("AGENT_APPROVAL_GROUP_CHAT_ID", "-1003967758004")
+from backend.services.group_config import AGENT_APPROVAL_GROUP_CHAT_ID
 
 
 def submit_agent_application(

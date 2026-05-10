@@ -7,10 +7,8 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051")
-# Legacy fallbacks (kept for backward compatibility)
-MANAGER_CHAT_ID = os.getenv("MANAGER_CHAT_ID", "")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
+from backend.services.group_config import ADMIN_GROUP_CHAT_ID, MANAGER_CHAT_ID
 
 
 def send_registration_notification(

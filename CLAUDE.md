@@ -26,7 +26,7 @@ These artifacts govern how to work here. Read in order before starting any task:
 ## Hard Constraints — Never Change Without Asking
 
 Load-bearing decisions. Stop and confirm with Ulugbek before touching:
-- **No Tailwind, no CSS-in-JS, no UI frameworks** — pure CSS only (bundle discipline)
+- **No CSS-in-JS, no UI frameworks (Material UI, Bootstrap, Chakra, etc.)** — Tailwind is OK and load-bearing: configured with Telegram theme tokens (`tg-bg`, `tg-text`, etc. — see `frontend/tailwind.config.js`) and used across 18 of 24 components since the initial commit. Goal is bundle discipline, not zero-utility-CSS — current main chunk is 317K JS + 28K CSS, budget is **<400K JS + <50K CSS** for the main chunk
 - **No chart libraries** — pure inline SVG
 - **SQLite schema** (`backend/database.py`) — additive `ALTER TABLE` only, never destructive DDL
 - **1C XLS parser** — `xlrd` + `cp1251`; never assume UTF-8 for 1C files

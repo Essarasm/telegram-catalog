@@ -44,39 +44,10 @@ def setup_db(tmp_dirs, monkeypatch):
     monkeypatch.setattr(backup_mod, "BACKUP_PATH", backup_path)
     monkeypatch.setattr(backup_mod, "DATABASE_PATH", db_path)
 
-    conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            telegram_id INTEGER PRIMARY KEY,
-            phone TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            username TEXT,
-            latitude REAL,
-            longitude REAL,
-            is_approved INTEGER DEFAULT 0,
-            client_id INTEGER,
-            registered_at TEXT DEFAULT (datetime('now'))
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS allowed_clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone_normalized TEXT NOT NULL,
-            name TEXT,
-            location TEXT,
-            source_sheet TEXT,
-            client_id_1c TEXT,
-            company_name TEXT,
-            status TEXT DEFAULT 'active',
-            matched_telegram_id INTEGER,
-            credit_score INTEGER,
-            credit_limit REAL,
-            notes TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    # Build the schema via init_db() so it stays in lockstep with production.
+    # Inline CREATE TABLE blocks here drift the moment a new column is added
+    # (e.g. is_agent, agent_role) and silently rot the test suite.
+    db_mod.init_db()
     return tmp_dirs
 
 

@@ -18,13 +18,17 @@ async def cmd_grouphealth(message: types.Message):
     if not is_admin(message):
         return
     log_admin_action(message, "grouphealth", "")
+    from bot.shared import (
+        ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID,
+        ORDER_GROUP_CHAT_ID, AGENTS_GROUP_CHAT_ID, ERRORS_GROUP_CHAT_ID,
+    )
     groups = [
-        ("Admin",             int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))),
-        ("Daily",             int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))),
-        ("Inventory",         int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))),
-        ("Orders/Sales",      int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))),
-        ("Agents",            int(os.getenv("AGENTS_GROUP_CHAT_ID", "-1003922400481"))),
-        ("Taklif va Xatolar", int(os.getenv("ERRORS_GROUP_CHAT_ID", "-1003896597497"))),
+        ("Admin",             ADMIN_GROUP_CHAT_ID),
+        ("Daily",             DAILY_GROUP_CHAT_ID),
+        ("Inventory",         INVENTORY_GROUP_CHAT_ID),
+        ("Orders/Sales",      ORDER_GROUP_CHAT_ID),
+        ("Agents",            AGENTS_GROUP_CHAT_ID),
+        ("Taklif va Xatolar", ERRORS_GROUP_CHAT_ID),
     ]
     lines = ["<b>🩺 Group health check</b>\n"]
     all_ok = True

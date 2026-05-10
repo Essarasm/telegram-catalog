@@ -37,13 +37,14 @@ from backend.services.payment_intake import (
 
 logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-CASHIER_GROUP_CHAT_ID = os.getenv("CASHIER_GROUP_CHAT_ID", "")
-# Dedicated group for legal-entity bank transfer flow (Stage 1 notifications,
-# Stage 2 supplier picker, future stages). Falls back to the cashier group if
-# unset so older deployments don't break.
-LEGAL_TRANSFER_GROUP_CHAT_ID = (
-    os.getenv("LEGAL_TRANSFER_GROUP_CHAT_ID", "") or CASHIER_GROUP_CHAT_ID
+from backend.services.group_config import (
+    CASHIER_GROUP_CHAT_ID,
+    legal_transfer_target,
 )
+# Dedicated group for legal-entity bank transfer flow. Falls back to the
+# cashier group if LEGAL_TRANSFER_GROUP_CHAT_ID is unset so older deployments
+# don't break — fallback logic centralized in group_config.legal_transfer_target.
+LEGAL_TRANSFER_GROUP_CHAT_ID = legal_transfer_target()
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 

@@ -190,7 +190,7 @@ async def _run_daily_client_sync(bot, chat_id: int) -> None:
         return
 
     _BASE_URL = os.getenv("WEBAPP_URL", "https://telegram-catalog-production.up.railway.app")
-    ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
+    from bot.shared import ORDER_GROUP_CHAT_ID
 
     try:
         with open(latest_file, "rb") as f:
@@ -630,13 +630,17 @@ async def _run_group_health_check(bot, admin_chat_id: int) -> None:
     chat_id so it can be updated. If the bot was removed or the group
     deleted, we also alert Admin.
     """
+    from bot.shared import (
+        ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID,
+        ORDER_GROUP_CHAT_ID, AGENTS_GROUP_CHAT_ID, ERRORS_GROUP_CHAT_ID,
+    )
     groups = [
-        ("Admin",            int(os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051"))),
-        ("Daily",            int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))),
-        ("Inventory",        int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))),
-        ("Orders/Sales",     int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))),
-        ("Agents",           int(os.getenv("AGENTS_GROUP_CHAT_ID", "-1003922400481"))),
-        ("Taklif va Xatolar", int(os.getenv("ERRORS_GROUP_CHAT_ID", "-1003896597497"))),
+        ("Admin",            ADMIN_GROUP_CHAT_ID),
+        ("Daily",            DAILY_GROUP_CHAT_ID),
+        ("Inventory",        INVENTORY_GROUP_CHAT_ID),
+        ("Orders/Sales",     ORDER_GROUP_CHAT_ID),
+        ("Agents",           AGENTS_GROUP_CHAT_ID),
+        ("Taklif va Xatolar", ERRORS_GROUP_CHAT_ID),
     ]
     issues: list[str] = []
     for label, cid in groups:
@@ -681,9 +685,10 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     Daily-upload nudges (morning + EOD) go to the new Daily group.
     Stock alert goes to Inventory group.
     """
-    ORDER_GROUP_CHAT_ID = int(os.getenv("ORDER_GROUP_CHAT_ID", "-1003740010463"))
-    INVENTORY_GROUP_CHAT_ID = int(os.getenv("INVENTORY_GROUP_CHAT_ID", "-5133871411"))
-    DAILY_GROUP_CHAT_ID = int(os.getenv("DAILY_GROUP_CHAT_ID", "-5243912135"))
+    from bot.shared import (
+        ORDER_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID,
+        CASHIER_GROUP_CHAT_ID,
+    )
     tasks = [
         # Daily-upload reminders → Daily group (were Admin group).
         asyncio.create_task(
@@ -757,7 +762,7 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(
                 bot,
-                int(os.getenv("CASHIER_GROUP_CHAT_ID", "0")),
+                CASHIER_GROUP_CHAT_ID,
                 18, 0,
                 _send_cashbook_summary,
             ),
