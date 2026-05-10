@@ -8,6 +8,20 @@ function getTelegramUserId() {
 }
 
 
+// Telegram's WebApp overlay (Close / chevron / ⋯) covers the top of the
+// content; mirror App.jsx's safeAreaInset-aware spacer so the page title
+// isn't buried under the overlay.
+function getTopPad() {
+  const tg = window.Telegram?.WebApp;
+  if (!tg) return 56;
+  const safe = tg.safeAreaInset?.top || 0;
+  const content = tg.contentSafeAreaInset?.top || 0;
+  // Always reserve at least 56px for the overlay buttons in non-fullscreen
+  // modes where the insets report 0.
+  return Math.max(safe + content, 56);
+}
+
+
 export default function AgentSignupPage({ onApproved }) {
   const uid = getTelegramUserId();
   const [stage, setStage] = useState('loading'); // loading | form | pending | rejected | approved
@@ -98,15 +112,17 @@ export default function AgentSignupPage({ onApproved }) {
     setStage('pending');
   };
 
+  const topPad = getTopPad();
+
   if (stage === 'loading') {
     return (
-      <div className="p-6 text-center text-tg-hint">…</div>
+      <div className="text-center text-tg-hint" style={{ paddingTop: topPad + 16 }}>…</div>
     );
   }
 
   if (stage === 'approved') {
     return (
-      <div className="p-6 text-center space-y-4">
+      <div className="px-6 pb-6 text-center space-y-4" style={{ paddingTop: topPad + 24 }}>
         <div className="text-3xl">✅</div>
         <div className="text-lg font-semibold">{t.agent_signup_approved_title}</div>
         <div className="text-sm text-tg-hint">{t.agent_signup_approved_body}</div>
@@ -116,7 +132,7 @@ export default function AgentSignupPage({ onApproved }) {
 
   if (stage === 'pending') {
     return (
-      <div className="p-6 space-y-4">
+      <div className="px-6 pb-6 space-y-4" style={{ paddingTop: topPad + 16 }}>
         <div className="rounded-xl bg-yellow-500/10 border border-yellow-500/40 p-4 space-y-2">
           <div className="text-2xl text-center">⏳</div>
           <div className="text-base font-semibold text-center">
@@ -137,7 +153,7 @@ export default function AgentSignupPage({ onApproved }) {
 
   if (stage === 'rejected') {
     return (
-      <div className="p-6 space-y-4">
+      <div className="px-6 pb-6 space-y-4" style={{ paddingTop: topPad + 16 }}>
         <div className="rounded-xl bg-red-500/10 border border-red-500/40 p-4 space-y-2">
           <div className="text-2xl text-center">❌</div>
           <div className="text-base font-semibold text-center">
@@ -161,7 +177,7 @@ export default function AgentSignupPage({ onApproved }) {
 
   // form
   return (
-    <div className="p-4 space-y-4">
+    <div className="px-4 pb-6 space-y-4" style={{ paddingTop: topPad + 8 }}>
       <div className="space-y-1">
         <h1 className="text-xl font-bold">{t.agent_signup_title}</h1>
         <div className="text-sm text-tg-hint">{t.agent_signup_subtitle}</div>
