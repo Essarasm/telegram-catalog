@@ -164,6 +164,11 @@ async def on_dispatch_assign(cb: types.CallbackQuery):
 
     await cb.answer(f"Biriktirildi: {label}")
 
+    logger.info(
+        f"dispatch:assign success — order #{order_id} → agent {agent_telegram_id} "
+        f"(label={label})"
+    )
+
     # DM the agent. Best-effort — if it fails (agent never DM'd the bot,
     # blocked, etc.), the assignment still stands and they see it next
     # time they open AgentHomePage's "Mening yetkazmalarim" section.
@@ -190,8 +195,12 @@ async def on_dispatch_assign(cb: types.CallbackQuery):
             text="\n".join(lines),
             parse_mode="HTML",
         )
+        logger.info(f"dispatch:assign DM sent to agent {agent_telegram_id} for order #{order_id}")
     except Exception as e:
-        logger.warning(f"DM to agent {agent_telegram_id} failed: {e}")
+        logger.warning(
+            f"dispatch:assign DM to agent {agent_telegram_id} failed: "
+            f"{type(e).__name__}: {e}"
+        )
 
 
 @router.callback_query(F.data.startswith("disp:cancel:"))
