@@ -2064,13 +2064,19 @@ def approve_agent(payload: dict = Body(...), admin_key: str = Query(...)):
 
 @router.post("/clear-agent-application")
 def clear_agent_application(payload: dict = Body(...), admin_key: str = Query(...)):
-    """Reset all agent-application state for a telegram_id so the user can
-    re-submit fresh. Deletes their `pending_agents` rows (any status) and
-    clears `users.agent_role` + `is_agent`. Idempotent — safe to call
-    repeatedly. Body: {telegram_id: int}.
+    """Reset agent-application state for a telegram_id. Two modes:
+
+      full_reset=false (default): delete pending_agents rows + clear
+        users.agent_role + is_agent. Phone, client_id, etc. preserved.
+      full_reset=true: also DELETE the users row entirely so the next
+        /api/users/check returns registered=false, mimicking a brand-new
+        user. Use for end-to-end signup re-tests.
+
+    Idempotent. Body: {telegram_id: int, full_reset?: bool}.
     """
     _check_admin(admin_key)
     telegram_id = payload.get("telegram_id")
+    full_reset = bool(payload.get("full_reset"))
     if not isinstance(telegram_id, int):
         return JSONResponse(
             {"ok": False, "error": "telegram_id required"},
@@ -2082,17 +2088,27 @@ def clear_agent_application(payload: dict = Body(...), admin_key: str = Query(..
             "DELETE FROM pending_agents WHERE telegram_id = ?",
             (telegram_id,),
         )
-        cur2 = conn.execute(
-            "UPDATE users SET agent_role = NULL, is_agent = 0 "
-            "WHERE telegram_id = ?",
-            (telegram_id,),
-        )
+        if full_reset:
+            cur2 = conn.execute(
+                "DELETE FROM users WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            users_action = "deleted"
+        else:
+            cur2 = conn.execute(
+                "UPDATE users SET agent_role = NULL, is_agent = 0 "
+                "WHERE telegram_id = ?",
+                (telegram_id,),
+            )
+            users_action = "agent_role_cleared"
         conn.commit()
         return {
             "ok": True,
             "telegram_id": telegram_id,
+            "full_reset": full_reset,
             "pending_deleted": cur1.rowcount,
-            "users_reset": cur2.rowcount > 0,
+            "users_action": users_action,
+            "users_affected": cur2.rowcount,
         }
     finally:
         conn.close()
