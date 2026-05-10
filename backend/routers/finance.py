@@ -660,84 +660,12 @@ def debug_errors_group(admin_key: str = Query(...)):
         return {"ok": False, "error": str(e), "chat_id": chat_id}
 
 
-@router.post("/migrate-payments-unique-key")
-def migrate_payments_unique_key(admin_key: str = Form(...)):
-    """One-time migration: change client_payments.doc_number_1c UNIQUE to
-    composite UNIQUE(doc_number_1c, doc_date).
-
-    Reason: 1C doc numbers cycle per year, so \"doc 191\" in Jan 2025 is a
-    different document from \"doc 191\" in Jan 2026. The old constraint
-    caused new-month imports to silently overwrite old-month data.
-
-    Safe to re-run: detects the new schema and no-ops if already migrated.
-    """
-    if not check_admin_key(admin_key):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=403)
-    conn = get_db()
-    try:
-        # Check current schema
-        schema_row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='client_payments'"
-        ).fetchone()
-        if schema_row and "UNIQUE(doc_number_1c, doc_date)" in (schema_row["sql"] or ""):
-            conn.close()
-            return {"ok": True, "already_migrated": True}
-
-        before = conn.execute("SELECT COUNT(*) AS n FROM client_payments").fetchone()["n"]
-
-        conn.executescript("""
-            CREATE TABLE client_payments_v2 (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                doc_number_1c TEXT NOT NULL,
-                doc_date TEXT NOT NULL,
-                doc_time TEXT,
-                author TEXT,
-                received_from TEXT,
-                basis TEXT,
-                attachment TEXT,
-                corr_account TEXT,
-                client_name_1c TEXT,
-                client_id INTEGER,
-                subconto2 TEXT,
-                subconto3 TEXT,
-                currency TEXT DEFAULT 'UZS',
-                amount_local REAL DEFAULT 0,
-                amount_currency REAL DEFAULT 0,
-                fx_rate REAL DEFAULT 0,
-                cashflow_category TEXT,
-                imported_at TEXT DEFAULT (datetime('now')),
-                UNIQUE(doc_number_1c, doc_date)
-            );
-
-            INSERT INTO client_payments_v2
-              (id, doc_number_1c, doc_date, doc_time, author, received_from,
-               basis, attachment, corr_account, client_name_1c, client_id,
-               subconto2, subconto3, currency, amount_local, amount_currency,
-               fx_rate, cashflow_category, imported_at)
-            SELECT id, doc_number_1c, doc_date, doc_time, author, received_from,
-                   basis, attachment, corr_account, client_name_1c, client_id,
-                   subconto2, subconto3, currency, amount_local, amount_currency,
-                   fx_rate, cashflow_category, imported_at
-            FROM client_payments;
-
-            DROP TABLE client_payments;
-            ALTER TABLE client_payments_v2 RENAME TO client_payments;
-
-            CREATE INDEX IF NOT EXISTS idx_client_payments_doc_date ON client_payments(doc_date);
-            CREATE INDEX IF NOT EXISTS idx_client_payments_client_name ON client_payments(client_name_1c);
-            CREATE INDEX IF NOT EXISTS idx_client_payments_client_id ON client_payments(client_id);
-            CREATE INDEX IF NOT EXISTS idx_client_payments_currency ON client_payments(currency);
-        """)
-
-        after = conn.execute("SELECT COUNT(*) AS n FROM client_payments").fetchone()["n"]
-        conn.commit()
-        conn.close()
-        return {"ok": True, "already_migrated": False,
-                "rows_before": before, "rows_after": after}
-    except Exception as e:
-        try: conn.close()
-        except Exception: pass
-        return {"ok": False, "error": str(e)}
+# Removed 2026-05-10: /migrate-payments-unique-key endpoint. Its job (rebuild
+# client_payments with composite UNIQUE) is now done idempotently by
+# init_db() v15 in backend/database.py — applied automatically on every
+# startup. Same v15 block also handles real_orders, which never had a
+# manual endpoint of its own. See Foundation Audit 2026-05-10 + Error Log #46
+# (MIGRATION_OUTSIDE_INIT_DB) for why the endpoint shape was the wrong home.
 
 
 @router.post("/import-shipments")
