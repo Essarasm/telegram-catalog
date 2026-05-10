@@ -37,12 +37,18 @@ BANK_TRANSFER_GROUP_CHAT_ID = int(os.getenv("BANK_TRANSFER_GROUP_CHAT_ID", "0"))
 # explicit client picker + first-confirmed-locks semantics. The general
 # location handler in location.py skips this chat to avoid double-processing.
 DRIVER_GROUP_CHAT_ID = int(os.getenv("DRIVER_GROUP_CHAT_ID", "-4998450084"))
+# Agent-approval group — receives Block C's agent self-registration
+# applications and is the canonical home for role-related admin work
+# (future: /makeagent moves here from the general ADMIN_GROUP). Bot must
+# have admin status in this supergroup for inline-button callbacks to
+# deliver — see memory `feedback_telegram_bot_supergroup_admin.md`.
+AGENT_APPROVAL_GROUP_CHAT_ID = int(os.getenv("AGENT_APPROVAL_GROUP_CHAT_ID", "-1003967758004"))
 
 
 def chat_context(message) -> str:
     """Classify chat for /help filtering and context-aware routing.
     Returns one of: 'daily', 'admin', 'sales', 'inventory', 'agents',
-    'dm_admin', 'dm_user', 'unknown'."""
+    'agent_approval', 'dm_admin', 'dm_user', 'unknown'."""
     cid = message.chat.id if getattr(message, 'chat', None) else None
     if cid == DAILY_GROUP_CHAT_ID:
         return 'daily'
@@ -54,6 +60,8 @@ def chat_context(message) -> str:
         return 'inventory'
     if cid == AGENTS_GROUP_CHAT_ID:
         return 'agents'
+    if cid == AGENT_APPROVAL_GROUP_CHAT_ID:
+        return 'agent_approval'
     if CASHIER_GROUP_CHAT_ID and cid == CASHIER_GROUP_CHAT_ID:
         return 'cashier'
     if BANK_TRANSFER_GROUP_CHAT_ID and cid == BANK_TRANSFER_GROUP_CHAT_ID:
@@ -139,7 +147,8 @@ def is_admin(message) -> bool:
     uid = message.from_user.id if getattr(message, 'from_user', None) else None
     if ADMIN_IDS and uid and uid in ADMIN_IDS:
         return True
-    if cid in (ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID):
+    if cid in (ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID,
+               AGENT_APPROVAL_GROUP_CHAT_ID):
         return True
     return False
 
@@ -205,7 +214,8 @@ def is_admin_cb(cb) -> bool:
     chat_id = cb.message.chat.id if cb.message else None
     if chat_id == ORDER_GROUP_CHAT_ID:
         return False
-    if chat_id in (ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID):
+    if chat_id in (ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID,
+                   AGENT_APPROVAL_GROUP_CHAT_ID):
         return True
     if cb.from_user and _db_role_check(cb.from_user.id, {"admin"}):
         return True

@@ -30,7 +30,9 @@ from backend.services.phone_slots import _normalize
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_GROUP_CHAT_ID = os.getenv("ADMIN_GROUP_CHAT_ID", "-5224656051")
+# Dedicated agent-approval / role-assignment group. Distinct from the
+# general ADMIN_GROUP. Mirrors `bot/shared.py::AGENT_APPROVAL_GROUP_CHAT_ID`.
+AGENT_APPROVAL_GROUP_CHAT_ID = os.getenv("AGENT_APPROVAL_GROUP_CHAT_ID", "-1003967758004")
 
 
 def submit_agent_application(
@@ -129,9 +131,9 @@ def _post_to_admin_group(
     """Send the inline-keyboarded approval prompt. Returns message_id on
     success, None on failure (logged but non-fatal — admin can still
     approve via direct DB / API call)."""
-    if not BOT_TOKEN or not ADMIN_GROUP_CHAT_ID:
-        logger.warning("BOT_TOKEN / ADMIN_GROUP_CHAT_ID missing — agent app #%s "
-                       "not announced to admin group", application_id)
+    if not BOT_TOKEN or not AGENT_APPROVAL_GROUP_CHAT_ID:
+        logger.warning("BOT_TOKEN / AGENT_APPROVAL_GROUP_CHAT_ID missing — agent app #%s "
+                       "not announced to approval group", application_id)
         return None
 
     veh_line = f"\n🚚 Transport: <b>{_h(vehicle)}</b>" if vehicle else ""
@@ -143,7 +145,7 @@ def _post_to_admin_group(
         f"Tasdiqlash uchun pastdagi tugmalardan birini bosing."
     )
     payload = {
-        "chat_id": ADMIN_GROUP_CHAT_ID,
+        "chat_id": AGENT_APPROVAL_GROUP_CHAT_ID,
         "text": text,
         "parse_mode": "HTML",
         "reply_markup": {
@@ -164,11 +166,11 @@ def _post_to_admin_group(
         j = resp.json()
         if j.get("ok"):
             return (j.get("result") or {}).get("message_id")
-        logger.warning("Admin-group post failed for agent app #%s: %s",
+        logger.warning("Approval-group post failed for agent app #%s: %s",
                        application_id, j.get("description"))
         return None
     except Exception as e:
-        logger.error("Admin-group post exception for agent app #%s: %s",
+        logger.error("Approval-group post exception for agent app #%s: %s",
                      application_id, e)
         return None
 
