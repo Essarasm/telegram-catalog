@@ -231,8 +231,7 @@ def _load_workbook(file_bytes: bytes, filename_hint: str = "") -> Tuple[Optional
                     row.append(v)
                 rows.append(row)
             return _Sheet(rows), None
-        except Exception as e:
-            xls_err = str(e)
+        except Exception:
             if not is_xlsx:
                 # Don't give up — try openpyxl in case the file is actually xlsx
                 pass
@@ -614,8 +613,6 @@ def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
     current: Optional[dict] = None
 
     # Walk data rows — start after whichever header row is lower
-    product_col = item_cols.get("product_name_1c", -1)
-    client_col = header_cols.get("client_name_1c", -1)
     start_row = max(header_row, item_header_row) + 1
     for r in range(start_row, sh.nrows):
         # Skip rows that are empty across the entire width
@@ -924,7 +921,9 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
 
     # Fire-and-forget: refresh units_score so the new shipments rerank the catalog.
     try:
-        import os as _os, subprocess as _subprocess, sys as _sys
+        import os as _os
+        import subprocess as _subprocess
+        import sys as _sys
         _SCRIPT = _os.path.join(
             _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
             'tools', 'update_units_score.py',
@@ -1671,7 +1670,7 @@ def ingest_unmatched_skus() -> dict:
     Returns summary stats.
     """
     from backend.services.import_products import generate_display_name
-    from backend.database import build_search_text, rebuild_all_search_text
+    from backend.database import build_search_text
 
     conn = get_db()
 

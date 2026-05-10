@@ -88,6 +88,24 @@ python tools/smoke_test.py
 
 Tests get a fresh temp SQLite per call via `tests/conftest.py::db`; the fixture re-points `backend.database.DATABASE_PATH` at a tempfile and runs full `init_db()`. Use `seed_products` fixture for a minimal product set.
 
+### Linting & dead-code
+
+```bash
+# Install dev tools (one-time)
+pip install -r requirements-dev.txt
+
+# Run before commit — config in ruff.toml
+python -m ruff check backend bot
+
+# Auto-fix safe issues (F401 unused imports, etc.)
+python -m ruff check backend bot --fix
+
+# High-confidence dead-code scan (false-positive prone — verify before deleting)
+python -m vulture backend bot --min-confidence 80
+```
+
+Ruff config (`ruff.toml`) targets py310, enables Pyflakes (`F`) + critical pycodestyle rules, ignores `E402` (this codebase intentionally embeds `from backend...` imports inside functions to defer loading). `F821` (undefined name) catches real bugs — never ignore at file level.
+
 ### Data Operations
 
 ```bash

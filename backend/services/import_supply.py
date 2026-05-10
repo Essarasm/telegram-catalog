@@ -14,18 +14,16 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from backend.database import get_db
 
 # ── Reuse helpers from import_real_orders ─────────────────────────────
 from backend.services.import_real_orders import (
     _load_workbook,
-    _norm,
     _parse_number,
     _parse_doc_date,
     _parse_doc_time,
-    _Sheet,
 )
 
 logger = logging.getLogger(__name__)

@@ -6,8 +6,11 @@ Phase 2: Supplier auto-detection, clean revenue, client segmentation,
 All financial endpoints exclude auto-detected suppliers/accounting entries
 unless ?include_suppliers=true is passed.
 """
+import logging
 from fastapi import APIRouter, Query, HTTPException, UploadFile, File, Form
 from backend.database import get_db
+
+logger = logging.getLogger(__name__)
 from backend.admin_auth import check_admin_key
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -1776,7 +1779,9 @@ async def upload_images(
         from fastapi.responses import JSONResponse
         return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
 
-    import zipfile, tempfile, os
+    import zipfile
+    import tempfile
+    import os
     from pathlib import Path
     from backend.services.convert_to_webp import encode_webp_from_bytes
 

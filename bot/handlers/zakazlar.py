@@ -16,7 +16,7 @@ import io
 import logging
 from typing import List
 
-from aiogram import Router, F, types
+from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import (
     BufferedInputFile,
@@ -30,7 +30,6 @@ from bot.shared import is_admin
 from backend.services.reorder import (
     DEFAULT_BUFFER_DAYS,
     DEFAULT_WINDOW_DAYS,
-    compute_supplier_reorder,
     list_supplier_full,
     list_suppliers_with_products,
 )

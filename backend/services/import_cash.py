@@ -25,11 +25,10 @@ document numbers, so both persist.
 """
 from __future__ import annotations
 
-import io
 import re
 import logging
-from datetime import datetime, time
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Dict, List, Optional
 
 from backend.database import get_db
 

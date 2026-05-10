@@ -12,7 +12,6 @@ import io
 import os
 import re
 import sqlite3
-import unicodedata
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -136,12 +135,9 @@ def apply_client_master_v2(
     headers = [(str(h) if h is not None else "").strip() for h in header_row]
     col_field: dict[int, str] = {}
     id_col = None
-    master_row_col = None
     for idx, h in enumerate(headers):
         if h == ID_HEADER:
             id_col = idx
-        elif h == MASTER_ROW_HEADER:
-            master_row_col = idx
         elif h in EDITABLE_HEADERS:
             col_field[idx] = EDITABLE_HEADERS[h]
 

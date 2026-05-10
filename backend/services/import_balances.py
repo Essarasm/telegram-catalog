@@ -21,11 +21,9 @@ Columns: name | opening_debit | opening_credit | period_debit | period_credit | 
 1C is the single source of truth — all financial data is accepted as-is.
 Uses cp1251 encoding override for XLS files from 1C.
 """
-import io
 import re
 import logging
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from typing import List, Optional, Tuple
 
 from backend.database import get_db
 from backend.services import client_identity

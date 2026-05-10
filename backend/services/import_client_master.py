@@ -42,7 +42,7 @@ import io
 import os
 import re
 import sqlite3
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from backend.services.import_real_orders import _py_normalize_client_name
 

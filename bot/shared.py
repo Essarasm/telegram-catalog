@@ -8,7 +8,6 @@ import re
 import sqlite3
 import logging
 
-from html import escape as _h
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -145,10 +144,6 @@ def is_admin(message) -> bool:
     return False
 
 
-def _is_sotuv_sender(message) -> bool:
-    return hasattr(message, 'chat') and message.chat.id == ORDER_GROUP_CHAT_ID
-
-
 def is_agent_or_admin(message) -> bool:
     if is_admin(message):
         return True
@@ -280,20 +275,6 @@ def is_bank_transfer_or_admin_cb(cb) -> bool:
     if cb.from_user and _db_role_check(cb.from_user.id, {"admin", "bank_transfer"}):
         return True
     return False
-
-
-def get_user_role(message):
-    """Return the most-privileged role that applies. Used for audit and
-    role tagging on intake records. Returns None if no recognized role."""
-    if is_admin(message):
-        return "admin"
-    if is_cashier(message):
-        return "cashier"
-    if is_bank_transfer(message):
-        return "bank_transfer"
-    if is_agent_or_admin(message):
-        return "agent"
-    return None
 
 
 # ── Display helpers ──────────────────────────────────────────────────

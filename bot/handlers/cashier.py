@@ -31,7 +31,7 @@ TASHKENT_TZ = timezone(timedelta(hours=5))
 def _now_tashkent_hhmm() -> str:
     return datetime.now(TASHKENT_TZ).strftime("%H:%M")
 
-from aiogram import Router, F, Bot, types
+from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -46,7 +46,6 @@ from bot.shared import (
     CASHIER_GROUP_CHAT_ID,
     is_cashier_or_admin,
     is_cashier_or_admin_cb,
-    get_user_role,
     get_db,
     html_escape,
 )

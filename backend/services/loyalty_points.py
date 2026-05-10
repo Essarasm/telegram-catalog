@@ -14,7 +14,7 @@ Discipline grades:
   D  (×0.0): on_time_rate < 0.30 (chronic late payer)
 """
 import logging
-from datetime import date, datetime
+from datetime import date
 
 from backend.database import get_db
 

@@ -7,7 +7,6 @@ import io
 import sqlite3
 import os
 import re
-from typing import Iterable
 
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 CLIENTS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "clients_data.csv")

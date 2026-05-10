@@ -20,7 +20,6 @@ Both modes are non-destructive — products are never deleted, only toggled.
 import io
 import re
 import logging
-from typing import Dict, List, Optional
 
 import pandas as pd
 from openpyxl import load_workbook

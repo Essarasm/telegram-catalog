@@ -11,7 +11,7 @@ from aiogram import Router, F
 from aiogram.types import Message
 
 from bot.shared import (
-    get_db, html_escape, normalize_phone,
+    get_db, normalize_phone,
     ADMIN_GROUP_CHAT_ID,
 )
 

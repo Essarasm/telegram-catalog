@@ -1,10 +1,11 @@
 """Admin bot commands — extracted from bot/main.py for isolation."""
 import os
+import re
 from aiogram import Router, F, types
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.shared import get_db, html_escape, is_admin, logger, log_admin_action
+from bot.shared import get_db, html_escape, is_admin, logger, log_admin_action, _BASE_URL
 from backend.admin_auth import get_admin_key
 
 router = Router()
@@ -26,7 +27,6 @@ async def cmd_grouphealth(message: types.Message):
         ("Taklif va Xatolar", int(os.getenv("ERRORS_GROUP_CHAT_ID", "-1003896597497"))),
     ]
     lines = ["<b>🩺 Group health check</b>\n"]
-    import re
     all_ok = True
     for label, cid in groups:
         try:
@@ -1569,7 +1569,7 @@ async def cmd_datacoverage(message: types.Message):
 
         # Group by currency
         from collections import defaultdict
-        from datetime import date, timedelta
+        from datetime import date
         by_currency = defaultdict(list)
         for r in rows:
             by_currency[r["currency"]].append({

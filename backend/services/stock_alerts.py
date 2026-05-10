@@ -8,7 +8,7 @@ stock_last_positive_at: sold in last 3 months or supplied recently.
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from backend.database import get_db

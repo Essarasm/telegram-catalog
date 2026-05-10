@@ -15,7 +15,7 @@ Supports both .xlsx and .xls (cp1251 encoding from 1C).
 import io
 import re
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict
 from datetime import datetime
 
 import pandas as pd

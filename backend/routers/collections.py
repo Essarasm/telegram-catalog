@@ -19,7 +19,6 @@ debtors across routes, deduped, with `matched_routes: [0,1,...]`
 indicating which corridor(s) the client lies on.
 """
 import math
-import os
 from typing import Optional, List
 from urllib.parse import quote_plus
 

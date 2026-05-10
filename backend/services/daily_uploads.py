@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, date, timedelta
-from typing import Optional, List, Tuple
+from typing import Optional, List
 from zoneinfo import ZoneInfo
 
 from backend.database import get_db

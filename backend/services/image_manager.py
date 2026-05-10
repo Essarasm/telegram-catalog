@@ -9,7 +9,6 @@ Images are resized to max 800x800 and compressed for fast loading.
 """
 import os
 import sys
-import re
 from pathlib import Path
 from PIL import Image, ImageOps
 

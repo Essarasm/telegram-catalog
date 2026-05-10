@@ -16,7 +16,7 @@ from aiogram.types import ForceReply
 
 from bot.shared import (
     get_db, sender_display_name, html_escape,
-    ADMIN_GROUP_CHAT_ID, chat_context,
+    ADMIN_GROUP_CHAT_ID,
 )
 
 logger = logging.getLogger(__name__)

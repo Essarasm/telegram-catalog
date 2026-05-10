@@ -9,10 +9,9 @@ Pair with `client_payments` to compute clean running balances that don't
 inherit the pre-2020 historical noise present in `client_balances`.
 """
 from __future__ import annotations
-import io
 import re
 import unicodedata
-from typing import List, Optional
+from typing import Optional
 
 import xlrd
 

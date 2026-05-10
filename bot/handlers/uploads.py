@@ -7,9 +7,6 @@ Handles: /prices, /stock, /clients, /supply, /balances, /debtors,
 and all caption-based document handlers.
 """
 import os
-import re
-import json
-from pathlib import Path
 
 from aiogram import Router, F, types
 from aiogram.filters import Command
@@ -161,7 +158,9 @@ async def cmd_syncimages(message: types.Message):
     if not is_admin(message):
         return
 
-    import zipfile, tempfile, shutil
+    import zipfile
+    import tempfile
+    import shutil
     from pathlib import Path
 
     images_dir = Path(os.getenv("IMAGES_DIR", "./images"))
@@ -642,42 +641,25 @@ def _format_import_result(result: dict, file_label: str = "") -> str:
 async def cmd_balances(message: types.Message):
     """Import client balances from 1C оборотно-сальдовая.
 
-    Supports:
-    - Single file: send XLS with /balances caption, or reply /balances to a file
-    - Multiple files: send 2+ XLS as album, then reply /balances to any of them
+    Send XLS with /balances caption, or reply /balances to a file.
     """
     if not is_admin(message):
         return
 
-    # Collect documents to process
     docs = []
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
 
-    # Check if replying to an album (media group)
-    if message.reply_to_message and message.reply_to_message.media_group_id:
-        gid = message.reply_to_message.media_group_id
-        if gid in _album_buffers and _album_buffers[gid]["messages"]:
-            for m in _album_buffers[gid]["messages"]:
-                if m.document and m.document.file_name and m.document.file_name.endswith(('.xls', '.xlsx')):
-                    docs.append(m.document)
-            _album_buffers[gid]["processed"] = True
-
-    # Single file: reply to document or caption on document
-    if not docs:
-        doc = None
-        if message.reply_to_message and message.reply_to_message.document:
-            doc = message.reply_to_message.document
-        elif message.document:
-            doc = message.document
-
-        if doc:
-            docs.append(doc)
+    if doc:
+        docs.append(doc)
 
     if not docs:
         await message.reply(
             "❌ <b>Foydalanish:</b>\n"
-            "1️⃣ <b>Bitta fayl:</b> XLS faylni /balances caption bilan yuboring\n"
-            "2️⃣ <b>Ikki fayl:</b> Ikkala XLS ni album sifatida yuboring,"
-            " so'ng istalgan biriga /balances deb javob yozing\n\n"
+            "XLS faylni /balances caption bilan yuboring\n\n"
             "<b>Ma'lumotlar:</b>\n"
             "💳 Дебет = отгрузки (jo'natilgan tovarlar)\n"
             "💰 Кредит = оплаты (to'lovlar)\n"
@@ -793,21 +775,6 @@ async def handle_balances_document(message: types.Message):
     if not is_admin(message):
         return
     await cmd_balances(message)
-
-
-
-@router.message(F.media_group_id & F.document)
-async def handle_album_document(message: types.Message):
-    """Collect album files for multi-file balance import.
-    Send 2+ XLS files as an album, then reply /balances to any of them.
-    Files are buffered briefly so they can be imported together.
-    """
-    if not is_admin(message):
-        return
-    gid = message.media_group_id
-    if gid not in _album_buffers:
-        _album_buffers[gid] = {"messages": [], "processed": False}
-    _album_buffers[gid]["messages"].append(message)
 
 
 
@@ -1197,9 +1164,9 @@ async def cmd_realordersstats(message: types.Message):
 
         lines.append(f"<b>Qamrov:</b>")
         lines.append(f"  📦 {total_orders:,} ta hujjat, {total_items:,} ta qator")
-        lines.append(f"  📅 {_h(str(first_date))} → {_h(str(last_date))}")
+        lines.append(f"  📅 {html_escape(str(first_date))} → {html_escape(str(last_date))}")
         for p in per_currency:
-            curr = _h(str(p["currency"] or "—"))
+            curr = html_escape(str(p["currency"] or "—"))
             n = p["orders"]
             sym = "💴" if curr == "UZS" else "💵"
             tot = p["total_curr"] or 0
@@ -1223,7 +1190,7 @@ async def cmd_realordersstats(message: types.Message):
         if agents:
             lines.append(f"\n<b>Top sales agentlar:</b>")
             for a in agents[:8]:
-                name = _h((a["sale_agent"] or "—")[:25])
+                name = html_escape((a["sale_agent"] or "—")[:25])
                 tot_uzs = a["uzs"] or 0
                 tot_usd = a["usd"] or 0
                 extras = []
@@ -1237,7 +1204,7 @@ async def cmd_realordersstats(message: types.Message):
         if monthly:
             lines.append(f"\n<b>Oylik taqsimot:</b>")
             for m in monthly[-12:]:  # last 12 months
-                ym = _h(str(m['ym'] or '—'))
+                ym = html_escape(str(m['ym'] or '—'))
                 lines.append(f"  {ym} — {m['orders']:,} hujjat, {m['clients']} mijoz")
 
         if total_wish > 0:
@@ -2004,7 +1971,6 @@ async def cmd_unmatchedclients(message: types.Message):
         unmatched = result.get("db_unmatched_docs", 0)
         match_pct = (matched / total_docs * 100) if total_docs else 0
         skipped_sys = result.get("skipped_system_docs", 0)
-        after_skip_docs = result.get("total_unmatched_docs_after_skip", 0)
         after_skip_local = result.get("total_unmatched_local_after_skip", 0)
         items = result.get("items", [])
 
@@ -2090,7 +2056,6 @@ async def cmd_unmatchedproducts(message: types.Message):
         unmatched = result.get("db_unmatched_items", 0)
         match_pct = (matched / total_items * 100) if total_items else 0
         full_unique = result.get("total_unique_unmatched_names_full", 0)
-        total_lines = result.get("total_unmatched_lines", 0)
         total_local = result.get("total_unmatched_local", 0)
         total_currency = result.get("total_unmatched_currency", 0)
         items = result.get("items", [])

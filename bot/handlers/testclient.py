@@ -3,8 +3,6 @@
 Extracted from bot/main.py monolith. Uses aiogram Router so a bug
 here cannot crash upload or order handlers.
 """
-import unicodedata
-from collections import OrderedDict
 
 from aiogram import Router, F, types
 from aiogram.filters import Command
@@ -350,7 +348,7 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
                 if row:
                     save_user_to_backup(dict(row))
             except Exception as e:
-                logging.warning(f"backup after /testclient link failed: {e}")
+                logger.warning(f"backup after /testclient link failed: {e}")
             conn.close()
             name = html_escape(client["client_id_1c"] or client["name"] or f"#{client_id}")
             await message.reply(

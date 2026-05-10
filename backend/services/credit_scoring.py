@@ -1269,7 +1269,6 @@ def detect_anomalies() -> List[dict]:
     conn = get_db()
     try:
         today = date.today()
-        today_str = today.strftime("%Y-%m-%d")
         staleness_cutoff = (today - timedelta(days=ANOMALY_STALENESS_DAYS)).strftime("%Y-%m-%d")
 
         # Get the two most recent scoring dates

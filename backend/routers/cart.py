@@ -1,7 +1,6 @@
 """Server-side cart — eliminates all client-side storage reliability issues."""
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
-from typing import Optional
 from backend.database import get_db
 
 router = APIRouter(prefix="/api/cart", tags=["cart"])

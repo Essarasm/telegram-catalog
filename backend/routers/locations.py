@@ -63,8 +63,6 @@ def get_location_tree():
     ).fetchall()
     conn.close()
 
-    # Build lookup
-    by_id = {r["id"]: dict(r) for r in rows}
     viloyats = []
     districts_by_viloyat = {}
     moljals_by_district = {}

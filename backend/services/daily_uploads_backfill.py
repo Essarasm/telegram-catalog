@@ -39,12 +39,11 @@ holidays are skipped entirely.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from backend.database import get_db
 from backend.services.daily_uploads import (
-    TASHKENT,
     tashkent_today,
     is_holiday,
     is_required_weekday,

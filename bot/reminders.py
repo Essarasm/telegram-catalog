@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from backend.admin_auth import get_admin_key
@@ -487,7 +487,7 @@ async def _send_pat_rotation_reminder(bot, chat_id: int) -> None:
     nudge Admin group to regenerate. Silent otherwise. Skips entirely if
     the stamp file doesn't exist (no data yet = no reminder)."""
     try:
-        from datetime import datetime as _dt, date as _date
+        from datetime import date as _date
         if not os.path.exists(PAT_STAMP_FILE):
             return
         with open(PAT_STAMP_FILE) as f:

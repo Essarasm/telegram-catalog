@@ -1,6 +1,5 @@
 """Generate order exports as PDF or Excel."""
 import io
-import os
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Dict

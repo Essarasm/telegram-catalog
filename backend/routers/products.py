@@ -1,7 +1,7 @@
 import threading
 from fastapi import APIRouter, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
-from typing import Optional, List
+from typing import Optional
 from backend.database import get_db, transliterate_to_latin, transliterate_to_cyrillic, normalize_uzbek
 from backend.services.update_prices import apply_price_updates
 from backend.services.update_stock import apply_stock_updates

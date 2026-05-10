@@ -12,7 +12,6 @@ from backend.services.import_balances import (
 from backend.admin_auth import check_admin_key
 from backend.services.import_debts import (
     apply_debtors_import,
-    get_client_debt,
     get_effective_debt,
 )
 from backend.services.import_real_orders import (
@@ -31,9 +30,6 @@ from backend.services.credit_scoring import (
     run_nightly_scoring,
     get_scoring_summary,
     debug_client_scores,
-    apply_score_adjustment,
-    detect_anomalies,
-    search_client_scores,
 )
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
@@ -740,7 +736,7 @@ def migrate_payments_unique_key(admin_key: str = Form(...)):
                 "rows_before": before, "rows_after": after}
     except Exception as e:
         try: conn.close()
-        except: pass
+        except Exception: pass
         return {"ok": False, "error": str(e)}
 
 
