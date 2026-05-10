@@ -6,6 +6,7 @@ import ProductsPage from './pages/ProductsPage';
 import CartPage from './pages/CartPage';
 import ProductDetailPage from './pages/ProductDetailPage';
 import RegisterPage from './pages/RegisterPage';
+import AgentSignupPage from './pages/AgentSignupPage';
 import CabinetPage from './pages/CabinetPage';
 import AgentHomePage from './pages/AgentHomePage';
 import WorkerClientView from './pages/WorkerClientView';
@@ -365,6 +366,21 @@ export default function App() {
     return (
       <div className="min-h-screen bg-tg-bg text-tg-text flex items-center justify-center">
         <div className="text-tg-hint">Yuklanmoqda...</div>
+      </div>
+    );
+  }
+
+  // Block C: agent self-registration entry. Triggered by Telegram deep-link
+  // ?startapp=agent_signup. If the user is already an agent we ignore the
+  // param and fall through to AgentHomePage.
+  const startParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param;
+  if (startParam === 'agent_signup' && !isAgent) {
+    return (
+      <div className="min-h-screen bg-tg-bg text-tg-text">
+        <AgentSignupPage onApproved={() => {
+          // After approval, reload to pick up the new agent role / panel.
+          window.location.reload();
+        }} />
       </div>
     );
   }

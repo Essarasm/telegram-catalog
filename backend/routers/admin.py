@@ -7,7 +7,8 @@ All financial endpoints exclude auto-detected suppliers/accounting entries
 unless ?include_suppliers=true is passed.
 """
 import logging
-from fastapi import APIRouter, Query, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Body, Query, HTTPException, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 from backend.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -2005,3 +2006,77 @@ def reassign_product(
     conn.close()
     return {"ok": True, "product_id": product_id,
             "category_id": category_id, "producer_id": producer_id}
+
+
+# ── Agent application queue (Block C) ─────────────────────────────────────
+
+@router.get("/pending-agents")
+def list_pending_agents(admin_key: str = Query(...)):
+    """List all current pending agent applications. Admin-key gated."""
+    _check_admin(admin_key)
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, telegram_id, first_name, last_name, phone_normalized, "
+            "       vehicle, requested_at "
+            "FROM pending_agents WHERE status = 'pending' "
+            "ORDER BY requested_at"
+        ).fetchall()
+        return {
+            "ok": True,
+            "items": [
+                {
+                    "application_id": r["id"],
+                    "telegram_id": r["telegram_id"],
+                    "first_name": r["first_name"],
+                    "last_name": r["last_name"],
+                    "phone": r["phone_normalized"],
+                    "vehicle": r["vehicle"] or "",
+                    "requested_at": r["requested_at"],
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/approve-agent")
+def approve_agent(payload: dict = Body(...), admin_key: str = Query(...)):
+    """Approve an agent application. Admin-key gated. Body:
+        {application_id: int, approver_telegram_id: int}
+    """
+    _check_admin(admin_key)
+    application_id = payload.get("application_id")
+    approver_telegram_id = payload.get("approver_telegram_id")
+    if not isinstance(application_id, int) or not isinstance(approver_telegram_id, int):
+        return JSONResponse(
+            {"ok": False, "error": "application_id + approver_telegram_id required"},
+            status_code=400,
+        )
+    from backend.services.agent_signup import approve_application
+    conn = get_db()
+    try:
+        return approve_application(conn, application_id, approver_telegram_id)
+    finally:
+        conn.close()
+
+
+@router.post("/reject-agent")
+def reject_agent(payload: dict = Body(...), admin_key: str = Query(...)):
+    """Reject an agent application. Admin-key gated."""
+    _check_admin(admin_key)
+    application_id = payload.get("application_id")
+    rejector_telegram_id = payload.get("rejector_telegram_id")
+    reason = payload.get("reason") or None
+    if not isinstance(application_id, int) or not isinstance(rejector_telegram_id, int):
+        return JSONResponse(
+            {"ok": False, "error": "application_id + rejector_telegram_id required"},
+            status_code=400,
+        )
+    from backend.services.agent_signup import reject_application
+    conn = get_db()
+    try:
+        return reject_application(conn, application_id, rejector_telegram_id, reason)
+    finally:
+        conn.close()

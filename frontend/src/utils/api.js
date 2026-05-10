@@ -376,6 +376,30 @@ export async function fetchAgentMyDeliveries(telegramId) {
   }
 }
 
+export async function registerAgent(payload) {
+  try {
+    const res = await fetch(`${API_BASE}/users/register-agent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: 'network' };
+  }
+}
+
+export async function fetchAgentApplicationStatus(telegramId) {
+  try {
+    const res = await fetch(
+      `${API_BASE}/users/agent-application-status?telegram_id=${telegramId}`,
+    );
+    return res.json();
+  } catch (e) {
+    return { ok: false, exists: false };
+  }
+}
+
 export async function submitP2P({ telegramId, clientId, amountUzs, cardId, screenshot }) {
   const fd = new FormData();
   fd.append('telegram_id', String(telegramId));

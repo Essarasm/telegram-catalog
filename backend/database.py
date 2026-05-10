@@ -1191,6 +1191,44 @@ def init_db():
         "ON orders(assigned_agent_id)"
     )
 
+    # Block C — agent self-registration queue. Audit-first per zero-data-loss
+    # rule. Each form submission inserts a row immediately; admin approval
+    # flips status to 'approved' and inserts/updates the matching users row
+    # with agent_role='agent'. notify_message_id tracks the admin-group
+    # message so the approval handler can edit it post-decision.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_agents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL,
+            first_name TEXT NOT NULL,
+            last_name TEXT NOT NULL,
+            phone_raw TEXT,
+            phone_normalized TEXT NOT NULL,
+            vehicle TEXT,
+            status TEXT DEFAULT 'pending',
+            requested_at TEXT DEFAULT (datetime('now')),
+            approved_by_telegram_id INTEGER,
+            approved_at TEXT,
+            rejected_by_telegram_id INTEGER,
+            rejected_at TEXT,
+            reject_reason TEXT,
+            notify_message_id INTEGER,
+            error_message TEXT
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pending_agents_telegram "
+        "ON pending_agents(telegram_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pending_agents_phone "
+        "ON pending_agents(phone_normalized)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pending_agents_status "
+        "ON pending_agents(status)"
+    )
+
     # One-time backfill: seed daily_fx_rate_events from existing daily_fx_rates
     # so the agent FX banner has history from day one. Runs only when the
     # events table is empty; subsequent /fxrate sets append normally.

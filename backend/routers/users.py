@@ -1,12 +1,13 @@
 """User registration with client whitelist verification."""
-from fastapi import APIRouter, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, Body, Query
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
 from backend.services.notify_registration import send_registration_notification
 from backend.services.backup_users import save_user_to_backup
 from backend.services.roles import get_role as get_panel_role
+from backend.services.agent_signup import submit_agent_application
 from backend.admin_auth import check_admin_key
 import json
 import os
@@ -286,3 +287,71 @@ def export_clients_csv():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=clients_map.csv"},
     )
+
+
+# ── Agent self-registration (Block C) ─────────────────────────────────────
+
+@router.post("/register-agent")
+def register_agent(payload: dict = Body(...)):
+    """Submit a prospective-agent application. Open endpoint — anyone with
+    a Telegram account can apply; the application enters `pending_agents`
+    and is announced to ADMIN_GROUP for human review.
+
+    Payload:
+        telegram_id: int (required)
+        first_name: str (required)
+        last_name: str (required)
+        phone: str (required, Telegram-verified contact via requestContact)
+        vehicle: str (optional, free-text, max 60 chars)
+
+    Response:
+        {ok: true, application_id: int, status: 'pending', deduped: bool}
+        {ok: false, error: 'name_required'|'phone_invalid'|'already_agent'}
+    """
+    telegram_id = payload.get("telegram_id")
+    if not isinstance(telegram_id, int):
+        return JSONResponse({"ok": False, "error": "telegram_id required"},
+                            status_code=400)
+    conn = get_db()
+    try:
+        result = submit_agent_application(
+            conn,
+            telegram_id=telegram_id,
+            first_name=payload.get("first_name") or "",
+            last_name=payload.get("last_name") or "",
+            phone_raw=payload.get("phone") or "",
+            vehicle=payload.get("vehicle") or None,
+        )
+        if not result.get("ok"):
+            return JSONResponse(result, status_code=400)
+        return result
+    finally:
+        conn.close()
+
+
+@router.get("/agent-application-status")
+def agent_application_status(telegram_id: int = Query(...)):
+    """Check whether the given telegram_id has a pending / approved /
+    rejected agent application. Used by the mini-app to show the right
+    state on cold load when start_param='agent_signup'."""
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, status, requested_at, rejected_at, reject_reason "
+            "FROM pending_agents WHERE telegram_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (telegram_id,),
+        ).fetchone()
+        if not row:
+            return {"ok": True, "exists": False}
+        return {
+            "ok": True,
+            "exists": True,
+            "application_id": row["id"],
+            "status": row["status"],
+            "requested_at": row["requested_at"],
+            "rejected_at": row["rejected_at"],
+            "reject_reason": row["reject_reason"],
+        }
+    finally:
+        conn.close()
