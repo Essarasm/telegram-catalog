@@ -468,20 +468,30 @@ function AgentPanelCard({ data, stats, userRole }) {
   );
 }
 
-function VehicleProfile({ uid, userRole, value, onChange }) {
+function VehicleProfile({ uid, userRole, value, capacity, onChange }) {
   // Workers don't see agent profile surfaces.
   if (userRole === 'worker') return null;
 
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value || '');
+  const [draftVeh, setDraftVeh] = useState(value || '');
+  const [draftCap, setDraftCap] = useState(capacity != null ? String(capacity) : '');
   const [saving, setSaving] = useState(false);
 
-  const startEdit = () => { setDraft(value || ''); setEditing(true); };
+  const startEdit = () => {
+    setDraftVeh(value || '');
+    setDraftCap(capacity != null ? String(capacity) : '');
+    setEditing(true);
+  };
   const save = async () => {
     setSaving(true);
-    const r = await setAgentVehicle(uid, draft);
+    const capNum = parseFloat(draftCap);
+    const capPayload = Number.isFinite(capNum) && capNum > 0 ? capNum : null;
+    const r = await setAgentVehicle(uid, draftVeh, capPayload);
     setSaving(false);
-    if (r.ok) { onChange(r.vehicle || ''); setEditing(false); }
+    if (r.ok) {
+      onChange(r.vehicle || '', r.vehicle_capacity_tons);
+      setEditing(false);
+    }
   };
 
   if (editing) {
@@ -490,13 +500,25 @@ function VehicleProfile({ uid, userRole, value, onChange }) {
         <div className="text-xs text-tg-hint">{t.agent_vehicle_label}</div>
         <input
           className="w-full bg-tg-bg rounded px-2 py-1.5 text-sm"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          value={draftVeh}
+          onChange={(e) => setDraftVeh(e.target.value)}
           maxLength={60}
           placeholder={t.agent_vehicle_placeholder}
           autoFocus
         />
-        <div className="flex gap-2">
+        <div className="text-xs text-tg-hint pt-1">{t.agent_vehicle_capacity_label}</div>
+        <input
+          className="w-full bg-tg-bg rounded px-2 py-1.5 text-sm"
+          value={draftCap}
+          onChange={(e) => setDraftCap(e.target.value)}
+          type="number"
+          step="0.1"
+          min="0"
+          max="50"
+          inputMode="decimal"
+          placeholder={t.agent_vehicle_capacity_placeholder}
+        />
+        <div className="flex gap-2 pt-1">
           <button
             onClick={save}
             disabled={saving}
@@ -515,6 +537,13 @@ function VehicleProfile({ uid, userRole, value, onChange }) {
     );
   }
 
+  // Display: "Labo · 1.0 t" / "Labo" / "1.0 t" / "ofis"
+  const descriptor =
+    value && capacity != null ? `${value} · ${Number(capacity).toFixed(1)} t` :
+    value ? value :
+    capacity != null ? `${Number(capacity).toFixed(1)} t` :
+    t.agent_vehicle_none;
+
   return (
     <button
       onClick={startEdit}
@@ -522,7 +551,7 @@ function VehicleProfile({ uid, userRole, value, onChange }) {
     >
       <span className="text-xs text-tg-hint">{t.agent_vehicle_label}:</span>
       <span className="text-sm font-medium flex-1 text-left truncate">
-        {value || t.agent_vehicle_none}
+        {descriptor}
       </span>
       <span className="text-xs text-tg-link">{t.agent_vehicle_edit}</span>
     </button>
@@ -613,6 +642,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
   const [commission, setCommission] = useState(null);
   const [stats, setStats] = useState(null);
   const [vehicle, setVehicle] = useState('');
+  const [vehicleCapacity, setVehicleCapacity] = useState(null);
   const [deliveries, setDeliveries] = useState(null);
   const [recent, setRecent] = useState([]);
   const [query, setQuery] = useState('');
@@ -634,7 +664,10 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
       fetchAgentCommission(uid).then(setCommission);
       fetchAgentStats(uid).then(setStats);
       fetchAgentVehicle(uid).then(r => {
-        if (r.ok) setVehicle(r.vehicle || '');
+        if (r.ok) {
+          setVehicle(r.vehicle || '');
+          setVehicleCapacity(r.vehicle_capacity_tons ?? null);
+        }
       });
       fetchAgentMyDeliveries(uid).then(setDeliveries);
     }
@@ -837,7 +870,13 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
       <AgentPanelCard data={commission} stats={stats} userRole={userRole} />
 
       {/* Vehicle profile — small operational pill, stays at the very bottom */}
-      <VehicleProfile uid={uid} userRole={userRole} value={vehicle} onChange={setVehicle} />
+      <VehicleProfile
+        uid={uid}
+        userRole={userRole}
+        value={vehicle}
+        capacity={vehicleCapacity}
+        onChange={(v, c) => { setVehicle(v); setVehicleCapacity(c ?? null); }}
+      />
     </div>
   );
 }

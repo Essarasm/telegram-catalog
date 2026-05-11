@@ -41,10 +41,16 @@ def _is_dispatcher(cb: types.CallbackQuery) -> bool:
     return _db_role_check(uid, {"admin"})
 
 
-def _agent_label(first_name: str | None, vehicle: str | None) -> str:
+def _agent_label(first_name: str | None, vehicle: str | None,
+                 vehicle_capacity_tons: float | None = None) -> str:
     name = (first_name or "Agent").strip() or "Agent"
     veh = (vehicle or "").strip()
-    label = f"{name} ({veh})" if veh else name
+    cap_text = f"{vehicle_capacity_tons:.1f}t" if vehicle_capacity_tons else ""
+    if veh and cap_text:
+        descriptor = f"{veh}·{cap_text}"
+    else:
+        descriptor = veh or cap_text
+    label = f"{name} ({descriptor})" if descriptor else name
     return label[:64]  # Telegram inline-button text cap
 
 
@@ -76,8 +82,8 @@ async def on_dispatch_pick(cb: types.CallbackQuery):
             return
 
         agents = conn.execute(
-            "SELECT telegram_id, first_name, vehicle FROM users "
-            "WHERE agent_role = 'agent' "
+            "SELECT telegram_id, first_name, vehicle, vehicle_capacity_tons "
+            "FROM users WHERE agent_role = 'agent' "
             "ORDER BY first_name COLLATE NOCASE"
         ).fetchall()
     finally:
@@ -90,7 +96,7 @@ async def on_dispatch_pick(cb: types.CallbackQuery):
     rows: list[list[InlineKeyboardButton]] = []
     for a in agents:
         rows.append([InlineKeyboardButton(
-            text=_agent_label(a["first_name"], a["vehicle"]),
+            text=_agent_label(a["first_name"], a["vehicle"], a["vehicle_capacity_tons"]),
             callback_data=f"disp:assign:{order_id}:{a['telegram_id']}",
         )])
     rows.append([InlineKeyboardButton(
@@ -140,7 +146,8 @@ async def on_dispatch_assign(cb: types.CallbackQuery):
         conn.commit()
 
         agent = conn.execute(
-            "SELECT telegram_id, first_name, vehicle FROM users WHERE telegram_id = ?",
+            "SELECT telegram_id, first_name, vehicle, vehicle_capacity_tons "
+            "FROM users WHERE telegram_id = ?",
             (agent_telegram_id,),
         ).fetchone()
         order = conn.execute(
@@ -151,8 +158,11 @@ async def on_dispatch_assign(cb: types.CallbackQuery):
     finally:
         conn.close()
 
-    label = _agent_label(agent["first_name"] if agent else "?",
-                         agent["vehicle"] if agent else "")
+    label = _agent_label(
+        agent["first_name"] if agent else "?",
+        agent["vehicle"] if agent else "",
+        agent["vehicle_capacity_tons"] if agent else None,
+    )
     new_kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text=f"✅ Biriktirildi: {label}",
                              callback_data="disp:noop"),

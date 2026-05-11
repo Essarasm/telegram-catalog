@@ -30,6 +30,7 @@ export default function AgentSignupPage({ onApproved }) {
   const [lastName, setLastName] = useState('');
   const [phone, setPhone] = useState('');
   const [vehicle, setVehicle] = useState('');
+  const [capacity, setCapacity] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
 
@@ -90,12 +91,14 @@ export default function AgentSignupPage({ onApproved }) {
   const doSubmit = async (resolvedPhone) => {
     setSubmitting(true);
     setError(null);
+    const capNum = parseFloat(capacity);
     const result = await registerAgent({
       telegram_id: uid,
       first_name: firstName.trim(),
       last_name: lastName.trim(),
       phone: resolvedPhone,
       vehicle: vehicle.trim() || null,
+      vehicle_capacity_tons: (Number.isFinite(capNum) && capNum > 0) ? capNum : null,
     });
     setSubmitting(false);
     if (!result.ok) {
@@ -219,6 +222,25 @@ export default function AgentSignupPage({ onApproved }) {
           />
           <div className="text-[11px] text-tg-hint mt-1">
             {t.agent_signup_vehicle_hint}
+          </div>
+        </div>
+        <div>
+          <label className="block text-xs text-tg-hint mb-1">
+            {t.agent_signup_capacity_label}
+          </label>
+          <input
+            value={capacity}
+            onChange={(e) => setCapacity(e.target.value)}
+            type="number"
+            step="0.1"
+            min="0"
+            max="50"
+            inputMode="decimal"
+            className="w-full bg-tg-bg rounded px-2 py-2 text-sm"
+            placeholder={t.agent_signup_capacity_placeholder}
+          />
+          <div className="text-[11px] text-tg-hint mt-1">
+            {t.agent_signup_capacity_hint}
           </div>
         </div>
       </div>

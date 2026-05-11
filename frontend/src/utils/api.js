@@ -363,12 +363,16 @@ export async function fetchAgentVehicle(telegramId) {
   }
 }
 
-export async function setAgentVehicle(telegramId, vehicle) {
+export async function setAgentVehicle(telegramId, vehicle, vehicleCapacityTons) {
   try {
     const res = await fetch(`${API_BASE}/agent/vehicle`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ telegram_id: telegramId, vehicle }),
+      body: JSON.stringify({
+        telegram_id: telegramId,
+        vehicle,
+        vehicle_capacity_tons: vehicleCapacityTons,
+      }),
     });
     return res.json();
   } catch (e) {

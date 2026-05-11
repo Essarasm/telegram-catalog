@@ -225,38 +225,52 @@ def agent_commission(telegram_id: int = Query(...)):
 
 @router.get("/vehicle")
 def agent_vehicle_get(telegram_id: int = Query(...)):
-    """Return this agent's vehicle string (free-text). Empty/null = office-
-    only agent (no delivery vehicle). Workers blocked."""
+    """Return this agent's vehicle descriptor + estimated capacity (tonna).
+    Empty/null = office-only agent (no delivery vehicle). Workers blocked."""
     conn = get_db()
     try:
         if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
             return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
         row = conn.execute(
-            "SELECT vehicle FROM users WHERE telegram_id = ?", (telegram_id,)
+            "SELECT vehicle, vehicle_capacity_tons FROM users WHERE telegram_id = ?",
+            (telegram_id,),
         ).fetchone()
-        return {"ok": True, "vehicle": (row["vehicle"] if row else "") or ""}
+        return {
+            "ok": True,
+            "vehicle": (row["vehicle"] if row else "") or "",
+            "vehicle_capacity_tons": (row["vehicle_capacity_tons"] if row else None),
+        }
     finally:
         conn.close()
 
 
 @router.post("/vehicle")
 def agent_vehicle_set(payload: dict = Body(...)):
-    """Agent updates their own vehicle descriptor. Free-text, max 60 chars.
-    Empty string clears the field (office-only)."""
+    """Agent updates their own vehicle descriptor + capacity. Free-text
+    vehicle max 60 chars; capacity is float 0 < cap ≤ 50 (advisory, sanitized
+    silently). Empty/null inputs clear the respective field."""
     telegram_id = payload.get("telegram_id")
     if not isinstance(telegram_id, int):
         return JSONResponse({"ok": False, "error": "telegram_id required"}, status_code=400)
     vehicle = (payload.get("vehicle") or "").strip()[:60]
+    try:
+        cap_raw = payload.get("vehicle_capacity_tons")
+        cap = float(cap_raw) if cap_raw is not None and cap_raw != "" else None
+        if cap is not None and (cap <= 0 or cap > 50):
+            cap = None
+    except (TypeError, ValueError):
+        cap = None
     conn = get_db()
     try:
         if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
             return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
         conn.execute(
-            "UPDATE users SET vehicle = ? WHERE telegram_id = ?",
-            (vehicle or None, telegram_id),
+            "UPDATE users SET vehicle = ?, vehicle_capacity_tons = ? "
+            "WHERE telegram_id = ?",
+            (vehicle or None, cap, telegram_id),
         )
         conn.commit()
-        return {"ok": True, "vehicle": vehicle}
+        return {"ok": True, "vehicle": vehicle, "vehicle_capacity_tons": cap}
     finally:
         conn.close()
 

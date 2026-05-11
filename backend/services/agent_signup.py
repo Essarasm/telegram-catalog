@@ -40,6 +40,7 @@ def submit_agent_application(
     last_name: str,
     phone_raw: str,
     vehicle: Optional[str] = None,
+    vehicle_capacity_tons: Optional[float] = None,
 ) -> dict:
     """Insert a pending_agents row + post to admin group. Returns:
 
@@ -55,6 +56,14 @@ def submit_agent_application(
     last_name = (last_name or "").strip()
     phone_raw = (phone_raw or "").strip()
     vehicle = (vehicle or "").strip()[:60]
+    # Capacity is optional + advisory; sanitize to a sensible range or null.
+    try:
+        cap = float(vehicle_capacity_tons) if vehicle_capacity_tons is not None else None
+        if cap is not None and (cap <= 0 or cap > 50):
+            cap = None  # silently drop nonsense values
+    except (TypeError, ValueError):
+        cap = None
+    vehicle_capacity_tons = cap
     phone_norm = _normalize(phone_raw)
 
     if not first_name or not last_name:
@@ -84,10 +93,10 @@ def submit_agent_application(
     cur = conn.execute(
         "INSERT INTO pending_agents "
         "(telegram_id, first_name, last_name, phone_raw, phone_normalized, "
-        " vehicle, status) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'pending')",
+        " vehicle, vehicle_capacity_tons, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')",
         (telegram_id, first_name, last_name, phone_raw, phone_norm,
-         vehicle or None),
+         vehicle or None, vehicle_capacity_tons),
     )
     application_id = cur.lastrowid
     conn.commit()
@@ -101,6 +110,7 @@ def submit_agent_application(
         phone_raw=phone_raw,
         phone_norm=phone_norm,
         vehicle=vehicle,
+        vehicle_capacity_tons=vehicle_capacity_tons,
     )
     if msg_id is not None:
         conn.execute(
@@ -125,6 +135,7 @@ def _post_to_admin_group(
     phone_raw: str,
     phone_norm: str,
     vehicle: Optional[str],
+    vehicle_capacity_tons: Optional[float] = None,
 ) -> Optional[int]:
     """Send the inline-keyboarded approval prompt. Returns message_id on
     success, None on failure (logged but non-fatal — admin can still
@@ -134,7 +145,15 @@ def _post_to_admin_group(
                        "not announced to approval group", application_id)
         return None
 
-    veh_line = f"\n🚚 Transport: <b>{_h(vehicle)}</b>" if vehicle else ""
+    # Build vehicle line: "Labo (1.0 t)" if both, "Labo" if only text,
+    # "1.0 t" if only capacity, nothing if neither.
+    veh_text = _h(vehicle) if vehicle else ""
+    cap_text = f"{vehicle_capacity_tons:.1f} t" if vehicle_capacity_tons else ""
+    if veh_text and cap_text:
+        veh_descriptor = f"{veh_text} ({cap_text})"
+    else:
+        veh_descriptor = veh_text or cap_text
+    veh_line = f"\n🚚 Transport: <b>{veh_descriptor}</b>" if veh_descriptor else ""
     text = (
         f"🆕 <b>Yangi agent arizasi</b>\n\n"
         f"👤 Ism: <b>{_h(first_name)} {_h(last_name)}</b>\n"
@@ -184,7 +203,8 @@ def approve_application(
         {ok: False, error: 'not_pending' | 'not_found'}
     """
     row = conn.execute(
-        "SELECT id, telegram_id, first_name, last_name, vehicle, status "
+        "SELECT id, telegram_id, first_name, last_name, vehicle, "
+        "       vehicle_capacity_tons, status "
         "FROM pending_agents WHERE id = ?",
         (application_id,),
     ).fetchone()
@@ -205,7 +225,7 @@ def approve_application(
 
     # Insert or update the users row. INSERT OR IGNORE first so a freshly-
     # signed-up agent gets a row even if they never opened the mini-app
-    # before. Then UPDATE to set the role + vehicle.
+    # before. Then UPDATE to set the role + vehicle + capacity.
     conn.execute(
         "INSERT OR IGNORE INTO users (telegram_id, is_approved) VALUES (?, 1)",
         (row["telegram_id"],),
@@ -214,10 +234,11 @@ def approve_application(
         "UPDATE users SET agent_role = 'agent', is_agent = 1, is_approved = 1, "
         "  first_name = COALESCE(first_name, ?), "
         "  last_name = COALESCE(last_name, ?), "
-        "  vehicle = COALESCE(vehicle, ?) "
+        "  vehicle = COALESCE(vehicle, ?), "
+        "  vehicle_capacity_tons = COALESCE(vehicle_capacity_tons, ?) "
         "WHERE telegram_id = ?",
         (row["first_name"], row["last_name"], row["vehicle"] or None,
-         row["telegram_id"]),
+         row["vehicle_capacity_tons"], row["telegram_id"]),
     )
     conn.commit()
 
@@ -227,6 +248,7 @@ def approve_application(
         "first_name": row["first_name"],
         "last_name": row["last_name"],
         "vehicle": row["vehicle"] or "",
+        "vehicle_capacity_tons": row["vehicle_capacity_tons"],
     }
 
 

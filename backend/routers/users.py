@@ -303,6 +303,7 @@ def register_agent(payload: dict = Body(...)):
         last_name: str (required)
         phone: str (required, Telegram-verified contact via requestContact)
         vehicle: str (optional, free-text, max 60 chars)
+        vehicle_capacity_tons: float (optional, advisory, 0 < cap ≤ 50)
 
     Response:
         {ok: true, application_id: int, status: 'pending', deduped: bool}
@@ -321,6 +322,7 @@ def register_agent(payload: dict = Body(...)):
             last_name=payload.get("last_name") or "",
             phone_raw=payload.get("phone") or "",
             vehicle=payload.get("vehicle") or None,
+            vehicle_capacity_tons=payload.get("vehicle_capacity_tons"),
         )
         if not result.get("ok"):
             return JSONResponse(result, status_code=400)

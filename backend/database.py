@@ -1159,6 +1159,12 @@ def init_db():
     user_cols_vehicle = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     if "vehicle" not in user_cols_vehicle:
         conn.execute("ALTER TABLE users ADD COLUMN vehicle TEXT")
+    # vehicle_capacity_tons: estimated cargo capacity for delivery-matching
+    # logic (dispatch picker label, future order batching). Optional —
+    # admin/office-only agents leave it null. Stored as REAL with one
+    # meaningful decimal (0.3 = Жигули, 1.0 = Labo, 5.0 = Isuzu).
+    if "vehicle_capacity_tons" not in user_cols_vehicle:
+        conn.execute("ALTER TABLE users ADD COLUMN vehicle_capacity_tons REAL")
 
     # orders.assigned_agent_id / assigned_at / delivery_status — Block A
     # adds the schema only; admin dispatch flow ships in Block B. Atomic
@@ -1228,6 +1234,12 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_pending_agents_status "
         "ON pending_agents(status)"
     )
+    # Additive: capture self-reported vehicle capacity on the audit row too,
+    # so approval-side logic can copy it through to users.vehicle_capacity_tons
+    # without re-asking the agent.
+    pa_cols = {row[1] for row in conn.execute("PRAGMA table_info(pending_agents)").fetchall()}
+    if "vehicle_capacity_tons" not in pa_cols:
+        conn.execute("ALTER TABLE pending_agents ADD COLUMN vehicle_capacity_tons REAL")
 
     # One-time backfill: seed daily_fx_rate_events from existing daily_fx_rates
     # so the agent FX banner has history from day one. Runs only when the
