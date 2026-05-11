@@ -24,6 +24,9 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 # Group chat IDs — canonical home is backend/services/group_config.py.
 # Re-exported here so existing `from bot.shared import ADMIN_GROUP_CHAT_ID`
 # imports keep working without changes across all handler modules.
+# ERRORS/REPORT/LEGAL_TRANSFER/MANAGER aren't used inside this file but are
+# re-exported for handlers — declare them in __all__ below so ruff knows
+# they're intentional re-exports (otherwise F401 fires in CI).
 from backend.services.group_config import (
     ORDER_GROUP_CHAT_ID,
     ADMIN_GROUP_CHAT_ID,
@@ -39,6 +42,23 @@ from backend.services.group_config import (
     LEGAL_TRANSFER_GROUP_CHAT_ID,
     MANAGER_CHAT_ID,
 )
+
+# Explicit re-export list. ruff respects __all__ for F401 unused-import checks.
+__all__ = [
+    "ORDER_GROUP_CHAT_ID",
+    "ADMIN_GROUP_CHAT_ID",
+    "AGENTS_GROUP_CHAT_ID",
+    "DAILY_GROUP_CHAT_ID",
+    "INVENTORY_GROUP_CHAT_ID",
+    "CASHIER_GROUP_CHAT_ID",
+    "BANK_TRANSFER_GROUP_CHAT_ID",
+    "DRIVER_GROUP_CHAT_ID",
+    "AGENT_APPROVAL_GROUP_CHAT_ID",
+    "ERRORS_GROUP_CHAT_ID",
+    "REPORT_GROUP_CHAT_ID",
+    "LEGAL_TRANSFER_GROUP_CHAT_ID",
+    "MANAGER_CHAT_ID",
+]
 
 
 def chat_context(message) -> str:

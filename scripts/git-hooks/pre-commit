@@ -12,6 +12,7 @@
 # Override env vars for the rare legitimate exception:
 #   SKIP_SCHEMA_CHECK=1   — bypass the schema-DDL guard
 #   SKIP_CHATID_CHECK=1   — bypass the chat-ID guard
+#   SKIP_RUFF=1           — skip ruff lint
 #   SKIP_FRONTEND_BUILD=1 — skip the frontend rebuild
 #   SKIP_BUNDLE_CHECK=1   — skip the bundle-size budget check
 
@@ -78,6 +79,21 @@ if [ "$SKIP_CHATID_CHECK" != "1" ]; then
         echo "   This prevents the WRONG_FALLBACK_FROM_COPY_PASTE class"
         echo "   (Error Log #46 — location.py shipped to wrong group via copy-paste)."
         echo "   Override (rare): SKIP_CHATID_CHECK=1 git commit ..."
+        exit 1
+    fi
+fi
+
+# ── Ruff lint ─────────────────────────────────────────────────────────────
+# CI runs ruff too — running it locally first means the same drift class
+# (unused imports, F821 undefined names) gets caught at commit time, not
+# after a push round-trip. Hook precedes pytest because lint is cheap (~1s)
+# and a lint error often reveals a typo that pytest would surface as a less
+# clear failure.
+if [ "$SKIP_RUFF" != "1" ]; then
+    echo "🧹 Ruff lint..."
+    if ! python3 -m ruff check backend bot 2>&1; then
+        echo "❌ Ruff found issues. Fix or run \`python3 -m ruff check backend bot --fix\`."
+        echo "   Override (rare): SKIP_RUFF=1 git commit ..."
         exit 1
     fi
 fi

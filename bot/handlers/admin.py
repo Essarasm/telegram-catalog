@@ -1,5 +1,4 @@
 """Admin bot commands — extracted from bot/main.py for isolation."""
-import os
 import re
 from aiogram import Router, F, types
 from aiogram.filters import Command

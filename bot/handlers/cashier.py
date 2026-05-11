@@ -18,7 +18,6 @@ Notifications fire from this handler directly via bot.send_message:
 from __future__ import annotations
 
 import logging
-import os
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional

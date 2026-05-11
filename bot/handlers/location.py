@@ -3,7 +3,6 @@
 When an agent is /testclient-linked to a client, GPS is saved on the
 CLIENT's profile, so agents can tag client shop locations on the spot.
 """
-import os
 import logging
 
 from aiogram import Router, F
