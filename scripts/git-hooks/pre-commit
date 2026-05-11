@@ -13,6 +13,7 @@
 #   SKIP_SCHEMA_CHECK=1   — bypass the schema-DDL guard
 #   SKIP_CHATID_CHECK=1   — bypass the chat-ID guard
 #   SKIP_FRONTEND_BUILD=1 — skip the frontend rebuild
+#   SKIP_BUNDLE_CHECK=1   — skip the bundle-size budget check
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
@@ -110,9 +111,17 @@ if [ -n "$STAGED_FE_SRC" ] && [ "$SKIP_FRONTEND_BUILD" != "1" ]; then
         echo "❌ Frontend build failed. Run 'cd frontend && npm run build' to see the error."
         exit 1
     fi
+    # Enforce bundle budget from CLAUDE.md (<400K JS + <50K CSS main chunk).
+    if [ "$SKIP_BUNDLE_CHECK" != "1" ]; then
+        if ! python3 tools/check_bundle_size.py; then
+            echo ""
+            echo "   Override (rare): SKIP_BUNDLE_CHECK=1 git commit ..."
+            exit 1
+        fi
+    fi
     # Re-stage the updated dist so the commit reflects the new bundle
     git add frontend/dist
-    echo "✅ Frontend rebuilt & dist/ re-staged"
+    echo "✅ Frontend rebuilt, within budget & dist/ re-staged"
 fi
 
 echo "✅ All checks passed"

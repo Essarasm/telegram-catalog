@@ -1,0 +1,67 @@
+version: 2
+
+# Dependabot config — automated dependency-update PRs.
+# Runs on the schedule below and opens PRs for outdated packages.
+# CI workflow (.github/workflows/ci.yml) auto-validates each PR before merge.
+#
+# Rationale: backend/frontend deps drift silently between manual reviews.
+# Weekly auto-PRs surface security advisories and breaking-change windows
+# without requiring a person to remember to run `pip outdated` / `npm outdated`.
+# See ADR-0002 / foundation audit 2026-05-10 for the broader "automate the
+# discipline" theme.
+
+updates:
+  # ── Python (backend + bot share requirements.txt) ──
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Tashkent"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "Session Ops"
+      include: "scope"
+    # Group patch + minor bumps into one PR per ecosystem to reduce noise.
+    # Majors get individual PRs because they need scrutiny.
+    groups:
+      python-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Frontend (Vite + React) ──
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Tashkent"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "frontend"
+    commit-message:
+      prefix: "Session Ops"
+      include: "scope"
+    groups:
+      js-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── GitHub Actions themselves (keep CI workflow up to date) ──
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "Session Ops"

@@ -1,0 +1,82 @@
+name: CI
+
+# Mirrors the pre-commit hook discipline at the remote-repo level so the
+# foundation guards still fire if someone ever pushes without the local hook
+# installed (fresh clone, different machine, hook overridden in emergency).
+# See Foundation Audit 2026-05-10 + Error Log #46 for context.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a new commit lands on the same branch — no
+# point burning minutes on stale code.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (ruff + pytest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # The Python project lives at the repo root.
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10.14'  # matches runtime.txt
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff lint (no F821, no syntax errors)
+        run: python -m ruff check backend bot
+
+      - name: Pytest (both suites — `tests/` and `backend/tests/`)
+        # pytest.ini's testpaths picks up both. Single invocation runs the
+        # full 200-test suite. Pre-Foundation-Audit 2026-05-10 the
+        # backend/tests/ suite silently rotted because it wasn't in testpaths;
+        # this CI step is the remote-level guard against re-occurrence.
+        env:
+          ADMIN_API_KEY: ci-test-admin-key
+        run: python -m pytest -q --tb=short
+
+  frontend:
+    name: Frontend (build + bundle budget)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build (vite)
+        working-directory: frontend
+        run: npm run build
+
+      - name: Enforce bundle-size budget
+        # Mirrors the pre-commit guard. CLAUDE.md Hard Constraints sets
+        # <400K JS + <50K CSS for the main chunk. Code-split chunks
+        # (MapPicker / leaflet) are excluded by design.
+        run: python3 tools/check_bundle_size.py
