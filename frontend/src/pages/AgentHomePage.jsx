@@ -646,100 +646,106 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         />
       )}
 
-      {/* Search bar */}
-      <div className="relative">
-        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-tg-hint pointer-events-none">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="11" cy="11" r="7" />
-            <path d="M21 21l-4.3-4.3" />
-          </svg>
-        </span>
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={t.agent_search_placeholder}
-          className="w-full bg-tg-secondary rounded-2xl pl-10 pr-10 py-3.5 text-sm outline-none border border-tg-hint/20 focus:border-tg-link focus:ring-2 focus:ring-tg-link/20 transition-colors"
-        />
-        {query && !searching && (
-          <button
-            type="button"
-            onClick={() => setQuery('')}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-tg-hint hover:text-tg-text active:scale-95"
-            aria-label="Tozalash"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      {/* Client picker — search input + results/recent grouped together as
+          one visually distinct section (per user request 2026-05-11). Subtle
+          tg-secondary tint + border so it reads as a "card" without being
+          loud. Search input is the action; the list below is context. */}
+      <section className="rounded-2xl bg-tg-secondary/40 border border-tg-hint/15 p-3 space-y-3">
+        {/* Search bar — larger touch target, prominent icon, focus ring */}
+        <div className="relative">
+          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-tg-hint pointer-events-none">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                  strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M15 9l-6 6M9 9l6 6" />
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
             </svg>
-          </button>
-        )}
-        {searching && (
-          <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs text-tg-hint">
-            …
           </span>
-        )}
-      </div>
-
-      {/* Search results */}
-      {results && (
-        <div className="space-y-2">
-          {results.whitelisted.length === 0 && results.new_1c.length === 0 && (
-            <div className="text-center text-sm text-tg-hint py-6">
-              {t.agent_no_results}
-            </div>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t.agent_search_placeholder}
+            className="w-full bg-tg-bg rounded-xl pl-12 pr-11 py-4 text-base outline-none border border-tg-hint/20 focus:border-tg-link focus:ring-2 focus:ring-tg-link/20 transition-colors placeholder:text-tg-hint/80"
+          />
+          {query && !searching && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-tg-hint hover:text-tg-text active:scale-95"
+              aria-label="Tozalash"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M15 9l-6 6M9 9l6 6" />
+              </svg>
+            </button>
           )}
-          {results.new_1c.length > 0 && (
-            <div className="text-xs text-tg-hint px-1">
-              {t.agent_new_1c_hint}
-            </div>
+          {searching && (
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs text-tg-hint">
+              …
+            </span>
           )}
-          {results.new_1c.map((c) => (
-            <ClientRow
-              key={`new:${c.client_name_1c}`}
-              label={c.client_name_1c}
-              sub={`${c.balance_count} yozuv`}
-              isNew
-              onClick={() => pickClient({ client_name_1c: c.client_name_1c })}
-            />
-          ))}
-          {results.whitelisted.map((c) => (
-            <ClientRow
-              key={`wl:${c.id}`}
-              label={c.client_id_1c || c.name || `#${c.id}`}
-              sub={c.phone || (c.name && c.client_id_1c !== c.name ? c.name : '')}
-              onClick={() => pickClient({ client_id: c.id })}
-            />
-          ))}
         </div>
-      )}
 
-      {/* Recent clients (when not searching) */}
-      {!results && (
-        <div>
-          <div className="text-xs text-tg-hint font-semibold px-1 mb-2">
-            {t.agent_recent_clients}
+        {/* Search results */}
+        {results && (
+          <div className="space-y-2">
+            {results.whitelisted.length === 0 && results.new_1c.length === 0 && (
+              <div className="text-center text-sm text-tg-hint py-6">
+                {t.agent_no_results}
+              </div>
+            )}
+            {results.new_1c.length > 0 && (
+              <div className="text-xs text-tg-hint px-1">
+                {t.agent_new_1c_hint}
+              </div>
+            )}
+            {results.new_1c.map((c) => (
+              <ClientRow
+                key={`new:${c.client_name_1c}`}
+                label={c.client_name_1c}
+                sub={`${c.balance_count} yozuv`}
+                isNew
+                onClick={() => pickClient({ client_name_1c: c.client_name_1c })}
+              />
+            ))}
+            {results.whitelisted.map((c) => (
+              <ClientRow
+                key={`wl:${c.id}`}
+                label={c.client_id_1c || c.name || `#${c.id}`}
+                sub={c.phone || (c.name && c.client_id_1c !== c.name ? c.name : '')}
+                onClick={() => pickClient({ client_id: c.id })}
+              />
+            ))}
           </div>
-          {recent.length === 0 ? (
-            <div className="text-center text-sm text-tg-hint py-6 bg-tg-secondary/50 rounded-xl">
-              {t.agent_no_recent}
+        )}
+
+        {/* Recent clients (when not searching) */}
+        {!results && (
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-tg-hint font-semibold px-1 mb-2">
+              {t.agent_recent_clients}
             </div>
-          ) : (
-            <div className="space-y-2">
-              {recent.map((c) => (
-                <ClientRow
-                  key={c.client_id}
-                  label={c.client_id_1c || c.name || `#${c.client_id}`}
-                  sub={c.phone || (c.name && c.client_id_1c !== c.name ? c.name : '')}
-                  onClick={() => pickClient({ client_id: c.client_id })}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+            {recent.length === 0 ? (
+              <div className="text-center text-sm text-tg-hint py-6 rounded-xl">
+                {t.agent_no_recent}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {recent.map((c) => (
+                  <ClientRow
+                    key={c.client_id}
+                    label={c.client_id_1c || c.name || `#${c.client_id}`}
+                    sub={c.phone || (c.name && c.client_id_1c !== c.name ? c.name : '')}
+                    onClick={() => pickClient({ client_id: c.client_id })}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
       {/* Personal sections — moved to the bottom of the panel per Ulugbek's
           UX call (2026-05-11). Client-search work happens at the top; agent's
