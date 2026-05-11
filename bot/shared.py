@@ -41,6 +41,7 @@ from backend.services.group_config import (
     REPORT_GROUP_CHAT_ID,
     LEGAL_TRANSFER_GROUP_CHAT_ID,
     MANAGER_CHAT_ID,
+    OWNER_DAILY_BRIEF_TARGETS,
 )
 
 # Explicit re-export list. ruff respects __all__ for F401 unused-import checks.
@@ -58,6 +59,7 @@ __all__ = [
     "REPORT_GROUP_CHAT_ID",
     "LEGAL_TRANSFER_GROUP_CHAT_ID",
     "MANAGER_CHAT_ID",
+    "OWNER_DAILY_BRIEF_TARGETS",
 ]
 
 

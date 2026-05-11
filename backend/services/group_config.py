@@ -31,6 +31,26 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_int_list(name: str) -> list[int]:
+    """Parse a comma-separated env var into a list of ints.
+    Empty / unset → empty list (feature stays inert).
+    Malformed entries are skipped silently (logged at debug elsewhere).
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return []
+    out: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(int(part))
+        except ValueError:
+            continue
+    return out
+
+
 # ── Canonical group chat IDs ─────────────────────────────────────────
 
 # Admin group — error alerts, registration notifications, ops chatter.
@@ -79,6 +99,13 @@ LEGAL_TRANSFER_GROUP_CHAT_ID: int = _env_int("LEGAL_TRANSFER_GROUP_CHAT_ID", 0)
 # Direct-message manager (single user) — used by registration notifications.
 # 0 = unconfigured.
 MANAGER_CHAT_ID: int = _env_int("MANAGER_CHAT_ID", 0)
+
+# Owner daily-brief targets — comma-separated list of chat IDs (negative for
+# groups, positive for individual users). Each receives the 09:00 Tashkent
+# morning reconciliation DM. Empty → feature inert. Notion Command Center
+# backlog A2 (2026-05-11). Test target: -1003933938202 (supergroup).
+# Once verified, swap to or add the father's user ID, e.g. "-1003,652...".
+OWNER_DAILY_BRIEF_TARGETS: list[int] = _env_int_list("OWNER_DAILY_BRIEF_TARGETS")
 
 
 def legal_transfer_target() -> int:

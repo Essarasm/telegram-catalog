@@ -114,6 +114,7 @@ SPECS = {
             Cmd("/missed", "Mijozga yetkazilmagan to'lov bildirishnomalari (Session N)"),
         ]),
         ("📈 Hisobotlar", [
+            Cmd("/morningbrief [YYYY-MM-DD]", "Kunlik hisobot — kassa+realizatsiya+top mijozlar+anomaliya (avto 09:00)"),
             Cmd("/reports", "So'nggi xatolik xabarlari va mahsulot so'rovlari"),
             Cmd("/wrongphotos", "Noto'g'ri rasm xabarlari"),
             Cmd("/searches [kunlar]", "Qidiruv statistikasi (default 7)"),

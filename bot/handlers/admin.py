@@ -10,6 +10,53 @@ from backend.admin_auth import get_admin_key
 router = Router()
 
 
+@router.message(Command("morningbrief"))
+async def cmd_morningbrief(message: types.Message):
+    """Generate the owner daily reconciliation brief on-demand.
+
+    Mirrors the 09:00 scheduled brief but sends to whoever ran the command
+    (DM or wherever). Useful for testing + ad-hoc viewing. Always sends —
+    skips the quiet-day suppression so the operator sees the actual current
+    data even on a 0-row day.
+
+    Optional argument: YYYY-MM-DD date to inspect (defaults to yesterday).
+    Example: /morningbrief 2026-05-09
+    """
+    if not is_admin(message):
+        return
+    log_admin_action(message, "morningbrief", message.text or "")
+    try:
+        from datetime import date as _date
+        from backend.services.owner_brief import gather_brief, render_brief
+
+        # Parse optional YYYY-MM-DD argument
+        parts = (message.text or "").split(maxsplit=1)
+        for_date: _date | None = None
+        if len(parts) == 2:
+            try:
+                for_date = _date.fromisoformat(parts[1].strip())
+            except ValueError:
+                await message.reply(
+                    "❌ Sana formati: <code>/morningbrief 2026-05-09</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+        conn = get_db()
+        try:
+            data = gather_brief(conn, for_date=for_date)
+        finally:
+            conn.close()
+
+        text = render_brief(data)
+        # Append a footer noting this was on-demand (not the auto 09:00 fire)
+        text += "\n\n<i>(manual /morningbrief)</i>"
+        await message.reply(text, parse_mode="HTML")
+    except Exception as e:
+        logger.exception(f"cmd_morningbrief failed: {e}")
+        await message.reply(f"❌ Xato: <code>{html_escape(str(e))}</code>", parse_mode="HTML")
+
+
 @router.message(Command("grouphealth"))
 async def cmd_grouphealth(message: types.Message):
     """Ping every forwarding group to verify the bot can post. Reports back

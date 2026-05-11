@@ -560,6 +560,66 @@ async def _send_master_sync_nudge(bot, chat_id: int) -> None:
         logger.error(f"Master sync nudge failed: {e}")
 
 
+async def _send_owner_morning_brief(bot, _ignored_chat_id: int) -> None:
+    """09:00 Tashkent — owner daily reconciliation brief.
+
+    Targets are configured via OWNER_DAILY_BRIEF_TARGETS env var (list of
+    chat IDs — groups or users). The chat_id argument from run_daily_reminder
+    is ignored: this reminder fans out to its own configured targets, not
+    to the generic admin chat. Quiet on a fully-empty day.
+
+    Notion Command Center feature backlog A2 (2026-05-11).
+    """
+    from backend.services.group_config import OWNER_DAILY_BRIEF_TARGETS
+    if not OWNER_DAILY_BRIEF_TARGETS:
+        # Feature inert by design — nothing configured, nothing sent.
+        logger.debug("owner_morning_brief: no targets configured, skipping")
+        return
+
+    today = datetime.now(TASHKENT)
+    ok, reason = _should_send(today)
+    if not ok:
+        logger.info(f"Owner morning brief skipped: {reason}")
+        return
+
+    try:
+        from backend.database import get_db
+        from backend.services.owner_brief import (
+            gather_brief, render_brief, is_quiet_day,
+        )
+        conn = get_db()
+        try:
+            data = gather_brief(conn)
+        finally:
+            conn.close()
+
+        if is_quiet_day(data):
+            logger.info(
+                f"owner_morning_brief: quiet day for {data['for_date']} "
+                f"— no message sent"
+            )
+            return
+
+        text = render_brief(data)
+        sent = 0
+        for target in OWNER_DAILY_BRIEF_TARGETS:
+            try:
+                await bot.send_message(target, text, parse_mode="HTML")
+                sent += 1
+            except Exception as e:
+                logger.warning(
+                    f"owner_morning_brief: failed to send to {target}: {e}"
+                )
+        logger.info(
+            f"owner_morning_brief: sent to {sent}/{len(OWNER_DAILY_BRIEF_TARGETS)} "
+            f"targets for {data['for_date']} "
+            f"(uzs_cash={data['cash_uzs_total']:.0f}, "
+            f"anomalies={len(data['overdue_debtors']) + (1 if data['out_of_stock_count'] else 0) + len(data['silent_regulars'])})"
+        )
+    except Exception as e:
+        logger.error(f"owner_morning_brief failed: {e}", exc_info=True)
+
+
 async def _send_cashbook_summary(bot, chat_id: int) -> None:
     """18:00 Tashkent — post the day's cashbook intake summary to the
     cashier group. Quiet on a 0-row + 0-pending day (no chat noise)."""
@@ -772,6 +832,15 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 4, 30, _recompute_units_score),
             name="daily-units-score-recompute",
+        ),
+        # Daily 09:00 — owner daily reconciliation brief to configured
+        # targets (OWNER_DAILY_BRIEF_TARGETS env). Fans out to its own
+        # target list, not the generic admin chat — the chat_id arg here
+        # is just to satisfy the run_daily_reminder signature.
+        # Notion Command Center feature backlog A2 (2026-05-11).
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 9, 0, _send_owner_morning_brief),
+            name="daily-owner-morning-brief",
         ),
     ]
     logger.info(
