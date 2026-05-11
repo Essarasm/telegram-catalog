@@ -479,11 +479,15 @@ function MyDeliveriesSection({ data }) {
 
   const fmtUzs = (v) => new Intl.NumberFormat('ru-RU').format(Math.round(v || 0));
   const statusLabel = (s) => t[`agent_delivery_status_${s}`] || s;
+  // High-contrast pairs that read well in BOTH light + dark Telegram themes —
+  // the prior `text-yellow-300 / blue-300 / green-300` invisibly blended with
+  // their 20%-opacity fills in light mode (user screenshot 2026-05-11).
   const statusBadgeClass = (s) => {
-    if (s === 'in_transit') return 'bg-blue-500/20 text-blue-300';
-    if (s === 'assigned') return 'bg-yellow-500/20 text-yellow-300';
-    if (s === 'delivered') return 'bg-green-500/20 text-green-300';
-    return 'bg-tg-hint/20 text-tg-hint';
+    if (s === 'in_transit') return 'bg-blue-100 text-blue-800';
+    if (s === 'assigned') return 'bg-amber-100 text-amber-800';
+    if (s === 'delivered') return 'bg-green-100 text-green-800';
+    if (s === 'cancelled') return 'bg-red-100 text-red-800';
+    return 'bg-tg-hint/20 text-tg-text';
   };
 
   const Row = ({ d }) => (
@@ -635,7 +639,6 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         </button>
       )}
       <FxRateBanner data={fx} />
-      <MyDeliveriesSection data={deliveries} />
 
       {/* Client picker — search input + results/recent + register CTA grouped
           as one visually distinct section (per user request 2026-05-11). Light
@@ -643,7 +646,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
           with the FX banner / deliveries cards above. Search input is the
           primary action; recent-clients list is context; register CTA at
           the bottom is the escape valve when no existing client matches. */}
-      <section className="rounded-2xl bg-tg-secondary/60 border border-tg-hint/10 p-3 space-y-3">
+      <section className="rounded-2xl bg-tg-hint/15 border border-tg-hint/20 p-3 space-y-3">
         {/* Search bar — larger touch target, prominent icon, focus ring */}
         <div className="relative">
           <span className="absolute left-4 top-1/2 -translate-y-1/2 text-tg-hint pointer-events-none">
@@ -761,6 +764,11 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
           />
         )}
       </section>
+
+      {/* Mening yetkazmalarim — moved below the picker section per user
+          UX call (2026-05-11). Reads as: pick / register a client first,
+          then see your deliveries. */}
+      <MyDeliveriesSection data={deliveries} />
 
       {/* Purple AgentPanelCard — moved here from the top per Ulugbek's
           UX call (2026-05-11). Reuses CabinetPage AgentStatsCard styling;
