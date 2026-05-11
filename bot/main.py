@@ -519,9 +519,17 @@ async def cmd_list(message: types.Message):
 #     cashier_router has Stage 5a transfer-proof handler in DM)
 #   - photos (cashier_router Stage 5a accepts photo replies in DM as
 #     bank-transfer proof for legal-entity transfer flow)
-@dp.message(F.chat.type == "private", ~F.location, ~F.document, ~F.photo)
+@dp.message(F.chat.type == "private", ~F.location, ~F.document, ~F.photo,
+            ~F.text.startswith("/"))
 async def fallback(message: types.Message):
-    """Handle unrecognized messages in private chats."""
+    """Handle unrecognized messages in private chats.
+
+    Slash commands are explicitly excluded so router-level Command(...)
+    handlers can fire — without that exclusion this dispatcher-level
+    catch-all eats EVERY DM command before any include_router(...)
+    sub-router gets a chance. 2026-05-11: /morningbrief in admin_router
+    was unreachable from DM until this filter was added.
+    """
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
