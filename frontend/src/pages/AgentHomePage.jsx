@@ -632,7 +632,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
           with the FX banner / deliveries cards above. Search input is the
           primary action; recent-clients list is context; register CTA at
           the bottom is the escape valve when no existing client matches. */}
-      <section className="rounded-2xl bg-tg-hint/10 border border-tg-hint/15 p-3 space-y-3">
+      <section className="rounded-2xl bg-tg-secondary/60 border border-tg-hint/10 p-3 space-y-3">
         {/* Search bar — larger touch target, prominent icon, focus ring */}
         <div className="relative">
           <span className="absolute left-4 top-1/2 -translate-y-1/2 text-tg-hint pointer-events-none">
