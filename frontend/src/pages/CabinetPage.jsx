@@ -1428,14 +1428,14 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
           <div className="flex items-center gap-2 mb-2">
             <span className="text-base">⚠️</span>
             <div className="flex-1 text-left text-xs font-semibold text-yellow-400">
-              {agentStats ? "Mijoz joylashuvi saqlanmagan" : "Joylashuv saqlanmagan"}
+              {actingAsClient ? "Mijoz joylashuvi saqlanmagan" : "Joylashuv saqlanmagan"}
             </div>
           </div>
           <div className="block w-full text-center px-3 py-2.5 rounded-lg bg-yellow-500 text-tg-bg font-semibold text-sm">
-            📍 {agentStats ? "Mijoz joylashuvini saqlash" : "Joylashuvni saqlash"}
+            📍 {actingAsClient ? "Mijoz joylashuvini saqlash" : "Joylashuvni saqlash"}
           </div>
           <div className="text-[10px] text-tg-hint mt-1.5 text-center">
-            {agentStats ? "Telegram orqali mijoz manzilini yuboring" : "Telegram orqali joylashuvingizni yuboring"}
+            {actingAsClient ? "Telegram orqali mijoz manzilini yuboring" : "Telegram orqali joylashuvingizni yuboring"}
           </div>
         </button>
       )}
