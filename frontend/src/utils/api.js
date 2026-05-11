@@ -345,6 +345,15 @@ export async function fetchAgentCommission(telegramId) {
   }
 }
 
+export async function fetchAgentStats(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/agent/stats?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false };
+  }
+}
+
 export async function fetchAgentVehicle(telegramId) {
   try {
     const res = await fetch(`${API_BASE}/agent/vehicle?telegram_id=${telegramId}`);

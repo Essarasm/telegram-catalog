@@ -3,6 +3,7 @@ import t from '../i18n/uz.json';
 import {
   fetchAgentCommission,
   fetchAgentMyDeliveries,
+  fetchAgentStats,
   fetchAgentVehicle,
   fetchFxRateToday,
   fetchRecentAgentClients,
@@ -319,12 +320,13 @@ function FxRateBanner({ data }) {
   );
 }
 
-function AgentPanelCard({ data, userRole }) {
-  // Combined role-banner + commission card. Lives at the bottom of
-  // AgentHomePage (per Ulugbek's 2026-05-11 UX call): the picker is the
-  // top action surface; this card is ambient summary + identity. Reuses
-  // the AgentStatsCard purple-gradient styling from CabinetPage.jsx:759
-  // so the visual identity is consistent with the prior Cabinet design.
+function AgentPanelCard({ data, stats, userRole }) {
+  // Combined role-banner + commission + order-stats card. Lives at the
+  // bottom of AgentHomePage (per 2026-05-11 UX call). The agent-stats
+  // section absorbs what used to be a SEPARATE AgentStatsCard inside
+  // CabinetPage — removed there 2026-05-11 because rendering it on top
+  // of an acted-as client's data created ambiguity about whose numbers
+  // the user was looking at. One agent-data surface, one place.
   //
   // Workers don't see money-flow surfaces (Agent charter Active risk #3).
   if (userRole === 'worker') return null;
@@ -401,6 +403,62 @@ function AgentPanelCard({ data, userRole }) {
             </div>
           )}
         </>
+      )}
+
+      {/* Order stats — absorbed from the now-removed CabinetPage
+          AgentStatsCard. Today + this-month order counts, totals,
+          recent orders. Only renders when stats endpoint returned ok. */}
+      {stats && stats.ok && (
+        <div className="pt-3 border-t border-white/15 space-y-2.5">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-[10px] opacity-80 uppercase">{t.agent_today || 'Bugun'}</div>
+              <div className="text-2xl font-bold leading-tight">{stats.today?.order_count || 0}</div>
+              <div className="text-[10px] opacity-80">{t.agent_orders || 'buyurtma'}</div>
+              {(stats.today?.total_uzs > 0) && (
+                <div className="text-[11px] mt-1">{fmtUzs(stats.today.total_uzs)} so'm</div>
+              )}
+              {(stats.today?.total_usd > 0) && (
+                <div className="text-[11px]">${fmtUsd(stats.today.total_usd)}</div>
+              )}
+            </div>
+            <div>
+              <div className="text-[10px] opacity-80 uppercase">{t.agent_this_month || 'Oy'}</div>
+              <div className="text-2xl font-bold leading-tight">{stats.month?.order_count || 0}</div>
+              <div className="text-[10px] opacity-80">
+                {t.agent_orders || 'buyurtma'} · {stats.month?.unique_clients || 0} {t.agent_clients || 'mijoz'}
+              </div>
+              {(stats.month?.total_uzs > 0) && (
+                <div className="text-[11px] mt-1">{fmtUzs(stats.month.total_uzs)} so'm</div>
+              )}
+              {(stats.month?.total_usd > 0) && (
+                <div className="text-[11px]">${fmtUsd(stats.month.total_usd)}</div>
+              )}
+            </div>
+          </div>
+
+          {(stats.recent_orders || []).length > 0 && (
+            <div className="pt-2 border-t border-white/15">
+              <div className="text-[10px] opacity-80 uppercase mb-1.5">
+                {t.agent_recent || 'Oxirgi buyurtmalar'}
+              </div>
+              <div className="space-y-1">
+                {stats.recent_orders.slice(0, 3).map((o) => (
+                  <div key={o.id} className="text-[11px] flex items-center gap-2">
+                    <span className="opacity-70 whitespace-nowrap">
+                      {(o.created_at || '').slice(5, 10)}
+                    </span>
+                    <span className="flex-1 truncate">{o.client_1c}</span>
+                    <span className="opacity-80 whitespace-nowrap">
+                      {o.total_uzs > 0 ? fmtUzs(o.total_uzs) + ' ' : ''}
+                      {o.total_usd > 0 ? '$' + fmtUsd(o.total_usd) : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       )}
 
       <div className="text-[10px] opacity-70 italic pt-1 border-t border-white/15">
@@ -553,6 +611,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
   // page; no longer needed at the AgentHomePage top level.
   const [fx, setFx] = useState(null);
   const [commission, setCommission] = useState(null);
+  const [stats, setStats] = useState(null);
   const [vehicle, setVehicle] = useState('');
   const [deliveries, setDeliveries] = useState(null);
   const [recent, setRecent] = useState([]);
@@ -573,6 +632,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         if (r.ok) setRecent(r.recent || []);
       });
       fetchAgentCommission(uid).then(setCommission);
+      fetchAgentStats(uid).then(setStats);
       fetchAgentVehicle(uid).then(r => {
         if (r.ok) setVehicle(r.vehicle || '');
       });
@@ -774,7 +834,7 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
           UX call (2026-05-11). Reuses CabinetPage AgentStatsCard styling;
           merges role banner (AGENT PANELI + Beta) with commission summary
           so they're a single visual unit, not two stacked cards. */}
-      <AgentPanelCard data={commission} userRole={userRole} />
+      <AgentPanelCard data={commission} stats={stats} userRole={userRole} />
 
       {/* Vehicle profile — small operational pill, stays at the very bottom */}
       <VehicleProfile uid={uid} userRole={userRole} value={vehicle} onChange={setVehicle} />
