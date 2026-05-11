@@ -626,31 +626,13 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
       <FxRateBanner data={fx} />
       <MyDeliveriesSection data={deliveries} />
 
-      {/* Register new shop — non-workers only */}
-      {canRegister && !registerOpen && (
-        <button
-          onClick={() => setRegisterOpen(true)}
-          className="w-full rounded-xl bg-tg-button/15 border border-tg-button/40 px-3 py-2 text-sm font-semibold text-tg-button active:bg-tg-button/25"
-        >
-          {t.register_shop_button}
-        </button>
-      )}
-      {canRegister && registerOpen && (
-        <RegisterShopForm
-          uid={uid}
-          onRegistered={(client) => {
-            setRegisterOpen(false);
-            onClientSwitched(client);
-          }}
-          onCancel={() => setRegisterOpen(false)}
-        />
-      )}
-
-      {/* Client picker — search input + results/recent grouped together as
-          one visually distinct section (per user request 2026-05-11). Subtle
-          tg-secondary tint + border so it reads as a "card" without being
-          loud. Search input is the action; the list below is context. */}
-      <section className="rounded-2xl bg-tg-secondary/40 border border-tg-hint/15 p-3 space-y-3">
+      {/* Client picker — search input + results/recent + register CTA grouped
+          as one visually distinct section (per user request 2026-05-11). Light
+          gray tint (bg-tg-hint/10) so the grouping reads without competing
+          with the FX banner / deliveries cards above. Search input is the
+          primary action; recent-clients list is context; register CTA at
+          the bottom is the escape valve when no existing client matches. */}
+      <section className="rounded-2xl bg-tg-hint/10 border border-tg-hint/15 p-3 space-y-3">
         {/* Search bar — larger touch target, prominent icon, focus ring */}
         <div className="relative">
           <span className="absolute left-4 top-1/2 -translate-y-1/2 text-tg-hint pointer-events-none">
@@ -744,6 +726,27 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
               </div>
             )}
           </div>
+        )}
+
+        {/* Register-new-shop CTA — escape valve at the bottom of the picker
+            card. When tapped, replaces itself with the inline form. */}
+        {canRegister && !registerOpen && (
+          <button
+            onClick={() => setRegisterOpen(true)}
+            className="w-full rounded-xl bg-tg-button/15 border border-tg-button/40 px-3 py-2.5 text-sm font-semibold text-tg-button active:bg-tg-button/25"
+          >
+            {t.register_shop_button}
+          </button>
+        )}
+        {canRegister && registerOpen && (
+          <RegisterShopForm
+            uid={uid}
+            onRegistered={(client) => {
+              setRegisterOpen(false);
+              onClientSwitched(client);
+            }}
+            onCancel={() => setRegisterOpen(false)}
+          />
         )}
       </section>
 
