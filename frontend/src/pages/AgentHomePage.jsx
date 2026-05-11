@@ -319,16 +319,22 @@ function FxRateBanner({ data }) {
   );
 }
 
-function CommissionCard({ data, userRole }) {
+function AgentPanelCard({ data, userRole }) {
+  // Combined role-banner + commission card. Lives at the bottom of
+  // AgentHomePage (per Ulugbek's 2026-05-11 UX call): the picker is the
+  // top action surface; this card is ambient summary + identity. Reuses
+  // the AgentStatsCard purple-gradient styling from CabinetPage.jsx:759
+  // so the visual identity is consistent with the prior Cabinet design.
+  //
   // Workers don't see money-flow surfaces (Agent charter Active risk #3).
-  // Defensive: AgentHomePage isn't rendered for workers anyway, but keep the
-  // gate here so if routing changes the card stays hidden by role.
   if (userRole === 'worker') return null;
+
+  const theme = roleTheme(userRole);
 
   if (!data) {
     return (
-      <div className="rounded-xl bg-tg-secondary p-3 animate-pulse border border-tg-hint/20">
-        <div className="text-sm text-tg-hint">{t.agent_commission_title}</div>
+      <div className={`rounded-xl p-4 shadow-lg animate-pulse ${theme.bgClass}`} style={theme.style}>
+        <div className="text-[11px] uppercase tracking-wider opacity-90">{theme.label}</div>
       </div>
     );
   }
@@ -343,34 +349,49 @@ function CommissionCard({ data, userRole }) {
   const hasCollections = (data.collected_uzs || 0) > 0 || (data.collected_usd || 0) > 0;
 
   return (
-    <div className="rounded-xl bg-tg-secondary p-3 border border-tg-hint/20 space-y-2">
+    <div
+      className={`rounded-xl p-4 shadow-lg space-y-2.5 ${theme.bgClass}`}
+      style={theme.style}
+    >
+      {/* Top row — role label + Beta badge (replaces the standalone AGENT
+          PANELI banner that lived at the top of the page) */}
+      <div className="flex items-center justify-between">
+        <div className="text-[11px] uppercase tracking-wider opacity-90">
+          {theme.label}
+        </div>
+        <span className={`text-[10px] px-2 py-0.5 rounded-full ${theme.badgeClass}`}>
+          {t.agent_dashboard_beta || 'Beta'}
+        </span>
+      </div>
+
+      {/* Commission header */}
       <div className="flex items-baseline justify-between">
-        <div className="text-sm font-semibold">{t.agent_commission_title}</div>
-        <div className="text-[11px] text-tg-hint font-mono">{data.period}</div>
+        <div className="text-sm font-semibold opacity-95">{t.agent_commission_title}</div>
+        <div className="text-[11px] opacity-80 font-mono">{data.period}</div>
       </div>
 
       {data.client_count === 0 ? (
-        <div className="text-xs text-tg-hint py-2">{t.agent_commission_no_clients}</div>
+        <div className="text-xs opacity-80 py-1">{t.agent_commission_no_clients}</div>
       ) : !hasCollections ? (
-        <div className="text-xs text-tg-hint py-2">{t.agent_commission_no_payments}</div>
+        <div className="text-xs opacity-80 py-1">{t.agent_commission_no_payments}</div>
       ) : (
         <>
           <div className="flex items-baseline gap-2 flex-wrap">
             <span className="text-2xl font-bold">{fmtUzs(data.commission_uzs)}</span>
-            <span className="text-xs text-tg-hint">so'm</span>
+            <span className="text-xs opacity-80">so'm</span>
             {data.commission_usd > 0 && (
               <span className="text-xl font-bold ml-1">+ ${fmtUsd(data.commission_usd)}</span>
             )}
-            <span className="text-[11px] text-tg-hint ml-auto bg-tg-button/15 px-1.5 py-0.5 rounded">
+            <span className="text-[11px] opacity-95 ml-auto bg-white/20 px-1.5 py-0.5 rounded">
               {t.agent_commission_rate_badge}
             </span>
           </div>
-          <div className="text-xs text-tg-hint">
+          <div className="text-xs opacity-85">
             {t.agent_commission_collected_label}: {fmtUzs(data.collected_uzs)} so'm
             {data.collected_usd > 0 && ` · $${fmtUsd(data.collected_usd)}`}
           </div>
           {data.by_channel && data.by_channel.length > 0 && (
-            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-tg-hint pt-1">
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] opacity-80 pt-1">
               {data.by_channel.map((c) => (
                 <span key={c.channel}>
                   {channelLabel(c.channel)}: {fmtUzs(c.uzs)}
@@ -382,7 +403,7 @@ function CommissionCard({ data, userRole }) {
         </>
       )}
 
-      <div className="text-[10px] text-tg-hint/70 italic">
+      <div className="text-[10px] opacity-70 italic pt-1 border-t border-white/15">
         {t.agent_commission_phase1_note}
       </div>
     </div>
@@ -510,7 +531,7 @@ function ClientRow({ label, sub, onClick, isNew }) {
   return (
     <button
       onClick={onClick}
-      className="w-full text-left bg-tg-secondary rounded-lg p-3 flex items-center gap-3 active:bg-tg-secondary/70"
+      className="w-full text-left bg-tg-bg rounded-lg p-3 flex items-center gap-3 active:bg-tg-bg/70 border border-tg-hint/10"
     >
       <span className="text-xl shrink-0">{isNew ? '🟡' : '👤'}</span>
       <div className="flex-1 min-w-0">
@@ -524,12 +545,8 @@ function ClientRow({ label, sub, onClick, isNew }) {
 
 export default function AgentHomePage({ onClientSwitched, previousClient, onResumePrevious, userRole }) {
   const uid = getTelegramUserId();
-  const theme = roleTheme(userRole);
-  const roleTitle =
-    userRole === 'admin' ? t.admin_panel_home_title :
-    userRole === 'cashier' ? t.cashier_panel_home_title :
-    userRole === 'worker' ? t.worker_panel_home_title :
-    t.agent_panel_home_title;
+  // Role label / theme now consumed by <AgentPanelCard> at the bottom of the
+  // page; no longer needed at the AgentHomePage top level.
   const [fx, setFx] = useState(null);
   const [commission, setCommission] = useState(null);
   const [vehicle, setVehicle] = useState('');
@@ -601,15 +618,9 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
 
   return (
     <div className="space-y-4">
-      {/* Role banner — color tells the user at a glance which panel they're in */}
-      <div
-        className={`rounded-xl px-3 py-2 ${theme.bgClass}`}
-        style={theme.style}
-      >
-        <div className="text-[11px] uppercase tracking-wider opacity-80">
-          {roleTitle}
-        </div>
-      </div>
+      {/* Role banner removed 2026-05-11 — its content (label + commission
+          summary) now lives in <AgentPanelCard /> at the bottom of the page,
+          matching the prior CabinetPage AgentStatsCard design. */}
       {previousClient && (
         <button
           onClick={onResumePrevious}
@@ -728,12 +739,13 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
           </div>
         )}
 
-        {/* Register-new-shop CTA — escape valve at the bottom of the picker
-            card. When tapped, replaces itself with the inline form. */}
+        {/* Register-new-client CTA — escape valve at the bottom of the picker
+            card. White pill with blue accent so it reads as a "toggle"
+            against the section's tinted background. */}
         {canRegister && !registerOpen && (
           <button
             onClick={() => setRegisterOpen(true)}
-            className="w-full rounded-xl bg-tg-button/15 border border-tg-button/40 px-3 py-2.5 text-sm font-semibold text-tg-button active:bg-tg-button/25"
+            className="w-full rounded-xl bg-tg-bg border border-tg-button/40 px-3 py-2.5 text-sm font-semibold text-tg-button active:bg-tg-button/10"
           >
             {t.register_shop_button}
           </button>
@@ -750,12 +762,14 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         )}
       </section>
 
-      {/* Personal sections — moved to the bottom of the panel per Ulugbek's
-          UX call (2026-05-11). Client-search work happens at the top; agent's
-          own profile (vehicle) + earnings (commission) sit below as ambient
-          context, not action surface. */}
+      {/* Purple AgentPanelCard — moved here from the top per Ulugbek's
+          UX call (2026-05-11). Reuses CabinetPage AgentStatsCard styling;
+          merges role banner (AGENT PANELI + Beta) with commission summary
+          so they're a single visual unit, not two stacked cards. */}
+      <AgentPanelCard data={commission} userRole={userRole} />
+
+      {/* Vehicle profile — small operational pill, stays at the very bottom */}
       <VehicleProfile uid={uid} userRole={userRole} value={vehicle} onChange={setVehicle} />
-      <CommissionCard data={commission} userRole={userRole} />
     </div>
   );
 }

@@ -278,7 +278,9 @@ export default function App() {
   };
 
   const getTitle = () => {
-    if (isAgent && !actingAsClient) return t.agent_panel_home_title;
+    // Agent on their own panel home: title lives in the purple role-card
+    // at the bottom of the page; suppress the duplicate in the page header.
+    if (isAgent && !actingAsClient) return '';
     if (page === 'catalog') return t.app_title;
     if (page === 'producers') return selectedCategory?.name || t.producers;
     if (page === 'products' && searchQuery) return t.search_results;
