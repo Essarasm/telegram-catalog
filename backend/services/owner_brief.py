@@ -14,12 +14,26 @@ Two clean halves:
 Quiet on a fully empty day (0 collections + 0 shipments + 0 anomalies) so
 the father's morning chat isn't polluted by no-news pings.
 
+All per-client aggregations filter out pseudo-accounts (`Наличка`,
+`СТРОЙКА`, `ИСПРАВЛЕНИЕ`, etc.) via backend.services.pseudo_clients.
+Without this filter, system-bucket accounts appear in top-clients,
+debtors, and silent-regulars (Error Log #36 — LEGACY_HEURISTIC_CLIENT_FILTER).
+
+Stock anomaly is scoped to "products that went out yesterday" via
+products.stockout_at, NOT the bulk pool of products currently at 0
+(which includes default-0 products that were never actually tracked).
+
 Memory: see Notion Command Center → Feature backlog A2 for the spec rationale.
 """
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+
+from backend.services.pseudo_clients import (
+    sql_exclusion_clause as _pseudo_exclusion_clause,
+    sql_exclusion_params as _pseudo_exclusion_params,
+)
 
 
 TASHKENT = timezone(timedelta(hours=5))
@@ -113,20 +127,30 @@ def gather_brief(
         (for_str,),
     ).fetchone()
 
+    # ── Pseudo-client filter (Error Log #36 — LEGACY_HEURISTIC_CLIENT_FILTER) ─
+    # Every per-client aggregation below excludes pseudo-accounts via the
+    # canonical filter from backend.services.pseudo_clients. Without this,
+    # the morning brief was full of false signals (Наличка №3 "overdue 30+
+    # days with 587M debt", СТРОЙКА as a "silent regular", etc. on 2026-05-11).
+    pseudo_clause_cp = _pseudo_exclusion_clause("client_name_1c")
+    pseudo_clause_cd = _pseudo_exclusion_clause("cd.client_name_1c")
+    pseudo_clause_ro = _pseudo_exclusion_clause("client_name_1c")
+    pseudo_params = list(_pseudo_exclusion_params())
+
     # ── 3. Top N clients by yesterday's cash receipts (UZS, real clients) ─
-    # COALESCE to ensure NULL client names don't break the GROUP BY.
     top_clients = conn.execute(
-        """SELECT client_name_1c AS name, SUM(amount_local) AS total_uzs,
-                  COUNT(*) AS n
-           FROM client_payments
-           WHERE doc_date = ?
-             AND client_name_1c IS NOT NULL
-             AND TRIM(client_name_1c) != ''
-             AND REPLACE(REPLACE(corr_account, '.', ''), ' ', '') LIKE '4010%'
-           GROUP BY client_name_1c
-           ORDER BY total_uzs DESC
-           LIMIT ?""",
-        (for_str, DEFAULT_TOP_CLIENTS_N),
+        f"""SELECT client_name_1c AS name, SUM(amount_local) AS total_uzs,
+                   COUNT(*) AS n
+            FROM client_payments
+            WHERE doc_date = ?
+              AND client_name_1c IS NOT NULL
+              AND TRIM(client_name_1c) != ''
+              AND REPLACE(REPLACE(corr_account, '.', ''), ' ', '') LIKE '4010%'
+              AND {pseudo_clause_cp}
+            GROUP BY client_name_1c
+            ORDER BY total_uzs DESC
+            LIMIT ?""",
+        [for_str] + pseudo_params + [DEFAULT_TOP_CLIENTS_N],
     ).fetchall()
 
     # ── 4. Anomaly A: top debtors overdue 30+ days above threshold ──────
@@ -145,18 +169,25 @@ def gather_brief(
             AND latest_cd.latest = cd.report_date
            WHERE cd.debt_uzs > ?
              AND (cd.{DEFAULT_AGING_BUCKETS_OVERDUE[0]} + cd.{DEFAULT_AGING_BUCKETS_OVERDUE[1]}) > 0
+             AND {pseudo_clause_cd}
            ORDER BY overdue_91p DESC
            LIMIT ?""",
-        (debt_threshold_uzs, DEFAULT_TOP_DEBTORS_N),
+        [debt_threshold_uzs] + pseudo_params + [DEFAULT_TOP_DEBTORS_N],
     ).fetchall()
 
-    # ── 5. Anomaly B: active products at stock=0 ────────────────────────
-    # Uses `stock_quantity` (REAL, added via ALTER) — set by /stock import.
-    # NULL/missing stock means unknown; we only flag explicit zeros.
+    # ── 5. Anomaly B: NEW stockouts yesterday ───────────────────────────
+    # Uses `stockout_at` (TEXT, set when stock first hit 0) NOT the bulk
+    # "stock_quantity=0" pool, which includes default-0 products that were
+    # never tracked. We want "fell to 0 yesterday" — actionable signal.
+    # `stockout_at` may include time; date() normalizes to YYYY-MM-DD.
     out_of_stock_row = conn.execute(
         """SELECT COUNT(*) AS n
            FROM products
-           WHERE is_active = 1 AND stock_quantity = 0"""
+           WHERE is_active = 1
+             AND stock_quantity = 0
+             AND stockout_at IS NOT NULL
+             AND date(stockout_at) = ?""",
+        (for_str,),
     ).fetchone()
     out_of_stock_count = int(out_of_stock_row["n"]) if out_of_stock_row else 0
 
@@ -164,26 +195,27 @@ def gather_brief(
     # Uses real_orders as the activity signal (shipments — proxy for orders).
     week_ago_str = (for_date - timedelta(days=6)).isoformat()  # last 7 days incl. yesterday
     silent_rows = conn.execute(
-        """SELECT recent.name, recent.recent_count
-           FROM (
-             SELECT client_name_1c AS name, COUNT(*) AS recent_count
-             FROM real_orders
-             WHERE doc_date BETWEEN ? AND ?
-               AND client_name_1c IS NOT NULL
-               AND TRIM(client_name_1c) != ''
-             GROUP BY client_name_1c
-             HAVING COUNT(*) >= 3
-           ) recent
-           LEFT JOIN (
-             SELECT DISTINCT client_name_1c AS name
-             FROM real_orders
-             WHERE doc_date = ?
-           ) yesterday_active
-             ON yesterday_active.name = recent.name
-           WHERE yesterday_active.name IS NULL
-           ORDER BY recent.recent_count DESC
-           LIMIT 3""",
-        (week_ago_str, for_str, for_str),
+        f"""SELECT recent.name, recent.recent_count
+            FROM (
+              SELECT client_name_1c AS name, COUNT(*) AS recent_count
+              FROM real_orders
+              WHERE doc_date BETWEEN ? AND ?
+                AND client_name_1c IS NOT NULL
+                AND TRIM(client_name_1c) != ''
+                AND {pseudo_clause_ro}
+              GROUP BY client_name_1c
+              HAVING COUNT(*) >= 3
+            ) recent
+            LEFT JOIN (
+              SELECT DISTINCT client_name_1c AS name
+              FROM real_orders
+              WHERE doc_date = ?
+            ) yesterday_active
+              ON yesterday_active.name = recent.name
+            WHERE yesterday_active.name IS NULL
+            ORDER BY recent.recent_count DESC
+            LIMIT 3""",
+        [week_ago_str, for_str] + pseudo_params + [for_str],
     ).fetchall()
 
     return {
@@ -292,7 +324,7 @@ def render_brief(data: dict, *, today: Optional[date] = None) -> str:
         )
     if data["out_of_stock_count"] > 0:
         anomaly_lines.append(
-            f"   • Inventarda <b>{data['out_of_stock_count']} mahsulot</b> "
+            f"   • Kecha <b>{data['out_of_stock_count']} mahsulot</b> "
             f"0'ga tushdi (<code>/zakazlar</code>)"
         )
     for s in data["silent_regulars"]:
