@@ -624,8 +624,6 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
         </button>
       )}
       <FxRateBanner data={fx} />
-      <VehicleProfile uid={uid} userRole={userRole} value={vehicle} onChange={setVehicle} />
-      <CommissionCard data={commission} userRole={userRole} />
       <MyDeliveriesSection data={deliveries} />
 
       {/* Register new shop — non-workers only */}
@@ -650,15 +648,36 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
 
       {/* Search bar */}
       <div className="relative">
+        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-tg-hint pointer-events-none">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4.3-4.3" />
+          </svg>
+        </span>
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder={t.agent_search_placeholder}
-          className="w-full bg-tg-secondary rounded-xl px-4 py-3 text-sm outline-none border border-tg-hint/20 focus:border-tg-link"
+          className="w-full bg-tg-secondary rounded-2xl pl-10 pr-10 py-3.5 text-sm outline-none border border-tg-hint/20 focus:border-tg-link focus:ring-2 focus:ring-tg-link/20 transition-colors"
         />
+        {query && !searching && (
+          <button
+            type="button"
+            onClick={() => setQuery('')}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-tg-hint hover:text-tg-text active:scale-95"
+            aria-label="Tozalash"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M15 9l-6 6M9 9l6 6" />
+            </svg>
+          </button>
+        )}
         {searching && (
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-tg-hint">
+          <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs text-tg-hint">
             …
           </span>
         )}
@@ -721,6 +740,13 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
           )}
         </div>
       )}
+
+      {/* Personal sections — moved to the bottom of the panel per Ulugbek's
+          UX call (2026-05-11). Client-search work happens at the top; agent's
+          own profile (vehicle) + earnings (commission) sit below as ambient
+          context, not action surface. */}
+      <VehicleProfile uid={uid} userRole={userRole} value={vehicle} onChange={setVehicle} />
+      <CommissionCard data={commission} userRole={userRole} />
     </div>
   );
 }
