@@ -1,4 +1,3 @@
-import threading
 from fastapi import APIRouter, Query, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from typing import Optional
@@ -126,21 +125,6 @@ def _fuzzy_match_products(conn, search_term, search_latin, search_norm, category
 
     scored.sort(key=lambda x: -x[0])
     return [(pid, score) for score, pid in scored[:max_results]]
-
-
-def _log_search_bg(telegram_id, query, results_count, category_id, producer_id):
-    """Background thread: log search to search_logs table."""
-    try:
-        conn = get_db()
-        conn.execute(
-            """INSERT INTO search_logs (telegram_id, query, results_count, category_id, producer_id)
-               VALUES (?, ?, ?, ?, ?)""",
-            (telegram_id, query.strip().lower(), results_count, category_id, producer_id),
-        )
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass  # Never fail the product request because of logging
 
 
 @router.get("")
@@ -327,13 +311,21 @@ def list_products(
         except Exception:
             pass
 
-    # Log search in background (only on first page to avoid duplicates from pagination)
+    # Log search inline (only on first page to avoid duplicates from pagination).
+    # Inline so we can return search_log_id and frontend can attach it to subsequent
+    # click/cart events for the funnel. Cheap single INSERT.
+    search_log_id = None
     if search and page == 1:
-        threading.Thread(
-            target=_log_search_bg,
-            args=(telegram_id or 0, search, total, category_id, producer_id),
-            daemon=True,
-        ).start()
+        try:
+            cur = conn.execute(
+                """INSERT INTO search_logs (telegram_id, query, results_count, category_id, producer_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (telegram_id or 0, search.strip().lower(), total, category_id, producer_id),
+            )
+            search_log_id = cur.lastrowid
+            conn.commit()
+        except Exception:
+            pass  # Never fail the product request because of logging
 
     # Normalize rows to dicts
     items = [dict(r) if not isinstance(r, dict) else r for r in rows]
@@ -388,6 +380,7 @@ def list_products(
         "pages": (total + limit - 1) // limit,
         "fuzzy": fuzzy_ids is not None and len(fuzzy_ids) > 0 if fuzzy_ids is not None else False,
         "hidden_count": len(hidden_items),
+        "search_log_id": search_log_id,
     }
     if filters:
         result["filters"] = filters

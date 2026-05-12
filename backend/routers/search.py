@@ -219,17 +219,21 @@ def search_funnel(
     days: int = Query(7, ge=1, le=365),
     admin_key: str = Query(...),
 ):
-    """Search-to-cart conversion funnel for the last N days."""
+    """Search-to-cart conversion funnel for the last N days.
+    Excludes anonymous traffic (telegram_id=0) — clicks can't be attributed
+    without a user identity, so including unauthenticated searches in the
+    denominator only deflates the rate.
+    """
     _check_admin(admin_key)
     conn = get_db()
 
     total_searches = conn.execute(
-        "SELECT COUNT(*) FROM search_logs WHERE created_at >= datetime('now', ?)",
+        "SELECT COUNT(*) FROM search_logs WHERE telegram_id != 0 AND created_at >= datetime('now', ?)",
         (f"-{days} days",),
     ).fetchone()[0]
 
     searches_with_results = conn.execute(
-        "SELECT COUNT(*) FROM search_logs WHERE results_count > 0 AND created_at >= datetime('now', ?)",
+        "SELECT COUNT(*) FROM search_logs WHERE telegram_id != 0 AND results_count > 0 AND created_at >= datetime('now', ?)",
         (f"-{days} days",),
     ).fetchone()[0]
 
@@ -237,7 +241,8 @@ def search_funnel(
         """SELECT COUNT(DISTINCT sl.id)
            FROM search_logs sl
            JOIN search_clicks sc ON sc.search_log_id = sl.id AND sc.action = 'click'
-           WHERE sl.created_at >= datetime('now', ?)""",
+           WHERE sl.telegram_id != 0
+             AND sl.created_at >= datetime('now', ?)""",
         (f"-{days} days",),
     ).fetchone()[0]
 
@@ -245,7 +250,8 @@ def search_funnel(
         """SELECT COUNT(DISTINCT sl.id)
            FROM search_logs sl
            JOIN search_clicks sc ON sc.search_log_id = sl.id AND sc.action = 'cart'
-           WHERE sl.created_at >= datetime('now', ?)""",
+           WHERE sl.telegram_id != 0
+             AND sl.created_at >= datetime('now', ?)""",
         (f"-{days} days",),
     ).fetchone()[0]
 
@@ -289,7 +295,9 @@ def per_client_searches(
     limit: int = Query(20, ge=1, le=100),
     admin_key: str = Query(...),
 ):
-    """Search activity per client — who's searching the most and for what."""
+    """Search activity per client — who's searching the most and for what.
+    Excludes telegram_id=0 (anonymous traffic) — there's no client to attribute.
+    """
     _check_admin(admin_key)
     conn = get_db()
     rows = conn.execute(
@@ -302,7 +310,8 @@ def per_client_searches(
            FROM search_logs sl
            LEFT JOIN users u ON u.telegram_id = sl.telegram_id
            LEFT JOIN allowed_clients ac ON ac.matched_telegram_id = sl.telegram_id
-           WHERE sl.created_at >= datetime('now', ?)
+           WHERE sl.telegram_id != 0
+             AND sl.created_at >= datetime('now', ?)
            GROUP BY sl.telegram_id
            ORDER BY search_count DESC
            LIMIT ?""",
@@ -317,27 +326,36 @@ def search_summary(
     days: int = Query(7, ge=1, le=365),
     admin_key: str = Query(...),
 ):
-    """Quick overview stats for bot command / dashboard header."""
+    """Quick overview stats for bot command / dashboard header.
+    Excludes telegram_id=0 (anonymous traffic) from authenticated metrics —
+    anonymous searches still drive Top Queries / Zero Results / Recent feeds,
+    but should not inflate Unique Searchers or the user-attributed totals here.
+    """
     _check_admin(admin_key)
     conn = get_db()
 
     total = conn.execute(
-        "SELECT COUNT(*) FROM search_logs WHERE created_at >= datetime('now', ?)",
+        "SELECT COUNT(*) FROM search_logs WHERE telegram_id != 0 AND created_at >= datetime('now', ?)",
         (f"-{days} days",),
     ).fetchone()[0]
 
     unique_users = conn.execute(
-        "SELECT COUNT(DISTINCT telegram_id) FROM search_logs WHERE created_at >= datetime('now', ?)",
+        "SELECT COUNT(DISTINCT telegram_id) FROM search_logs WHERE telegram_id != 0 AND created_at >= datetime('now', ?)",
         (f"-{days} days",),
     ).fetchone()[0]
 
     unique_queries = conn.execute(
-        "SELECT COUNT(DISTINCT query) FROM search_logs WHERE created_at >= datetime('now', ?)",
+        "SELECT COUNT(DISTINCT query) FROM search_logs WHERE telegram_id != 0 AND created_at >= datetime('now', ?)",
         (f"-{days} days",),
     ).fetchone()[0]
 
     zero_result_count = conn.execute(
-        "SELECT COUNT(*) FROM search_logs WHERE results_count = 0 AND created_at >= datetime('now', ?)",
+        "SELECT COUNT(*) FROM search_logs WHERE telegram_id != 0 AND results_count = 0 AND created_at >= datetime('now', ?)",
+        (f"-{days} days",),
+    ).fetchone()[0]
+
+    anon_total = conn.execute(
+        "SELECT COUNT(*) FROM search_logs WHERE telegram_id = 0 AND created_at >= datetime('now', ?)",
         (f"-{days} days",),
     ).fetchone()[0]
 
@@ -349,6 +367,7 @@ def search_summary(
         "unique_queries": unique_queries,
         "zero_result_searches": zero_result_count,
         "zero_result_pct": round(zero_result_count / total * 100, 1) if total else 0,
+        "anonymous_searches": anon_total,
     }
 
 

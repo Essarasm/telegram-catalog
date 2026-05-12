@@ -148,6 +148,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
   const [isFuzzy, setIsFuzzy] = useState(false);
   const [filters, setFilters] = useState(null);
   const [activeFilter, setActiveFilter] = useState(null);
+  const [searchLogId, setSearchLogId] = useState(null);
   const observer = useRef();
 
   const loadProducts = useCallback(async (pageNum, reset = false, filterOverride = null) => {
@@ -172,6 +173,11 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
         }
         if (reset && data.filters && !filterOverride) {
           setFilters(data.filters);
+        }
+        // Capture search_log_id (only set when search was performed on page 1)
+        // so click/cart events can be attributed to the funnel.
+        if (reset) {
+          setSearchLogId(data.search_log_id || null);
         }
       } else {
         setError('Products API unexpected: ' + JSON.stringify(data).slice(0, 100));
@@ -317,7 +323,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                         matchScore: product.match_score || 0,
                       });
                     } else {
-                      logSearchClick({ telegramId: getTelegramUserId(), productId: product.id, action: 'click' });
+                      logSearchClick({ searchLogId, telegramId: getTelegramUserId(), productId: product.id, action: 'click' });
                     }
                   }
                   onSelectProduct && onSelectProduct(product);
@@ -400,7 +406,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                           currency: getPriceCurrency(product.price_usd, product.price_uzs),
                         });
                         if (searchQuery) {
-                          logSearchClick({ telegramId: getTelegramUserId(), productId: product.id, action: 'cart' });
+                          logSearchClick({ searchLogId, telegramId: getTelegramUserId(), productId: product.id, action: 'cart' });
                         }
                       }}
                       className="w-full bg-tg-button text-tg-button-text text-sm font-semibold rounded-lg py-2.5 active:scale-95 transition-transform"
