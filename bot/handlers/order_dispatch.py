@@ -16,13 +16,66 @@ Block A shipped the schema; this handler is Block B's full implementation.
 No separate HTTP endpoint — bot is the sole entrypoint for v1.
 """
 
+from datetime import datetime, timezone, timedelta
+
 from aiogram import Router, F, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.shared import ADMIN_IDS, _db_role_check, get_db, html_escape, logger
+from backend.services.notify_group import build_dispatch_markup
 
 
 router = Router()
+
+
+def _kb_from_payload(payload: dict | None) -> InlineKeyboardMarkup | None:
+    """Convert build_dispatch_markup's JSON-shape dict into the aiogram
+    InlineKeyboardMarkup object that edit_reply_markup expects."""
+    if not payload or not payload.get("inline_keyboard"):
+        return None
+    rows = [
+        [InlineKeyboardButton(text=btn["text"], callback_data=btn["callback_data"])
+         for btn in row]
+        for row in payload["inline_keyboard"]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _rebuild_order_kb(order_id: int) -> InlineKeyboardMarkup | None:
+    """Look up the current dispatch state and rebuild the Sotuv-message
+    keyboard. Used by the cancel-no path to restore the pre-cancel view."""
+    conn = get_db()
+    try:
+        order = conn.execute(
+            "SELECT id, delivery_status, assigned_agent_id FROM orders WHERE id = ?",
+            (order_id,),
+        ).fetchone()
+        if not order:
+            return None
+        agent_dict = None
+        if order["assigned_agent_id"]:
+            a = conn.execute(
+                "SELECT first_name, vehicle, vehicle_capacity_tons "
+                "FROM users WHERE telegram_id = ?",
+                (order["assigned_agent_id"],),
+            ).fetchone()
+            if a:
+                agent_dict = {
+                    "first_name": a["first_name"],
+                    "vehicle": a["vehicle"],
+                    "vehicle_capacity_tons": a["vehicle_capacity_tons"],
+                }
+        confirmed = conn.execute(
+            "SELECT 1 FROM confirmed_orders WHERE wishlist_order_id = ? LIMIT 1",
+            (order_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    payload = build_dispatch_markup(
+        order_id, order["delivery_status"], agent_dict,
+        allow_cancel=(confirmed is None),
+    )
+    return _kb_from_payload(payload)
 
 
 def _is_dispatcher(cb: types.CallbackQuery) -> bool:
@@ -163,12 +216,19 @@ async def on_dispatch_assign(cb: types.CallbackQuery):
         agent["vehicle"] if agent else "",
         agent["vehicle_capacity_tons"] if agent else None,
     )
-    new_kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"✅ Biriktirildi: {label}",
-                             callback_data="disp:noop"),
-    ]])
+    agent_dict = {
+        "first_name": agent["first_name"] if agent else "?",
+        "vehicle": agent["vehicle"] if agent else "",
+        "vehicle_capacity_tons": agent["vehicle_capacity_tons"] if agent else None,
+    }
+    # Use build_dispatch_markup so the "✖ Bekor qilish" row carries through
+    # post-assignment — cancel stays available until 1C reply lands.
+    new_kb = _kb_from_payload(
+        build_dispatch_markup(order_id, "assigned", agent_dict)
+    )
     try:
-        await cb.message.edit_reply_markup(reply_markup=new_kb)
+        if new_kb:
+            await cb.message.edit_reply_markup(reply_markup=new_kb)
     except Exception as e:
         logger.warning(f"dispatch:assign edit_reply_markup failed: {e}")
 
@@ -242,4 +302,200 @@ async def on_dispatch_cancel(cb: types.CallbackQuery):
 async def on_dispatch_noop(cb: types.CallbackQuery):
     """Tap on the post-assignment label — no action, just acknowledge.
     Avoids Android's no-feedback-on-noop UX bug (Error Log #2)."""
+    await cb.answer()
+
+
+# ── Order cancellation (admin self-service for wrong-name test orders) ─
+#
+# Two-tap flow:
+#   ord:cancel:<id>  → swap keyboard to [✅ Ha, bekor qil] [↩ Yo'q]
+#   ord:yes:<id>     → re-check confirmed_orders, hard-delete order +
+#                      order_items, edit message text with cancellation
+#                      banner, strip keyboard, log to admin_action_log
+#   ord:no:<id>      → rebuild the pre-cancel keyboard via
+#                      build_dispatch_markup (preserves pick / assigned)
+#
+# Refuses if `confirmed_orders` already has a row for this wishlist_order
+# — once 1C entry happens, the cancel is no longer safe (real_orders +
+# client_balances would diverge).
+
+@router.callback_query(F.data.startswith("ord:cancel:"))
+async def on_order_cancel(cb: types.CallbackQuery):
+    if not _is_dispatcher(cb):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+
+    parts = (cb.data or "").split(":")
+    if len(parts) != 3 or not parts[2].isdigit():
+        await cb.answer("Noto'g'ri tugma", show_alert=False)
+        return
+    order_id = int(parts[2])
+
+    conn = get_db()
+    try:
+        order = conn.execute(
+            "SELECT id FROM orders WHERE id = ?", (order_id,)
+        ).fetchone()
+        confirmed = conn.execute(
+            "SELECT 1 FROM confirmed_orders WHERE wishlist_order_id = ? LIMIT 1",
+            (order_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not order:
+        await cb.answer(f"Buyurtma #{order_id} topilmadi", show_alert=True)
+        return
+    if confirmed:
+        await cb.answer(
+            "1C ga kiritilgan — bekor qilib bo'lmaydi.",
+            show_alert=True,
+        )
+        return
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✅ Ha, bekor qil",
+            callback_data=f"ord:yes:{order_id}",
+        ),
+        InlineKeyboardButton(
+            text="↩ Yo'q",
+            callback_data=f"ord:no:{order_id}",
+        ),
+    ]])
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"ord:cancel edit_reply_markup failed: {e}")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("ord:yes:"))
+async def on_order_cancel_yes(cb: types.CallbackQuery):
+    if not _is_dispatcher(cb):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+
+    parts = (cb.data or "").split(":")
+    if len(parts) != 3 or not parts[2].isdigit():
+        await cb.answer("Noto'g'ri tugma", show_alert=False)
+        return
+    order_id = int(parts[2])
+
+    conn = get_db()
+    order_row = None
+    try:
+        # Re-check at execution time — 1C reply could have landed between
+        # taps. confirmed_orders row = no-go.
+        confirmed = conn.execute(
+            "SELECT 1 FROM confirmed_orders WHERE wishlist_order_id = ? LIMIT 1",
+            (order_id,),
+        ).fetchone()
+        if confirmed:
+            await cb.answer(
+                "1C ga kiritildi — bekor qilib bo'lmaydi.",
+                show_alert=True,
+            )
+            return
+
+        order_row = conn.execute(
+            "SELECT id, client_name, sales_group_message_text "
+            "FROM orders WHERE id = ?",
+            (order_id,),
+        ).fetchone()
+        if not order_row:
+            await cb.answer(f"#{order_id} topilmadi", show_alert=True)
+            return
+
+        try:
+            conn.execute("BEGIN")
+            conn.execute("DELETE FROM order_items WHERE order_id = ?", (order_id,))
+            conn.execute("DELETE FROM orders WHERE id = ?", (order_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    except Exception as e:
+        logger.error(f"order cancel #{order_id} failed: {e}", exc_info=True)
+        await cb.answer(f"Xatolik: {str(e)[:80]}", show_alert=True)
+        return
+    finally:
+        conn.close()
+
+    # Audit log — fire-and-forget. CallbackQuery doesn't fit log_admin_action's
+    # Message-shape contract, so insert directly.
+    try:
+        conn2 = get_db()
+        conn2.execute(
+            "INSERT INTO admin_action_log "
+            "(telegram_id, user_name, chat_id, command, args) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                cb.from_user.id if cb.from_user else None,
+                (cb.from_user.full_name if cb.from_user else None) or "",
+                cb.message.chat.id if cb.message and cb.message.chat else None,
+                "cancelorder",
+                f"order_id={order_id} client={order_row['client_name']}"[:500],
+            ),
+        )
+        conn2.commit()
+        conn2.close()
+    except Exception as e:
+        logger.warning(f"admin_action_log failed for cancel #{order_id}: {e}")
+
+    # Edit Sotuv message: prepend cancellation banner, drop keyboard.
+    ts = datetime.now(timezone(timedelta(hours=5))).strftime("%H:%M")
+    who_raw = ""
+    if cb.from_user:
+        who_raw = cb.from_user.first_name or cb.from_user.username or "admin"
+    who = html_escape(who_raw or "admin")
+    original = order_row["sales_group_message_text"] or ""
+    banner = f"❌ <b>BEKOR QILINDI</b> — {who}, {ts} (Toshkent)"
+    new_text = f"{banner}\n\n{original}" if original else banner
+    if len(new_text) > 4000:
+        new_text = new_text[:3997] + "…"
+    try:
+        await cb.message.edit_text(
+            new_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logger.warning(
+            f"ord:yes edit_text failed for #{order_id}: {e}; "
+            f"falling back to keyboard strip"
+        )
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception as e2:
+            logger.warning(f"ord:yes keyboard strip also failed: {e2}")
+
+    logger.info(
+        f"order cancelled: #{order_id} by user="
+        f"{cb.from_user.id if cb.from_user else '?'}"
+    )
+    await cb.answer(f"#{order_id} bekor qilindi")
+
+
+@router.callback_query(F.data.startswith("ord:no:"))
+async def on_order_cancel_no(cb: types.CallbackQuery):
+    if not _is_dispatcher(cb):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+
+    parts = (cb.data or "").split(":")
+    if len(parts) != 3 or not parts[2].isdigit():
+        await cb.answer("Noto'g'ri tugma", show_alert=False)
+        return
+    order_id = int(parts[2])
+
+    kb = _rebuild_order_kb(order_id)
+    if kb is None:
+        # Order vanished between cancel-prompt and decline — nothing to restore.
+        await cb.answer(f"#{order_id} topilmadi", show_alert=True)
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb)
+    except Exception as e:
+        logger.warning(f"ord:no edit_reply_markup failed: {e}")
     await cb.answer()

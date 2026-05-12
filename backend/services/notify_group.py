@@ -28,32 +28,46 @@ def _agent_label_for_button(first_name: Optional[str], vehicle: Optional[str],
 
 
 def build_dispatch_markup(order_id: int, delivery_status: str,
-                          agent_row: Optional[Dict] = None) -> Optional[Dict]:
+                          agent_row: Optional[Dict] = None,
+                          allow_cancel: bool = True) -> Optional[Dict]:
     """Build the inline-keyboard payload for an order's Sotuv message based on
     its current dispatch state. Used at first send AND on editMessageText
     (Telegram drops the keyboard otherwise).
 
     Returns the JSON-shaped reply_markup dict (httpx will serialize it),
     or None if order_id is missing.
+
+    `allow_cancel` appends a second-row "✖ Bekor qilish" button (callback
+    `ord:cancel:<id>`). The cancel handler re-checks `confirmed_orders` at
+    tap time and refuses if the order is already in 1C, so leaving this
+    True by default is safe even for confirmed orders.
     """
     if not order_id:
         return None
     status = (delivery_status or "open").lower()
+    rows: list = []
     if status == "assigned" and agent_row:
         label = _agent_label_for_button(
             agent_row.get("first_name"),
             agent_row.get("vehicle"),
             agent_row.get("vehicle_capacity_tons"),
         )
-        return {"inline_keyboard": [[
+        rows.append([
             {"text": f"✅ Biriktirildi: {label}", "callback_data": "disp:noop"}
-        ]]}
-    # 'open' (and any other / unknown state) shows the pick button so the
-    # dispatcher can still act.
-    return {"inline_keyboard": [[
-        {"text": "🚚 Agent ga biriktirish",
-         "callback_data": f"disp:pick:{order_id}"}
-    ]]}
+        ])
+    else:
+        # 'open' (and any other / unknown state) shows the pick button so the
+        # dispatcher can still act.
+        rows.append([
+            {"text": "🚚 Agent ga biriktirish",
+             "callback_data": f"disp:pick:{order_id}"}
+        ])
+    if allow_cancel:
+        rows.append([
+            {"text": "✖ Bekor qilish",
+             "callback_data": f"ord:cancel:{order_id}"}
+        ])
+    return {"inline_keyboard": rows}
 
 
 def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = "", order_id: int = 0, agent_name: str = "", parent_order_id: int = None):
