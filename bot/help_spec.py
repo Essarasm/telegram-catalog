@@ -144,6 +144,7 @@ SPECS = {
     'sales': [
         ("💰 Savdo buyruqlari", [
             Cmd("/lastorders [N]", "Oxirgi N buyurtma (default 10)"),
+            Cmd("/javobsiz [kun]", "1C javob kutilayotgan buyurtmalar (def 7 kun)"),
             Cmd("/today", "Kunlik yuklash holati (read-only)"),
             Cmd("/chatid", "Chat va user ID"),
         ]),
@@ -157,7 +158,7 @@ SPECS = {
             Cmd("/stockalert kam", "Faqat KAM QOLDI (to'liq ro'yxat)"),
             Cmd("/stockalert full", "Ikkalasi ham, to'liq"),
             Cmd("/stockalert hafta", "Bu hafta (Du→hozir) tugagan, kunlar bo'yicha"),
-            Cmd("/zakazlar", "Yetkazib beruvchi bo'yicha buyurtma tavsiyasi (90d sotuv × 30d bufer − qoldiq)"),
+            Cmd("/zakazlar", "Yetkazib beruvchi bo'yicha buyurtma tavsiyasi (60d sotuv × mavsumiy × lead-time × 1.5 − qoldiq)"),
             Cmd("/cleanupinactive [N]", f"Faol bo'lmagan mahsulotlarni preview (def 60d)"),
             Cmd("/cleanupinactive [N] confirm", "Qo'llash — is_active=0 ga o'tkazadi"),
             Cmd("/demand [kunlar]", "Tugagan mahsulotlarga mijoz talabi"),

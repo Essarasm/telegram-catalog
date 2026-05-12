@@ -14,7 +14,7 @@ from aiogram.types import Message
 
 from bot.shared import (
     get_db, html_escape, is_admin, sender_display_name, log_admin_action,
-    BOT_TOKEN, ORDER_GROUP_CHAT_ID,
+    BOT_TOKEN, ORDER_GROUP_CHAT_ID, ADMIN_IDS, _db_role_check,
 )
 
 logger = logging.getLogger("bot")
@@ -300,6 +300,128 @@ async def handle_order_confirmation_reply(message: Message):
     except Exception as e:
         logger.error(f"Order confirmation reply failed: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:200]}")
+
+
+# ── /javobsiz — orders awaiting 1C-reply ────────────────────────────
+
+def _is_sotuv_admin(message) -> bool:
+    """Admin check that bypasses the ORDER_GROUP_CHAT_ID silencing in
+    `is_admin()`. Mirrors `bot.handlers.order_dispatch._is_dispatcher`'s
+    pattern (admin via env-var ADMIN_IDS or DB-role 'admin'), needed so
+    /javobsiz can run in Sotuv where the message belongs."""
+    uid = message.from_user.id if getattr(message, 'from_user', None) else None
+    if not uid:
+        return False
+    if ADMIN_IDS and uid in ADMIN_IDS:
+        return True
+    return _db_role_check(uid, {"admin"})
+
+
+def _format_age(created_at_text: str) -> str:
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.fromisoformat(created_at_text.replace(" ", "T"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - dt
+        mins = int(delta.total_seconds() // 60)
+        if mins < 60:
+            return f"{mins}m"
+        if mins < 60 * 24:
+            return f"{mins // 60}h {mins % 60}m"
+        days_old = mins // (60 * 24)
+        hours_left = (mins % (60 * 24)) // 60
+        return f"{days_old}d {hours_left}h"
+    except Exception:
+        return "—"
+
+
+@router.message(Command("javobsiz"))
+async def cmd_javobsiz(message: Message):
+    """List Sotuv orders that haven't yet received a 1C-confirmation reply.
+
+    Designed to live in ORDER_GROUP_CHAT_ID (Sotuv) so Alisher/Ibrat see
+    the pending list themselves. Also allowed in admin DM for private
+    spot-checks. Optional integer arg overrides the 7-day window (1..90).
+    """
+    if not _is_sotuv_admin(message):
+        return
+    cid = message.chat.id if hasattr(message, 'chat') else None
+    # Allow only Sotuv (intended) + DM of admin (for testing). Silent in
+    # other chats so the command doesn't leak to wrong audiences.
+    if cid != ORDER_GROUP_CHAT_ID and cid is not None and cid < 0:
+        return
+
+    parts = (message.text or "").strip().split(maxsplit=1)
+    try:
+        days = int(parts[1]) if len(parts) > 1 else 7
+    except ValueError:
+        days = 7
+    days = max(1, min(days, 90))
+
+    conn = get_db()
+    try:
+        pending = conn.execute(
+            """SELECT o.id, o.client_name, o.created_at,
+                      o.sales_group_message_id, o.parent_order_id
+               FROM orders o
+               WHERE o.sales_group_message_id IS NOT NULL
+                 AND datetime(o.created_at) >= datetime('now', ?)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM confirmed_orders co
+                     WHERE co.wishlist_order_id = o.id
+                 )
+               ORDER BY o.created_at ASC""",
+            (f"-{days} days",),
+        ).fetchall()
+        replied_today = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM confirmed_orders "
+            "WHERE date(created_at) = date('now')"
+        ).fetchone()["cnt"]
+    finally:
+        conn.close()
+
+    if not pending:
+        await message.reply(
+            f"✅ Javob kutilayotgan buyurtma yo'q (so'nggi {days} kun).\n"
+            f"Bugun tasdiqlandi: <b>{replied_today}</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    # Telegram supergroup deep-link convention: chat -100XXXXXX → t.me/c/XXXXXX/<mid>
+    chat_abs = str(abs(ORDER_GROUP_CHAT_ID))
+    chat_link_id = chat_abs[3:] if chat_abs.startswith("100") else chat_abs
+
+    lines = [f"🟡 <b>Javob kutilmoqda — so'nggi {days} kun</b>", ""]
+    # Cap at 30 lines to stay well under Telegram's 4096-char ceiling.
+    shown = pending[:30]
+    truncated = len(pending) - len(shown)
+    for row in shown:
+        cname = row["client_name"] or "—"
+        if len(cname) > 40:
+            cname = cname[:38] + "…"
+        suffix = f" (qo'sh #{row['parent_order_id']})" if row["parent_order_id"] else ""
+        link = f"https://t.me/c/{chat_link_id}/{row['sales_group_message_id']}"
+        lines.append(
+            f"#{row['id']}{suffix} · <b>{html_escape(cname)}</b> · "
+            f"{_format_age(row['created_at'])}\n"
+            f"   <a href=\"{link}\">↗ Xabarga o'tish</a>"
+        )
+    if truncated > 0:
+        lines.append(f"\n…va yana {truncated} ta")
+    lines.append("")
+    lines.append("———")
+    lines.append(
+        f"Javob kutilmoqda: <b>{len(pending)}</b> · "
+        f"Bugun tasdiqlandi: <b>{replied_today}</b>"
+    )
+
+    await message.reply(
+        "\n".join(lines),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 # ── /skipupload ─────────────────────────────────────────────────────
