@@ -216,6 +216,13 @@
             overflow: hidden;
         }
 
+        /* Business Overview is USD-equivalent only — hide the nav UZS/USD toggle there.
+           Tabs that still use dual-currency endpoints (Client Portfolio drill-down)
+           keep the toggle visible. */
+        body.tab-overview-active .nav-footer .currency-toggle {
+            display: none;
+        }
+
         .currency-btn {
             flex: 1;
             padding: 8px 12px;
@@ -792,7 +799,7 @@
         }
     </style>
 </head>
-<body>
+<body class="tab-overview-active">
     <!-- Auth Screen -->
     <div id="authScreen" class="auth-screen">
         <div class="auth-box">
@@ -824,6 +831,7 @@
                 <div class="nav-tab active" data-tab="overview" onclick="switchTab('overview')">Business Overview</div>
                 <div class="nav-tab" data-tab="clients" onclick="switchTab('clients')">Client Portfolio</div>
                 <div class="nav-tab" data-tab="inventory" onclick="switchTab('inventory')">Inventory</div>
+                <div class="nav-tab" data-tab="supply" onclick="switchTab('supply')">Supply</div>
                 <div class="nav-tab" data-tab="health" onclick="switchTab('health')">Platform Health</div>
                 <!-- BEGIN Phase 3: Search Analytics tab -->
                 <div class="nav-tab" data-tab="search" onclick="switchTab('search')">Search</div>
@@ -849,20 +857,19 @@
             <div class="content-area">
                 <!-- Business Overview Tab -->
                 <div id="overview-tab" class="tab-content">
-                    <!-- KPI Cards with time-range selector -->
+                    <!-- KPI Cards — Last Closed Week (USD-equivalent) -->
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                        <span style="font-size: 12px; color: #8b8fa3; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Key Metrics</span>
+                        <span style="font-size: 12px; color: #8b8fa3; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Key Metrics · USD-equivalent</span>
                         <div class="currency-toggle" id="kpiRangeToggle">
-                            <button class="currency-btn active" data-range="last_full" onclick="setKpiRange('last_full')">Last Full Month</button>
-                            <button class="currency-btn" data-range="qoq" onclick="setKpiRange('qoq')">QoQ</button>
-                            <button class="currency-btn" data-range="yoy" onclick="setKpiRange('yoy')">YoY</button>
-                            <button class="currency-btn" data-range="all" onclick="setKpiRange('all')">All Time</button>
+                            <button class="currency-btn active" data-range="last_week" onclick="setKpiRange('last_week')">Last Closed Week</button>
+                            <button class="currency-btn" data-range="13w_avg" onclick="setKpiRange('13w_avg')">13-Week Avg</button>
+                            <button class="currency-btn" data-range="yoy" onclick="setKpiRange('yoy')">YoY Delta</button>
                         </div>
                     </div>
 
                     <div class="kpi-grid">
                         <div class="kpi-card">
-                            <div class="kpi-label" id="kpi-shipments-label">Revenue (Last Full Month)</div>
+                            <div class="kpi-label" id="kpi-shipments-label">Revenue (Last Closed Week)</div>
                             <div class="kpi-value" id="kpi-total-shipments">-</div>
                             <div class="kpi-change" id="kpi-total-shipments-change"></div>
                         </div>
@@ -872,7 +879,7 @@
                             <div class="kpi-change" id="kpi-latest-revenue-change"></div>
                         </div>
                         <div class="kpi-card">
-                            <div class="kpi-label">Growth vs Comparison</div>
+                            <div class="kpi-label">YoY Revenue Δ</div>
                             <div class="kpi-value" id="kpi-mom-growth">-</div>
                             <div class="kpi-change" id="kpi-growth-detail"></div>
                         </div>
@@ -882,24 +889,42 @@
                         </div>
                     </div>
 
-                    <!-- Partial month warning -->
-                    <div id="partialMonthBanner" class="hidden" style="background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: #f59e0b; display: flex; align-items: center; gap: 8px;">
-                        <span>⚠</span>
-                        <span id="partialMonthText">Current month data is partial — charts show only fully closed months.</span>
+                    <!-- FX-fallback notice (shown when some weeks use the 12,000 fallback rate) -->
+                    <div id="fxFallbackBanner" class="hidden" style="background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.25); border-radius: 8px; padding: 10px 14px; margin-bottom: 20px; font-size: 12px; color: #a5a8be; display: flex; align-items: center; gap: 8px;">
+                        <span>ℹ</span>
+                        <span id="fxFallbackText">Some weeks predate daily FX coverage — UZS legs converted at 12,000 UZS/USD anchor.</span>
                     </div>
 
-                    <!-- Revenue Trend (closed months only) + YoY overlay -->
+                    <!-- Weekly Recap chart: revenue + collections bars + YoY revenue overlay line -->
                     <div class="chart-container">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                            <div class="chart-title" style="margin-bottom: 0;">Monthly Revenue (Closed Months Only)</div>
-                            <div class="currency-toggle" id="revenueViewToggle" style="font-size: 11px;">
-                                <button class="currency-btn active" data-revview="trend" onclick="setRevenueView('trend')">Trend</button>
-                                <button class="currency-btn" data-revview="yoy" onclick="setRevenueView('yoy')">YoY Compare</button>
-                                <button class="currency-btn" data-revview="bars" onclick="setRevenueView('bars')">Ship vs Coll</button>
-                            </div>
+                            <div class="chart-title" style="margin-bottom: 0;">Weekly Recap (USD-equivalent · last 13 closed weeks)</div>
+                            <span id="weeklyRecapMeta" style="font-size: 11px; color: #8b8fa3;"></span>
                         </div>
                         <div class="chart-wrapper" style="height: 350px;">
                             <canvas id="revenueChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Per-week breakdown table with YoY deltas -->
+                    <div class="chart-container" style="margin-top: 16px;">
+                        <div class="chart-title" style="margin-bottom: 12px;">Weekly Breakdown</div>
+                        <div style="overflow-x: auto;">
+                            <table class="data-table" style="font-size: 12px;">
+                                <thead>
+                                    <tr>
+                                        <th>Week</th>
+                                        <th style="text-align:right;">Revenue (USD-eq)</th>
+                                        <th style="text-align:right;">YoY Rev Δ</th>
+                                        <th style="text-align:right;">Collections (USD-eq)</th>
+                                        <th style="text-align:right;">YoY Coll Δ</th>
+                                        <th style="text-align:right;">Coll Rate</th>
+                                        <th style="text-align:right;">Orders</th>
+                                        <th style="text-align:right;">FX</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="weeklyBreakdownBody"></tbody>
+                            </table>
                         </div>
                     </div>
 
@@ -1350,6 +1375,188 @@
                                     </tbody>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Supply Tab -->
+                <div id="supply-tab" class="tab-content hidden">
+                    <!-- Seasonal alerts ribbon (only meaningful with YoY data) -->
+                    <div id="seasonalAlertsRibbon" class="hidden" style="background: linear-gradient(90deg, #fff3cc 0%, #ffe4cc 100%); border-left: 4px solid #f59e0b; padding: 10px 14px; margin-bottom: 16px; border-radius: 6px; font-size: 13px;">
+                        <div style="font-weight: 600; margin-bottom: 4px;">🔥 Mavsumiy ogohlantirishlar / Сезонные алерты</div>
+                        <div id="seasonalAlertsBody" style="color: #5a4500;"></div>
+                    </div>
+
+                    <!-- Supply KPI cards -->
+                    <div class="kpi-grid">
+                        <div class="kpi-card" style="border-left: 3px solid #ef4444;">
+                            <div class="kpi-label">🔴 Stockout</div>
+                            <div class="kpi-value" id="kpi-supply-stockout" style="color: #ef4444;">-</div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">SKUs out + demand</div>
+                        </div>
+                        <div class="kpi-card" style="border-left: 3px solid #f59e0b;">
+                            <div class="kpi-label">🟠 Order now</div>
+                            <div class="kpi-value" id="kpi-supply-order-now" style="color: #f59e0b;">-</div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">Below reorder point</div>
+                        </div>
+                        <div class="kpi-card" style="border-left: 3px solid #facc15;">
+                            <div class="kpi-label">🟡 Order soon</div>
+                            <div class="kpi-value" id="kpi-supply-order-soon" style="color: #ca8a04;">-</div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">Below target qty</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Total reorder dona</div>
+                            <div class="kpi-value" id="kpi-supply-total-buy">-</div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">Across all suppliers</div>
+                        </div>
+                    </div>
+
+                    <!-- Cross-supplier reorder hot-list -->
+                    <div class="section-title" style="margin-top: 16px;">
+                        🛒 Reorder hot-list <span id="supplyHotListCount" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                    </div>
+                    <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                        Top items needing order, across all suppliers. Sorted by status priority, then days-of-cover ascending. Click a supplier name to filter `/zakazlar` in chat.
+                    </div>
+                    <div class="table-container">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Status</th>
+                                        <th>Supplier</th>
+                                        <th>Product (1C)</th>
+                                        <th>Stock</th>
+                                        <th>Daily</th>
+                                        <th>Mavsum</th>
+                                        <th>Lead</th>
+                                        <th>Cover</th>
+                                        <th>Buyurtma</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="supplyHotListBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Supplier scoreboard -->
+                    <div class="section-title" style="margin-top: 16px;">
+                        📊 Supplier scoreboard <span id="supplyScoreboardCount" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                    </div>
+                    <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                        One row per supplier. Sorted by needs_order desc, then stockout desc.
+                    </div>
+                    <div class="table-container">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Supplier</th>
+                                        <th>Products</th>
+                                        <th>🔴 OOS</th>
+                                        <th>🟠 Now</th>
+                                        <th>🟡 Soon</th>
+                                        <th>⚪ No demand</th>
+                                        <th>% Stockout</th>
+                                        <th>Median lead</th>
+                                        <th>Last supply</th>
+                                        <th>YTD events</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="supplyScoreboardBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Lost demand top items -->
+                    <div class="section-title" style="margin-top: 16px;">
+                        💸 Lost demand (60d) <span id="supplyLostDemandCount" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                    </div>
+                    <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                        Products that clients tried to order while out of stock. Strongest evidence of under-ordered SKUs.
+                    </div>
+                    <div class="table-container">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Product (1C)</th>
+                                        <th>Supplier</th>
+                                        <th>Stock</th>
+                                        <th>Lost qty</th>
+                                        <th>Clients</th>
+                                        <th>Last signal</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="supplyLostDemandBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Recent deliveries -->
+                    <div class="section-title" style="margin-top: 16px;">
+                        📥 Recent deliveries (30d) <span id="supplyRecentDeliveriesCount" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                    </div>
+                    <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                        Most recent supply uploads. Gap of >2 days = check if Alisher uploaded.
+                    </div>
+                    <div class="table-container">
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Supplier</th>
+                                        <th>Doc #</th>
+                                        <th>Warehouse</th>
+                                        <th>Items</th>
+                                        <th>Units</th>
+                                        <th>Currency</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="supplyRecentDeliveriesBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Unmapped product gate -->
+                    <div class="section-title" style="margin-top: 16px;">
+                        🚪 Unmapped products gate
+                    </div>
+                    <div class="kpi-grid" style="grid-template-columns: repeat(4, 1fr);">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Active total</div>
+                            <div class="kpi-value" id="kpi-supply-total-active">-</div>
+                        </div>
+                        <div class="kpi-card" style="border-left: 3px solid #22c55e;">
+                            <div class="kpi-label">Mapped</div>
+                            <div class="kpi-value" id="kpi-supply-mapped" style="color: #22c55e;">-</div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;"><span id="kpi-supply-pct-mapped">-</span>%</div>
+                        </div>
+                        <div class="kpi-card" style="border-left: 3px solid #ef4444;">
+                            <div class="kpi-label">Unmapped</div>
+                            <div class="kpi-value" id="kpi-supply-unmapped" style="color: #ef4444;">-</div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;"><span id="kpi-supply-unmapped-oos">-</span> stockout</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Top producer (unmapped)</div>
+                            <div class="kpi-value" id="kpi-supply-top-producer" style="font-size: 14px;">-</div>
+                        </div>
+                    </div>
+                    <div class="table-container" style="margin-top: 8px;">
+                        <div class="table-title">Top producers with unmapped SKUs</div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Producer</th>
+                                        <th>Unmapped SKUs</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="supplyUnmappedProducersBody"></tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
@@ -1969,10 +2176,14 @@
             document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
             document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
 
+            // USD-equivalent-only tabs hide the nav UZS/USD toggle (Business Overview).
+            document.body.classList.toggle('tab-overview-active', tabName === 'overview');
+
             const titles = {
                 overview: 'Business Overview',
                 clients: 'Client Portfolio',
                 inventory: 'Inventory',
+                supply: 'Supply',
                 health: 'Platform Health',
                 search: 'Search',
                 coverage: 'Agent Coverage',
@@ -2022,6 +2233,7 @@
                 ['overview', loadOverviewData],
                 ['clients', loadClientsData],
                 ['inventory', loadInventoryData],
+                ['supply', loadSupplyData],
                 ['health', loadHealthData],
                 ['search', loadSearchData],
                 ['coverage', loadCoverageData],
@@ -2038,52 +2250,42 @@
         }
 
         // ==================== BUSINESS OVERVIEW ====================
-        let cachedRevenue = null;
-        let cachedCollections = null;
         let cachedReceivables = null;
-        let kpiRange = 'last_full';
-        let revenueView = 'trend';
+        let cachedWeekly = null;
+        let kpiRange = 'last_week';
 
         function setKpiRange(range) {
             kpiRange = range;
             document.querySelectorAll('#kpiRangeToggle .currency-btn').forEach(b => b.classList.remove('active'));
             document.querySelector(`[data-range="${range}"]`).classList.add('active');
-            if (cachedRevenue) updateKpis();
-        }
-
-        function setRevenueView(view) {
-            revenueView = view;
-            document.querySelectorAll('#revenueViewToggle .currency-btn').forEach(b => b.classList.remove('active'));
-            document.querySelector(`[data-revview="${view}"]`).classList.add('active');
-            if (cachedRevenue) drawRevenueChart();
+            if (cachedWeekly) updateKpis();
         }
 
         async function loadOverviewData() {
-            cachedRevenue = await apiCall('revenue');
-            cachedCollections = await apiCall('collections');
+            cachedWeekly = await apiCall('weekly-recap?weeks=13');
             cachedReceivables = await apiCall(`receivables?currency=${CURRENCY}`);
 
-            const revData = cachedRevenue.data[CURRENCY];
-            const collData = cachedCollections.data[CURRENCY];
-            if (!revData || !revData.length) return;
+            const weeks = (cachedWeekly && cachedWeekly.weeks) || [];
 
-            // Show partial month banner
-            const hasPartial = revData.some(p => p.partial);
-            const partialBanner = document.getElementById('partialMonthBanner');
-            if (hasPartial) {
-                const partialMonth = revData.find(p => p.partial);
-                document.getElementById('partialMonthText').textContent =
-                    `${periodLabel(partialMonth.period)} is partial (${partialMonth.active_clients} clients, ${fmt(partialMonth.shipments)} ${getCurrencyLabel()}) — charts show only fully closed months by default.`;
-                partialBanner.classList.remove('hidden');
-                partialBanner.style.display = 'flex';
+            // FX-fallback notice
+            const fxBanner = document.getElementById('fxFallbackBanner');
+            const fallbackCount = (cachedWeekly && cachedWeekly.fx_fallback_count) || 0;
+            const yoyFallbackCount = weeks.filter(w => w.yoy && w.yoy.fx_source === 'fallback').length;
+            if (fallbackCount > 0 || yoyFallbackCount > 0) {
+                const rate = (cachedWeekly && cachedWeekly.fx_fallback_rate) || 12000;
+                document.getElementById('fxFallbackText').textContent =
+                    `${fallbackCount} of last 13 weeks and ${yoyFallbackCount} prior-year weeks predate daily FX coverage — UZS converted at ${fmt(rate)} UZS/USD anchor.`;
+                fxBanner.classList.remove('hidden');
+                fxBanner.style.display = 'flex';
             } else {
-                partialBanner.classList.add('hidden');
-                partialBanner.style.display = 'none';
+                fxBanner.classList.add('hidden');
+                fxBanner.style.display = 'none';
             }
 
             updateKpis();
             drawRevenueChart();
-            drawCollectionChart(collData);
+            drawCollectionChart();
+            renderWeeklyBreakdown();
             drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
             loadDebtorsList();
             loadTopSellersWoW();
@@ -2253,213 +2455,193 @@
             }).join('');
         }
 
-        function getFullMonths() {
-            const revData = cachedRevenue.data[CURRENCY] || [];
-            return revData.filter(p => !p.partial);
+        // ── Weekly recap helpers ─────────────────────────────────────
+        // All Business Overview metrics derive from cachedWeekly (the
+        // /api/admin/weekly-recap response). Values are USD-equivalent
+        // using each week's avg(daily_fx_rates), with a 12,000 UZS/USD
+        // fallback when FX rows don't cover that week (e.g. all YoY
+        // 2025 weeks). See `fxFallbackBanner` for the user-visible note.
+
+        function weeklyList() {
+            return (cachedWeekly && cachedWeekly.weeks) || [];
+        }
+
+        function fmtUSD(v) {
+            return '$' + fmt(Math.round(v || 0));
+        }
+
+        function fmtDeltaPct(v) {
+            if (v === null || v === undefined) return '—';
+            const sign = v >= 0 ? '+' : '';
+            return sign + v.toFixed(1) + '%';
+        }
+
+        function deltaColor(v) {
+            if (v === null || v === undefined || isNaN(v)) return '#8b8fa3';
+            return v >= 0 ? '#22c55e' : '#ef4444';
         }
 
         function updateKpis() {
-            const revData = cachedRevenue.data[CURRENCY] || [];
-            const collData = cachedCollections.data[CURRENCY] || [];
-            const full = getFullMonths();
-            const fullColl = collData.filter(p => {
-                return full.some(f => f.period === p.period);
-            });
+            const weeks = weeklyList();
+            if (!weeks.length) return;
+            const last = weeks[weeks.length - 1];
 
             let shipLabel, shipVal, collVal, growthVal, growthDetail, collRateVal;
 
-            if (kpiRange === 'last_full') {
-                const lastFull = full[full.length - 1];
-                const prevFull = full.length > 1 ? full[full.length - 2] : null;
-                const lastColl = fullColl[fullColl.length - 1];
-
-                shipLabel = `Revenue — ${periodLabel(lastFull?.period)}`;
-                shipVal = lastFull?.shipments || 0;
-                collVal = lastFull?.collections || 0;
-                growthVal = prevFull && prevFull.shipments > 0
-                    ? ((lastFull.shipments - prevFull.shipments) / prevFull.shipments * 100).toFixed(1) + '%'
-                    : 'N/A';
-                growthDetail = prevFull ? `vs ${periodLabel(prevFull.period)}: ${fmt(prevFull.shipments)}` : '';
-                collRateVal = lastColl?.collection_rate?.toFixed(1) || '0';
+            if (kpiRange === '13w_avg') {
+                const avgRev = weeks.reduce((a, w) => a + (w.revenue_usd_eq || 0), 0) / weeks.length;
+                const avgColl = weeks.reduce((a, w) => a + (w.collections_usd_eq || 0), 0) / weeks.length;
+                const avgRate = weeks.reduce((a, w) => a + (w.collection_rate_pct || 0), 0) / weeks.length;
+                const yoyValid = weeks.filter(w => w.yoy && w.yoy.revenue_usd_eq > 0);
+                const avgYoy = yoyValid.length
+                    ? yoyValid.reduce((a, w) => a + w.yoy.revenue_usd_eq, 0) / yoyValid.length
+                    : 0;
+                shipLabel = 'Revenue — 13W Avg';
+                shipVal = avgRev;
+                collVal = avgColl;
+                growthVal = avgYoy > 0 ? ((avgRev - avgYoy) / avgYoy * 100).toFixed(1) + '%' : 'N/A';
+                growthDetail = avgYoy > 0 ? `vs prior-year 13W avg: ${fmtUSD(avgYoy)}` : 'No prior-year data';
+                collRateVal = avgRate.toFixed(1);
             } else if (kpiRange === 'yoy') {
-                const lastFull = full[full.length - 1];
-                shipLabel = `Revenue — ${periodLabel(lastFull?.period)}`;
-                shipVal = lastFull?.shipments || 0;
-                collVal = lastFull?.collections || 0;
-                const yoyGrowth = lastFull?.yoy_growth;
-                const yoyPrev = lastFull?.yoy_prev_shipments;
-                growthVal = yoyGrowth !== null && yoyGrowth !== undefined ? yoyGrowth.toFixed(1) + '%' : 'N/A';
-                const prevYear = lastFull ? parseInt(lastFull.period.slice(0, 4)) - 1 : '';
-                growthDetail = yoyPrev ? `vs ${periodLabel(prevYear + lastFull.period.slice(4))}: ${fmt(yoyPrev)}` : 'No prior year data';
-                const lastColl = fullColl[fullColl.length - 1];
-                collRateVal = lastColl?.collection_rate?.toFixed(1) || '0';
-            } else if (kpiRange === 'qoq') {
-                // Last 3 full months vs previous 3
-                const q1 = full.slice(-3);
-                const q0 = full.slice(-6, -3);
-                const q1Ship = q1.reduce((a, b) => a + (b.shipments || 0), 0);
-                const q0Ship = q0.reduce((a, b) => a + (b.shipments || 0), 0);
-                const q1Coll = q1.reduce((a, b) => a + (b.collections || 0), 0);
-
-                shipLabel = `Revenue — Last Quarter (${q1.map(p => periodLabel(p.period)).join(', ')})`;
-                shipVal = q1Ship;
-                collVal = q1Coll;
-                growthVal = q0Ship > 0 ? ((q1Ship - q0Ship) / q0Ship * 100).toFixed(1) + '%' : 'N/A';
-                growthDetail = q0.length ? `vs ${q0.map(p => periodLabel(p.period)).join(', ')}: ${fmt(q0Ship)}` : '';
-                const avgColl = fullColl.slice(-3);
-                collRateVal = avgColl.length ? (avgColl.reduce((a, b) => a + (b.collection_rate || 0), 0) / avgColl.length).toFixed(1) : '0';
+                shipLabel = `Revenue — ${last.label} vs same wk 2025`;
+                shipVal = last.revenue_usd_eq || 0;
+                collVal = last.collections_usd_eq || 0;
+                const delta = last.yoy ? last.yoy.revenue_delta_pct : null;
+                growthVal = delta !== null && delta !== undefined ? delta.toFixed(1) + '%' : 'N/A';
+                const prior = last.yoy ? last.yoy.revenue_usd_eq : 0;
+                growthDetail = prior > 0
+                    ? `vs ${last.yoy.week_start} → ${last.yoy.week_end}: ${fmtUSD(prior)}`
+                    : 'No prior-year data';
+                collRateVal = (last.collection_rate_pct || 0).toFixed(1);
             } else {
-                // All time
-                shipLabel = 'Total Shipments (All Time)';
-                shipVal = full.reduce((a, b) => a + (b.shipments || 0), 0);
-                collVal = full.reduce((a, b) => a + (b.collections || 0), 0);
-                growthVal = '-';
-                growthDetail = `${full.length} months`;
-                collRateVal = shipVal > 0 ? (collVal / shipVal * 100).toFixed(1) : '0';
+                // last_week (default)
+                const prevWeek = weeks.length > 1 ? weeks[weeks.length - 2] : null;
+                shipLabel = `Revenue — ${last.label}`;
+                shipVal = last.revenue_usd_eq || 0;
+                collVal = last.collections_usd_eq || 0;
+                if (last.yoy && last.yoy.revenue_delta_pct !== null && last.yoy.revenue_delta_pct !== undefined) {
+                    growthVal = last.yoy.revenue_delta_pct.toFixed(1) + '%';
+                    growthDetail = `vs ${last.yoy.week_start} → ${last.yoy.week_end}: ${fmtUSD(last.yoy.revenue_usd_eq)}`;
+                } else {
+                    growthVal = 'N/A';
+                    growthDetail = 'No prior-year data';
+                }
+                collRateVal = (last.collection_rate_pct || 0).toFixed(1);
             }
 
             document.getElementById('kpi-shipments-label').textContent = shipLabel;
-            document.getElementById('kpi-total-shipments').textContent = fmt(shipVal) + ' ' + getCurrencyLabel();
-            document.getElementById('kpi-collections-label').textContent = kpiRange === 'all' ? 'Total Collections' : 'Collections';
-            document.getElementById('kpi-latest-revenue').textContent = fmt(collVal) + ' ' + getCurrencyLabel();
+            document.getElementById('kpi-total-shipments').textContent = fmtUSD(shipVal);
+            document.getElementById('kpi-collections-label').textContent =
+                kpiRange === '13w_avg' ? 'Collections (13W Avg)' : 'Collections';
+            document.getElementById('kpi-latest-revenue').textContent = fmtUSD(collVal);
             document.getElementById('kpi-mom-growth').textContent = growthVal;
             document.getElementById('kpi-growth-detail').textContent = growthDetail;
 
             const growthNum = parseFloat(growthVal);
             const growthEl = document.getElementById('kpi-mom-growth');
-            growthEl.style.color = isNaN(growthNum) ? '#e4e4e7' : growthNum >= 0 ? '#22c55e' : '#ef4444';
+            growthEl.style.color = isNaN(growthNum) ? '#e4e4e7' : (growthNum >= 0 ? '#22c55e' : '#ef4444');
 
             document.getElementById('kpi-collection-rate').textContent = collRateVal + '%';
         }
 
         function drawRevenueChart() {
-            const full = getFullMonths();
+            const weeks = weeklyList();
             const ctx = document.getElementById('revenueChart').getContext('2d');
             if (charts.revenue) charts.revenue.destroy();
+            if (!weeks.length) return;
 
-            if (revenueView === 'trend') {
-                // Simple line trend — closed months only
-                charts.revenue = new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: full.map(p => periodLabel(p.period)),
-                        datasets: [{
-                            label: 'Revenue (' + getCurrencyLabel() + ')',
-                            data: full.map(p => p.shipments || 0),
-                            borderColor: '#6366f1',
-                            backgroundColor: 'rgba(99, 102, 241, 0.05)',
-                            borderWidth: 2, fill: true, tension: 0.3,
-                            pointBackgroundColor: '#6366f1',
+            const labels = weeks.map(w => w.label);
+            const revenue = weeks.map(w => w.revenue_usd_eq || 0);
+            const collections = weeks.map(w => w.collections_usd_eq || 0);
+            const yoyRevenue = weeks.map(w => (w.yoy && w.yoy.revenue_usd_eq) || null);
+
+            const meta = document.getElementById('weeklyRecapMeta');
+            if (meta) {
+                meta.textContent = `${weeks[0].week_start} → ${weeks[weeks.length - 1].week_end}`;
+            }
+
+            charts.revenue = new Chart(ctx, {
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            type: 'bar',
+                            label: 'Revenue (USD-eq)',
+                            data: revenue,
+                            backgroundColor: '#6366f1',
+                            borderRadius: 4,
+                            order: 2,
+                        },
+                        {
+                            type: 'bar',
+                            label: 'Collections (USD-eq)',
+                            data: collections,
+                            backgroundColor: '#22c55e',
+                            borderRadius: 4,
+                            order: 2,
+                        },
+                        {
+                            type: 'line',
+                            label: 'Prior-year Revenue',
+                            data: yoyRevenue,
+                            borderColor: '#a855f7',
+                            backgroundColor: 'rgba(168, 85, 247, 0.0)',
+                            borderWidth: 2,
+                            borderDash: [6, 4],
+                            tension: 0.3,
+                            pointBackgroundColor: '#a855f7',
                             pointBorderColor: '#1a1d27',
-                            pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6
-                        }]
-                    },
-                    options: {
-                        responsive: true, maintainAspectRatio: false,
-                        plugins: { legend: { display: false } },
-                        scales: {
-                            y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => fmt(v) } },
-                            x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
+                            pointRadius: 3,
+                            pointHoverRadius: 5,
+                            fill: false,
+                            order: 1,
                         }
-                    }
-                });
-
-            } else if (revenueView === 'yoy') {
-                // YoY comparison: dual bars — this year month vs same month last year
-                const thisYear = full.filter(p => p.period >= '2026-01-01');
-                const monthLabels = thisYear.map(p => {
-                    const m = new Date(p.period + 'T00:00:00Z').toLocaleString('en', { month: 'short' });
-                    return m;
-                });
-                const thisYearVals = thisYear.map(p => p.shipments || 0);
-                const prevYearVals = thisYear.map(p => p.yoy_prev_shipments || 0);
-
-                charts.revenue = new Chart(ctx, {
-                    type: 'bar',
-                    data: {
-                        labels: monthLabels,
-                        datasets: [
-                            {
-                                label: '2025', data: prevYearVals,
-                                backgroundColor: 'rgba(139, 143, 163, 0.4)', borderRadius: 4
-                            },
-                            {
-                                label: '2026', data: thisYearVals,
-                                backgroundColor: '#6366f1', borderRadius: 4
-                            }
-                        ]
-                    },
-                    options: {
-                        responsive: true, maintainAspectRatio: false,
-                        plugins: {
-                            legend: { labels: { color: '#8b8fa3' } },
-                            tooltip: {
-                                callbacks: {
-                                    afterBody: (items) => {
-                                        if (items.length >= 2) {
-                                            const prev = items[0].raw || 0;
-                                            const curr = items[1].raw || 0;
-                                            if (prev > 0) return `Change: ${((curr - prev) / prev * 100).toFixed(1)}%`;
-                                        }
-                                        return '';
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#8b8fa3' } },
+                        tooltip: {
+                            callbacks: {
+                                afterBody: (items) => {
+                                    if (!items.length) return '';
+                                    const idx = items[0].dataIndex;
+                                    const w = weeks[idx];
+                                    if (!w) return '';
+                                    const lines = [];
+                                    if (w.yoy && w.yoy.revenue_delta_pct !== null && w.yoy.revenue_delta_pct !== undefined) {
+                                        const sign = w.yoy.revenue_delta_pct >= 0 ? '+' : '';
+                                        lines.push(`YoY Δ: ${sign}${w.yoy.revenue_delta_pct.toFixed(1)}% vs ${w.yoy.week_start}→${w.yoy.week_end}`);
                                     }
+                                    lines.push(`FX: ${fmt(w.fx_rate)} UZS/USD (${w.fx_source})`);
+                                    lines.push(`Orders: ${w.order_count} · Active clients: ${w.active_clients}`);
+                                    return lines;
                                 }
                             }
-                        },
-                        scales: {
-                            y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => fmt(v) } },
-                            x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
                         }
-                    }
-                });
-
-            } else if (revenueView === 'bars') {
-                // Shipments vs Collections bars
-                charts.revenue = new Chart(ctx, {
-                    type: 'bar',
-                    data: {
-                        labels: full.map(p => periodLabel(p.period)),
-                        datasets: [
-                            {
-                                label: 'Shipments (' + getCurrencyLabel() + ')',
-                                data: full.map(p => p.shipments || 0),
-                                backgroundColor: '#6366f1', borderRadius: 4
-                            },
-                            {
-                                label: 'Collections (' + getCurrencyLabel() + ')',
-                                data: full.map(p => p.collections || 0),
-                                backgroundColor: '#22c55e', borderRadius: 4
-                            }
-                        ]
                     },
-                    options: {
-                        responsive: true, maintainAspectRatio: false,
-                        plugins: { legend: { labels: { color: '#8b8fa3' } } },
-                        scales: {
-                            y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => fmt(v) } },
-                            x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
-                        }
+                    scales: {
+                        y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => '$' + fmt(v) } },
+                        x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
                     }
-                });
-            }
+                }
+            });
         }
 
-        function drawCollectionChart(collData) {
-            // Filter to closed months only
-            const full = getFullMonths();
-            const fullPeriods = new Set(full.map(p => p.period));
-            const filtered = collData.filter(p => fullPeriods.has(p.period));
-
+        function drawCollectionChart() {
+            const weeks = weeklyList();
             const ctx = document.getElementById('collectionChart').getContext('2d');
             if (charts.collection) charts.collection.destroy();
+            if (!weeks.length) return;
 
             charts.collection = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: filtered.map(p => periodLabel(p.period)),
+                    labels: weeks.map(w => w.label),
                     datasets: [{
                         label: 'Collection Rate %',
-                        data: filtered.map(p => p.collection_rate || 0),
+                        data: weeks.map(w => w.collection_rate_pct || 0),
                         borderColor: '#22c55e',
                         backgroundColor: 'rgba(34, 197, 94, 0.05)',
                         borderWidth: 2, fill: true, tension: 0.3,
@@ -2477,6 +2659,33 @@
                     }
                 }
             });
+        }
+
+        function renderWeeklyBreakdown() {
+            const body = document.getElementById('weeklyBreakdownBody');
+            if (!body) return;
+            const weeks = weeklyList();
+            if (!weeks.length) {
+                body.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#8b8fa3; padding:16px;">No data</td></tr>';
+                return;
+            }
+            // Render newest first for at-a-glance scan.
+            const rows = weeks.slice().reverse().map(w => {
+                const revDelta = w.yoy ? w.yoy.revenue_delta_pct : null;
+                const collDelta = w.yoy ? w.yoy.collections_delta_pct : null;
+                const fxNote = w.fx_source === 'fallback' ? '<span style="color:#a5a8be;" title="Fallback rate — no FX data for this week">*</span>' : '';
+                return `<tr>
+                    <td>${escapeHtml(w.label)}</td>
+                    <td style="text-align:right;">${fmtUSD(w.revenue_usd_eq)}</td>
+                    <td style="text-align:right; color:${deltaColor(revDelta)};">${fmtDeltaPct(revDelta)}</td>
+                    <td style="text-align:right;">${fmtUSD(w.collections_usd_eq)}</td>
+                    <td style="text-align:right; color:${deltaColor(collDelta)};">${fmtDeltaPct(collDelta)}</td>
+                    <td style="text-align:right;">${(w.collection_rate_pct || 0).toFixed(1)}%</td>
+                    <td style="text-align:right;">${w.order_count}</td>
+                    <td style="text-align:right; font-size:11px; color:#8b8fa3;">${fmt(w.fx_rate)}${fxNote}</td>
+                </tr>`;
+            }).join('');
+            body.innerHTML = rows;
         }
 
         function drawAgingChart(aging, receivables) {
@@ -3224,6 +3433,209 @@
                     <td>${item.click_count || 0}</td>
                 </tr>
             `).join('');
+        }
+
+        // ==================== SUPPLY ====================
+        const SUPPLY_STATUS_EMOJI = {
+            stockout: '🔴', order_now: '🟠', order_soon: '🟡',
+            ok: '🟢', no_recent_demand: '⚪',
+        };
+        const SUPPLY_STATUS_LABEL = {
+            stockout: 'Tugagan', order_now: 'Tezda', order_soon: 'Yaqin',
+            ok: 'Yetarli', no_recent_demand: 'Talab yo\'q',
+        };
+        const SUPPLY_STATUS_COLOR = {
+            stockout: '#ef4444', order_now: '#f59e0b', order_soon: '#ca8a04',
+            ok: '#22c55e', no_recent_demand: '#8b8fa3',
+        };
+
+        function _fmtNum(v, dash = '-') {
+            if (v === null || v === undefined) return dash;
+            return Number(v).toLocaleString();
+        }
+
+        function _supplyStatusCell(status) {
+            const emoji = SUPPLY_STATUS_EMOJI[status] || '·';
+            const label = SUPPLY_STATUS_LABEL[status] || status;
+            const color = SUPPLY_STATUS_COLOR[status] || '#000';
+            return `<span style="color:${color};font-weight:600;">${emoji} ${label}</span>`;
+        }
+
+        async function loadSupplyData() {
+            // Fire all six endpoints in parallel
+            const [hotList, scoreboard, lost, deliveries, unmapped, seasonal] = await Promise.all([
+                apiCall('supply/hot-list?limit=50'),
+                apiCall('supply/supplier-scoreboard'),
+                apiCall('supply/lost-demand?days=60&limit=20'),
+                apiCall('supply/recent-deliveries?days=30'),
+                apiCall('supply/unmapped-count'),
+                apiCall('supply/seasonal-alerts?limit=10'),
+            ]);
+            renderSupplyKpis(scoreboard);
+            renderSupplyHotList(hotList);
+            renderSupplyScoreboard(scoreboard);
+            renderSupplyLostDemand(lost);
+            renderSupplyRecentDeliveries(deliveries);
+            renderSupplyUnmapped(unmapped);
+            renderSupplySeasonal(seasonal);
+        }
+
+        function renderSupplyKpis(scoreboard) {
+            let stockout = 0, orderNow = 0, orderSoon = 0, totalBuy = 0;
+            (scoreboard.suppliers || []).forEach(s => {
+                stockout += s.stockout || 0;
+                orderNow += s.order_now || 0;
+                orderSoon += s.order_soon || 0;
+                totalBuy += s.total_buy_qty || 0;
+            });
+            document.getElementById('kpi-supply-stockout').textContent = _fmtNum(stockout);
+            document.getElementById('kpi-supply-order-now').textContent = _fmtNum(orderNow);
+            document.getElementById('kpi-supply-order-soon').textContent = _fmtNum(orderSoon);
+            document.getElementById('kpi-supply-total-buy').textContent = _fmtNum(totalBuy);
+        }
+
+        function renderSupplyHotList(data) {
+            const body = document.getElementById('supplyHotListBody');
+            const count = document.getElementById('supplyHotListCount');
+            const items = data.items || [];
+            count.textContent = `· ${items.length} of ${data.total_with_buy} total needing order`;
+            if (!items.length) {
+                body.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#8b8fa3;">No items need reordering.</td></tr>';
+                return;
+            }
+            body.innerHTML = items.map((it, i) => {
+                const seasMark = it.seasonal_source === 'yoy' && it.seasonal_mult !== 1.0
+                    ? `<strong>${it.seasonal_mult}×</strong>` : '1.0';
+                const leadMark = it.lead_time_source === 'product' ? it.lead_time_days
+                    : it.lead_time_source === 'supplier' ? `${it.lead_time_days}*`
+                    : `${it.lead_time_days}†`;
+                const cover = it.days_of_cover === null ? '∞' : Math.round(it.days_of_cover);
+                const supName = it.supplier_name || '(noma\'lum)';
+                return `
+                    <tr>
+                        <td class="table-number">${i + 1}</td>
+                        <td>${_supplyStatusCell(it.status)}</td>
+                        <td style="font-size:11px;color:#8b8fa3;">${supName}</td>
+                        <td>${it.name}</td>
+                        <td>${Math.round(it.stock)}</td>
+                        <td>${it.seasoned_daily}</td>
+                        <td>${seasMark}</td>
+                        <td>${leadMark}</td>
+                        <td>${cover}</td>
+                        <td><strong>${_fmtNum(it.suggested_buy)}</strong></td>
+                    </tr>`;
+            }).join('');
+        }
+
+        function renderSupplyScoreboard(data) {
+            const body = document.getElementById('supplyScoreboardBody');
+            const count = document.getElementById('supplyScoreboardCount');
+            const sups = data.suppliers || [];
+            count.textContent = `· ${sups.length} suppliers`;
+            if (!sups.length) {
+                body.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#8b8fa3;">No supplier data.</td></tr>';
+                return;
+            }
+            body.innerHTML = sups.map(s => `
+                <tr>
+                    <td><strong>${s.supplier_name}</strong></td>
+                    <td>${s.product_count}</td>
+                    <td style="color:#ef4444;">${s.stockout}</td>
+                    <td style="color:#f59e0b;">${s.order_now}</td>
+                    <td style="color:#ca8a04;">${s.order_soon}</td>
+                    <td style="color:#8b8fa3;">${s.no_recent_demand}</td>
+                    <td>${s.pct_stockout}%</td>
+                    <td>${s.median_lead_time_days || '-'} kun</td>
+                    <td>${s.last_supply_date || '-'}</td>
+                    <td>${s.supply_events_ytd}</td>
+                </tr>`).join('');
+        }
+
+        function renderSupplyLostDemand(data) {
+            const body = document.getElementById('supplyLostDemandBody');
+            const count = document.getElementById('supplyLostDemandCount');
+            const items = data.items || [];
+            count.textContent = items.length ? `· top ${items.length}` : '';
+            if (!items.length) {
+                body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8b8fa3;">No demand signals in window.</td></tr>';
+                return;
+            }
+            body.innerHTML = items.map((it, i) => `
+                <tr>
+                    <td class="table-number">${i + 1}</td>
+                    <td>${it.name}</td>
+                    <td style="font-size:11px;color:#8b8fa3;">${it.supplier_name || '(noma\'lum)'}</td>
+                    <td>${Math.round(it.stock)}</td>
+                    <td><strong style="color:#ef4444;">${_fmtNum(it.lost_qty)}</strong></td>
+                    <td>${it.unique_clients}</td>
+                    <td>${it.last_signal_date || '-'}</td>
+                </tr>`).join('');
+        }
+
+        function renderSupplyRecentDeliveries(data) {
+            const body = document.getElementById('supplyRecentDeliveriesBody');
+            const count = document.getElementById('supplyRecentDeliveriesCount');
+            const items = data.deliveries || [];
+            count.textContent = items.length ? `· ${items.length} deliveries` : '';
+            if (!items.length) {
+                body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#8b8fa3;">No deliveries in window.</td></tr>';
+                return;
+            }
+            body.innerHTML = items.slice(0, 50).map(d => `
+                <tr>
+                    <td>${d.doc_date}</td>
+                    <td><strong>${d.counterparty_name}</strong></td>
+                    <td style="font-size:11px;color:#8b8fa3;">${d.doc_number}</td>
+                    <td style="font-size:11px;">${d.warehouse || '-'}</td>
+                    <td>${d.item_count}</td>
+                    <td>${_fmtNum(Math.round(d.unit_count || 0))}</td>
+                    <td>${d.currency || '-'}</td>
+                </tr>`).join('');
+        }
+
+        function renderSupplyUnmapped(data) {
+            document.getElementById('kpi-supply-total-active').textContent = _fmtNum(data.total_active);
+            document.getElementById('kpi-supply-mapped').textContent = _fmtNum(data.mapped);
+            document.getElementById('kpi-supply-pct-mapped').textContent = data.pct_mapped;
+            document.getElementById('kpi-supply-unmapped').textContent = _fmtNum(data.unmapped);
+            document.getElementById('kpi-supply-unmapped-oos').textContent = _fmtNum(data.unmapped_oos);
+            const top = (data.top_producers_unmapped || [])[0];
+            document.getElementById('kpi-supply-top-producer').textContent = top
+                ? `${top.producer} (${top.unmapped_skus})` : '-';
+
+            const body = document.getElementById('supplyUnmappedProducersBody');
+            const producers = data.top_producers_unmapped || [];
+            if (!producers.length) {
+                body.innerHTML = '<tr><td colspan="2" style="text-align:center;color:#8b8fa3;">All producers mapped.</td></tr>';
+                return;
+            }
+            body.innerHTML = producers.map(p => `
+                <tr>
+                    <td>${p.producer}</td>
+                    <td>${p.unmapped_skus}</td>
+                </tr>`).join('');
+        }
+
+        function renderSupplySeasonal(data) {
+            const ribbon = document.getElementById('seasonalAlertsRibbon');
+            const body = document.getElementById('seasonalAlertsBody');
+            const peak = data.peak || [];
+            const low = data.low || [];
+            if (!peak.length && !low.length) {
+                ribbon.classList.add('hidden');
+                return;
+            }
+            ribbon.classList.remove('hidden');
+            const parts = [];
+            if (peak.length) {
+                const top = peak.slice(0, 3).map(it => `<strong>${it.name}</strong> ${it.seasonal_mult}×`).join(' · ');
+                parts.push(`📈 ${peak.length} ta mavsumiy ko'tarilish (≥${data.peak_threshold}×): ${top}`);
+            }
+            if (low.length) {
+                const top = low.slice(0, 3).map(it => `<strong>${it.name}</strong> ${it.seasonal_mult}×`).join(' · ');
+                parts.push(`📉 ${low.length} ta past mavsum (≤${data.low_threshold}×): ${top}`);
+            }
+            body.innerHTML = parts.join('<br>');
         }
 
         // ==================== PLATFORM HEALTH ====================

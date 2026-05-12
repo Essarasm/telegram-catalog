@@ -473,6 +473,212 @@ def collection_rate(
     return {"ok": True, "data": result}
 
 
+# ── Weekly Recap (USD-equivalent, YoY) ──────────────────────────
+#
+# Source: real_orders (revenue / shipments) + client_payments (collections).
+# Replaces client_balances for owner-facing weekly view — daily 1C uploads
+# from 2026-04-13+ broke the day=01 monthly assumption, and weekly cadence
+# matches how the owner consumes the data.
+#
+# UZS+USD legs converted to USD-equivalent using each week's AVG(daily_fx_rates).
+# Falls back to FX_FALLBACK (12,000) when no rates exist for that week
+# (covers all YoY 2025 weeks and the first ~9 weeks of 2026 — UZS/USD has
+# been ±2% of 12,000 the whole period FX data exists, so this is a safe
+# anchor). Each week is tagged with fx_source = "actual" or "fallback" so
+# the chart can footnote it.
+#
+# YoY shift = exactly 364 days (52 weeks) to preserve Mon-Sun alignment.
+
+FX_FALLBACK = 12000.0
+
+
+def _closed_week_bounds_tashkent(weeks_back: int):
+    """Return (monday_date_str, sunday_date_str) for a closed week N weeks
+    before this Monday. weeks_back=1 → last closed week (most recent Sun-end).
+
+    The "current" in-progress week (today's week) is weeks_back=0; charts
+    skip it so only fully-closed weeks are shown.
+    """
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    tk = ZoneInfo("Asia/Tashkent")
+    now_tk = datetime.now(tk)
+    monday_tk = (now_tk - timedelta(days=now_tk.weekday() + 7 * weeks_back)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    sunday_tk = monday_tk + timedelta(days=6)
+    return monday_tk.strftime("%Y-%m-%d"), sunday_tk.strftime("%Y-%m-%d")
+
+
+def _yoy_week_bounds(week_start_iso: str, week_end_iso: str):
+    """Shift the given week back 364 days (= exactly 52 weeks).
+    Keeps Mon-Sun alignment intact.
+    """
+    from datetime import date, timedelta
+    ws = date.fromisoformat(week_start_iso) - timedelta(days=364)
+    we = date.fromisoformat(week_end_iso) - timedelta(days=364)
+    return ws.isoformat(), we.isoformat()
+
+
+def _week_avg_fxrate(conn, start_iso: str, end_iso: str):
+    """Return (rate, source) where source is 'actual' if any FX rows fall
+    within [start_iso, end_iso] (inclusive), else ('fallback', FX_FALLBACK)."""
+    row = conn.execute(
+        """SELECT AVG(rate) as avg_rate, COUNT(*) as n
+           FROM daily_fx_rates
+           WHERE currency_pair = 'USD_UZS'
+             AND rate_date BETWEEN ? AND ?""",
+        (start_iso, end_iso),
+    ).fetchone()
+    if row and row["n"] and row["avg_rate"]:
+        return float(row["avg_rate"]), "actual"
+    return FX_FALLBACK, "fallback"
+
+
+def _aggregate_week(conn, start_iso: str, end_iso: str, excl_clause_ro: str,
+                    excl_clause_cp: str, excl_params: tuple):
+    """Aggregate revenue (real_orders) + collections (client_payments) over a
+    Mon-Sun week. Returns dict with native UZS/USD legs, order count, and
+    distinct active client count.
+    """
+    rev = conn.execute(
+        f"""SELECT COALESCE(SUM(total_sum), 0) as uzs,
+                   COALESCE(SUM(total_sum_currency), 0) as usd,
+                   COUNT(*) as orders,
+                   COUNT(DISTINCT COALESCE(client_id, client_name_1c)) as clients
+              FROM real_orders ro
+             WHERE doc_date BETWEEN ? AND ?
+               {excl_clause_ro}""",
+        (start_iso, end_iso, *excl_params),
+    ).fetchone()
+
+    coll = conn.execute(
+        f"""SELECT COALESCE(SUM(CASE WHEN currency = 'UZS' THEN amount_local ELSE 0 END), 0) as uzs,
+                   COALESCE(SUM(CASE WHEN currency = 'USD' THEN amount_currency ELSE 0 END), 0) as usd,
+                   COUNT(*) as pays
+              FROM client_payments cp
+             WHERE doc_date BETWEEN ? AND ?
+               {excl_clause_cp}""",
+        (start_iso, end_iso, *excl_params),
+    ).fetchone()
+
+    return {
+        "revenue_uzs": float(rev["uzs"] or 0),
+        "revenue_usd": float(rev["usd"] or 0),
+        "collections_uzs": float(coll["uzs"] or 0),
+        "collections_usd": float(coll["usd"] or 0),
+        "order_count": int(rev["orders"] or 0),
+        "active_clients": int(rev["clients"] or 0),
+    }
+
+
+def _format_week_label(start_iso: str, end_iso: str) -> str:
+    """Human-readable label like 'May 4–10' (same month) or 'Apr 27–May 3'."""
+    from datetime import date
+    s = date.fromisoformat(start_iso)
+    e = date.fromisoformat(end_iso)
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    if s.month == e.month:
+        return f"{months[s.month - 1]} {s.day}–{e.day}"
+    return f"{months[s.month - 1]} {s.day}–{months[e.month - 1]} {e.day}"
+
+
+@router.get("/weekly-recap")
+def weekly_recap(
+    admin_key: str = Query(...),
+    weeks: int = Query(13, ge=1, le=52),
+    include_suppliers: bool = Query(False),
+):
+    """Weekly revenue + collections in USD-equivalent, with YoY comparison.
+
+    Returns the most recent `weeks` closed Mon-Sun weeks (Tashkent), each with
+    native UZS/USD legs, week-avg FX, USD-equivalent totals, and the same
+    week 364 days earlier for YoY delta.
+
+    Revenue source: real_orders (Realizatsiya). Collections: client_payments
+    (Kassa). Pseudo-clients excluded by default.
+    """
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause, sql_exclusion_params,
+    )
+
+    _check_admin(admin_key)
+    conn = get_db()
+
+    excl_clause_ro = "" if include_suppliers else f" AND {sql_exclusion_clause('ro.client_name_1c')}"
+    excl_clause_cp = "" if include_suppliers else f" AND {sql_exclusion_clause('cp.client_name_1c')}"
+    excl_params = () if include_suppliers else sql_exclusion_params()
+
+    # Build list of (week_start, week_end) pairs — weeks_back=1 is the most
+    # recent closed week, weeks_back=weeks is the oldest. We render oldest →
+    # newest so the chart reads left-to-right chronologically.
+    weeks_list = []
+    for wb in range(weeks, 0, -1):
+        ws, we = _closed_week_bounds_tashkent(wb)
+        weeks_list.append((ws, we))
+
+    fx_fallback_count = 0
+    out = []
+    for ws, we in weeks_list:
+        cur = _aggregate_week(conn, ws, we, excl_clause_ro, excl_clause_cp, excl_params)
+        fx_rate, fx_source = _week_avg_fxrate(conn, ws, we)
+        if fx_source == "fallback":
+            fx_fallback_count += 1
+
+        revenue_usd_eq = cur["revenue_uzs"] / fx_rate + cur["revenue_usd"]
+        collections_usd_eq = cur["collections_uzs"] / fx_rate + cur["collections_usd"]
+        collection_rate = (collections_usd_eq / revenue_usd_eq * 100) if revenue_usd_eq > 0 else 0.0
+
+        # YoY
+        ws_y, we_y = _yoy_week_bounds(ws, we)
+        prior = _aggregate_week(conn, ws_y, we_y, excl_clause_ro, excl_clause_cp, excl_params)
+        fx_rate_y, fx_source_y = _week_avg_fxrate(conn, ws_y, we_y)
+        yoy_revenue_usd_eq = prior["revenue_uzs"] / fx_rate_y + prior["revenue_usd"]
+        yoy_collections_usd_eq = prior["collections_uzs"] / fx_rate_y + prior["collections_usd"]
+        yoy_available = (prior["order_count"] + prior["revenue_uzs"] + prior["revenue_usd"]) > 0
+
+        yoy_rev_delta = ((revenue_usd_eq - yoy_revenue_usd_eq) / yoy_revenue_usd_eq * 100) if yoy_revenue_usd_eq > 0 else None
+        yoy_coll_delta = ((collections_usd_eq - yoy_collections_usd_eq) / yoy_collections_usd_eq * 100) if yoy_collections_usd_eq > 0 else None
+
+        out.append({
+            "week_start": ws,
+            "week_end": we,
+            "label": _format_week_label(ws, we),
+            "revenue_uzs_native": round(cur["revenue_uzs"], 2),
+            "revenue_usd_native": round(cur["revenue_usd"], 2),
+            "revenue_usd_eq": round(revenue_usd_eq, 2),
+            "collections_uzs_native": round(cur["collections_uzs"], 2),
+            "collections_usd_native": round(cur["collections_usd"], 2),
+            "collections_usd_eq": round(collections_usd_eq, 2),
+            "collection_rate_pct": round(collection_rate, 1),
+            "order_count": cur["order_count"],
+            "active_clients": cur["active_clients"],
+            "fx_rate": round(fx_rate, 2),
+            "fx_source": fx_source,
+            "yoy": {
+                "week_start": ws_y,
+                "week_end": we_y,
+                "revenue_usd_eq": round(yoy_revenue_usd_eq, 2),
+                "collections_usd_eq": round(yoy_collections_usd_eq, 2),
+                "revenue_delta_pct": round(yoy_rev_delta, 1) if yoy_rev_delta is not None else None,
+                "collections_delta_pct": round(yoy_coll_delta, 1) if yoy_coll_delta is not None else None,
+                "fx_source": fx_source_y,
+                "available": yoy_available,
+            },
+        })
+
+    conn.close()
+
+    return {
+        "ok": True,
+        "weeks_back": weeks,
+        "weeks": out,
+        "fx_fallback_rate": FX_FALLBACK,
+        "fx_fallback_count": fx_fallback_count,
+        "currency_basis": "USD-equivalent (week-avg FX)",
+    }
+
+
 # ── Top Clients (clean) ─────────────────────────────────────────
 
 

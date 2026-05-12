@@ -706,3 +706,239 @@ class TestPseudoFilterSweep:
                   params={"admin_key": ADMIN_KEY, "currency": "UZS"})
         names = {x["name"] for x in r.json()["clients"]}
         assert names == {"Реал клиент A"}
+
+
+# ── /weekly-recap ───────────────────────────────────────────────────
+
+
+def _seed_real_order(db, oid, doc_date, client, total_uzs=0.0, total_usd=0.0):
+    """Insert a real_orders row with dual UZS+USD legs."""
+    db.execute(
+        """INSERT OR REPLACE INTO real_orders
+           (id, doc_number_1c, doc_date, client_name_1c, currency,
+            exchange_rate, total_sum, total_sum_currency)
+           VALUES (?, ?, ?, ?, 'USD', 12000.0, ?, ?)""",
+        (oid, f"R{oid}", doc_date, client, total_uzs, total_usd),
+    )
+
+
+def _seed_payment(db, pid, doc_date, client, currency, amount_local=0.0, amount_currency=0.0):
+    """Insert a client_payments row. UZS rows put value in amount_local;
+    USD rows put it in amount_currency."""
+    db.execute(
+        """INSERT INTO client_payments
+           (doc_number_1c, doc_date, client_name_1c, currency,
+            amount_local, amount_currency, corr_account)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            f"P{pid}",
+            doc_date,
+            client,
+            currency,
+            amount_local,
+            amount_currency,
+            "40.10" if currency == "UZS" else "40.11",
+        ),
+    )
+
+
+def _seed_fx(db, rate_date, rate):
+    db.execute(
+        """INSERT OR REPLACE INTO daily_fx_rates
+           (rate_date, currency_pair, rate, source)
+           VALUES (?, 'USD_UZS', ?, 'test')""",
+        (rate_date, rate),
+    )
+
+
+def _closed_week(weeks_back: int):
+    """Compute the Mon→Sun closed-week dates the endpoint will look at,
+    weeks_back=1 = last closed week."""
+    now = datetime.now(TASHKENT)
+    monday = (now - timedelta(days=now.weekday() + 7 * weeks_back)).date()
+    sunday = monday + timedelta(days=6)
+    return monday.isoformat(), sunday.isoformat()
+
+
+class TestWeeklyRecap:
+    def test_unauthorized_without_key(self, db):
+        c = _client(db)
+        r = c.get("/api/admin/weekly-recap")
+        assert r.status_code == 422
+
+    def test_unauthorized_with_wrong_key(self, db):
+        c = _client(db)
+        r = c.get("/api/admin/weekly-recap", params={"admin_key": "wrong"})
+        assert r.status_code == 401
+
+    def test_returns_13_weeks_by_default(self, db):
+        c = _client(db)
+        r = c.get("/api/admin/weekly-recap", params={"admin_key": ADMIN_KEY})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["weeks_back"] == 13
+        assert len(body["weeks"]) == 13
+        # Oldest first, newest last
+        starts = [w["week_start"] for w in body["weeks"]]
+        assert starts == sorted(starts)
+
+    def test_excludes_in_progress_current_week(self, db):
+        """Orders dated *this* (unclosed) week must not appear in any bucket."""
+        now = datetime.now(TASHKENT).date()
+        # Find this week's Monday
+        this_monday = now - timedelta(days=now.weekday())
+        _seed_real_order(db, 1, this_monday.isoformat(), "Real Client", total_uzs=999_000_000)
+        db.commit()
+        c = _client(db)
+        r = c.get("/api/admin/weekly-recap", params={"admin_key": ADMIN_KEY})
+        weeks = r.json()["weeks"]
+        # No closed week should overlap today
+        for w in weeks:
+            assert w["week_end"] < now.isoformat()
+            assert w["revenue_uzs_native"] == 0  # the order is in the open week
+
+    def test_aggregates_revenue_uzs_and_usd_legs_separately(self, db):
+        last_mon, last_sun = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "Real Client", total_uzs=120_000_000, total_usd=0)
+        _seed_real_order(db, 2, last_sun, "Real Client", total_uzs=0, total_usd=5_000)
+        _seed_fx(db, last_mon, 12000.0)
+        _seed_fx(db, last_sun, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/weekly-recap", params={"admin_key": ADMIN_KEY})
+        last_week = r.json()["weeks"][-1]
+        assert last_week["revenue_uzs_native"] == 120_000_000
+        assert last_week["revenue_usd_native"] == 5_000
+        # USD-eq = 120M / 12000 + 5000 = 10000 + 5000 = 15000
+        assert last_week["revenue_usd_eq"] == 15_000
+        assert last_week["fx_source"] == "actual"
+        assert last_week["order_count"] == 2
+
+    def test_collections_split_by_currency(self, db):
+        last_mon, last_sun = _closed_week(1)
+        _seed_payment(db, 1, last_mon, "Client A", "UZS", amount_local=24_000_000)
+        _seed_payment(db, 2, last_sun, "Client B", "USD", amount_currency=2_500)
+        _seed_fx(db, last_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        r = c.get("/api/admin/weekly-recap", params={"admin_key": ADMIN_KEY})
+        last = r.json()["weeks"][-1]
+        assert last["collections_uzs_native"] == 24_000_000
+        assert last["collections_usd_native"] == 2_500
+        # 24M / 12000 + 2500 = 2000 + 2500 = 4500
+        assert last["collections_usd_eq"] == 4_500
+
+    def test_fx_fallback_when_no_rates_for_week(self, db):
+        """No daily_fx_rates → fallback rate 12000, fx_source='fallback'."""
+        last_mon, last_sun = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "Real Client", total_uzs=120_000_000)
+        db.commit()  # NB: no _seed_fx
+
+        c = _client(db)
+        body = c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY}).json()
+        last = body["weeks"][-1]
+        assert last["fx_source"] == "fallback"
+        assert last["fx_rate"] == 12000.0
+        assert last["revenue_usd_eq"] == 10_000  # 120M / 12k
+        assert body["fx_fallback_count"] >= 1
+
+    def test_pseudo_filter_excludes_system_accounts(self, db):
+        last_mon, last_sun = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "Наличка СКЛАД", total_uzs=999_000_000)
+        _seed_real_order(db, 2, last_sun, "Real Client", total_uzs=12_000_000)
+        _seed_fx(db, last_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY}).json()
+        last = body["weeks"][-1]
+        # Pseudo accounts dropped → only the real client counts
+        assert last["revenue_uzs_native"] == 12_000_000
+        assert last["order_count"] == 1
+        assert last["active_clients"] == 1
+
+    def test_pseudo_filter_can_be_disabled(self, db):
+        last_mon, _ = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "Наличка СКЛАД", total_uzs=10_000_000)
+        _seed_fx(db, last_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY,
+                             "include_suppliers": "true"}).json()
+        # With pseudo filter off, the system account is counted
+        assert body["weeks"][-1]["revenue_uzs_native"] == 10_000_000
+
+    def test_yoy_shift_is_364_days(self, db):
+        """YoY week = exactly 364 days back so Mon-Sun alignment is preserved."""
+        c = _client(db)
+        body = c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY}).json()
+        for w in body["weeks"]:
+            ws = date.fromisoformat(w["week_start"])
+            yws = date.fromisoformat(w["yoy"]["week_start"])
+            assert (ws - yws).days == 364
+
+    def test_yoy_delta_pct_computation(self, db):
+        last_mon, _ = _closed_week(1)
+        yoy_mon = (date.fromisoformat(last_mon) - timedelta(days=364)).isoformat()
+        _seed_real_order(db, 1, last_mon, "Real Client", total_uzs=120_000_000)  # this year: $10k
+        _seed_real_order(db, 2, yoy_mon, "Real Client", total_uzs=96_000_000)    # prior year: $8k
+        _seed_fx(db, last_mon, 12000.0)
+        _seed_fx(db, yoy_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        last = c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["weeks"][-1]
+        assert last["revenue_usd_eq"] == 10_000
+        assert last["yoy"]["revenue_usd_eq"] == 8_000
+        # (10000 - 8000) / 8000 = +25%
+        assert last["yoy"]["revenue_delta_pct"] == 25.0
+        assert last["yoy"]["available"] is True
+
+    def test_yoy_unavailable_when_no_prior_data(self, db):
+        last_mon, _ = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "Real Client", total_uzs=120_000_000)
+        _seed_fx(db, last_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        last = c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["weeks"][-1]
+        assert last["yoy"]["available"] is False
+        assert last["yoy"]["revenue_usd_eq"] == 0
+        assert last["yoy"]["revenue_delta_pct"] is None
+
+    def test_collection_rate_pct(self, db):
+        last_mon, last_sun = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "Real Client", total_uzs=120_000_000)  # $10k revenue
+        _seed_payment(db, 1, last_sun, "Real Client", "UZS", amount_local=60_000_000)  # $5k collected
+        _seed_fx(db, last_mon, 12000.0)
+        _seed_fx(db, last_sun, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        last = c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["weeks"][-1]
+        assert last["revenue_usd_eq"] == 10_000
+        assert last["collections_usd_eq"] == 5_000
+        assert last["collection_rate_pct"] == 50.0
+
+    def test_weeks_param_bounds(self, db):
+        c = _client(db)
+        # Out of range — pydantic validation
+        assert c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY, "weeks": 0}).status_code == 422
+        assert c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY, "weeks": 53}).status_code == 422
+        # In range
+        body = c.get("/api/admin/weekly-recap",
+                     params={"admin_key": ADMIN_KEY, "weeks": 4}).json()
+        assert len(body["weeks"]) == 4
