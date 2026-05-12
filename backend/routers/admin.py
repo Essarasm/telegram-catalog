@@ -679,6 +679,141 @@ def weekly_recap(
     }
 
 
+# ── Top Clients (per-week, USD-eq + native UZS/USD legs) ─────────
+
+
+@router.get("/top-clients-weekly")
+def top_clients_weekly(
+    admin_key: str = Query(...),
+    weeks_back: int = Query(1, ge=1, le=13),
+    limit: int = Query(50, ge=1, le=200),
+    include_suppliers: bool = Query(False),
+):
+    """Top clients for a single closed Mon-Sun week (Tashkent).
+
+    Source: real_orders (shipped) + client_payments (paid), pseudo-filter on.
+    Each client returns native UZS + native USD legs for both shipped and paid,
+    plus the USD-eq sum (week-avg FX). Ranking by shipped_usd_eq descending.
+
+    Also returns three top-of-tab KPIs in USD-eq:
+      - total_receivable_usd_eq (current outstanding from client_debts)
+      - top_client_shipped_usd_eq (rank #1 in this week)
+      - net_balance_usd_eq_week (Σ shipped − Σ paid across the top-N this week)
+    """
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause,
+        sql_exclusion_params,
+    )
+
+    _check_admin(admin_key)
+    conn = get_db()
+
+    ws, we = _closed_week_bounds_tashkent(weeks_back)
+    fx_rate, fx_source = _week_avg_fxrate(conn, ws, we)
+
+    excl_clause_ro = "" if include_suppliers else f" AND {sql_exclusion_clause('ro.client_name_1c')}"
+    excl_clause_cp = "" if include_suppliers else f" AND {sql_exclusion_clause('cp.client_name_1c')}"
+    excl_clause_cd = "" if include_suppliers else f" AND {sql_exclusion_clause('cd.client_name_1c')}"
+    excl_params = () if include_suppliers else sql_exclusion_params()
+
+    shipped_rows = conn.execute(
+        f"""SELECT ro.client_name_1c AS name,
+                   COALESCE(SUM(ro.total_sum), 0) AS uzs,
+                   COALESCE(SUM(ro.total_sum_currency), 0) AS usd
+              FROM real_orders ro
+             WHERE ro.doc_date BETWEEN ? AND ?
+               {excl_clause_ro}
+             GROUP BY ro.client_name_1c""",
+        (ws, we, *excl_params),
+    ).fetchall()
+
+    paid_rows = conn.execute(
+        f"""SELECT cp.client_name_1c AS name,
+                   COALESCE(SUM(CASE WHEN cp.currency='UZS' THEN cp.amount_local ELSE 0 END), 0) AS uzs,
+                   COALESCE(SUM(CASE WHEN cp.currency='USD' THEN cp.amount_currency ELSE 0 END), 0) AS usd
+              FROM client_payments cp
+             WHERE cp.doc_date BETWEEN ? AND ?
+               {excl_clause_cp}
+             GROUP BY cp.client_name_1c""",
+        (ws, we, *excl_params),
+    ).fetchall()
+
+    by_name: dict = {}
+    for r in shipped_rows:
+        by_name[r["name"]] = {
+            "shipped_uzs": float(r["uzs"] or 0),
+            "shipped_usd": float(r["usd"] or 0),
+            "paid_uzs": 0.0,
+            "paid_usd": 0.0,
+        }
+    for r in paid_rows:
+        d = by_name.setdefault(r["name"], {
+            "shipped_uzs": 0.0, "shipped_usd": 0.0,
+            "paid_uzs": 0.0, "paid_usd": 0.0,
+        })
+        d["paid_uzs"] = float(r["uzs"] or 0)
+        d["paid_usd"] = float(r["usd"] or 0)
+
+    clients_all = []
+    for name, d in by_name.items():
+        shipped_usd_eq = d["shipped_usd"] + (d["shipped_uzs"] / fx_rate if fx_rate else 0)
+        paid_usd_eq = d["paid_usd"] + (d["paid_uzs"] / fx_rate if fx_rate else 0)
+        pay_pct = round(paid_usd_eq / shipped_usd_eq * 100, 1) if shipped_usd_eq > 0 else None
+        clients_all.append({
+            "client_name": name,
+            "shipped_uzs": round(d["shipped_uzs"], 2),
+            "shipped_usd": round(d["shipped_usd"], 2),
+            "shipped_usd_eq": round(shipped_usd_eq, 2),
+            "paid_uzs": round(d["paid_uzs"], 2),
+            "paid_usd": round(d["paid_usd"], 2),
+            "paid_usd_eq": round(paid_usd_eq, 2),
+            "pay_pct": pay_pct,
+        })
+
+    clients_all.sort(key=lambda c: -c["shipped_usd_eq"])
+    top = clients_all[:limit]
+
+    top_client_shipped_usd_eq = top[0]["shipped_usd_eq"] if top else 0.0
+    net_balance_usd_eq_week = sum(c["shipped_usd_eq"] - c["paid_usd_eq"] for c in top)
+
+    # Total receivable: latest client_debts snapshot, USD-eq via current week's FX.
+    report_date = conn.execute(
+        "SELECT MAX(report_date) FROM client_debts"
+    ).fetchone()[0]
+    total_receivable_usd_eq = 0.0
+    if report_date:
+        row = conn.execute(
+            f"""SELECT COALESCE(SUM(debt_uzs), 0) AS uzs,
+                       COALESCE(SUM(debt_usd), 0) AS usd
+                  FROM client_debts cd
+                 WHERE cd.report_date = ?
+                   {excl_clause_cd}""",
+            (report_date, *excl_params),
+        ).fetchone()
+        total_receivable_usd_eq = float(row["usd"] or 0) + (
+            float(row["uzs"] or 0) / fx_rate if fx_rate else 0
+        )
+
+    conn.close()
+
+    return {
+        "ok": True,
+        "week_start": ws,
+        "week_end": we,
+        "week_label": _format_week_label(ws, we),
+        "fx_rate": fx_rate,
+        "fx_source": fx_source,
+        "weeks_back": weeks_back,
+        "count": len(top),
+        "kpis": {
+            "total_receivable_usd_eq": round(total_receivable_usd_eq, 2),
+            "top_client_shipped_usd_eq": round(top_client_shipped_usd_eq, 2),
+            "net_balance_usd_eq_week": round(net_balance_usd_eq_week, 2),
+        },
+        "clients": top,
+    }
+
+
 # ── Top Clients (clean) ─────────────────────────────────────────
 
 

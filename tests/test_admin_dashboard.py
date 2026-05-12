@@ -942,3 +942,128 @@ class TestWeeklyRecap:
         body = c.get("/api/admin/weekly-recap",
                      params={"admin_key": ADMIN_KEY, "weeks": 4}).json()
         assert len(body["weeks"]) == 4
+
+
+class TestTopClientsWeekly:
+    def test_auth_required(self, db):
+        c = _client(db)
+        assert c.get("/api/admin/top-clients-weekly").status_code == 422
+        assert c.get("/api/admin/top-clients-weekly",
+                     params={"admin_key": "wrong"}).status_code == 401
+
+    def test_empty_week_returns_empty_clients(self, db):
+        c = _client(db)
+        body = c.get("/api/admin/top-clients-weekly",
+                     params={"admin_key": ADMIN_KEY}).json()
+        assert body["ok"] is True
+        assert body["clients"] == []
+        assert body["count"] == 0
+        assert body["kpis"]["top_client_shipped_usd_eq"] == 0
+
+    def test_ranks_clients_by_usd_eq_shipped(self, db):
+        last_mon, last_sun = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "Big Client", total_uzs=240_000_000)  # $20k @ 12k
+        _seed_real_order(db, 2, last_sun, "Big Client", total_usd=0)
+        _seed_real_order(db, 3, last_mon, "Small Client", total_uzs=60_000_000)  # $5k
+        _seed_real_order(db, 4, last_sun, "Mid Client", total_usd=10_000)  # $10k native
+        _seed_fx(db, last_mon, 12000.0)
+        _seed_fx(db, last_sun, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/top-clients-weekly",
+                     params={"admin_key": ADMIN_KEY}).json()
+        names = [cl["client_name"] for cl in body["clients"]]
+        assert names == ["Big Client", "Mid Client", "Small Client"]
+        assert body["kpis"]["top_client_shipped_usd_eq"] == 20_000
+
+    def test_includes_native_legs_and_usd_eq(self, db):
+        last_mon, _ = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "X", total_uzs=120_000_000, total_usd=500)
+        _seed_payment(db, 1, last_mon, "X", "UZS", amount_local=60_000_000)
+        _seed_payment(db, 2, last_mon, "X", "USD", amount_currency=200)
+        _seed_fx(db, last_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        row = c.get("/api/admin/top-clients-weekly",
+                    params={"admin_key": ADMIN_KEY}).json()["clients"][0]
+        assert row["shipped_uzs"] == 120_000_000
+        assert row["shipped_usd"] == 500
+        assert row["shipped_usd_eq"] == 10_500  # 500 + 120M / 12k
+        assert row["paid_uzs"] == 60_000_000
+        assert row["paid_usd"] == 200
+        assert row["paid_usd_eq"] == 5_200
+        # pay_pct = 5200 / 10500 = 49.5%
+        assert row["pay_pct"] == 49.5
+
+    def test_pseudo_filter_excludes_structural_accounts(self, db):
+        last_mon, _ = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "Real Client", total_uzs=120_000_000)
+        _seed_real_order(db, 2, last_mon, "Наличка СКЛАД", total_uzs=999_000_000)
+        _seed_fx(db, last_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/top-clients-weekly",
+                     params={"admin_key": ADMIN_KEY}).json()
+        names = [cl["client_name"] for cl in body["clients"]]
+        assert "Наличка СКЛАД" not in names
+        assert names == ["Real Client"]
+
+    def test_total_receivable_uses_latest_debts_snapshot(self, db):
+        last_mon, _ = _closed_week(1)
+        _seed_debt(db, "Real Client", debt_uzs=120_000_000, debt_usd=500,
+                   last_tx=last_mon)
+        _seed_debt(db, "Наличка СКЛАД", debt_uzs=99_000_000_000,
+                   last_tx=last_mon)
+        _seed_fx(db, last_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/top-clients-weekly",
+                     params={"admin_key": ADMIN_KEY}).json()
+        # 500 + 120M / 12k = 10_500; pseudo excluded
+        assert body["kpis"]["total_receivable_usd_eq"] == 10_500
+
+    def test_net_balance_is_top_only(self, db):
+        last_mon, _ = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "A", total_uzs=120_000_000)  # $10k
+        _seed_payment(db, 1, last_mon, "A", "UZS", amount_local=24_000_000)  # $2k paid
+        _seed_real_order(db, 2, last_mon, "B", total_uzs=60_000_000)  # $5k
+        _seed_payment(db, 2, last_mon, "B", "UZS", amount_local=60_000_000)  # $5k paid
+        _seed_fx(db, last_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/top-clients-weekly",
+                     params={"admin_key": ADMIN_KEY}).json()
+        # (10k - 2k) + (5k - 5k) = 8k
+        assert body["kpis"]["net_balance_usd_eq_week"] == 8_000
+
+    def test_fx_fallback_when_no_rate(self, db):
+        last_mon, _ = _closed_week(1)
+        _seed_real_order(db, 1, last_mon, "X", total_uzs=120_000_000)
+        # no fxrate seeded
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/top-clients-weekly",
+                     params={"admin_key": ADMIN_KEY}).json()
+        assert body["fx_source"] == "fallback"
+        assert body["fx_rate"] == 12_000
+        assert body["clients"][0]["shipped_usd_eq"] == 10_000
+
+    def test_weeks_back_param(self, db):
+        # weeks_back=2 should hit the week before last
+        two_mon, two_sun = _closed_week(2)
+        _seed_real_order(db, 1, two_mon, "Old Client", total_uzs=120_000_000)
+        _seed_fx(db, two_mon, 12000.0)
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/top-clients-weekly",
+                     params={"admin_key": ADMIN_KEY, "weeks_back": 2}).json()
+        assert body["week_start"] == two_mon
+        assert body["week_end"] == two_sun
+        assert body["clients"][0]["client_name"] == "Old Client"

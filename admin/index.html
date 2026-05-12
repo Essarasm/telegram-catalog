@@ -1074,38 +1074,36 @@
                         <div class="kpi-card">
                             <div class="kpi-label">Total Receivable</div>
                             <div class="kpi-value" id="kpi-total-receivable">-</div>
-                            <div class="kpi-change" id="kpi-total-receivable-currency"></div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">USD-equivalent · current</div>
                         </div>
                         <div class="kpi-card">
-                            <div class="kpi-label">Top Clients Shipped</div>
+                            <div class="kpi-label">Top Client Shipped</div>
                             <div class="kpi-value" id="kpi-top-clients-shipped">-</div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">USD-equivalent · last closed week</div>
                         </div>
                         <div class="kpi-card">
                             <div class="kpi-label">Net Balance</div>
                             <div class="kpi-value" id="kpi-net-balance">-</div>
-                            <div class="kpi-change" id="kpi-net-balance-currency"></div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">Σ shipped − Σ paid (top-50, week)</div>
                         </div>
                     </div>
 
-                    <div class="segment-summary">
-                        <h3>Client Segments</h3>
-                        <div class="segment-badges" id="segmentBadges"></div>
-                    </div>
-
                     <div class="table-container">
-                        <div class="table-title">Top Clients</div>
+                        <div class="table-title" style="display: flex; align-items: center; gap: 8px;">
+                            Top Clients
+                            <span id="clientsWeekMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        </div>
                         <div class="table-wrapper">
                             <table>
                                 <thead>
                                     <tr>
                                         <th class="table-number">#</th>
                                         <th>Client</th>
-                                        <th>Segment</th>
-                                        <th>Total Shipped <span class="table-currency" id="clients-table-currency">(UZS)</span></th>
-                                        <th>Total Paid <span class="table-currency">(UZS)</span></th>
-                                        <th>Pay %</th>
-                                        <th>Balance <span class="table-currency">(UZS)</span></th>
-                                        <th>Months</th>
+                                        <th style="text-align:right;">Shipped (UZS)</th>
+                                        <th style="text-align:right;">Shipped (USD)</th>
+                                        <th style="text-align:right;">Paid (UZS)</th>
+                                        <th style="text-align:right;">Paid (USD)</th>
+                                        <th style="text-align:right;">Pay %</th>
                                     </tr>
                                 </thead>
                                 <tbody id="clientsTableBody">
@@ -2800,62 +2798,50 @@
 
         // ==================== CLIENT PORTFOLIO ====================
         async function loadClientsData() {
-            const clients = await apiCall(`top-clients?currency=${CURRENCY}&limit=50`);
-            const receivables = await apiCall(`receivables?currency=${CURRENCY}`);
+            const data = await apiCall('top-clients-weekly?weeks_back=1&limit=50');
+            const kpis = data.kpis || {};
+            const clients = data.clients || [];
 
-            // KPIs
-            const totalReceivable = receivables.total_receivable || 0;
-            const totalClients = clients.clients.length;
-            const topShipped = clients.clients.length > 0 ? clients.clients[0].total_shipped || 0 : 0;
-            const netBalance = clients.clients.reduce((a, c) => a + (c.balance || 0), 0);
+            // KPIs — USD-equivalent only
+            document.getElementById('kpi-total-receivable').textContent = '$' + fmt(Math.round(kpis.total_receivable_usd_eq || 0));
+            document.getElementById('kpi-top-clients-shipped').textContent = '$' + fmt(Math.round(kpis.top_client_shipped_usd_eq || 0));
+            document.getElementById('kpi-net-balance').textContent = '$' + fmt(Math.round(kpis.net_balance_usd_eq_week || 0));
 
-            document.getElementById('kpi-total-receivable').textContent = fmt(totalReceivable);
-            document.getElementById('kpi-total-receivable-currency').textContent = getCurrencyLabel();
-            document.getElementById('kpi-top-clients-shipped').textContent = fmt(topShipped);
-            document.getElementById('kpi-net-balance').textContent = fmt(netBalance);
-            document.getElementById('kpi-net-balance-currency').textContent = getCurrencyLabel();
+            // Week meta
+            const meta = document.getElementById('clientsWeekMeta');
+            if (meta) {
+                const fxNote = data.fx_source === 'fallback'
+                    ? ` · FX ${fmt(Math.round(data.fx_rate))} (fallback)`
+                    : ` · FX ${fmt(Math.round(data.fx_rate))}`;
+                meta.textContent = `· ${data.week_label || data.week_start} (${data.week_start} → ${data.week_end})${fxNote} · ${clients.length} clients`;
+            }
 
-            // Segments
-            const segments = { growing: 0, declining: 0, stable: 0, dormant: 0, new: 0 };
-            clients.clients.forEach(c => {
-                if (c.segment) segments[c.segment.toLowerCase()] = (segments[c.segment.toLowerCase()] || 0) + 1;
-            });
-
-            const segmentBadgesHtml = Object.entries(segments)
-                .filter(([_, count]) => count > 0)
-                .map(([seg, count]) => {
-                    const colors = { growing: 'badge-growing', declining: 'badge-declining', stable: 'badge-stable', dormant: 'badge-dormant', new: 'badge-new' };
-                    return `<span class="badge badge-small ${colors[seg]}">${seg.charAt(0).toUpperCase() + seg.slice(1)}: ${count}</span>`;
-                })
-                .join('');
-            document.getElementById('segmentBadges').innerHTML = segmentBadgesHtml;
-
-            // Table
             const tbody = document.getElementById('clientsTableBody');
-            tbody.innerHTML = clients.clients.map((c, i) => {
-                const segColor = {
-                    'growing': 'badge-growing',
-                    'declining': 'badge-declining',
-                    'stable': 'badge-stable',
-                    'dormant': 'badge-dormant',
-                    'new': 'badge-new'
-                }[c.segment] || 'badge-stable';
-
+            if (!clients.length) {
+                tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#8b8fa3; padding:16px;">No client activity in this week.</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = clients.map((c, i) => {
+                const uzsShipped = c.shipped_uzs > 0 ? fmt(Math.round(c.shipped_uzs)) : '—';
+                const usdShipped = c.shipped_usd > 0 ? '$' + fmt(Math.round(c.shipped_usd)) : '—';
+                const uzsPaid = c.paid_uzs > 0 ? fmt(Math.round(c.paid_uzs)) : '—';
+                const usdPaid = c.paid_usd > 0 ? '$' + fmt(Math.round(c.paid_usd)) : '—';
+                const payPct = c.pay_pct === null || c.pay_pct === undefined ? '—' : c.pay_pct.toFixed(0) + '%';
+                const payColor = (c.pay_pct === null || c.pay_pct === undefined) ? '#8b8fa3'
+                    : c.pay_pct >= 90 ? '#22c55e' : c.pay_pct >= 50 ? '#f59e0b' : '#ef4444';
+                const safeName = c.client_name.replace(/'/g, "\\'");
                 return `
-                    <tr class="clickable" onclick="showClientHistory('${c.name.replace(/'/g, "\\'")}')">
+                    <tr class="clickable" onclick="showClientHistory('${safeName}')">
                         <td class="table-number">${i + 1}</td>
-                        <td class="table-name">${c.name}</td>
-                        <td><span class="badge badge-small ${segColor}">${c.segment ? c.segment.charAt(0).toUpperCase() + c.segment.slice(1) : 'Unknown'}</span></td>
-                        <td>${fmt(c.total_shipped)} ${getCurrencyLabel()}</td>
-                        <td>${fmt(c.total_paid)} ${getCurrencyLabel()}</td>
-                        <td>${c.pay_pct ? c.pay_pct.toFixed(1) : 0}%</td>
-                        <td>${fmt(c.balance)} ${getCurrencyLabel()}</td>
-                        <td>${c.months_active || 0}</td>
+                        <td class="table-name">${escapeHtml(c.client_name)}</td>
+                        <td style="text-align:right;">${uzsShipped}</td>
+                        <td style="text-align:right;">${usdShipped}</td>
+                        <td style="text-align:right;">${uzsPaid}</td>
+                        <td style="text-align:right;">${usdPaid}</td>
+                        <td style="text-align:right; color:${payColor};">${payPct}</td>
                     </tr>
                 `;
             }).join('');
-
-            document.getElementById('clients-table-currency').textContent = `(${getCurrencyLabel()})`;
         }
 
         async function showClientHistory(clientName) {
