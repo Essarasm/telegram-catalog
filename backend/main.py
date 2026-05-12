@@ -236,6 +236,8 @@ app.include_router(cabinet.router)
 app.include_router(search.router)
 app.include_router(finance.router)
 app.include_router(admin.router)
+from backend.routers import admin_supply
+app.include_router(admin_supply.router)
 app.include_router(feedback.router)
 app.include_router(locations.router)
 from backend.routers import agent

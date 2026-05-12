@@ -120,7 +120,7 @@ def _gc() -> None:
 # Tab visibility per role. Add cashier/worker entries when those roles
 # are wired up; today only `admin` and `agent` are defined.
 ROLE_ALLOWED_TABS: dict[str, list[str]] = {
-    "admin": ["overview", "clients", "inventory", "health", "search", "coverage", "collections"],
+    "admin": ["overview", "clients", "inventory", "supply", "health", "search", "coverage", "collections"],
     "agent": ["coverage"],
 }
 
