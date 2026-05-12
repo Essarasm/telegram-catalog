@@ -1,14 +1,16 @@
-"""/zakazlar — per-supplier reorder view (Session N Phase 1).
+"""/zakazlar — per-supplier reorder view.
 
 Inventory-group command. Lists active suppliers as inline-keyboard buttons;
 clicking one returns BOTH:
-  (a) a simple chat message with name + qoldiq + buyurtma per item
+  (a) a simple chat message with status emoji + name + qoldiq + buyurtma
       (read-top-down to place an order — non-tech-friendly), and
   (b) an xlsx attachment with 4 sheets for desktop analysis:
       Tushuntirish (trilingual guide) / Buyurtma / Hammasi / Yig'ma.
 
-Formula: rolling 90-day daily sales rate × 30-day buffer − current stock.
-No prices (per memory feedback_order_prep_no_prices).
+Formula: 60d demand × seasonal YoY multiplier × (lead_time + 7d review) × 1.5 safety.
+Lead time is the median inter-delivery gap from supply history (product-level
+→ supplier-level → 14d global fallback). Demand-signal augmentation adds lost
+demand from stockout days. No prices (per memory feedback_order_prep_no_prices).
 """
 from __future__ import annotations
 
@@ -28,7 +30,8 @@ from aiogram.types import (
 
 from bot.shared import is_admin
 from backend.services.reorder import (
-    DEFAULT_BUFFER_DAYS,
+    DEFAULT_REVIEW_PERIOD_DAYS,
+    DEFAULT_SAFETY_FACTOR,
     DEFAULT_WINDOW_DAYS,
     list_supplier_full,
     list_suppliers_with_products,
@@ -38,10 +41,23 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
-# ── Inline keyboard ─────────────────────────────────────────────────────
+STATUS_EMOJI = {
+    "stockout": "🔴",
+    "order_now": "🟠",
+    "order_soon": "🟡",
+    "ok": "🟢",
+    "no_recent_demand": "⚪",
+}
+STATUS_LABEL_UZ = {
+    "stockout": "Tugagan",
+    "order_now": "Tezda",
+    "order_soon": "Yaqin orada",
+    "ok": "Yetarli",
+    "no_recent_demand": "Talab yo'q",
+}
+
 
 def _supplier_keyboard(suppliers: List[dict]) -> InlineKeyboardMarkup:
-    """Two-column supplier list. Format: 'NAME (oos/total)'."""
     rows = []
     pair: List[InlineKeyboardButton] = []
     for s in suppliers:
@@ -59,15 +75,13 @@ def _supplier_keyboard(suppliers: List[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ── Simple chat text (name + qoldiq + buyurtma only) ────────────────────
-
 def _format_simple_text(supplier_label: str, items: List[dict]) -> str:
-    """Plain text: 1 line per item. Reads top-down for hand-placing an order."""
+    """Status-grouped list, top-down for hand-placing an order."""
     if not items:
         return (f"📦 {supplier_label}\n\n"
                 f"Hech qanday mahsulot uchun buyurtma kerak emas.\n"
-                f"(Oxirgi {DEFAULT_WINDOW_DAYS} kun sotuv × {DEFAULT_BUFFER_DAYS} "
-                f"kun bufer formulasiga ko'ra qoldiq yetarli.)")
+                f"(Oxirgi {DEFAULT_WINDOW_DAYS} kun sotuvi + mavsumiy multiplikator "
+                f"+ yetkazib berish muddati formulasiga ko'ra qoldiq yetarli.)")
 
     total_buy = sum(it["suggested_buy"] for it in items)
     lines = [
@@ -76,18 +90,21 @@ def _format_simple_text(supplier_label: str, items: List[dict]) -> str:
         "",
     ]
     for i, it in enumerate(items, 1):
+        emoji = STATUS_EMOJI.get(it["status"], "·")
         name = it["name"]
-        if len(name) > 55:
-            name = name[:52] + "..."
-        lines.append(f"{i}. {name}")
-        lines.append(f"   Qoldiq: {int(it['stock'])} → Buyurtma: {it['suggested_buy']}")
+        if len(name) > 52:
+            name = name[:49] + "..."
+        lines.append(f"{i}. {emoji} {name}")
+        doc = it["days_of_cover"]
+        cover_txt = f" · ~{int(doc)} kun qoldi" if doc is not None and doc < 999 else ""
+        lines.append(f"   Qoldiq: {int(it['stock'])} → Buyurtma: {it['suggested_buy']}{cover_txt}")
     lines.append("")
-    lines.append(f"💡 Batafsil ma'lumot — biriktirilgan Excel fayldan oching.")
+    lines.append("🔴 Tugagan  🟠 Tezda  🟡 Yaqin orada")
+    lines.append("💡 Batafsil ma'lumot — biriktirilgan Excel fayldan oching.")
     return "\n".join(lines)
 
 
 def _chunk_text(text: str, limit: int = 3900) -> List[str]:
-    """Split on newlines so chunks fit inside Telegram's 4096-char limit."""
     if len(text) <= limit:
         return [text]
     chunks, cur = [], ""
@@ -102,11 +119,8 @@ def _chunk_text(text: str, limit: int = 3900) -> List[str]:
     return chunks
 
 
-# ── 4-sheet xlsx (mirrors Plintus_Reorder structure) ────────────────────
-
 def _build_xlsx(supplier_label: str, reorder_items: List[dict],
                 full_items: List[dict]) -> bytes:
-    """Generate the rich xlsx — same shape as Plintus_Reorder_2026-05-07.xlsx."""
     from datetime import date
     from openpyxl import Workbook
     from openpyxl.comments import Comment
@@ -118,7 +132,9 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
     head_fill = PatternFill("solid", fgColor="2E4F73")
     red_fill = PatternFill("solid", fgColor="FFD6D6")
     amber_fill = PatternFill("solid", fgColor="FFF3CC")
+    yellow_fill = PatternFill("solid", fgColor="FFF9CC")
     green_fill = PatternFill("solid", fgColor="D8F0D8")
+    grey_fill = PatternFill("solid", fgColor="EEEEEE")
     center = Alignment(horizontal="center", vertical="center")
     right = Alignment(horizontal="right", vertical="center")
     left = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -126,52 +142,81 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
     thin = Side(style="thin", color="BBBBBB")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    # Column metadata: (label, key, width, EN, RU, UZ)
+    STATUS_FILL = {
+        "stockout": red_fill,
+        "order_now": amber_fill,
+        "order_soon": yellow_fill,
+        "ok": green_fill,
+        "no_recent_demand": grey_fill,
+    }
+
     COL_DEFS = [
         ("#", "rank", 5,
-         "Rank: top of list = biggest reorder need (sorted by Buyurtma desc).",
-         "Ранг: вверху — самые срочные позиции.",
-         "Tartib: yuqorida eng katta buyurtma."),
+         "Rank: top of list = most urgent (sorted by status then days-of-cover).",
+         "Ранг: вверху — самые срочные.",
+         "Tartib: yuqorida eng shoshilinch."),
+        ("Status", "status", 14,
+         "🔴 stockout · 🟠 order now · 🟡 order soon · 🟢 ok · ⚪ no recent demand.",
+         "🔴 нет в наличии · 🟠 срочно · 🟡 скоро · 🟢 норма · ⚪ нет спроса.",
+         "🔴 tugagan · 🟠 tezda · 🟡 yaqin orada · 🟢 yetarli · ⚪ talab yo'q."),
         ("Mahsulot nomi", "name", 42,
          "Full 1C product name (Cyrillic). Copy verbatim when ordering.",
          "Полное название из 1С (кириллица). Копировать дословно.",
          "1C-dagi to'liq nom (kirill). Buyurtmada aynan shu matnni nusxalang."),
         ("Stock", "stock", 8,
          "Current warehouse stock from latest 1C balances upload (donalar).",
-         "Текущий складской остаток из последней загрузки 1С (шт.).",
-         "Hozirgi ombor qoldig'i (oxirgi 1C yuklamasi, dona)."),
-        (f"Sotilgan ({DEFAULT_WINDOW_DAYS}d)", "sold_window", 14,
-         f"Units sold in the last {DEFAULT_WINDOW_DAYS} days (rolling window).",
-         f"Продано за последние {DEFAULT_WINDOW_DAYS} дней.",
-         f"Oxirgi {DEFAULT_WINDOW_DAYS} kunda sotilgan dona."),
-        ("Kunlik rate", "daily_rate", 11,
-         f"Average daily sales = sotilgan / {DEFAULT_WINDOW_DAYS} days.",
-         f"Среднесуточные продажи = sotilgan / {DEFAULT_WINDOW_DAYS}.",
-         f"O'rtacha kunlik sotuv = sotilgan / {DEFAULT_WINDOW_DAYS}."),
+         "Текущий складской остаток (шт.).",
+         "Hozirgi ombor qoldig'i (dona)."),
+        (f"Sotilgan ({DEFAULT_WINDOW_DAYS}d)", "sold_window", 12,
+         f"Real-orders units in last {DEFAULT_WINDOW_DAYS}d. Demand signals shown separately.",
+         f"Реальные продажи за {DEFAULT_WINDOW_DAYS} дней.",
+         f"Oxirgi {DEFAULT_WINDOW_DAYS} kun haqiqiy sotuvi (dona)."),
+        ("Lost (signals)", "demand_signal_qty", 11,
+         "Demand signals from out-of-stock orders — added to demand for forecast.",
+         "Сигналы спроса при нулевом остатке — добавлены к спросу.",
+         "Qoldiqsiz buyurtma signallari — talabga qo'shilgan."),
+        ("Kunlik", "seasoned_daily", 9,
+         "Seasoned daily rate: (sold + lost) / window × seasonal multiplier.",
+         "Среднесуточный спрос: (sold + lost) / window × сезонный коэф.",
+         "O'rtacha kunlik talab: (sotilgan + signallar) / oyna × mavsumiy."),
+        ("Mavsum", "seasonal_mult", 8,
+         "YoY multiplier = (last-year same-month daily) / (last-year prior-60d daily). 1.0 = no signal.",
+         "Сезонный коэф. = продажи (этот месяц прошлого года) / (предыдущие 60 дней). 1.0 = нет данных.",
+         "Mavsumiy koef. = (o'tgan yili shu oy) / (oldingi 60 kun). 1.0 = ma'lumot yo'q."),
+        ("Yetkazish", "lead_time_days", 11,
+         "Lead time (days) = median gap between supply deliveries. Product-level if ≥3 events, else supplier-level, else 14d.",
+         "Срок поставки (дни) = медиана между поставками. По товару если ≥3 событий, иначе по поставщику, иначе 14д.",
+         "Yetkazib berish muddati (kun) = supply orasidagi mediana. ≥3 hodisa bo'lsa mahsulotga, aks holda supplierga, aks holda 14."),
         ("Buyurtma", "suggested_buy", 11,
-         f"Suggested order qty = ceil(daily_rate × {DEFAULT_BUFFER_DAYS}) − stock. 0 = enough on hand.",
-         f"Рекомендуемый заказ = ceil(daily_rate × {DEFAULT_BUFFER_DAYS}) − stock. 0 = хватает.",
-         f"Tavsiya qilingan buyurtma = ceil(kunlik × {DEFAULT_BUFFER_DAYS}) − qoldiq. 0 = yetarli."),
-        ("Last sale", "last_sale", 11,
-         "Most recent date this SKU was sold. >90 days = check if dying.",
-         "Дата последней продажи. Старше 90 дней — проверьте.",
-         "Oxirgi sotilgan sana. 90 kundan eski bo'lsa, tekshiring."),
+         f"Suggested order = ceil(seasoned_daily × (lead + {DEFAULT_REVIEW_PERIOD_DAYS}d review) × {DEFAULT_SAFETY_FACTOR} safety) − stock.",
+         f"Рекомендуемый заказ = ceil(daily × (lead + {DEFAULT_REVIEW_PERIOD_DAYS}д) × {DEFAULT_SAFETY_FACTOR}) − остаток.",
+         f"Tavsiya buyurtma = ceil(kunlik × (lead + {DEFAULT_REVIEW_PERIOD_DAYS}) × {DEFAULT_SAFETY_FACTOR}) − qoldiq."),
+        ("~Cover", "days_of_cover", 9,
+         "Days of stock remaining at current daily rate.",
+         "Сколько дней хватит при текущем спросе.",
+         "Hozirgi qoldiq necha kun yetadi."),
+        ("Oxirgi sotuv", "last_sale", 11,
+         "Most recent date this SKU was sold. >60 days = verify still active.",
+         "Дата последней продажи.",
+         "Oxirgi sotilgan sana."),
     ]
 
     today = date.today().isoformat()
     wb = Workbook()
 
-    # ────────── Sheet 1: Tushuntirish (Guide) ──────────
     ws_g = wb.active
     ws_g.title = "Tushuntirish (Guide)"
 
     ws_g["A1"] = f"{supplier_label} — Buyurtma Tahlili / Анализ заказа / Order Analysis"
     ws_g["A1"].font = Font(bold=True, size=15)
     ws_g.merge_cells("A1:D1")
+    n_full = len(full_items)
+    n_buy = len(reorder_items)
     ws_g["A2"] = (f"Sana / Дата / Date: {today} | "
-                  f"Window: {DEFAULT_WINDOW_DAYS}d sales | "
-                  f"Buffer: {DEFAULT_BUFFER_DAYS}d | "
-                  f"{len(full_items)} ta mahsulot · {len(reorder_items)} buyurtma kerak")
+                  f"Window: {DEFAULT_WINDOW_DAYS}d | "
+                  f"Review: {DEFAULT_REVIEW_PERIOD_DAYS}d | "
+                  f"Safety: {DEFAULT_SAFETY_FACTOR}× | "
+                  f"{n_full} ta mahsulot · {n_buy} buyurtma kerak")
     ws_g["A2"].font = Font(italic=True, color="666666")
     ws_g.merge_cells("A2:D2")
 
@@ -187,45 +232,58 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
     r = 4
     r = section(ws_g, r, "1. Bu hisobot nima haqida / О чём этот отчёт / What this report does")
     overview = [
-        ("UZ", f"'{supplier_label}' yetkazib beruvchidagi {len(full_items)} ta aktiv mahsulot uchun "
-               f"buyurtma tavsiyasi. Formula: oxirgi {DEFAULT_WINDOW_DAYS} kun sotuvi × "
-               f"{DEFAULT_BUFFER_DAYS} kun buferi − hozirgi qoldiq."),
-        ("RU", f"Рекомендация по заказу для {len(full_items)} активных товаров поставщика "
-               f"'{supplier_label}'. Формула: продажи за последние {DEFAULT_WINDOW_DAYS} дней × "
-               f"{DEFAULT_BUFFER_DAYS}-дневный буфер − текущий остаток."),
-        ("EN", f"Reorder recommendation for {len(full_items)} active products mapped to "
-               f"'{supplier_label}'. Formula: last-{DEFAULT_WINDOW_DAYS}-day sales × "
-               f"{DEFAULT_BUFFER_DAYS}-day buffer − current stock."),
+        ("UZ", f"'{supplier_label}' yetkazib beruvchidagi {n_full} ta aktiv mahsulot uchun "
+               f"buyurtma tavsiyasi. Hisob asoslari: oxirgi {DEFAULT_WINDOW_DAYS} kun haqiqiy sotuvi, "
+               f"qoldiqsiz davrda kelgan talab signallari, o'tgan yilgi shu oyning mavsumiy koef., "
+               f"hamda supply tarixidan hisoblangan yetkazish muddati."),
+        ("RU", f"Рекомендация по заказу для {n_full} активных товаров поставщика "
+               f"'{supplier_label}'. Учтены: продажи за {DEFAULT_WINDOW_DAYS} дн., сигналы спроса "
+               f"при нулевом остатке, сезонный коэф. (год к году) и расчётный срок поставки."),
+        ("EN", f"Reorder recommendation for {n_full} active products mapped to "
+               f"'{supplier_label}'. Inputs: last-{DEFAULT_WINDOW_DAYS}-day real sales, "
+               f"out-of-stock demand signals, year-over-year seasonal multiplier, "
+               f"lead time derived from supply delivery history."),
     ]
     for lang, text in overview:
         ws_g.cell(row=r, column=1, value=lang).font = bold
         ws_g.cell(row=r, column=1).alignment = Alignment(horizontal="center", vertical="top")
         ws_g.cell(row=r, column=2, value=text).alignment = left_top
         ws_g.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
-        ws_g.row_dimensions[r].height = 50
+        ws_g.row_dimensions[r].height = 60
         r += 1
 
     r += 1
     r = section(ws_g, r, "2. Hisoblash usuli / Метод расчёта / Calculation method")
     method_lines = [
-        ("Window / Окно", f"{DEFAULT_WINDOW_DAYS} kun",
-         f"Oxirgi {DEFAULT_WINDOW_DAYS} kun sotuvi sanovi.",
-         f"Считаем продажи за последние {DEFAULT_WINDOW_DAYS} дней."),
-        ("Buffer / Буфер", f"{DEFAULT_BUFFER_DAYS} kun",
-         f"Buyurtma {DEFAULT_BUFFER_DAYS} kunlik talabni qoplashga mo'ljallangan.",
-         f"Заказ покрывает {DEFAULT_BUFFER_DAYS} дней спроса."),
-        ("Daily rate", "sotilgan / 90",
-         f"Kunlik o'rtacha sotuv darajasi.",
-         f"Среднесуточные продажи."),
-        ("Buyurtma", "ceil(daily × 30) − stock",
-         f"Manfiy bo'lsa 0 — yetarli.",
-         f"Если отрицательное — 0, запас достаточен."),
-        ("Mavsumiy?", "Yo'q (flat-rate)",
-         f"Bu formula mavsumiylikni hisobga olmaydi. Cho'qqi mavsumda kam baholashi mumkin.",
-         f"Формула не учитывает сезонность; в пиковый сезон может занижать."),
+        ("Window", f"{DEFAULT_WINDOW_DAYS} kun",
+         f"Sotuv tahlili davri.",
+         f"Период анализа продаж."),
+        ("Lost demand", "demand_signals",
+         "Qoldiqsiz buyurtma signallari talabga qo'shiladi.",
+         "Сигналы спроса при OOS добавлены к спросу."),
+        ("Seasonal (YoY)", "last-year same-month / prior-60d",
+         "Mavsumiy koef. — o'tgan yili shu oy bilan oldingi 60 kun nisbati. <30 dona bo'lsa 1.0.",
+         "Сезонный коэф. — отношение к предыдущим 60 дням. <30 шт. → 1.0."),
+        ("Lead time", "median gap (≥3 events)",
+         "Mahsulot darajasida ≥3 supply hodisasi → mediana. Aks holda supplier yoki 14 kun.",
+         "Медиана между поставками. Если событий <3 → по поставщику или 14д."),
+        ("Review period", f"{DEFAULT_REVIEW_PERIOD_DAYS} kun",
+         "Buyurtmalar orasidagi qarash davri.",
+         "Период между ревизиями заказа."),
+        ("Safety factor", f"{DEFAULT_SAFETY_FACTOR}×",
+         "Xatolik buferi (spros pikida tushib qolmaslik uchun).",
+         "Запас на ошибку прогноза."),
+        ("Reorder point", "daily × lead × safety",
+         "Shundan past tushganda buyurtma berish kerak.",
+         "Точка перезаказа."),
+        ("Target", "daily × (lead + review) × safety",
+         "Buyurtmadan keyin qancha qoldiq bo'lishi kerakligi.",
+         "Целевой остаток после поставки."),
+        ("Buyurtma", "ceil(target − stock)",
+         "Manfiy bo'lsa 0.",
+         "Если меньше 0 → 0."),
     ]
-    headers = ["Atama / Параметр / Term", "Qiymat / Значение / Value",
-               "Tushuntirish (UZ)", "Объяснение (RU)"]
+    headers = ["Atama / Параметр / Term", "Qiymat / Значение / Value", "UZ", "RU"]
     for ci, h in enumerate(headers, start=1):
         c = ws_g.cell(row=r, column=ci, value=h)
         c.font = head_font
@@ -242,53 +300,34 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
         ws_g.cell(row=r, column=4, value=ru).alignment = left_top
         for ci in range(1, 5):
             ws_g.cell(row=r, column=ci).border = border
-        ws_g.row_dimensions[r].height = 50
+        ws_g.row_dimensions[r].height = 42
         r += 1
 
     r += 1
-    r = section(ws_g, r, "3. Ustun tushuntirishlari / Описание колонок / Column reference")
-    headers = ["Ustun / Колонка / Column", "EN", "RU", "UZ"]
-    for ci, h in enumerate(headers, start=1):
-        c = ws_g.cell(row=r, column=ci, value=h)
-        c.font = head_font
-        c.fill = head_fill
-        c.alignment = center
-        c.border = border
-    ws_g.row_dimensions[r].height = 22
-    r += 1
-    for label, key, width, en, ru, uz in COL_DEFS:
-        ws_g.cell(row=r, column=1, value=label).font = bold
-        ws_g.cell(row=r, column=1).alignment = left_top
-        ws_g.cell(row=r, column=2, value=en).alignment = left_top
-        ws_g.cell(row=r, column=3, value=ru).alignment = left_top
-        ws_g.cell(row=r, column=4, value=uz).alignment = left_top
-        for ci in range(1, 5):
-            ws_g.cell(row=r, column=ci).border = border
-        ws_g.row_dimensions[r].height = 40
-        r += 1
-
-    r += 1
-    r = section(ws_g, r, "4. Qaror qabul qilish / Принятие решения / Decision rubric")
+    r = section(ws_g, r, "3. Status belgilari / Статусы / Status markers")
     decision = [
-        ("Qizil — RED", "Stock=0 + Buyurtma>0", red_fill,
-         "OUT OF STOCK. Sales lost until restocked. HIGHEST URGENCY.",
-         "НЕТ В НАЛИЧИИ. Теряем продажи. Высший приоритет.",
-         "Sotuvda yo'q. Sotuv yo'qotamiz. Eng yuqori shoshiluvchanlik."),
-        ("Sariq — AMBER", "Stock>0 + Buyurtma>0", amber_fill,
-         "Stock exists but won't cover the buffer window. Order to top up.",
-         "Есть остаток, но не хватит на буфер. Дозаказать.",
-         "Qoldiq bor, lekin bufer davriga yetmaydi. To'ldirish kerak."),
-        ("Yashil — GREEN", "Stock>0 + Buyurtma=0", green_fill,
-         "Sufficient stock. Skip this order.",
+        ("🔴 stockout", "stock=0 + demand>0", red_fill,
+         "OUT OF STOCK with active demand. Sales lost until restocked.",
+         "Нет в наличии при активном спросе. Теряем продажи.",
+         "Sotuvda yo'q va talab bor. Sotuv yo'qotamiz."),
+        ("🟠 order_now", "stock < reorder_point", amber_fill,
+         "Below reorder point — order now to avoid imminent stockout.",
+         "Ниже точки перезаказа — заказать срочно.",
+         "Perezakaz nuqtasidan past — tezda buyurtma bering."),
+        ("🟡 order_soon", "stock < target", yellow_fill,
+         "Above reorder point but below post-delivery target.",
+         "Выше точки перезаказа, но ниже целевого остатка.",
+         "Maqsad qiymatidan past — yaqin orada to'ldirish."),
+        ("🟢 ok", "stock ≥ target", green_fill,
+         "Sufficient cover. Skip.",
          "Достаточно. Не заказывать.",
          "Yetarli. Buyurtma bermang."),
-        ("Bo'sh — N/A", "Stock>0 + Sotilgan=0", PatternFill("solid", fgColor="FFFFFF"),
-         "Slow-mover or retired. Verify with uncle before reordering.",
-         "Не движется или списан. Уточнить у дяди.",
-         "Sekin yoki olib tashlangan. Amakidan tekshiring."),
+        ("⚪ no_recent_demand", "no sales in window", grey_fill,
+         "No sales in window. Verify with uncle before reordering.",
+         "Нет продаж в окне. Уточнить у дяди.",
+         "Oynada sotuv yo'q. Amakidan tekshiring."),
     ]
-    headers = ["Belgi / Маркер / Marker", "Shart / Условие / Condition",
-               "EN", "RU + UZ"]
+    headers = ["Belgi / Маркер / Marker", "Shart / Условие / Condition", "EN", "UZ / RU"]
     for ci, h in enumerate(headers, start=1):
         c = ws_g.cell(row=r, column=ci, value=h)
         c.font = head_font
@@ -304,48 +343,49 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
         c1.fill = fill
         ws_g.cell(row=r, column=2, value=cond).alignment = left_top
         ws_g.cell(row=r, column=3, value=en).alignment = left_top
-        ws_g.cell(row=r, column=4, value=f"RU: {ru}\nUZ: {uz}").alignment = left_top
+        ws_g.cell(row=r, column=4, value=f"UZ: {uz}\nRU: {ru}").alignment = left_top
         for ci in range(1, 5):
             ws_g.cell(row=r, column=ci).border = border
         ws_g.row_dimensions[r].height = 50
         r += 1
 
     r += 1
-    r = section(ws_g, r, "5. Cheklovlar / Ограничения / Caveats")
+    r = section(ws_g, r, "4. Cheklovlar / Ограничения / Caveats")
     cav = [
         ("UZ",
-         "• Mavsumiylik hisobga olinmagan. Mavsumiy mahsulotlar uchun cho'qqi davrida kam baholashi mumkin.\n"
-         "• Yetkazib berish muddati hisobga olinmagan. Agar 4+ hafta bo'lsa, buyurtmani oldinroq bering.\n"
-         "• 0 sotilgan + 0 qoldiq mahsulotlar — eskirgan bo'lishi mumkin, ko'rib chiqish kerak."),
+         "• Yetkazib berish muddati supply tarixidan olinadi — buyurtma berilgan sana emas, kelgan sana. Real lead time bundan bir oz uzun bo'lishi mumkin.\n"
+         "• Mavsumiy koef. faqat o'tgan yili shu oyda ≥30 dona sotilgan mahsulotlarga qo'llaniladi; yangi mahsulotlar uchun 1.0 ishlatiladi.\n"
+         "• Stockout tarixi vaqt qatori sifatida saqlanmaydi — demand_signals faqat hozirgi qoldiqsiz davrlarda yozilgan, eski oylarni qoplamaydi.\n"
+         "• Statistik xatolik buferi (1.5×) qo'lda sozlanadi; haqiqiy variatsiyani hisoblanmaydi."),
         ("RU",
-         "• Сезонность не учтена. Для сезонных товаров в пик может занижать заказ.\n"
-         "• Срок поставки не учтён. Если 4+ недель — заказывать заранее.\n"
-         "• Товары с 0 продаж и 0 остатком возможно сняты с продаж — проверить."),
+         "• Срок поставки — медиана интервалов между поступлениями (а не «заказали–получили»). Реальный лид может быть длиннее.\n"
+         "• Сезонный коэф. применяется только если в прошлом году за этот месяц продано ≥30 шт. Для новых SKU → 1.0.\n"
+         "• История OOS как временной ряд не хранится — demand_signals покрывают только недавние эпизоды.\n"
+         "• Буфер на ошибку прогноза (1.5×) задаётся вручную."),
         ("EN",
-         "• Seasonality not modelled. May undershoot for seasonal SKUs in peak season.\n"
-         "• Supplier lead time not modelled. Order earlier if lead time ≥4 weeks.\n"
-         "• SKUs with zero sales + zero stock may be retired — review."),
+         "• Lead time is the median inter-delivery gap, not the order-to-arrival span. Actual lead time may be longer.\n"
+         "• Seasonal multiplier applies only when last-year same-month sales ≥30 units. New SKUs use 1.0.\n"
+         "• Historical stock-out series is not preserved — demand_signals only capture recent OOS episodes.\n"
+         "• Safety factor (1.5×) is hand-tuned, not a statistical safety stock."),
     ]
     for lang, text in cav:
         ws_g.cell(row=r, column=1, value=lang).font = bold
         ws_g.cell(row=r, column=1).alignment = Alignment(horizontal="center", vertical="top")
         ws_g.cell(row=r, column=2, value=text).alignment = left_top
         ws_g.merge_cells(start_row=r, start_column=2, end_row=r, end_column=4)
-        ws_g.row_dimensions[r].height = 65
+        ws_g.row_dimensions[r].height = 75
         r += 1
 
-    for col, w in [("A", 22), ("B", 28), ("C", 50), ("D", 50)]:
+    for col, w in [("A", 22), ("B", 32), ("C", 48), ("D", 48)]:
         ws_g.column_dimensions[col].width = w
 
-    # ────────── Sheet 2: Buyurtma (Reorder candidates) ──────────
     ws = wb.create_sheet("Buyurtma (Order)")
     ws["A1"] = f"{supplier_label} — Buyurtma kerak ({len(reorder_items)} ta mahsulot)"
     ws["A1"].font = Font(bold=True, size=14)
-    ws.merge_cells("A1:G1")
-    ws["A2"] = ("Hover the column header for explanation. "
-                "See 'Tushuntirish' sheet for full reference.")
+    ws.merge_cells(f"A1:{get_column_letter(len(COL_DEFS))}1")
+    ws["A2"] = "Hover the column header for explanation. See 'Tushuntirish' sheet for full reference."
     ws["A2"].font = Font(italic=True, color="666666")
-    ws.merge_cells("A2:G2")
+    ws.merge_cells(f"A2:{get_column_letter(len(COL_DEFS))}2")
 
     for ci, (label, key, width, en, ru, uz) in enumerate(COL_DEFS, start=1):
         c = ws.cell(row=4, column=ci, value=label)
@@ -359,46 +399,30 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
         c.comment = cm
         ws.column_dimensions[get_column_letter(ci)].width = width
 
-    sorted_reorder = sorted(reorder_items, key=lambda x: -x["suggested_buy"])
-    r_idx = 5
-    for i, it in enumerate(sorted_reorder, 1):
-        ws.cell(row=r_idx, column=1, value=i).alignment = center
-        ws.cell(row=r_idx, column=2, value=it["name"]).alignment = left
-        ws.cell(row=r_idx, column=3, value=int(it["stock"])).alignment = right
-        ws.cell(row=r_idx, column=4, value=int(it["sold_window"])).alignment = right
-        ws.cell(row=r_idx, column=5, value=it["daily_rate"]).alignment = right
-        buy = ws.cell(row=r_idx, column=6, value=it["suggested_buy"])
-        buy.alignment = right
-        buy.font = bold
-        ws.cell(row=r_idx, column=7, value=it["last_sale"]).alignment = center
-        fill = red_fill if it["stock"] <= 0 else amber_fill
-        for ci in range(1, 8):
-            ws.cell(row=r_idx, column=ci).fill = fill
-            ws.cell(row=r_idx, column=ci).border = border
-        r_idx += 1
+    _write_data_rows(ws, reorder_items, COL_DEFS, start_row=5, border=border,
+                     left=left, right=right, center=center, bold=bold,
+                     status_fill=STATUS_FILL)
 
-    if sorted_reorder:
-        total_buy = sum(it["suggested_buy"] for it in sorted_reorder)
-        total_stock = sum(int(it["stock"]) for it in sorted_reorder)
-        ws.cell(row=r_idx, column=2, value=f"JAMI ({len(sorted_reorder)} ta)").font = bold
-        ws.cell(row=r_idx, column=2).alignment = right
-        ws.cell(row=r_idx, column=3, value=total_stock).font = bold
-        ws.cell(row=r_idx, column=6, value=total_buy).font = bold
-        for ci in range(1, 8):
+    if reorder_items:
+        r_idx = 5 + len(reorder_items)
+        total_buy = sum(it["suggested_buy"] for it in reorder_items)
+        total_stock = sum(int(it["stock"]) for it in reorder_items)
+        ws.cell(row=r_idx, column=3, value=f"JAMI ({len(reorder_items)} ta)").font = Font(bold=True, color="FFFFFF")
+        ws.cell(row=r_idx, column=3).alignment = right
+        ws.cell(row=r_idx, column=4, value=total_stock).font = Font(bold=True, color="FFFFFF")
+        ws.cell(row=r_idx, column=10, value=total_buy).font = Font(bold=True, color="FFFFFF")
+        for ci in range(1, len(COL_DEFS) + 1):
             ws.cell(row=r_idx, column=ci).border = border
             ws.cell(row=r_idx, column=ci).fill = head_fill
-            if ws.cell(row=r_idx, column=ci).value is not None:
-                ws.cell(row=r_idx, column=ci).font = Font(bold=True, color="FFFFFF")
     ws.freeze_panes = "A5"
 
-    # ────────── Sheet 3: Hammasi (All products) ──────────
     ws_all = wb.create_sheet(f"Hammasi ({len(full_items)})")
     ws_all["A1"] = f"{supplier_label} — barcha aktiv mahsulotlar ({len(full_items)} ta)"
     ws_all["A1"].font = Font(bold=True, size=14)
-    ws_all.merge_cells("A1:H1")
+    ws_all.merge_cells(f"A1:{get_column_letter(len(COL_DEFS) + 1)}1")
 
     all_cols = COL_DEFS + [("Lifecycle", "lifecycle", 10,
-                             "Popularity classifier: active / aging / stale / never. Stale + zero sales = retirement candidate.",
+                             "Popularity classifier: active / aging / stale / never.",
                              "Классификатор: active / aging / stale / never.",
                              "Faollik: active / aging / stale / never.")]
     for ci, (label, key, width, en, ru, uz) in enumerate(all_cols, start=1):
@@ -413,56 +437,50 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
         c.comment = cm
         ws_all.column_dimensions[get_column_letter(ci)].width = width
 
-    sorted_all = sorted(full_items, key=lambda x: (-x["suggested_buy"], -x["sold_window"]))
-    r_idx = 4
-    for i, it in enumerate(sorted_all, 1):
-        ws_all.cell(row=r_idx, column=1, value=i).alignment = center
-        ws_all.cell(row=r_idx, column=2, value=it["name"]).alignment = left
-        ws_all.cell(row=r_idx, column=3, value=int(it["stock"])).alignment = right
-        ws_all.cell(row=r_idx, column=4, value=int(it["sold_window"])).alignment = right
-        ws_all.cell(row=r_idx, column=5, value=it["daily_rate"]).alignment = right
-        ws_all.cell(row=r_idx, column=6, value=it["suggested_buy"]).alignment = right
-        ws_all.cell(row=r_idx, column=7, value=it["last_sale"]).alignment = center
-        ws_all.cell(row=r_idx, column=8, value=it["lifecycle"]).alignment = center
-        if it["stock"] <= 0 and it["suggested_buy"] > 0:
-            fill = red_fill
-        elif it["suggested_buy"] > 0:
-            fill = amber_fill
-        elif it["sold_window"] == 0 and it["stock"] == 0:
-            fill = None
-        else:
-            fill = green_fill
-        for ci in range(1, 9):
-            if fill:
-                ws_all.cell(row=r_idx, column=ci).fill = fill
-            ws_all.cell(row=r_idx, column=ci).border = border
-        r_idx += 1
+    _write_data_rows(ws_all, full_items, all_cols, start_row=4, border=border,
+                     left=left, right=right, center=center, bold=bold,
+                     status_fill=STATUS_FILL)
     ws_all.freeze_panes = "A4"
 
-    # ────────── Sheet 4: Yig'ma (Summary) ──────────
     ws_y = wb.create_sheet("Yig'ma (Summary)")
     ws_y["A1"] = f"{supplier_label} — Yig'ma / Summary"
     ws_y["A1"].font = Font(bold=True, size=14)
     ws_y.merge_cells("A1:C1")
 
-    oos = sum(1 for it in full_items if it["stock"] <= 0)
-    low = sum(1 for it in full_items if 0 < it["stock"] and it["suggested_buy"] > 0)
-    ok = sum(1 for it in full_items if it["suggested_buy"] == 0 and it["sold_window"] > 0)
-    no_demand = sum(1 for it in full_items if it["suggested_buy"] == 0 and it["sold_window"] == 0)
+    status_counts = {k: 0 for k in STATUS_EMOJI}
+    for it in full_items:
+        status_counts[it["status"]] = status_counts.get(it["status"], 0) + 1
     total_buy = sum(it["suggested_buy"] for it in full_items)
     total_stock = sum(int(it["stock"]) for it in full_items)
     total_sold = sum(int(it["sold_window"]) for it in full_items)
+    total_lost = sum(int(it["demand_signal_qty"]) for it in full_items)
+
+    lead_sources = {"product": 0, "supplier": 0, "global": 0}
+    seasonal_sources = {"yoy": 0, "fallback": 0}
+    for it in full_items:
+        lead_sources[it["lead_time_source"]] = lead_sources.get(it["lead_time_source"], 0) + 1
+        seasonal_sources[it["seasonal_source"]] = seasonal_sources.get(it["seasonal_source"], 0) + 1
 
     rows_data = [
-        ("Jami mahsulotlar / Всего товаров / Total products", len(full_items)),
-        ("Tugagan (stock=0) / Нет в наличии / Out of stock", oos),
-        ("Kam qoldi (stock>0 + buyurtma>0) / Низкий запас", low),
-        ("Yetarli / Достаточно / Sufficient", ok),
-        ("Talab yo'q / Нет спроса / No demand", no_demand),
+        ("Jami mahsulotlar / Всего / Total", len(full_items)),
         ("", ""),
-        (f"Jami qoldiq / Stock total (donalar)", total_stock),
-        (f"Oxirgi {DEFAULT_WINDOW_DAYS}d sotuv / Sales window total", total_sold),
-        ("Tavsiya qilingan jami buyurtma / Total suggested order", total_buy),
+        ("🔴 Stockout (tugagan + talab)", status_counts.get("stockout", 0)),
+        ("🟠 Order now (perezakaz)", status_counts.get("order_now", 0)),
+        ("🟡 Order soon (yaqin orada)", status_counts.get("order_soon", 0)),
+        ("🟢 Ok (yetarli)", status_counts.get("ok", 0)),
+        ("⚪ No demand (talab yo'q)", status_counts.get("no_recent_demand", 0)),
+        ("", ""),
+        ("Jami qoldiq / Stock total (dona)", total_stock),
+        (f"Oxirgi {DEFAULT_WINDOW_DAYS}d sotuv / Sales window", total_sold),
+        ("Qoldiqsiz signal (lost demand)", total_lost),
+        ("Tavsiya jami buyurtma / Total order", total_buy),
+        ("", ""),
+        ("Lead time — product-level", lead_sources["product"]),
+        ("Lead time — supplier-level fallback", lead_sources["supplier"]),
+        ("Lead time — global 14d fallback", lead_sources["global"]),
+        ("", ""),
+        ("Seasonal — YoY applied", seasonal_sources["yoy"]),
+        ("Seasonal — 1.0 fallback", seasonal_sources["fallback"]),
     ]
     r = 3
     for label, val in rows_data:
@@ -472,14 +490,13 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
             if isinstance(val, int) and val > 0:
                 ws_y.cell(row=r, column=2).font = bold
         r += 1
-    ws_y.column_dimensions["A"].width = 60
+    ws_y.column_dimensions["A"].width = 50
     ws_y.column_dimensions["B"].width = 14
 
-    # Notes
     r += 1
     ws_y.cell(row=r, column=1, value="Method:").font = bold
     ws_y.cell(row=r, column=2,
-              value=f"sold_window / {DEFAULT_WINDOW_DAYS} × {DEFAULT_BUFFER_DAYS} − stock (flat-rate, no seasonality)")
+              value=f"({DEFAULT_WINDOW_DAYS}d sales + lost) × YoY × (lead + {DEFAULT_REVIEW_PERIOD_DAYS}d review) × {DEFAULT_SAFETY_FACTOR} − stock")
     ws_y.cell(row=r + 1, column=1, value="Generated:").font = bold
     ws_y.cell(row=r + 1, column=2, value=today)
 
@@ -488,7 +505,43 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
     return buf.getvalue()
 
 
-# ── Bot handlers ────────────────────────────────────────────────────────
+def _write_data_rows(ws, items, cols, start_row, border, left, right, center,
+                     bold, status_fill):
+    """Generic writer for Buyurtma + Hammasi sheets. Renders one row per item."""
+    key_to_col = {c[1]: i + 1 for i, c in enumerate(cols)}
+    for i, it in enumerate(items, 1):
+        r = start_row + i - 1
+        fill = status_fill.get(it["status"])
+        ws.cell(row=r, column=1, value=i).alignment = center
+        emoji = STATUS_EMOJI.get(it["status"], "")
+        label = STATUS_LABEL_UZ.get(it["status"], it["status"])
+        ws.cell(row=r, column=2, value=f"{emoji} {label}").alignment = center
+        ws.cell(row=r, column=3, value=it["name"]).alignment = left
+        ws.cell(row=r, column=4, value=int(it["stock"])).alignment = right
+        ws.cell(row=r, column=5, value=int(it["sold_window"])).alignment = right
+        ws.cell(row=r, column=6, value=int(it["demand_signal_qty"])).alignment = right
+        ws.cell(row=r, column=7, value=round(it["seasoned_daily"], 2)).alignment = right
+        ws.cell(row=r, column=8, value=it["seasonal_mult"]).alignment = right
+        lt_txt = f"{it['lead_time_days']}"
+        if it["lead_time_source"] == "supplier":
+            lt_txt += "*"
+        elif it["lead_time_source"] == "global":
+            lt_txt += "†"
+        ws.cell(row=r, column=9, value=lt_txt).alignment = right
+        buy_cell = ws.cell(row=r, column=10, value=it["suggested_buy"])
+        buy_cell.alignment = right
+        buy_cell.font = bold
+        doc = it["days_of_cover"]
+        ws.cell(row=r, column=11, value=("∞" if doc is None else doc)).alignment = right
+        ws.cell(row=r, column=12, value=it["last_sale"]).alignment = center
+        if "lifecycle" in key_to_col:
+            ws.cell(row=r, column=13, value=it["lifecycle"]).alignment = center
+        for ci in range(1, len(cols) + 1):
+            cell = ws.cell(row=r, column=ci)
+            if fill is not None:
+                cell.fill = fill
+            cell.border = border
+
 
 @router.message(Command("zakazlar"))
 async def cmd_zakazlar(message: Message):
@@ -515,7 +568,6 @@ async def cmd_zakazlar(message: Message):
 
 @router.callback_query(F.data.startswith("zakaz:s:"))
 async def cb_supplier_pick(cb: CallbackQuery):
-    """Send (a) simple chat list + (b) detailed xlsx attachment."""
     await cb.answer("Hisoblanmoqda...")
 
     suffix = cb.data.removeprefix("zakaz:s:")
@@ -535,15 +587,12 @@ async def cb_supplier_pick(cb: CallbackQuery):
             conn.close()
 
     full_items = list_supplier_full(supplier_id)
-    reorder_items = sorted([x for x in full_items if x["suggested_buy"] > 0],
-                            key=lambda x: -x["suggested_buy"])
+    reorder_items = [x for x in full_items if x["suggested_buy"] > 0]
 
-    # Send the simple chat message (chunked for long lists)
     text = _format_simple_text(label, reorder_items)
     for chunk in _chunk_text(text):
         await cb.message.answer(chunk)
 
-    # Send xlsx attachment
     xlsx_bytes = _build_xlsx(label, reorder_items, full_items)
     from datetime import date as _date
     safe_name = "".join(c if ord(c) < 128 else "_" for c in label).strip("_") or "supplier"
