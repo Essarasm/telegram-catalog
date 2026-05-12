@@ -3,20 +3,65 @@ import os
 import io
 import logging
 import httpx
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-from backend.services.group_config import ORDER_GROUP_CHAT_ID
+from backend.services.group_config import ORDER_GROUP_CHAT_ID, ONEC_HANDLERS
+
+
+def _agent_label_for_button(first_name: Optional[str], vehicle: Optional[str],
+                            vehicle_capacity_tons: Optional[float]) -> str:
+    """Replica of `bot.handlers.order_dispatch._agent_label`. Kept here so
+    feedback-driven editMessageText can rebuild the assigned-badge without
+    importing from bot/ (backend → bot import would invert the dep)."""
+    name = (first_name or "Agent").strip() or "Agent"
+    veh = (vehicle or "").strip()
+    cap_text = f"{vehicle_capacity_tons:.1f}t" if vehicle_capacity_tons else ""
+    if veh and cap_text:
+        descriptor = f"{veh}·{cap_text}"
+    else:
+        descriptor = veh or cap_text
+    label = f"{name} ({descriptor})" if descriptor else name
+    return label[:64]
+
+
+def build_dispatch_markup(order_id: int, delivery_status: str,
+                          agent_row: Optional[Dict] = None) -> Optional[Dict]:
+    """Build the inline-keyboard payload for an order's Sotuv message based on
+    its current dispatch state. Used at first send AND on editMessageText
+    (Telegram drops the keyboard otherwise).
+
+    Returns the JSON-shaped reply_markup dict (httpx will serialize it),
+    or None if order_id is missing.
+    """
+    if not order_id:
+        return None
+    status = (delivery_status or "open").lower()
+    if status == "assigned" and agent_row:
+        label = _agent_label_for_button(
+            agent_row.get("first_name"),
+            agent_row.get("vehicle"),
+            agent_row.get("vehicle_capacity_tons"),
+        )
+        return {"inline_keyboard": [[
+            {"text": f"✅ Biriktirildi: {label}", "callback_data": "disp:noop"}
+        ]]}
+    # 'open' (and any other / unknown state) shows the pick button so the
+    # dispatcher can still act.
+    return {"inline_keyboard": [[
+        {"text": "🚚 Agent ga biriktirish",
+         "callback_data": f"disp:pick:{order_id}"}
+    ]]}
 
 
 def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str = "", delivery_type: str = "delivery", client_name_1c: str = "", location_text: str = "", maps_link: str = "", order_id: int = 0, agent_name: str = "", parent_order_id: int = None):
     """Send order summary + Excel file to the sales managers' Telegram group.
 
-    Returns a dict {ok, text_message_id, doc_message_id} so the caller can
-    persist the message ids on the order row and later match manager
-    reply-to messages back to this order.
+    Returns a dict {ok, text_message_id, doc_message_id, text_message_text}
+    so the caller can persist the message ids + frozen text on the order
+    row and later match manager reply-to messages back to this order.
     """
     if not BOT_TOKEN or not ORDER_GROUP_CHAT_ID:
         logger.warning("ORDER_GROUP_CHAT_ID or BOT_TOKEN not set, skipping group notification")
@@ -62,6 +107,19 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
     lines.append("")
     lines.append("\U0001f4ce Excel fayl ilova qilingan")
 
+    # Ping the 1C handlers (Alisher + Ibrat by default) so they remember to
+    # enter the order into 1C and reply-with-Excel back to this message.
+    # `tg://user?id=` mentions fire a real notification even without public
+    # usernames; the user must be in the group.
+    if ONEC_HANDLERS:
+        mentions = ", ".join(
+            f"<a href=\"tg://user?id={tg_id}\">{name}</a>"
+            for tg_id, name in ONEC_HANDLERS
+        )
+        lines.append("")
+        lines.append(f"\U0001f440 {mentions} — iltimos 1C-ga kirgazib, "
+                     f"ushbu xabarga javob bering.")
+
     message_text = "\n".join(lines)
 
     try:
@@ -76,13 +134,9 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
             "text": message_text,
             "parse_mode": "HTML",
         }
-        if order_id:
-            send_payload["reply_markup"] = {
-                "inline_keyboard": [[
-                    {"text": "🚚 Agent ga biriktirish",
-                     "callback_data": f"disp:pick:{order_id}"}
-                ]]
-            }
+        markup = build_dispatch_markup(order_id, "open")
+        if markup:
+            send_payload["reply_markup"] = markup
         text_resp = httpx.post(
             f"{api_url}/sendMessage",
             json=send_payload,
@@ -118,7 +172,12 @@ def send_order_to_group(items: List[Dict], excel_bytes: bytes, client_name: str 
 
         logger.info(f"Order notification sent to group {ORDER_GROUP_CHAT_ID} "
                     f"(text_mid={text_mid}, doc_mid={doc_mid})")
-        return {"ok": True, "text_message_id": text_mid, "doc_message_id": doc_mid}
+        return {
+            "ok": True,
+            "text_message_id": text_mid,
+            "doc_message_id": doc_mid,
+            "text_message_text": message_text,
+        }
 
     except Exception as e:
         logger.error(f"Failed to send order to group: {e}")

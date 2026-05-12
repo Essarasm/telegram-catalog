@@ -15,7 +15,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 # changed from -5085083917 (regular) to -1003896597497 (supergroup). Using
 # the old ID caused all feedback forwarding to silently fail (Telegram
 # returned 400 "group chat was upgraded to a supergroup chat"). Фикс 2026-04-21.
-from backend.services.group_config import ADMIN_GROUP_CHAT_ID, ERRORS_GROUP_CHAT_ID
+from backend.services.group_config import ORDER_GROUP_CHAT_ID, ERRORS_GROUP_CHAT_ID
+from backend.services.notify_group import build_dispatch_markup
 
 
 class FeedbackRequest(BaseModel):
@@ -24,9 +25,23 @@ class FeedbackRequest(BaseModel):
     feedback_text: str
 
 
+def _esc(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 @router.post("")
 def submit_feedback(req: FeedbackRequest):
-    """Save post-order feedback and notify admins."""
+    """Save post-order feedback and append it to the Sotuv-group order message.
+
+    Behavior change (2026-05-11): instead of posting a separate "Yangi
+    fikr-mulohaza" notification to the admin group, the comment is edited
+    onto the end of the existing Sotuv order message so the sales team
+    sees client thoughts in-context with the order they belong to. The
+    frozen-original message text lives in `orders.sales_group_message_text`;
+    re-submissions overlay the latest comment on top of the original (no
+    stacking). Dispatch keyboard is rebuilt from current order state so
+    editMessageText doesn't strip the pick/assigned button.
+    """
     text = (req.feedback_text or "").strip()
     if not text:
         return {"ok": False, "error": "Feedback text is empty"}
@@ -44,48 +59,77 @@ def submit_feedback(req: FeedbackRequest):
     finally:
         conn.close()
 
-    # Look up full client identity for the notification
-    client_name = ""
-    phone = ""
-    client_1c = ""
-    if req.telegram_id:
-        conn2 = get_db()
-        row = conn2.execute(
-            "SELECT u.first_name, u.last_name, u.phone, u.client_id, "
-            "ac.client_id_1c "
-            "FROM users u "
-            "LEFT JOIN allowed_clients ac ON ac.id = u.client_id "
-            "WHERE u.telegram_id = ?",
-            (req.telegram_id,),
+    if not req.order_id:
+        logger.info("feedback received without order_id — saved to DB, no Sotuv edit")
+        return {"ok": True, "appended": False}
+
+    if not BOT_TOKEN or not ORDER_GROUP_CHAT_ID:
+        logger.warning("BOT_TOKEN or ORDER_GROUP_CHAT_ID missing; feedback saved but not appended")
+        return {"ok": True, "appended": False}
+
+    conn2 = get_db()
+    try:
+        order = conn2.execute(
+            "SELECT sales_group_message_id, sales_group_message_text, "
+            "delivery_status, assigned_agent_id "
+            "FROM orders WHERE id = ?",
+            (req.order_id,),
         ).fetchone()
+        agent = None
+        if order and order["assigned_agent_id"]:
+            agent = conn2.execute(
+                "SELECT first_name, vehicle, vehicle_capacity_tons "
+                "FROM users WHERE telegram_id = ?",
+                (order["assigned_agent_id"],),
+            ).fetchone()
+    finally:
         conn2.close()
-        if row:
-            client_name = " ".join(filter(None, [row["first_name"], row["last_name"]]))
-            phone = row["phone"] or ""
-            client_1c = row["client_id_1c"] or ""
 
-    # Notify admin group with full context
-    if BOT_TOKEN and ADMIN_GROUP_CHAT_ID:
-        preview = text[:100] + ("..." if len(text) > 100 else "")
-        lines = ["\U0001f4ac <b>Yangi fikr-mulohaza</b>", ""]
-        if client_1c:
-            lines.append(f"\U0001f464 Mijoz (1C): <b>{client_1c}</b>")
-        lines.append(f"\U0001f4f1 Telegram: {client_name or '—'}")
-        if phone:
-            lines.append(f"\U0001f4de Telefon: {phone}")
-        lines.append(f"\U0001f194 ID: <code>{req.telegram_id}</code>")
-        lines.append(f"\n\U0001f4ac {preview}")
-        message = "\n".join(lines)
-        try:
-            httpx.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": ADMIN_GROUP_CHAT_ID, "text": message, "parse_mode": "HTML"},
-                timeout=10,
+    if not order or not order["sales_group_message_id"] or not order["sales_group_message_text"]:
+        logger.warning(
+            f"feedback for order {req.order_id}: missing sales_group_message_id/_text "
+            f"(legacy order pre-migration?); saved to DB, no Sotuv edit"
+        )
+        return {"ok": True, "appended": False}
+
+    new_text = (
+        order["sales_group_message_text"]
+        + f"\n\n\U0001f4ac <b>Mijoz izohi:</b>\n{_esc(text)}"
+    )
+    agent_dict = None
+    if agent:
+        agent_dict = {
+            "first_name": agent["first_name"],
+            "vehicle": agent["vehicle"],
+            "vehicle_capacity_tons": agent["vehicle_capacity_tons"],
+        }
+    markup = build_dispatch_markup(req.order_id, order["delivery_status"], agent_dict)
+
+    payload = {
+        "chat_id": ORDER_GROUP_CHAT_ID,
+        "message_id": order["sales_group_message_id"],
+        "text": new_text,
+        "parse_mode": "HTML",
+    }
+    if markup:
+        payload["reply_markup"] = markup
+    try:
+        resp = httpx.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/editMessageText",
+            json=payload,
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.error(
+                f"editMessageText for order {req.order_id} returned "
+                f"{resp.status_code}: {resp.text[:200]}"
             )
-        except Exception as e:
-            logger.error(f"Failed to send feedback notification: {e}")
+            return {"ok": True, "appended": False}
+    except Exception as e:
+        logger.error(f"editMessageText for order {req.order_id} failed: {e}")
+        return {"ok": True, "appended": False}
 
-    return {"ok": True}
+    return {"ok": True, "appended": True}
 
 
 @router.post("/order-issue")

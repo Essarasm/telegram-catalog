@@ -1045,6 +1045,15 @@ def init_db():
         if col not in order_cols3:
             conn.execute(f"ALTER TABLE orders ADD COLUMN {col} INTEGER")
 
+    # Migration: store the frozen original Sotuv-group message text so
+    # post-order feedback (CartPage → /api/feedback) can be appended to the
+    # same message via editMessageText instead of posting a separate "Yangi
+    # fikr-mulohaza" notification. Re-submissions always overlay the
+    # original text + latest comment (no stacking).
+    order_cols4 = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
+    if "sales_group_message_text" not in order_cols4:
+        conn.execute("ALTER TABLE orders ADD COLUMN sales_group_message_text TEXT")
+
     # Manager-confirmed orders: the 1C-exported Excel that replaces the
     # wishlist order once sales managers + Uncle finalize it in 1C.
     conn.execute("""

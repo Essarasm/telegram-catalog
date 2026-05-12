@@ -308,13 +308,15 @@ def export_order(req: ExportRequest):
         else:
             text_mid = group_result.get("text_message_id")
             doc_mid = group_result.get("doc_message_id")
+            text_msg = group_result.get("text_message_text")
             if text_mid or doc_mid:
                 conn_ids = get_db()
                 try:
                     conn_ids.execute(
                         "UPDATE orders SET sales_group_message_id = ?, "
-                        "sales_group_doc_message_id = ? WHERE id = ?",
-                        (text_mid, doc_mid, order_id),
+                        "sales_group_doc_message_id = ?, "
+                        "sales_group_message_text = ? WHERE id = ?",
+                        (text_mid, doc_mid, text_msg, order_id),
                     )
                     conn_ids.commit()
                 finally:

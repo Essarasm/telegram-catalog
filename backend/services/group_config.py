@@ -107,6 +107,21 @@ MANAGER_CHAT_ID: int = _env_int("MANAGER_CHAT_ID", 0)
 # Once verified, swap to or add the father's user ID, e.g. "-1003,652...".
 OWNER_DAILY_BRIEF_TARGETS: list[int] = _env_int_list("OWNER_DAILY_BRIEF_TARGETS")
 
+# 1C handlers — tagged in every Sotuv-group order message so they don't
+# forget to enter the order into 1C and reply with the confirmed Excel.
+# Pairs of (telegram_id, display_name). Defaults to Alisher + Ibrat.
+# Override via env: ONEC_HANDLER_IDS="123,456" (display names stay as fallback).
+ONEC_HANDLERS: list[tuple[int, str]] = [
+    (1914160011, "Alisher"),
+    (7650055227, "Ibrat"),
+]
+_onec_override = _env_int_list("ONEC_HANDLER_IDS")
+if _onec_override:
+    # Preserve display names where ID matches the default pair, else label
+    # unknown IDs as "1C". Restart required to pick up env changes.
+    _default_map = {tg_id: name for tg_id, name in ONEC_HANDLERS}
+    ONEC_HANDLERS = [(tg_id, _default_map.get(tg_id, "1C")) for tg_id in _onec_override]
+
 
 def legal_transfer_target() -> int:
     """Resolve the chat ID for legal-transfer notifications, falling back
