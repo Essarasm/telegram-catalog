@@ -158,6 +158,54 @@ async def _send_eod_check(bot, chat_id: int) -> None:
         logger.error(f"EOD check failed: {e}")
 
 
+async def _send_javobsiz_reminder(bot, chat_id: int) -> None:
+    """Twice-daily reminder (10:00 + 17:30 Tashkent) listing wishlist orders
+    that still haven't received a 1C-confirmation reply. Silent when nothing
+    is pending so the Sotuv group isn't spammed. Skips Sundays and holidays
+    to match the other operational reminders.
+
+    Prepends a 1C-handler mention (Alisher + Ibrat by default — see
+    `group_config.ONEC_HANDLERS`) so they get a phone notification.
+    """
+    from backend.services.daily_uploads import tashkent_today
+
+    today = tashkent_today()
+    ok, reason = _should_send(today)
+    if not ok:
+        logger.info(f"/javobsiz reminder skipped: {reason}")
+        return
+
+    try:
+        from bot.handlers.orders import build_javobsiz_report
+        from backend.services.group_config import ONEC_HANDLERS
+
+        report = build_javobsiz_report(days=7)
+        if report["pending_count"] == 0:
+            logger.info("/javobsiz reminder: nothing pending, silent")
+            return
+
+        ping = ""
+        if ONEC_HANDLERS:
+            mentions = ", ".join(
+                f"<a href=\"tg://user?id={tg_id}\">{name}</a>"
+                for tg_id, name in ONEC_HANDLERS
+            )
+            ping = f"👀 {mentions}\n\n"
+
+        await bot.send_message(
+            chat_id,
+            ping + report["text"],
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        logger.info(
+            f"/javobsiz reminder sent to {chat_id} — "
+            f"{report['pending_count']} pending"
+        )
+    except Exception as e:
+        logger.error(f"/javobsiz reminder failed: {e}")
+
+
 async def run_daily_reminder(bot, chat_id: int, hour: int, minute: int, sender) -> None:
     """Forever loop that sleeps until the next trigger and calls ``sender``."""
     while True:
@@ -763,6 +811,16 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 6, 0, _run_daily_client_sync),
             name="daily-client-sync",
+        ),
+        # 1C-reply reminders → Sotuv (Order) group. 10:00 morning + 17:30
+        # evening. Silent when no pending orders. Tags Alisher + Ibrat.
+        asyncio.create_task(
+            run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 10, 0, _send_javobsiz_reminder),
+            name="javobsiz-morning",
+        ),
+        asyncio.create_task(
+            run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 17, 30, _send_javobsiz_reminder),
+            name="javobsiz-evening",
         ),
         # Weekly unlinked users → Admin group (admin concern, not daily ops).
         asyncio.create_task(

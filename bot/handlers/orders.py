@@ -336,29 +336,13 @@ def _format_age(created_at_text: str) -> str:
         return "—"
 
 
-@router.message(Command("javobsiz"))
-async def cmd_javobsiz(message: Message):
-    """List Sotuv orders that haven't yet received a 1C-confirmation reply.
-
-    Designed to live in ORDER_GROUP_CHAT_ID (Sotuv) so Alisher/Ibrat see
-    the pending list themselves. Also allowed in admin DM for private
-    spot-checks. Optional integer arg overrides the 7-day window (1..90).
+def build_javobsiz_report(days: int = 7) -> dict:
+    """Build the pending-orders report. Returns
+    {text, pending_count, replied_today}. Shared between the on-demand
+    /javobsiz command and the scheduled 10:00 / 17:30 reminders.
+    `days` clamped to 1..90.
     """
-    if not _is_sotuv_admin(message):
-        return
-    cid = message.chat.id if hasattr(message, 'chat') else None
-    # Allow only Sotuv (intended) + DM of admin (for testing). Silent in
-    # other chats so the command doesn't leak to wrong audiences.
-    if cid != ORDER_GROUP_CHAT_ID and cid is not None and cid < 0:
-        return
-
-    parts = (message.text or "").strip().split(maxsplit=1)
-    try:
-        days = int(parts[1]) if len(parts) > 1 else 7
-    except ValueError:
-        days = 7
     days = max(1, min(days, 90))
-
     conn = get_db()
     try:
         pending = conn.execute(
@@ -382,12 +366,14 @@ async def cmd_javobsiz(message: Message):
         conn.close()
 
     if not pending:
-        await message.reply(
-            f"✅ Javob kutilayotgan buyurtma yo'q (so'nggi {days} kun).\n"
-            f"Bugun tasdiqlandi: <b>{replied_today}</b>",
-            parse_mode="HTML",
-        )
-        return
+        return {
+            "text": (
+                f"✅ Javob kutilayotgan buyurtma yo'q (so'nggi {days} kun).\n"
+                f"Bugun tasdiqlandi: <b>{replied_today}</b>"
+            ),
+            "pending_count": 0,
+            "replied_today": replied_today,
+        }
 
     # Telegram supergroup deep-link convention: chat -100XXXXXX → t.me/c/XXXXXX/<mid>
     chat_abs = str(abs(ORDER_GROUP_CHAT_ID))
@@ -417,8 +403,39 @@ async def cmd_javobsiz(message: Message):
         f"Bugun tasdiqlandi: <b>{replied_today}</b>"
     )
 
+    return {
+        "text": "\n".join(lines),
+        "pending_count": len(pending),
+        "replied_today": replied_today,
+    }
+
+
+@router.message(Command("javobsiz"))
+async def cmd_javobsiz(message: Message):
+    """List Sotuv orders that haven't yet received a 1C-confirmation reply.
+
+    Designed to live in ORDER_GROUP_CHAT_ID (Sotuv) so Alisher/Ibrat see
+    the pending list themselves. Also allowed in admin DM for private
+    spot-checks. Optional integer arg overrides the 7-day window (1..90).
+    Auto-fires twice a day too — see bot.reminders._send_javobsiz_reminder.
+    """
+    if not _is_sotuv_admin(message):
+        return
+    cid = message.chat.id if hasattr(message, 'chat') else None
+    # Allow only Sotuv (intended) + DM of admin (for testing). Silent in
+    # other chats so the command doesn't leak to wrong audiences.
+    if cid != ORDER_GROUP_CHAT_ID and cid is not None and cid < 0:
+        return
+
+    parts = (message.text or "").strip().split(maxsplit=1)
+    try:
+        days = int(parts[1]) if len(parts) > 1 else 7
+    except ValueError:
+        days = 7
+
+    report = build_javobsiz_report(days=days)
     await message.reply(
-        "\n".join(lines),
+        report["text"],
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
