@@ -83,6 +83,10 @@ def _fmt_uzs(n) -> str:
     return f"{round(float(n or 0)):,}".replace(",", " ") + " so'm"
 
 
+def _fmt_usd(n) -> str:
+    return f"{float(n or 0):,.2f} $"
+
+
 def _fmt_pct(p) -> str:
     val = float(p or 0)
     if val == int(val):
@@ -308,8 +312,8 @@ async def pick_client(cb: CallbackQuery, state: FSMContext):
     )
     await state.set_state(BankTransferFlow.gross_uzs)
     debt_line = (
-        f"📊 Qarz: <b>{_fmt_uzs(debt['uzs'])}</b>"
-        if debt["uzs"]
+        f"📊 Qarz: <b>{_fmt_uzs(debt['uzs'])}</b> · <b>{_fmt_usd(debt['usd'])}</b>"
+        if (debt["uzs"] or debt["usd"])
         else "✅ Qarz yo'q"
     )
     await cb.message.answer(
