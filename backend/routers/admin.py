@@ -1241,7 +1241,12 @@ def client_history(
     client_name: str,
     admin_key: str = Query(...),
 ):
-    """Per-client balance history — 15-month chart data."""
+    """Per-client balance history — monthly bars, with USD-equivalent merge.
+
+    Returns native UZS and USD legs (back-compat for any other caller) plus a
+    pre-merged `history_usd_eq` series that converts UZS via the month's
+    average daily_fx_rates (FX_FALLBACK 12,000 when no rate covers the month).
+    """
     _check_admin(admin_key)
     conn = get_db()
 
@@ -1255,17 +1260,20 @@ def client_history(
         ORDER BY currency, period_start ASC
     """, (client_name,)).fetchall()
 
-    conn.close()
-
     if not rows:
-        return {"ok": True, "client_name": client_name, "history": {}}
+        conn.close()
+        return {
+            "ok": True,
+            "client_name": client_name,
+            "history": {},
+            "history_usd_eq": [],
+        }
 
-    history = {}
+    history: dict = {}
+    months: set = set()
     for r in rows:
         cur = r["currency"]
-        if cur not in history:
-            history[cur] = []
-        history[cur].append({
+        history.setdefault(cur, []).append({
             "period": r["period_start"],
             "period_end": r["period_end"],
             "period_debit": round(r["period_debit"] or 0, 2),
@@ -1274,8 +1282,55 @@ def client_history(
             "closing_credit": round(r["closing_credit"] or 0, 2),
             "balance": round((r["closing_debit"] or 0) - (r["closing_credit"] or 0), 2),
         })
+        months.add(r["period_start"])
 
-    return {"ok": True, "client_name": client_name, "history": history}
+    # Per-month average FX for the UZS leg
+    fx_by_month: dict = {}
+    if months:
+        ms = min(months)
+        fx_rows = conn.execute(
+            """SELECT strftime('%Y-%m-01', rate_date) AS month, AVG(rate) AS r
+                 FROM daily_fx_rates
+                WHERE currency_pair = 'USD_UZS'
+                  AND rate_date >= ?
+                GROUP BY month""",
+            (ms,),
+        ).fetchall()
+        for row in fx_rows:
+            fx_by_month[row["month"]] = float(row["r"] or FX_FALLBACK)
+
+    def _fx_for(month: str) -> float:
+        return fx_by_month.get(month, FX_FALLBACK)
+
+    # Merge UZS + USD per period into USD-eq
+    uzs_by_period = {p["period"]: p for p in history.get("UZS", [])}
+    usd_by_period = {p["period"]: p for p in history.get("USD", [])}
+    all_periods = sorted(set(uzs_by_period) | set(usd_by_period))
+
+    history_usd_eq = []
+    for period in all_periods:
+        u = uzs_by_period.get(period, {})
+        d = usd_by_period.get(period, {})
+        fx = _fx_for(period) or FX_FALLBACK
+        debit_usd_eq = (d.get("period_debit") or 0) + (u.get("period_debit") or 0) / fx
+        credit_usd_eq = (d.get("period_credit") or 0) + (u.get("period_credit") or 0) / fx
+        balance_usd_eq = (d.get("balance") or 0) + (u.get("balance") or 0) / fx
+        history_usd_eq.append({
+            "period": period,
+            "period_end": u.get("period_end") or d.get("period_end"),
+            "period_debit": round(debit_usd_eq, 2),
+            "period_credit": round(credit_usd_eq, 2),
+            "balance": round(balance_usd_eq, 2),
+            "fx_rate": round(fx, 2),
+        })
+
+    conn.close()
+    return {
+        "ok": True,
+        "client_name": client_name,
+        "history": history,
+        "history_usd_eq": history_usd_eq,
+    }
 
 
 # ── Stock Status (enhanced) ──────────────────────────────────────

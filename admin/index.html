@@ -216,13 +216,6 @@
             overflow: hidden;
         }
 
-        /* Business Overview is USD-equivalent only — hide the nav UZS/USD toggle there.
-           Tabs that still use dual-currency endpoints (Client Portfolio drill-down)
-           keep the toggle visible. */
-        body.tab-overview-active .nav-footer .currency-toggle {
-            display: none;
-        }
-
         .currency-btn {
             flex: 1;
             padding: 8px 12px;
@@ -799,7 +792,7 @@
         }
     </style>
 </head>
-<body class="tab-overview-active">
+<body>
     <!-- Auth Screen -->
     <div id="authScreen" class="auth-screen">
         <div class="auth-box">
@@ -840,10 +833,6 @@
                 <div class="nav-tab" data-tab="collections" onclick="switchTab('collections')">Collections</div>
             </div>
             <div class="nav-footer">
-                <div class="currency-toggle">
-                    <button class="currency-btn active" data-currency="UZS" onclick="setCurrency('UZS')">UZS</button>
-                    <button class="currency-btn" data-currency="USD" onclick="setCurrency('USD')">USD</button>
-                </div>
                 <button class="logout-btn" onclick="logout()">Logout</button>
             </div>
         </div>
@@ -1957,7 +1946,6 @@
 
     <script>
         // ==================== GLOBALS ====================
-        let CURRENCY = 'UZS';
         let ADMIN_KEY = '';
         let DASHBOARD_ROLE = 'admin';   // 'admin' | 'agent' | 'cashier' | 'worker'
         let ALLOWED_TABS = null;        // null = all (admin); array = restricted set
@@ -1998,10 +1986,6 @@
             const date = new Date(p + 'T00:00:00Z');
             const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
             return months[date.getUTCMonth()] + ' ' + date.getUTCFullYear();
-        }
-
-        function getCurrencyLabel() {
-            return CURRENCY === 'UZS' ? 'UZS' : 'USD';
         }
 
         // ==================== AUTH ====================
@@ -2174,9 +2158,6 @@
             document.querySelectorAll('.nav-tab').forEach(el => el.classList.remove('active'));
             document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
 
-            // USD-equivalent-only tabs hide the nav UZS/USD toggle (Business Overview).
-            document.body.classList.toggle('tab-overview-active', tabName === 'overview');
-
             const titles = {
                 overview: 'Business Overview',
                 clients: 'Client Portfolio',
@@ -2213,14 +2194,6 @@
                     collectionsMap.invalidateSize();
                 }
             }, 100);
-        }
-
-        // ==================== CURRENCY ====================
-        function setCurrency(curr) {
-            CURRENCY = curr;
-            document.querySelectorAll('.currency-btn').forEach(btn => btn.classList.remove('active'));
-            document.querySelector(`[data-currency="${curr}"]`).classList.add('active');
-            loadAllData();
         }
 
         // ==================== DATA LOADING ====================
@@ -2261,7 +2234,7 @@
 
         async function loadOverviewData() {
             cachedWeekly = await apiCall('weekly-recap?weeks=13');
-            cachedReceivables = await apiCall(`receivables?currency=${CURRENCY}`);
+            cachedReceivables = await apiCall('receivables');
 
             const weeks = (cachedWeekly && cachedWeekly.weeks) || [];
 
@@ -2743,7 +2716,7 @@
                     const asOf = receivables.as_of || '—';
                     const numClients = receivables.total_clients_with_debt || 0;
                     let usdNote = '';
-                    if (CURRENCY === 'UZS' && (receivables.usd_total || 0) > 0) {
+                    if ((receivables.usd_total || 0) > 0) {
                         usdNote = ` &nbsp;·&nbsp; <span style="color:#94a3b8;">+$${fmt(receivables.usd_total)} USD owed (no aging from 1C)</span>`;
                     }
                     meta.innerHTML = `${numClients} clients with outstanding debt &nbsp;·&nbsp; as of ${asOf}${usdNote}`;
@@ -2846,9 +2819,9 @@
 
         async function showClientHistory(clientName) {
             const data = await apiCall(`client/${encodeURIComponent(clientName)}/history`);
-            const histData = data.history[CURRENCY];
+            const histData = data.history_usd_eq || [];
 
-            if (!histData || !histData.length) return;
+            if (!histData.length) return;
 
             const labels = histData.map(p => periodLabel(p.period));
             const debits = histData.map(p => p.period_debit || 0);
@@ -2864,21 +2837,21 @@
                     labels,
                     datasets: [
                         {
-                            label: 'Shipped',
+                            label: 'Shipped (USD-eq)',
                             data: debits,
                             backgroundColor: '#6366f1',
                             borderRadius: 4,
                             yAxisID: 'y'
                         },
                         {
-                            label: 'Paid',
+                            label: 'Paid (USD-eq)',
                             data: credits,
                             backgroundColor: '#22c55e',
                             borderRadius: 4,
                             yAxisID: 'y'
                         },
                         {
-                            label: 'Balance',
+                            label: 'Balance (USD-eq)',
                             data: balances,
                             borderColor: '#f59e0b',
                             backgroundColor: 'rgba(245, 158, 11, 0.05)',
