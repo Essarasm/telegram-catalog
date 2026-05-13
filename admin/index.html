@@ -964,6 +964,10 @@
                                             <th>Client</th>
                                             <th>Last deal</th>
                                             <th>Days since</th>
+                                            <th>Last payment</th>
+                                            <th style="text-align: right;">Paid UZS</th>
+                                            <th style="text-align: right;">Paid USD</th>
+                                            <th>Days since</th>
                                             <th style="text-align: right;">UZS</th>
                                             <th style="text-align: right;">USD</th>
                                         </tr>
@@ -2286,7 +2290,7 @@
                     : `as of ${asOf} · qarzdorlar yo'q`;
             }
             if (!items.length) {
-                body.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
+                body.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
                 if (foot) foot.innerHTML = '';
                 return;
             }
@@ -2302,13 +2306,42 @@
                 } else {
                     daysCell = `<span>${days}</span>`;
                 }
-                const uzs = it.debt_uzs > 0 ? fmt(Math.round(it.debt_uzs)) : '—';
-                const usd = it.debt_usd > 0 ? `$${fmt(Math.round(it.debt_usd))}` : '—';
+                const payDays = it.days_since_last_payment;
+                let payCell;
+                if (!it.last_payment_date) {
+                    payCell = '<span style="color:#8b8fa3;">—</span>';
+                } else if (payDays !== null && payDays !== undefined && payDays <= 7) {
+                    payCell = `<span style="color:#22c55e; font-weight:600;">${escapeHtml(it.last_payment_date)}</span>`;
+                } else if (payDays !== null && payDays !== undefined && payDays >= 90) {
+                    payCell = `<span style="color:#ef4444;">${escapeHtml(it.last_payment_date)}</span>`;
+                } else {
+                    payCell = escapeHtml(it.last_payment_date);
+                }
+                let payDaysCell;
+                if (payDays === null || payDays === undefined) {
+                    payDaysCell = '<span style="color:#8b8fa3;">—</span>';
+                } else if (payDays <= 7) {
+                    payDaysCell = `<span style="color:#22c55e; font-weight:600;">${payDays}</span>`;
+                } else if (payDays >= 90) {
+                    payDaysCell = `<span style="color:#ef4444; font-weight:600;">${payDays}</span>`;
+                } else if (payDays >= 30) {
+                    payDaysCell = `<span style="color:#f59e0b;">${payDays}</span>`;
+                } else {
+                    payDaysCell = `<span>${payDays}</span>`;
+                }
+                const paidUzs = it.last_payment_uzs > 0 ? fmtFull(it.last_payment_uzs) : '—';
+                const paidUsd = it.last_payment_usd > 0 ? `$${fmtFull(it.last_payment_usd)}` : '—';
+                const uzs = it.debt_uzs > 0 ? fmtFull(it.debt_uzs) : '—';
+                const usd = it.debt_usd > 0 ? `$${fmtFull(it.debt_usd)}` : '—';
                 return `<tr>
                     <td class="table-number">${it.rank}</td>
                     <td>${escapeHtml(it.client_name)}</td>
                     <td style="font-size:11px;">${escapeHtml(it.last_transaction_date || '—')}</td>
                     <td>${daysCell}</td>
+                    <td style="font-size:11px;">${payCell}</td>
+                    <td style="text-align:right;">${paidUzs}</td>
+                    <td style="text-align:right;">${paidUsd}</td>
+                    <td>${payDaysCell}</td>
                     <td style="text-align:right;">${uzs}</td>
                     <td style="text-align:right;">${usd}</td>
                 </tr>`;
@@ -2316,9 +2349,9 @@
             if (foot) {
                 foot.innerHTML = `<tr style="background: rgba(255,255,255,0.03);">
                     <td></td>
-                    <td colspan="3">JAMI · ${data.count} ta</td>
-                    <td style="text-align:right;">${fmt(Math.round(data.total_uzs))}</td>
-                    <td style="text-align:right;">$${fmt(Math.round(data.total_usd))}</td>
+                    <td colspan="7">JAMI · ${data.count} ta</td>
+                    <td style="text-align:right;">${fmtFull(data.total_uzs)}</td>
+                    <td style="text-align:right;">$${fmtFull(data.total_usd)}</td>
                 </tr>`;
             }
         }

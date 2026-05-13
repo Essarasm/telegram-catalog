@@ -1109,16 +1109,37 @@ def debtors_list(admin_key: str = Query(...)):
         }
 
     fxrate = _latest_fxrate(conn)
-    excl_clause = sql_exclusion_clause("client_name_1c")
+    excl_clause = sql_exclusion_clause("cd.client_name_1c")
 
     rows = conn.execute(
-        f"""SELECT client_name_1c, client_id, debt_uzs, debt_usd,
-                   last_transaction_date, last_transaction_no,
-                   aging_0_30, aging_31_60, aging_61_90,
-                   aging_91_120, aging_120_plus
-              FROM client_debts
-             WHERE report_date = ?
-               AND (debt_uzs > 0 OR debt_usd > 0)
+        f"""WITH max_pay AS (
+                SELECT client_name_1c, MAX(doc_date) AS max_date
+                  FROM client_payments
+                 GROUP BY client_name_1c
+            ),
+            last_pay AS (
+                SELECT cp.client_name_1c,
+                       cp.doc_date,
+                       COALESCE(SUM(CASE WHEN cp.currency = 'UZS'
+                                         THEN cp.amount_local ELSE 0 END), 0) AS last_pay_uzs,
+                       COALESCE(SUM(CASE WHEN cp.currency = 'USD'
+                                         THEN cp.amount_currency ELSE 0 END), 0) AS last_pay_usd
+                  FROM client_payments cp
+                  JOIN max_pay mp ON mp.client_name_1c = cp.client_name_1c
+                                 AND mp.max_date = cp.doc_date
+                 GROUP BY cp.client_name_1c, cp.doc_date
+            )
+            SELECT cd.client_name_1c, cd.client_id, cd.debt_uzs, cd.debt_usd,
+                   cd.last_transaction_date, cd.last_transaction_no,
+                   cd.aging_0_30, cd.aging_31_60, cd.aging_61_90,
+                   cd.aging_91_120, cd.aging_120_plus,
+                   lp.doc_date AS last_payment_date,
+                   lp.last_pay_uzs AS last_payment_uzs,
+                   lp.last_pay_usd AS last_payment_usd
+              FROM client_debts cd
+              LEFT JOIN last_pay lp ON lp.client_name_1c = cd.client_name_1c
+             WHERE cd.report_date = ?
+               AND (cd.debt_uzs > 0 OR cd.debt_usd > 0)
                AND {excl_clause}""",
         (report_date, *sql_exclusion_params()),
     ).fetchall()
@@ -1152,6 +1173,10 @@ def debtors_list(admin_key: str = Query(...)):
             "last_transaction_date": r["last_transaction_date"],
             "last_transaction_no": r["last_transaction_no"],
             "days_since_last_tx": _days_since(r["last_transaction_date"]),
+            "last_payment_date": r["last_payment_date"],
+            "days_since_last_payment": _days_since(r["last_payment_date"]),
+            "last_payment_uzs": round(float(r["last_payment_uzs"] or 0), 2),
+            "last_payment_usd": round(float(r["last_payment_usd"] or 0), 2),
             "aging_uzs": {
                 "0_30": round(r["aging_0_30"] or 0, 2),
                 "31_60": round(r["aging_31_60"] or 0, 2),
