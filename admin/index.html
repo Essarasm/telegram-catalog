@@ -1096,6 +1096,7 @@
                                             <th>Days since</th>
                                             <th style="text-align: right;">UZS</th>
                                             <th style="text-align: right;">USD</th>
+                                            <th style="min-width: 130px;">Telefon</th>
                                             <th style="min-width: 170px;">Qayta qo'ng'iroq</th>
                                         </tr>
                                     </thead>
@@ -2297,6 +2298,34 @@
         // Uzbek Latin weekday names — getDay() is 0=Sunday … 6=Saturday.
         const UZ_WEEKDAYS = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
 
+        // Phone helpers — phone_normalized is the last 9 digits of an
+        // Uzbek number (no country code). Prefix +998 for tel: + display.
+        function phoneTelHref(digits) {
+            const d = (digits || '').replace(/\D/g, '');
+            if (!d) return '';
+            return d.length === 9 ? `+998${d}` : `+${d}`;
+        }
+        function phoneDisplay(digits) {
+            const d = (digits || '').replace(/\D/g, '');
+            if (!d) return '';
+            // 9-digit Uzbek local — render as 'XX XXX XX XX'
+            if (d.length === 9) {
+                return `${d.slice(0, 2)} ${d.slice(2, 5)} ${d.slice(5, 7)} ${d.slice(7)}`;
+            }
+            return d;
+        }
+        function buildPhonesCell(phones) {
+            if (!phones || !phones.length) {
+                return '<span style="color:#8b8fa3;">—</span>';
+            }
+            return phones.map(p => {
+                const href = phoneTelHref(p);
+                const display = phoneDisplay(p);
+                if (!href) return '';
+                return `<a href="tel:${href}" style="color:#7c9eff; text-decoration:none; font-variant-numeric:tabular-nums; white-space:nowrap; font-size:11px;">${display}</a>`;
+            }).filter(Boolean).join('<br>');
+        }
+
         function uzWeekdayFor(dateStr) {
             if (!dateStr) return '';
             // Construct in local time intentionally — date input is calendar-day, no tz.
@@ -2388,7 +2417,7 @@
                     : `as of ${asOf} · qarzdorlar yo'q`;
             }
             if (!items.length) {
-                body.innerHTML = `<tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
+                body.innerHTML = `<tr><td colspan="12" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
                 if (foot) foot.innerHTML = '';
                 return;
             }
@@ -2446,6 +2475,7 @@
                     <td>${payDaysCell}</td>
                     <td style="text-align:right;">${uzs}</td>
                     <td style="text-align:right;">${usd}</td>
+                    <td>${buildPhonesCell(it.phones)}</td>
                     <td>${buildCallbackCell(it)}</td>
                 </tr>`;
             }).join('');
@@ -2455,6 +2485,7 @@
                     <td colspan="7">JAMI · ${data.count} ta</td>
                     <td style="text-align:right;">${fmtFull(data.total_uzs)}</td>
                     <td style="text-align:right;">$${fmtFull(data.total_usd)}</td>
+                    <td></td>
                     <td></td>
                 </tr>`;
             }

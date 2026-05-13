@@ -587,6 +587,69 @@ class TestDebtorsList:
         r = c.get("/api/admin/debtors-list", params={"admin_key": "nope"})
         assert r.status_code == 401
 
+    def test_phones_surfaced_anchor_only(self, db):
+        # Debtor linked to allowed_clients row without sibling phones.
+        cur = db.execute(
+            "INSERT INTO allowed_clients (phone_normalized, name, client_id_1c) "
+            "VALUES ('901234567', 'Реал A', NULL)"
+        )
+        ac_id = cur.lastrowid
+        db.execute(
+            """INSERT INTO client_debts
+               (client_name_1c, client_id, debt_uzs, debt_usd,
+                last_transaction_date, last_transaction_no,
+                aging_0_30, aging_31_60, aging_61_90, aging_91_120, aging_120_plus,
+                report_date)
+               VALUES ('Реал A', ?, 10000, 0, '2026-05-01', NULL,
+                       0, 0, 0, 0, 0, '2026-05-05')""",
+            (ac_id,),
+        )
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        item = next(it for it in body["items"] if it["client_name"] == "Реал A")
+        assert item["phones"] == ["901234567"]
+
+    def test_phones_surfaced_sibling_group(self, db):
+        # Same client_id_1c shared across 3 phone rows; client_debts links to one.
+        cid_1c = "1C-CLIENT-42"
+        ids = []
+        for phone in ("901111111", "902222222", "903333333"):
+            cur = db.execute(
+                "INSERT INTO allowed_clients (phone_normalized, name, client_id_1c) "
+                "VALUES (?, 'Реал A', ?)", (phone, cid_1c),
+            )
+            ids.append(cur.lastrowid)
+        # Link debt to the middle row — siblings should still appear.
+        db.execute(
+            """INSERT INTO client_debts
+               (client_name_1c, client_id, debt_uzs, debt_usd,
+                last_transaction_date, last_transaction_no,
+                aging_0_30, aging_31_60, aging_61_90, aging_91_120, aging_120_plus,
+                report_date)
+               VALUES ('Реал A', ?, 10000, 0, '2026-05-01', NULL,
+                       0, 0, 0, 0, 0, '2026-05-05')""",
+            (ids[1],),
+        )
+        db.commit()
+
+        c = _client(db)
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        item = next(it for it in body["items"] if it["client_name"] == "Реал A")
+        assert sorted(item["phones"]) == ["901111111", "902222222", "903333333"]
+
+    def test_phones_empty_when_unmatched(self, db):
+        _seed_debt(db, "Orphan", debt_uzs=10_000, last_tx="2026-05-01")
+        db.commit()
+        c = _client(db)
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        item = next(it for it in body["items"] if it["client_name"] == "Orphan")
+        assert item["phones"] == []
+
 
 class TestDebtorsCallbacks:
     def test_post_persists_and_surfaces_in_list(self, db):

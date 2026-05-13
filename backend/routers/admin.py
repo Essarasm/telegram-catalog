@@ -1149,10 +1149,22 @@ def debtors_list(admin_key: str = Query(...)):
                    lp.last_pay_uzs AS last_payment_uzs,
                    lp.last_pay_usd AS last_payment_usd,
                    lcb.callback_date, lcb.set_by_name AS callback_set_by,
-                   lcb.set_at AS callback_set_at, lcb.note AS callback_note
+                   lcb.set_at AS callback_set_at, lcb.note AS callback_note,
+                   ac.phone_normalized AS anchor_phone,
+                   sib.phones AS sibling_phones
               FROM client_debts cd
               LEFT JOIN last_pay lp ON lp.client_name_1c = cd.client_name_1c
               LEFT JOIN last_cb lcb ON lcb.client_name_1c = cd.client_name_1c
+              LEFT JOIN allowed_clients ac ON ac.id = cd.client_id
+              LEFT JOIN (
+                  SELECT client_id_1c,
+                         GROUP_CONCAT(DISTINCT phone_normalized) AS phones
+                    FROM allowed_clients
+                   WHERE phone_normalized IS NOT NULL
+                     AND phone_normalized != ''
+                     AND client_id_1c IS NOT NULL
+                   GROUP BY client_id_1c
+              ) sib ON sib.client_id_1c = ac.client_id_1c
              WHERE cd.report_date = ?
                AND (cd.debt_uzs > 0 OR cd.debt_usd > 0)
                AND {excl_clause}""",
@@ -1179,6 +1191,14 @@ def debtors_list(admin_key: str = Query(...)):
         usd_eq = debt_usd + (debt_uzs / fxrate if fxrate > 0 else 0)
         total_uzs += debt_uzs
         total_usd += debt_usd
+        # Phones: sibling group via shared client_id_1c if available, else
+        # fall back to the anchor row's own phone. Keep digits-only —
+        # frontend prefixes +998 for tel: links + display formatting.
+        phones_raw = r["sibling_phones"] or r["anchor_phone"] or ""
+        phones = sorted({
+            p.strip() for p in str(phones_raw).split(",")
+            if p and p.strip()
+        }) if phones_raw else []
         items.append({
             "client_name": r["client_name_1c"],
             "client_id": r["client_id"],
@@ -1196,6 +1216,7 @@ def debtors_list(admin_key: str = Query(...)):
             "callback_set_by": r["callback_set_by"],
             "callback_set_at": r["callback_set_at"],
             "callback_note": r["callback_note"],
+            "phones": phones,
             "aging_uzs": {
                 "0_30": round(r["aging_0_30"] or 0, 2),
                 "31_60": round(r["aging_31_60"] or 0, 2),
