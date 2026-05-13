@@ -158,54 +158,6 @@ async def _send_eod_check(bot, chat_id: int) -> None:
         logger.error(f"EOD check failed: {e}")
 
 
-async def _send_javobsiz_reminder(bot, chat_id: int) -> None:
-    """Twice-daily reminder (10:00 + 17:30 Tashkent) listing wishlist orders
-    that still haven't received a 1C-confirmation reply. Silent when nothing
-    is pending so the Sotuv group isn't spammed. Skips Sundays and holidays
-    to match the other operational reminders.
-
-    Prepends a 1C-handler mention (Alisher + Ibrat by default — see
-    `group_config.ONEC_HANDLERS`) so they get a phone notification.
-    """
-    from backend.services.daily_uploads import tashkent_today
-
-    today = tashkent_today()
-    ok, reason = _should_send(today)
-    if not ok:
-        logger.info(f"/javobsiz reminder skipped: {reason}")
-        return
-
-    try:
-        from bot.handlers.orders import build_javobsiz_report
-        from backend.services.group_config import ONEC_HANDLERS
-
-        report = build_javobsiz_report(days=7)
-        if report["pending_count"] == 0:
-            logger.info("/javobsiz reminder: nothing pending, silent")
-            return
-
-        ping = ""
-        if ONEC_HANDLERS:
-            mentions = ", ".join(
-                f"<a href=\"tg://user?id={tg_id}\">{name}</a>"
-                for tg_id, name in ONEC_HANDLERS
-            )
-            ping = f"👀 {mentions}\n\n"
-
-        await bot.send_message(
-            chat_id,
-            ping + report["text"],
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-        )
-        logger.info(
-            f"/javobsiz reminder sent to {chat_id} — "
-            f"{report['pending_count']} pending"
-        )
-    except Exception as e:
-        logger.error(f"/javobsiz reminder failed: {e}")
-
-
 async def run_daily_reminder(bot, chat_id: int, hour: int, minute: int, sender) -> None:
     """Forever loop that sleeps until the next trigger and calls ``sender``."""
     while True:
@@ -668,37 +620,45 @@ async def _send_owner_morning_brief(bot, _ignored_chat_id: int) -> None:
         logger.error(f"owner_morning_brief failed: {e}", exc_info=True)
 
 
-async def _send_cashbook_summary(bot, chat_id: int) -> None:
-    """18:00 Tashkent — post the day's cashbook intake summary to the
-    cashier group. Quiet on a 0-row + 0-pending day (no chat noise)."""
+async def _send_cashbook_today_list(bot, chat_id: int) -> None:
+    """18:00 Tashkent — post today's per-client payment list to the
+    cashier group. One row per client (combined UZS + USD), sorted by
+    first-payment time. Text-only (no inline keyboard — cashiers use
+    /bugunpul on demand to edit/cancel). Quiet on a 0-row day."""
     if not chat_id:
-        # Cashier group not configured — feature stays inert by design.
         return
     today = datetime.now(TASHKENT)
     ok, reason = _should_send(today)
     if not ok:
-        logger.info(f"Cashbook summary skipped: {reason}")
+        logger.info(f"Cashbook today-list skipped: {reason}")
         return
     try:
         from backend.database import get_db
-        from backend.services.payment_intake import summarize_today_intake
-        from bot.handlers.cashier import _render_summary
+        from bot.handlers.cashier import (
+            _today_intake_rows,
+            _aggregate_today_by_client,
+            _render_today_by_client,
+        )
         conn = get_db()
         try:
-            summary = summarize_today_intake(conn)
+            date, rows = _today_intake_rows(conn)
         finally:
             conn.close()
-        if summary["total_count"] == 0 and summary["pending_count"] == 0:
-            logger.info("Cashbook summary: 0 rows + 0 pending — staying quiet")
+        if not rows:
+            logger.info("Cashbook today-list: 0 rows — staying quiet")
             return
-        await bot.send_message(chat_id, _render_summary(summary), parse_mode="HTML")
+        clients = _aggregate_today_by_client(rows)
+        await bot.send_message(
+            chat_id,
+            _render_today_by_client(date, clients),
+            parse_mode="HTML",
+        )
         logger.info(
-            f"Cashbook summary sent: count={summary['total_count']} "
-            f"uzs={summary['uzs_total']} usd={summary['usd_total']} "
-            f"pending={summary['pending_count']}"
+            f"Cashbook today-list sent: {len(clients)} clients, "
+            f"{sum(c['count'] for c in clients)} payments"
         )
     except Exception as e:
-        logger.error(f"Cashbook summary failed: {e}")
+        logger.error(f"Cashbook today-list failed: {e}")
 
 
 async def _run_payment_notif_sweeper(bot, admin_chat_id: int) -> None:
@@ -812,16 +772,6 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 6, 0, _run_daily_client_sync),
             name="daily-client-sync",
         ),
-        # 1C-reply reminders → Sotuv (Order) group. 10:00 morning + 17:30
-        # evening. Silent when no pending orders. Tags Alisher + Ibrat.
-        asyncio.create_task(
-            run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 10, 0, _send_javobsiz_reminder),
-            name="javobsiz-morning",
-        ),
-        asyncio.create_task(
-            run_daily_reminder(bot, ORDER_GROUP_CHAT_ID, 17, 30, _send_javobsiz_reminder),
-            name="javobsiz-evening",
-        ),
         # Weekly unlinked users → Admin group (admin concern, not daily ops).
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 17, 0, _send_weekly_unlinked),
@@ -874,17 +824,17 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             run_daily_reminder(bot, chat_id, 18, 0, _run_payment_notif_sweeper),
             name="daily-payment-notif-sweeper",
         ),
-        # Daily 18:00 — Cashbook intake summary into the cashier group.
-        # Mirrors /bugun output (totals, by channel, top clients, pending count).
-        # Quiet on a 0-row day except when there are unactioned pendings.
+        # Daily 18:00 — Per-client payment list into the cashier group.
+        # One row per client (combined UZS + USD), sorted by first-payment
+        # time. Text-only; quiet on a 0-row day.
         asyncio.create_task(
             run_daily_reminder(
                 bot,
                 CASHIER_GROUP_CHAT_ID,
                 18, 0,
-                _send_cashbook_summary,
+                _send_cashbook_today_list,
             ),
-            name="daily-cashbook-summary",
+            name="daily-cashbook-today-list",
         ),
         # Daily 04:30 — refresh catalog units_score (rolling 30/60d windows).
         asyncio.create_task(

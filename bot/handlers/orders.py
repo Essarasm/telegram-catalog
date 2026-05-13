@@ -338,8 +338,7 @@ def _format_age(created_at_text: str) -> str:
 
 def build_javobsiz_report(days: int = 7) -> dict:
     """Build the pending-orders report. Returns
-    {text, pending_count, replied_today}. Shared between the on-demand
-    /javobsiz command and the scheduled 10:00 / 17:30 reminders.
+    {text, pending_count, replied_today}.
     `days` clamped to 1..90.
     """
     days = max(1, min(days, 90))
@@ -417,7 +416,6 @@ async def cmd_javobsiz(message: Message):
     Designed to live in ORDER_GROUP_CHAT_ID (Sotuv) so Alisher/Ibrat see
     the pending list themselves. Also allowed in admin DM for private
     spot-checks. Optional integer arg overrides the 7-day window (1..90).
-    Auto-fires twice a day too — see bot.reminders._send_javobsiz_reminder.
     """
     if not _is_sotuv_admin(message):
         return
