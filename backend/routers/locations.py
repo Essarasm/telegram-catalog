@@ -205,6 +205,389 @@ def get_agent_heatmap(
     return {"points": points, "agents": agents, "total": len(points)}
 
 
+# ── Customer Coverage (route planning) ──────────────────────────────────────
+#
+# DIRECTIONS schedule (Mon–Sat × geography) — sales managers' weekly route.
+# Centroids are approximate (used for non-pinned client map-placement only).
+# Source: parent root `Client Master 13.05.26.xlsx` sheet `Directions`.
+
+_DIRECTIONS = [
+    # (day_key,    tuman,                   approx_lat, approx_lng)
+    ("Dushanba",   "Chelak",                40.0530, 66.3000),
+    ("Dushanba",   "Payariq tumani",        40.0260, 66.6920),
+    ("Dushanba",   "Narimon",               40.0050, 66.7100),
+    ("Dushanba",   "Motrid",                39.6720, 66.9100),
+    ("Dushanba",   "Al-Buxoriy",            39.6610, 66.8400),
+    ("Seshanba",   "Juma",                  39.6900, 66.7000),
+    ("Seshanba",   "Pastdarg'om",           39.5800, 66.7800),
+    ("Seshanba",   "Charxin",               39.5300, 66.9800),
+    ("Seshanba",   "Xazora",                39.6100, 67.0400),
+    ("Seshanba",   "Super",                 39.6500, 66.9700),
+    ("Seshanba",   "Dal lager",             39.6300, 66.8800),
+    ("Chorshanba", "Jomboy",                39.7250, 67.1400),
+    ("Chorshanba", "Bulung'ur",             39.9100, 67.2500),
+    ("Payshanba",  "Urgut",                 39.4100, 67.2400),
+    ("Payshanba",  "Toyloq",                39.6200, 66.7900),
+    ("Payshanba",  "Jartepa",               39.4500, 67.1400),
+    ("Payshanba",  "Juma bozor",            39.6900, 66.7100),
+    ("Juma",       "Ishtixon",              39.9700, 66.4900),
+    ("Juma",       "Oqdaryo",               39.8500, 66.8500),
+    ("Juma",       "Mitan shaharchasi",     39.8400, 66.8800),
+    ("Juma",       "Dahbet",                39.7600, 66.8700),
+    ("Shanba",     "Kattaqo'rg'on",         39.8990, 66.2620),
+    ("Shanba",     "Payshanba shaharchasi", 39.7800, 66.3200),
+]
+
+# Normalized tuman keyword → day. Substring-match on normalized (lower, ASCII-stripped) text.
+_NAME_MATCH_DAY = {
+    "pastdargom": "Seshanba", "pastdaron": "Seshanba", "charxin": "Seshanba",
+    "xazora": "Seshanba",     "hazora": "Seshanba",
+    "jomboy": "Chorshanba",   "jombay": "Chorshanba", "bulungur": "Chorshanba",
+    "urgut": "Payshanba",     "ugrut": "Payshanba",   "toyloq": "Payshanba",
+    "tayloq": "Payshanba",    "jartepa": "Payshanba",
+    "ishtixon": "Juma",       "ishtihon": "Juma",     "oqdaryo": "Juma",
+    "akdarya": "Juma",        "dahbet": "Juma",       "dagbet": "Juma",
+    "mitan": "Juma",
+    "kattaqorgon": "Shanba",  "kattakurgan": "Shanba", "payshanba": "Shanba",
+    "payariq": "Dushanba",    "paiariq": "Dushanba",  "chelak": "Dushanba",
+    "chalak": "Dushanba",     "narimon": "Dushanba",
+}
+
+_CITY_KEYS = ("samarqandshahri", "samarqandshahar", "samarkand")
+_OUTSIDE_TUMANS = {  # NOT on the weekly schedule
+    "nurobod": (39.7950, 66.1500),
+    "qoshrabot": (40.2000, 66.7000),
+    "qoshrabod": (40.2000, 66.7000),
+    "narpay": (39.7400, 66.0300),
+}
+
+# Proposal B bucket thresholds, monthly USD.
+_BUCKET_THRESHOLDS = [
+    ("Heavy",  4120.0),
+    ("Large",  1721.0),
+    ("Medium",  621.0),
+    ("Small",   125.0),
+    ("Micro",     0.0),
+]
+
+# Fallback FX rate (UZS per USD). Matches memory `reference_fx_rate_coverage.md` —
+# ±2% of actual across the whole coverage window. For dashboard buckets this is fine.
+_USD_FALLBACK = 12000.0
+
+# Bucketing window for Proposal B comparison (months).
+_BUCKET_WINDOW_MONTHS = 12
+
+
+def _normalize_name(s: Optional[str]) -> str:
+    if not s:
+        return ""
+    import re
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    pairs = [
+        ("а","a"),("б","b"),("в","v"),("г","g"),("д","d"),("е","e"),("ё","yo"),
+        ("ж","j"),("з","z"),("и","i"),("й","y"),("к","k"),("л","l"),("м","m"),
+        ("н","n"),("о","o"),("п","p"),("р","r"),("с","s"),("т","t"),("у","u"),
+        ("ф","f"),("х","kh"),("ц","ts"),("ч","ch"),("ш","sh"),("щ","shch"),
+        ("ъ",""),("ы","y"),("ь",""),("э","e"),("ю","yu"),("я","ya"),
+    ]
+    out = []
+    for ch in s.lower():
+        repl = next((r for c, r in pairs if ch == c), ch)
+        out.append(repl)
+    return re.sub(r"[^a-z0-9]+", "", "".join(out))
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    import math
+    R = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _hash_jitter(seed: str, scale_deg: float = 0.012) -> tuple[float, float]:
+    """Deterministic ±~1 km offset so master-inferred clients in the same tuman don't overlap."""
+    import hashlib
+    h = hashlib.md5((seed or "").encode("utf-8", errors="replace")).digest()
+    return ((h[0] - 128) / 128.0) * scale_deg, ((h[1] - 128) / 128.0) * scale_deg
+
+
+def _assign_day_pinned(lat: float, lng: float, blob: str) -> tuple[str, str]:
+    """For a GPS-pinned client: returns (day_key, matched_tuman). Name-match first, then nearest centroid."""
+    norm = _normalize_name(blob)
+    for key, day in _NAME_MATCH_DAY.items():
+        if key in norm:
+            cands = [(t, la, ln) for d, t, la, ln in _DIRECTIONS if d == day]
+            t, _, _ = min(cands, key=lambda x: _haversine_km(lat, lng, x[1], x[2])) if cands else (key, 0, 0)
+            return day, t
+    for ck in _CITY_KEYS:
+        if ck in norm:
+            return "CITY", "Samarqand shahri"
+    best = None
+    for d, t, la, ln in _DIRECTIONS:
+        dist = _haversine_km(lat, lng, la, ln)
+        if best is None or dist < best[2]:
+            best = (d, t, dist)
+    return (best[0], best[1]) if best else ("UNMAPPED", "")
+
+
+def _assign_day_master(c1c: str, tuman: str, moljal: str, viloyat: str) -> tuple[str, str, float, float]:
+    """For a non-pinned client: returns (day_key, matched_tuman, approx_lat, approx_lng) from master text."""
+    blob = " ".join(s for s in (tuman, moljal, viloyat) if s)
+    norm = _normalize_name(blob)
+    for ck in _CITY_KEYS:
+        if ck in norm:
+            lat0, lng0 = 39.6542, 66.9597
+            jit_lat, jit_lng = _hash_jitter(c1c, scale_deg=0.015)
+            return "CITY", "Samarqand shahri", lat0 + jit_lat, lng0 + jit_lng
+    for key, (lat0, lng0) in _OUTSIDE_TUMANS.items():
+        if key in norm:
+            jit_lat, jit_lng = _hash_jitter(c1c)
+            return "OUTSIDE", (tuman or key), lat0 + jit_lat, lng0 + jit_lng
+    for key, day in _NAME_MATCH_DAY.items():
+        if key in norm:
+            cands = [(t, la, ln) for d, t, la, ln in _DIRECTIONS if d == day]
+            if not cands:
+                continue
+            pref = [x for x in cands if key in _normalize_name(x[0])]
+            t, lat0, lng0 = pref[0] if pref else cands[0]
+            jit_lat, jit_lng = _hash_jitter(c1c)
+            return day, t, lat0 + jit_lat, lng0 + jit_lng
+    return "UNMAPPED", (tuman or ""), 0.0, 0.0
+
+
+def _classify_bucket(monthly_usd: float) -> str:
+    for name, threshold in _BUCKET_THRESHOLDS:
+        if monthly_usd >= threshold:
+            return name
+    return "Micro"
+
+
+@router.get("/customer-coverage")
+def get_customer_coverage(
+    admin_key: str = Query(...),
+    since: Optional[str] = Query("2026-01-01", description="ISO date — trade-active cutoff"),
+    bucket: Optional[str] = Query(None, description="Heavy/Large/Medium/Small/Micro — filter to one bucket"),
+    day: Optional[str] = Query(None, description="Dushanba..Shanba or CITY/OUTSIDE — filter to one day"),
+    source: Optional[str] = Query(None, description="pinned/master — filter to one source"),
+):
+    """Return every trade-active client with: precise GPS pin OR master-inferred approximate location.
+
+    For each client returns: lat/lng, bucket (Proposal B thresholds on rolling 12-month USD-eq trade),
+    day-of-week assignment based on the Directions schedule, location source flag, last trade date.
+
+    Designed for the admin Customer Coverage tab. Read-only; ~500 clients, ~200ms warm.
+    """
+    auth = resolve_auth(admin_key)
+    if not auth or auth["role"] not in ("admin", "agent"):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    # Defensive: when this function is called outside FastAPI dependency injection
+    # (e.g., test harness), the Query(None) defaults arrive as fastapi.params.Query
+    # objects rather than None. Normalize so the optional-filter branches behave.
+    if not isinstance(bucket, str): bucket = None
+    if not isinstance(day, str): day = None
+    if not isinstance(source, str): source = None
+    if not isinstance(since, str): since = "2026-01-01"
+    if len(since) < 10:
+        raise HTTPException(status_code=400, detail="since must be ISO YYYY-MM-DD")
+
+    conn = get_db()
+
+    # 1) Universe of trade-active clients + last trade date
+    rows = conn.execute(
+        """
+        SELECT client_name_1c AS c1c, MAX(doc_date) AS last_date, 'realizatsiya' AS kind
+        FROM real_orders WHERE doc_date >= ? AND client_name_1c IS NOT NULL
+        GROUP BY client_name_1c
+        UNION ALL
+        SELECT client_name_1c, MAX(doc_date), 'kassa'
+        FROM client_payments WHERE doc_date >= ? AND client_name_1c IS NOT NULL
+        GROUP BY client_name_1c
+        """,
+        (since, since),
+    ).fetchall()
+    active_last: dict[str, tuple[str, str]] = {}
+    for r in rows:
+        c1c = r["c1c"] if "c1c" in r.keys() else r[0]
+        d = r[1]; kind = r[2]
+        if c1c is None:
+            continue
+        if c1c not in active_last or (d and d > active_last[c1c][0]):
+            active_last[c1c] = (d, kind)
+
+    if not active_last:
+        conn.close()
+        return {"clients": [], "totals": {"universe": 0, "pinned": 0, "master": 0, "unmapped": 0}, "tumans": []}
+
+    # 2) Compute USD-eq monthly volume per 1C name (rolling _BUCKET_WINDOW_MONTHS)
+    from datetime import datetime, timedelta
+    bucket_since = (datetime.fromisoformat(since[:10]) - timedelta(days=30 * _BUCKET_WINDOW_MONTHS)).date().isoformat()
+    bucket_rows = conn.execute(
+        """
+        SELECT client_name_1c AS c1c,
+               SUM(CASE WHEN UPPER(COALESCE(currency,'UZS'))='USD' THEN COALESCE(total_sum_currency, 0)
+                        ELSE COALESCE(total_sum_currency, 0) / ?
+                   END) AS total_usd
+        FROM real_orders
+        WHERE doc_date >= ? AND client_name_1c IS NOT NULL
+        GROUP BY client_name_1c
+        """,
+        (_USD_FALLBACK, bucket_since),
+    ).fetchall()
+    usd_by_1c: dict[str, float] = {}
+    for r in bucket_rows:
+        c1c = r["c1c"] if "c1c" in r.keys() else r[0]
+        if c1c is None:
+            continue
+        usd_by_1c[c1c] = float(r[1] or 0) / max(_BUCKET_WINDOW_MONTHS, 1)
+
+    # 3) Pull allowed_clients rows for active 1Cs
+    placeholders = ",".join(["?"] * len(active_last))
+    ac_rows = conn.execute(
+        f"""
+        SELECT ac.id, ac.client_id_1c, ac.name, ac.company_name, ac.phone_normalized,
+               ac.gps_latitude, ac.gps_longitude, ac.gps_address, ac.gps_region, ac.gps_district,
+               ac.gps_set_by_role, ac.gps_set_at, ac.gps_set_by_name,
+               ac.viloyat, ac.tuman, ac.moljal
+        FROM allowed_clients ac
+        WHERE ac.client_id_1c IN ({placeholders})
+          AND COALESCE(ac.status, 'active') = 'active'
+        """,
+        list(active_last.keys()),
+    ).fetchall()
+    by_1c: dict[str, list] = {}
+    for r in ac_rows:
+        c1c = r["client_id_1c"]
+        by_1c.setdefault(c1c, []).append(r)
+
+    conn.close()
+
+    # 4) Pick representative + assign location/day/bucket
+    clients = []
+    counts = {"pinned": 0, "master": 0, "unmapped": 0}
+    tuman_agg: dict[str, dict] = {}
+
+    for c1c, (last_date, last_kind) in active_last.items():
+        rows_for_1c = by_1c.get(c1c, [])
+        # Prefer a row that has a pin; fall back to first row
+        best = None
+        for r in rows_for_1c:
+            has_pin = r["gps_latitude"] is not None and r["gps_longitude"] is not None and (r["gps_set_by_role"] or "") in ("agent", "driver")
+            if has_pin and (best is None or _is_newer(r, best)):
+                best = r
+        if best is None and rows_for_1c:
+            best = rows_for_1c[0]
+
+        monthly_usd = usd_by_1c.get(c1c, 0.0)
+        bkt = _classify_bucket(monthly_usd)
+
+        if best is None:
+            # 1C name exists in trade tables but no allowed_clients row at all
+            location_source = "unmapped"
+            day_key = "UNMAPPED"
+            matched_tuman = ""
+            lat = 0.0; lng = 0.0
+            name = ""; phone = None
+            address = None; gps_district = None
+            master_v = master_t = master_m = ""
+        else:
+            has_pin = best["gps_latitude"] is not None and best["gps_longitude"] is not None and (best["gps_set_by_role"] or "") in ("agent", "driver")
+            master_v = (best["viloyat"] or "").strip() if isinstance(best["viloyat"], str) else ""
+            master_t = (best["tuman"] or "").strip() if isinstance(best["tuman"], str) else ""
+            master_m = (best["moljal"] or "").strip() if isinstance(best["moljal"], str) else ""
+
+            if has_pin:
+                location_source = "pinned"
+                lat = float(best["gps_latitude"]); lng = float(best["gps_longitude"])
+                blob = " ".join(filter(None, [best["gps_district"], best["gps_address"], best["gps_region"]]))
+                day_key, matched_tuman = _assign_day_pinned(lat, lng, blob)
+            elif master_t:
+                location_source = "master"
+                day_key, matched_tuman, lat, lng = _assign_day_master(c1c, master_t, master_m, master_v)
+            else:
+                location_source = "unmapped"
+                day_key = "UNMAPPED"
+                matched_tuman = ""
+                lat = 0.0; lng = 0.0
+            name = best["name"] or ""
+            phone = best["phone_normalized"]
+            address = best["gps_address"]
+            gps_district = best["gps_district"]
+
+        counts[location_source] += 1
+
+        # Optional filters
+        if bucket and bkt != bucket: continue
+        if day and day_key != day: continue
+        if source and location_source != source: continue
+
+        # Skip unmapped from the map response (but their count is preserved in `counts`)
+        if location_source == "unmapped":
+            continue
+
+        clients.append({
+            "client_id_1c": c1c,
+            "name": name,
+            "phone": phone,
+            "lat": lat,
+            "lng": lng,
+            "location_source": location_source,
+            "day": day_key,
+            "matched_tuman": matched_tuman,
+            "bucket": bkt,
+            "monthly_usd": round(monthly_usd, 0),
+            "last_trade_date": last_date,
+            "last_trade_kind": last_kind,
+            "address": address,
+            "gps_district": gps_district,
+            "master_viloyat": master_v if best is not None else "",
+            "master_tuman":   master_t if best is not None else "",
+            "master_moljal":  master_m if best is not None else "",
+            "pinned_by":      (best["gps_set_by_name"] if best is not None else None) if location_source == "pinned" else None,
+            "pinned_at":      (best["gps_set_at"]      if best is not None else None) if location_source == "pinned" else None,
+        })
+
+        # Tuman aggregate (for the Top Revenue Tumans table)
+        key = matched_tuman or "?"
+        agg = tuman_agg.setdefault(key, {"tuman": key, "day": day_key, "clients": 0, "monthly_usd": 0.0,
+                                         "heavy": 0, "large": 0, "medium": 0, "small": 0, "micro": 0})
+        agg["clients"] += 1
+        agg["monthly_usd"] += monthly_usd
+        agg[bkt.lower()] += 1
+
+    tuman_list = sorted(tuman_agg.values(), key=lambda x: -x["monthly_usd"])
+    for t in tuman_list:
+        t["monthly_usd"] = round(t["monthly_usd"], 0)
+
+    return {
+        "clients": clients,
+        "totals": {
+            "universe": len(active_last),
+            "pinned": counts["pinned"],
+            "master": counts["master"],
+            "unmapped": counts["unmapped"],
+            "shown": len(clients),
+        },
+        "tumans": tuman_list,
+        "filters": {"since": since, "bucket": bucket, "day": day, "source": source},
+    }
+
+
+def _is_newer(a, b) -> bool:
+    """Compare two allowed_clients rows: prefer the one with more recent gps_set_at."""
+    a_has = a["gps_latitude"] is not None and a["gps_longitude"] is not None and (a["gps_set_by_role"] or "") in ("agent", "driver")
+    b_has = b["gps_latitude"] is not None and b["gps_longitude"] is not None and (b["gps_set_by_role"] or "") in ("agent", "driver")
+    if a_has and not b_has:
+        return True
+    if not a_has:
+        return False
+    return (a["gps_set_at"] or "") > (b["gps_set_at"] or "")
+
+
 @router.get("/{location_id}")
 def get_location(location_id: int):
     """Get a single location with its parent chain."""

@@ -830,6 +830,7 @@
                 <div class="nav-tab" data-tab="search" onclick="switchTab('search')">Search</div>
                 <!-- END Phase 3 -->
                 <div class="nav-tab" data-tab="coverage" onclick="switchTab('coverage')">Agent Coverage</div>
+                <div class="nav-tab" data-tab="customers" onclick="switchTab('customers')">Customer Coverage</div>
                 <div class="nav-tab" data-tab="collections" onclick="switchTab('collections')">Collections</div>
             </div>
             <div class="nav-footer">
@@ -1847,6 +1848,103 @@
                     </div>
                 </div>
 
+                <!-- Customer Coverage tab — every trade-active client (pinned + master-inferred), bucket-sized markers -->
+                <div id="customers-tab" class="tab-content hidden">
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px;">
+                        <div style="color: #8b8fa3; font-size: 13px;">Every trade-active client mapped. Solid dot = GPS pin (precise). Hollow = Master xlsx tuman (approximate, ±~1 km).</div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                            <select id="customersBucket" onchange="renderCustomers()" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
+                                <option value="">All buckets</option>
+                                <option value="Heavy">Heavy only (&gt;$4K/mo)</option>
+                                <option value="Large">Large only ($1.7K–$4K)</option>
+                                <option value="Medium">Medium only</option>
+                                <option value="Small">Small only</option>
+                                <option value="Micro">Micro only</option>
+                            </select>
+                            <select id="customersDay" onchange="renderCustomers()" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
+                                <option value="">All days</option>
+                                <option value="Dushanba">Mon (Dushanba)</option>
+                                <option value="Seshanba">Tue (Seshanba)</option>
+                                <option value="Chorshanba">Wed (Chorshanba)</option>
+                                <option value="Payshanba">Thu (Payshanba)</option>
+                                <option value="Juma">Fri (Juma)</option>
+                                <option value="Shanba">Sat (Shanba)</option>
+                                <option value="CITY">Samarqand city</option>
+                                <option value="OUTSIDE">Outside schedule</option>
+                            </select>
+                            <select id="customersSource" onchange="renderCustomers()" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
+                                <option value="">Pinned + Master</option>
+                                <option value="pinned">GPS pinned only</option>
+                                <option value="master">Master-inferred only</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="customersLegend" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:14px; padding:10px 14px; background:#0f1117; border:1px solid #2a2d3a; border-radius:8px; font-size:11px; color:#8b8fa3;">
+                        <span style="color:#e4e4e7; font-weight:600;">Day color:</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#1f77b4; margin-right:4px; vertical-align:middle;"></span>Mon</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#ff7f0e; margin-right:4px; vertical-align:middle;"></span>Tue</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#2ca02c; margin-right:4px; vertical-align:middle;"></span>Wed</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#d62728; margin-right:4px; vertical-align:middle;"></span>Thu</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#9467bd; margin-right:4px; vertical-align:middle;"></span>Fri</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#8c564b; margin-right:4px; vertical-align:middle;"></span>Sat</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#7f7f7f; margin-right:4px; vertical-align:middle;"></span>City</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#17becf; margin-right:4px; vertical-align:middle;"></span>Outside</span>
+                        <span style="margin-left:8px; color:#e4e4e7; font-weight:600;">Bucket size:</span>
+                        <span><span style="display:inline-block; width:13px; height:13px; border-radius:50%; background:#888; margin-right:4px; vertical-align:middle;"></span>Heavy</span>
+                        <span><span style="display:inline-block; width:11px; height:11px; border-radius:50%; background:#888; margin-right:4px; vertical-align:middle;"></span>Large</span>
+                        <span><span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#888; margin-right:4px; vertical-align:middle;"></span>Medium</span>
+                        <span><span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#888; margin-right:4px; vertical-align:middle;"></span>Small</span>
+                        <span><span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:#888; margin-right:4px; vertical-align:middle;"></span>Micro</span>
+                    </div>
+
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Trade-active total</div>
+                            <div class="kpi-value" id="customers-kpi-universe">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">📍 GPS pinned</div>
+                            <div class="kpi-value" id="customers-kpi-pinned">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">≈ Master-inferred</div>
+                            <div class="kpi-value" id="customers-kpi-master">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">No location signal</div>
+                            <div class="kpi-value" id="customers-kpi-unmapped" style="color:#f97316;">-</div>
+                        </div>
+                    </div>
+
+                    <div class="chart-container" style="padding: 0; overflow: hidden;">
+                        <div id="customersMap" style="height: 600px; width: 100%; background:#0f1117;"></div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-title">Top Revenue Tumans (live 12-month rolling avg)</div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th class="table-number">#</th>
+                                        <th>Tuman</th>
+                                        <th>Day</th>
+                                        <th>Heavy</th>
+                                        <th>Large</th>
+                                        <th>Medium</th>
+                                        <th>Small</th>
+                                        <th>Micro</th>
+                                        <th>Clients</th>
+                                        <th>USD/mo</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="customersTumansBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Collections tab -->
                 <div id="collections-tab" class="tab-content hidden">
                     <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
@@ -2189,6 +2287,7 @@
                 health: 'Platform Health',
                 search: 'Search',
                 coverage: 'Agent Coverage',
+                customers: 'Customer Coverage',
                 collections: 'Collection Route Planner'
             };
             document.getElementById('pageTitle').textContent = titles[tabName];
@@ -2213,6 +2312,9 @@
                 if (tabName === 'coverage' && coverageMap) {
                     coverageMap.invalidateSize();
                 }
+                if (tabName === 'customers' && customersMap) {
+                    customersMap.invalidateSize();
+                }
                 if (tabName === 'collections' && collectionsMap) {
                     collectionsMap.invalidateSize();
                 }
@@ -2231,6 +2333,7 @@
                 ['health', loadHealthData],
                 ['search', loadSearchData],
                 ['coverage', loadCoverageData],
+                ['customers', loadCustomersData],
             ];
             const enabled = loaders
                 .filter(([tab]) => !ALLOWED_TABS || ALLOWED_TABS.includes(tab))
@@ -4254,6 +4357,138 @@
             try {
                 const b = L.latLngBounds(latlngs);
                 if (b.isValid()) coverageMap.fitBounds(b.pad(0.15), { maxZoom: 14, animate: false });
+            } catch (e) { /* keep current view */ }
+        }
+
+        // ==================== CUSTOMER COVERAGE (route planning view) ====================
+        let customersMap = null;
+        let customersMarkerLayer = null;
+        let customersData = { clients: [], tumans: [], totals: {} };
+
+        const CUST_DAY_COLOR = {
+            Dushanba:   '#1f77b4',
+            Seshanba:   '#ff7f0e',
+            Chorshanba: '#2ca02c',
+            Payshanba:  '#d62728',
+            Juma:       '#9467bd',
+            Shanba:     '#8c564b',
+            CITY:       '#7f7f7f',
+            OUTSIDE:    '#17becf',
+            UNMAPPED:   '#000000',
+        };
+        const CUST_BUCKET_RADIUS = { Heavy: 13, Large: 11, Medium: 9, Small: 7, Micro: 5 };
+
+        function ensureCustomersMap() {
+            if (customersMap) return customersMap;
+            // Opens on Samarkand at zoom 11 (mirrors Agent Coverage); pan/zoom
+            // unconstrained — user can explore outside the region freely.
+            customersMap = L.map('customersMap', { zoomControl: true }).setView([39.6542, 66.9597], 11);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap', maxZoom: 19
+            }).addTo(customersMap);
+            return customersMap;
+        }
+
+        async function loadCustomersData() {
+            try {
+                const params = new URLSearchParams({ admin_key: ADMIN_KEY, since: '2026-01-01' });
+                const res = await fetch(`/api/locations/customer-coverage?${params.toString()}`);
+                if (!res.ok) throw new Error(`customer-coverage ${res.status}`);
+                customersData = await res.json();
+                renderCustomers();
+            } catch (err) {
+                console.error('Customer coverage load error:', err);
+                const body = document.getElementById('customersTumansBody');
+                if (body) body.innerHTML = '<tr><td colspan="10" style="text-align:center; color:#ef4444;">Failed to load customer coverage data.</td></tr>';
+            }
+        }
+
+        function renderCustomers() {
+            ensureCustomersMap();
+            const bucket = document.getElementById('customersBucket').value;
+            const day = document.getElementById('customersDay').value;
+            const source = document.getElementById('customersSource').value;
+
+            const pts = (customersData.clients || []).filter(c => {
+                if (bucket && c.bucket !== bucket) return false;
+                if (day && c.day !== day) return false;
+                if (source && c.location_source !== source) return false;
+                return true;
+            });
+
+            // KPIs (totals come from server, reflect the full universe regardless of filters)
+            const t = customersData.totals || {};
+            document.getElementById('customers-kpi-universe').textContent = t.universe ?? '-';
+            document.getElementById('customers-kpi-pinned').textContent = t.pinned ?? '-';
+            document.getElementById('customers-kpi-master').textContent = t.master ?? '-';
+            document.getElementById('customers-kpi-unmapped').textContent = t.unmapped ?? '-';
+
+            // Clear old markers
+            if (customersMarkerLayer) {
+                customersMap.removeLayer(customersMarkerLayer);
+                customersMarkerLayer = null;
+            }
+            const group = L.layerGroup();
+
+            pts.forEach(c => {
+                if (!c.lat || !c.lng) return;
+                const color = CUST_DAY_COLOR[c.day] || '#666';
+                const radius = CUST_BUCKET_RADIUS[c.bucket] || 6;
+                const precise = c.location_source === 'pinned';
+                const opts = precise
+                    ? { radius, color, fillColor: color, fillOpacity: 0.85, weight: 2 }
+                    : { radius, color, fillColor: color, fillOpacity: 0.25, weight: 2, dashArray: '4,3' };
+                const popup =
+                    `<div style="font-size:13px; line-height:1.5; color:#222;">` +
+                    `<b>${escHtml(c.client_id_1c)}</b><br>` +
+                    (c.name ? `${escHtml(c.name)}<br>` : '') +
+                    `<span style="color:#c00; font-weight:600;">${c.bucket}</span>` +
+                    (c.monthly_usd ? ` · ~$${Math.round(c.monthly_usd)}/mo` : '') + `<br>` +
+                    `📞 ${escHtml(c.phone || '—')}<br>` +
+                    `${precise ? '📍 GPS pin' : '≈ Master tuman (approx)'}<br>` +
+                    `📍 ${escHtml(c.address || c.gps_district || c.master_tuman || '—')}` +
+                    (!precise && c.master_moljal ? ` → ${escHtml(c.master_moljal)}` : '') + `<br>` +
+                    `🗓 last trade ${escHtml(c.last_trade_date || '—')} (${escHtml(c.last_trade_kind || '')})<br>` +
+                    (precise && c.pinned_by ? `🧑 pinned by ${escHtml(c.pinned_by)}<br>` : '') +
+                    `➡️ <b>${escHtml(c.day)}</b> — ${escHtml(c.matched_tuman || '')}` +
+                    `</div>`;
+                L.circleMarker([c.lat, c.lng], opts).bindPopup(popup).addTo(group);
+            });
+
+            group.addTo(customersMap);
+            customersMarkerLayer = group;
+
+            // Tumans table — filter by current bucket/day if set; source filter doesn't affect aggregates
+            const tumanRows = (customersData.tumans || []).filter(t2 => {
+                if (day && t2.day !== day) return false;
+                return true;
+            });
+            const tbody = document.getElementById('customersTumansBody');
+            tbody.innerHTML = tumanRows.length
+                ? tumanRows.slice(0, 25).map((t2, i) => {
+                    const fmtUsd = '$' + Math.round(t2.monthly_usd).toLocaleString();
+                    return `<tr>` +
+                        `<td class="table-number">${i + 1}</td>` +
+                        `<td>${escHtml(t2.tuman)}</td>` +
+                        `<td style="color:#8b8fa3;">${escHtml(t2.day)}</td>` +
+                        `<td>${t2.heavy}</td>` +
+                        `<td>${t2.large}</td>` +
+                        `<td>${t2.medium}</td>` +
+                        `<td>${t2.small}</td>` +
+                        `<td>${t2.micro}</td>` +
+                        `<td>${t2.clients}</td>` +
+                        `<td style="color:#22d3ee;">${fmtUsd}</td>` +
+                        `</tr>`;
+                }).join('')
+                : '<tr><td colspan="10" style="text-align:center; color:#8b8fa3;">No data for the current filters.</td></tr>';
+
+            // Fit bounds to filtered set
+            try {
+                const latlngs = pts.filter(c => c.lat && c.lng).map(c => [c.lat, c.lng]);
+                if (latlngs.length) {
+                    const b = L.latLngBounds(latlngs);
+                    if (b.isValid()) customersMap.fitBounds(b.pad(0.15), { maxZoom: 14, animate: false });
+                }
             } catch (e) { /* keep current view */ }
         }
 
