@@ -279,6 +279,20 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_client_debts_client_id ON client_debts(client_id);
         CREATE INDEX IF NOT EXISTS idx_client_debts_report_date ON client_debts(report_date);
 
+        -- Per-client callback log: when an admin schedules a follow-up call.
+        -- Append-only history (every reschedule writes a new row); latest row
+        -- per client wins on read. callback_date may be NULL = explicit clear.
+        CREATE TABLE IF NOT EXISTS client_callbacks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_name_1c TEXT NOT NULL,
+            callback_date TEXT,
+            set_by_telegram_id INTEGER,
+            set_by_name TEXT NOT NULL,
+            note TEXT,
+            set_at DATETIME DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_client_callbacks_client ON client_callbacks(client_name_1c, set_at DESC);
+
         -- Daily aggregated snapshot of debtors. Written after every /debtors
         -- import. Per-client client_debts is truncate-replace; this preserves
         -- aggregate history for trend charts.

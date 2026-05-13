@@ -588,6 +588,110 @@ class TestDebtorsList:
         assert r.status_code == 401
 
 
+class TestDebtorsCallbacks:
+    def test_post_persists_and_surfaces_in_list(self, db):
+        _seed_debt(db, "Реал A", debt_uzs=10_000, last_tx="2026-05-01")
+        db.execute(
+            "INSERT INTO daily_fx_rates (rate_date, currency_pair, rate, source) "
+            "VALUES ('2026-05-05', 'USD_UZS', 12000, 'manual')"
+        )
+        db.commit()
+
+        c = _client(db)
+        r = c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY,
+            "client_name_1c": "Реал A",
+            "callback_date": "2026-05-15",
+        })
+        assert r.status_code == 200
+        body = r.json()
+        assert body["callback_date"] == "2026-05-15"
+        assert body["set_by_name"] == "admin"
+
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        item = next(it for it in body["items"] if it["client_name"] == "Реал A")
+        assert item["callback_date"] == "2026-05-15"
+        assert item["callback_set_by"] == "admin"
+        assert item["callback_set_at"] is not None
+
+    def test_latest_row_wins_on_reschedule(self, db):
+        _seed_debt(db, "Реал A", debt_uzs=10_000, last_tx="2026-05-01")
+        db.commit()
+
+        c = _client(db)
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "2026-05-14",
+        })
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "2026-05-16",
+        })
+
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        item = next(it for it in body["items"] if it["client_name"] == "Реал A")
+        assert item["callback_date"] == "2026-05-16"
+
+        hist = c.get("/api/admin/debtors-callback-history",
+                     params={"admin_key": ADMIN_KEY,
+                             "client_name_1c": "Реал A"}).json()
+        assert hist["count"] == 2
+        # Newest first
+        assert hist["items"][0]["callback_date"] == "2026-05-16"
+        assert hist["items"][1]["callback_date"] == "2026-05-14"
+
+    def test_clear_records_null_date_in_history(self, db):
+        _seed_debt(db, "Реал A", debt_uzs=10_000, last_tx="2026-05-01")
+        db.commit()
+
+        c = _client(db)
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "2026-05-15",
+        })
+        # Clear: empty string → None
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "",
+        })
+
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        item = next(it for it in body["items"] if it["client_name"] == "Реал A")
+        assert item["callback_date"] is None
+        # Set_by/set_at still populated — the clear is audit-trailed
+        assert item["callback_set_by"] == "admin"
+
+    def test_invalid_date_rejected(self, db):
+        _seed_debt(db, "Реал A", debt_uzs=10_000, last_tx="2026-05-01")
+        db.commit()
+
+        c = _client(db)
+        r = c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "next-friday",
+        })
+        assert r.status_code == 400
+
+    def test_missing_client_name_rejected(self, db):
+        c = _client(db)
+        r = c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "  ",
+            "callback_date": "2026-05-15",
+        })
+        assert r.status_code == 400
+
+    def test_unauthorized(self, db):
+        c = _client(db)
+        r = c.post("/api/admin/debtors-callback", data={
+            "admin_key": "nope", "client_name_1c": "Реал A",
+            "callback_date": "2026-05-15",
+        })
+        assert r.status_code == 401
+
+
 # ── Pseudo-client filter sweep — /revenue, /collections, /top-clients,
 # ── /receivables-trend, /entities now use pseudo_clients.SYSTEM_NON_CLIENT_NAMES
 # ── instead of the legacy <5%-collection heuristic. See

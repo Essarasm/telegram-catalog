@@ -1128,6 +1128,18 @@ def debtors_list(admin_key: str = Query(...)):
                   JOIN max_pay mp ON mp.client_name_1c = cp.client_name_1c
                                  AND mp.max_date = cp.doc_date
                  GROUP BY cp.client_name_1c, cp.doc_date
+            ),
+            max_cb AS (
+                SELECT client_name_1c, MAX(id) AS max_id
+                  FROM client_callbacks
+                 GROUP BY client_name_1c
+            ),
+            last_cb AS (
+                SELECT cc.client_name_1c, cc.callback_date,
+                       cc.set_by_name, cc.set_by_telegram_id, cc.set_at, cc.note
+                  FROM client_callbacks cc
+                  JOIN max_cb mc ON mc.client_name_1c = cc.client_name_1c
+                                AND mc.max_id = cc.id
             )
             SELECT cd.client_name_1c, cd.client_id, cd.debt_uzs, cd.debt_usd,
                    cd.last_transaction_date, cd.last_transaction_no,
@@ -1135,9 +1147,12 @@ def debtors_list(admin_key: str = Query(...)):
                    cd.aging_91_120, cd.aging_120_plus,
                    lp.doc_date AS last_payment_date,
                    lp.last_pay_uzs AS last_payment_uzs,
-                   lp.last_pay_usd AS last_payment_usd
+                   lp.last_pay_usd AS last_payment_usd,
+                   lcb.callback_date, lcb.set_by_name AS callback_set_by,
+                   lcb.set_at AS callback_set_at, lcb.note AS callback_note
               FROM client_debts cd
               LEFT JOIN last_pay lp ON lp.client_name_1c = cd.client_name_1c
+              LEFT JOIN last_cb lcb ON lcb.client_name_1c = cd.client_name_1c
              WHERE cd.report_date = ?
                AND (cd.debt_uzs > 0 OR cd.debt_usd > 0)
                AND {excl_clause}""",
@@ -1177,6 +1192,10 @@ def debtors_list(admin_key: str = Query(...)):
             "days_since_last_payment": _days_since(r["last_payment_date"]),
             "last_payment_uzs": round(float(r["last_payment_uzs"] or 0), 2),
             "last_payment_usd": round(float(r["last_payment_usd"] or 0), 2),
+            "callback_date": r["callback_date"],
+            "callback_set_by": r["callback_set_by"],
+            "callback_set_at": r["callback_set_at"],
+            "callback_note": r["callback_note"],
             "aging_uzs": {
                 "0_30": round(r["aging_0_30"] or 0, 2),
                 "31_60": round(r["aging_31_60"] or 0, 2),
@@ -1199,6 +1218,109 @@ def debtors_list(admin_key: str = Query(...)):
         "total_uzs": round(total_uzs, 2),
         "total_usd": round(total_usd, 2),
         "items": items,
+    }
+
+
+@router.post("/debtors-callback")
+def debtors_callback_set(
+    admin_key: str = Form(...),
+    client_name_1c: str = Form(...),
+    callback_date: str = Form(None),
+    note: str = Form(None),
+):
+    """Schedule (or clear) a callback for a debtor client.
+
+    Append-only: every save writes a new row in `client_callbacks`. The
+    latest row per client wins on read (joined back into `/debtors-list`).
+    Passing `callback_date=""` (or omitting it) records an explicit clear
+    so the audit trail captures who cleared and when.
+
+    Admin role only — captures `set_by_telegram_id` + `set_by_name` from
+    the dashboard session so the next employee can see who scheduled the
+    callback. The env-var admin path (no session identity) records
+    `set_by_name='admin'`; use the bot's /dashboard button for full
+    attribution.
+    """
+    from backend.admin_auth import resolve_auth
+
+    auth = resolve_auth(admin_key)
+    if not auth or auth.get("role") != "admin":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    name = (client_name_1c or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="client_name_1c required")
+
+    cb_date = (callback_date or "").strip() or None
+    if cb_date:
+        # Light validation — YYYY-MM-DD only.
+        from datetime import datetime
+        try:
+            datetime.strptime(cb_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="callback_date must be YYYY-MM-DD")
+
+    set_by_name = auth.get("name") or "admin"
+    set_by_tg = auth.get("telegram_id")
+    cb_note = (note or "").strip() or None
+
+    conn = get_db()
+    cur = conn.execute(
+        """INSERT INTO client_callbacks
+                  (client_name_1c, callback_date, set_by_telegram_id, set_by_name, note)
+           VALUES (?, ?, ?, ?, ?)""",
+        (name, cb_date, set_by_tg, set_by_name, cb_note),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id, callback_date, set_by_name, set_at, note FROM client_callbacks WHERE id = ?",
+        (cur.lastrowid,),
+    ).fetchone()
+    conn.close()
+
+    return {
+        "ok": True,
+        "client_name_1c": name,
+        "callback_date": row["callback_date"],
+        "set_by_name": row["set_by_name"],
+        "set_at": row["set_at"],
+        "note": row["note"],
+    }
+
+
+@router.get("/debtors-callback-history")
+def debtors_callback_history(
+    admin_key: str = Query(...),
+    client_name_1c: str = Query(...),
+    limit: int = Query(20, ge=1, le=200),
+):
+    """Per-client callback history (newest first). Read-only audit view."""
+    _check_admin(admin_key)
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT id, callback_date, set_by_name, set_by_telegram_id, set_at, note
+             FROM client_callbacks
+            WHERE client_name_1c = ?
+         ORDER BY id DESC
+            LIMIT ?""",
+        (client_name_1c, limit),
+    ).fetchall()
+    conn.close()
+    return {
+        "ok": True,
+        "client_name_1c": client_name_1c,
+        "count": len(rows),
+        "items": [
+            {
+                "id": r["id"],
+                "callback_date": r["callback_date"],
+                "set_by_name": r["set_by_name"],
+                "set_by_telegram_id": r["set_by_telegram_id"],
+                "set_at": r["set_at"],
+                "note": r["note"],
+            }
+            for r in rows
+        ],
     }
 
 

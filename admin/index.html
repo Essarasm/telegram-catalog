@@ -946,39 +946,6 @@
                         </div>
                     </div>
 
-                    <!-- 🧾 Debtors List — manager's printed report (per-client current debt) -->
-                    <div class="section-title collapsible" onclick="toggleSection('debtorsListSection')" style="margin-top: 24px;">
-                        🧾 Qarzdorlar Ro'yxati <span id="debtorsListMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
-                        <span class="toggle-arrow" id="debtorsListSection-arrow">▾</span>
-                    </div>
-                    <div id="debtorsListSection" class="collapsible-content">
-                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
-                            Per-client current debt from latest 1C 'Дебиторская задолженность' upload. Real clients only (pseudo-accounts excluded). Sorted by combined USD-equivalent debt. <strong>Days since</strong> = today − <code>last_transaction_date</code>; large values indicate stuck debt.
-                        </div>
-                        <div class="table-container">
-                            <div class="table-wrapper">
-                                <table>
-                                    <thead>
-                                        <tr>
-                                            <th class="table-number">#</th>
-                                            <th>Client</th>
-                                            <th>Last deal</th>
-                                            <th>Days since</th>
-                                            <th>Last payment</th>
-                                            <th style="text-align: right;">Paid UZS</th>
-                                            <th style="text-align: right;">Paid USD</th>
-                                            <th>Days since</th>
-                                            <th style="text-align: right;">UZS</th>
-                                            <th style="text-align: right;">USD</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="debtorsListBody"></tbody>
-                                    <tfoot id="debtorsListFooter" style="border-top: 2px solid #2a2d3a; font-weight: 600;"></tfoot>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-
                     <!-- 📅 Top 20 Sotilgan — Kecha (yesterday) -->
                     <div class="section-title collapsible" onclick="toggleSection('topSellersYesterdaySection')" style="margin-top: 24px;">
                         📅 Top 20 Sotilgan (Kecha) <span id="topSellersYesterdayMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
@@ -1102,6 +1069,40 @@
                                 <tbody id="clientsTableBody">
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+
+                    <!-- 🧾 Debtors List — manager's printed report (per-client current debt + callback scheduler) -->
+                    <div class="section-title collapsible" onclick="toggleSection('debtorsListSection')" style="margin-top: 24px;">
+                        🧾 Qarzdorlar Ro'yxati <span id="debtorsListMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        <span class="toggle-arrow" id="debtorsListSection-arrow">▾</span>
+                    </div>
+                    <div id="debtorsListSection" class="collapsible-content">
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Per-client current debt from latest 1C 'Дебиторская задолженность' upload. Real clients only (pseudo-accounts excluded). Sorted by combined USD-equivalent debt. <strong>Days since</strong> = today − <code>last_transaction_date</code>; large values indicate stuck debt. <strong>Qayta qo'ng'iroq</strong> — pick a date when the client asked to be called back; the row tints amber when that date arrives. History is preserved (every reschedule appends).
+                        </div>
+                        <div class="table-container">
+                            <div class="table-wrapper">
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th class="table-number">#</th>
+                                            <th>Client</th>
+                                            <th>Last deal</th>
+                                            <th>Days since</th>
+                                            <th>Last payment</th>
+                                            <th style="text-align: right;">Paid UZS</th>
+                                            <th style="text-align: right;">Paid USD</th>
+                                            <th>Days since</th>
+                                            <th style="text-align: right;">UZS</th>
+                                            <th style="text-align: right;">USD</th>
+                                            <th style="min-width: 170px;">Qayta qo'ng'iroq</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="debtorsListBody"></tbody>
+                                    <tfoot id="debtorsListFooter" style="border-top: 2px solid #2a2d3a; font-weight: 600;"></tfoot>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2099,6 +2100,23 @@
             return res.json();
         }
 
+        // POST helper for mutating endpoints (form-encoded). Pass extra fields
+        // as a plain object; admin_key is injected automatically.
+        async function apiPost(endpoint, fields = {}) {
+            const body = new URLSearchParams();
+            body.set('admin_key', ADMIN_KEY);
+            for (const [k, v] of Object.entries(fields)) {
+                if (v !== undefined && v !== null) body.set(k, String(v));
+            }
+            const res = await fetch(`/api/admin/${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body.toString(),
+            });
+            if (!res.ok) throw new Error(`API error: ${res.status}`);
+            return res.json();
+        }
+
         // ==================== SIDEBAR TOGGLE ====================
         function isMobileViewport() {
             return window.innerWidth <= 768;
@@ -2262,7 +2280,6 @@
             drawCollectionChart();
             renderWeeklyBreakdown();
             drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
-            loadDebtorsList();
             loadTopSellersWoW();
             loadTopSellersPeriod('last_week', 'topSellersLastWeekBody', 'topSellersLastWeekMeta');
             loadTopSellersPeriod('yesterday', 'topSellersYesterdayBody', 'topSellersYesterdayMeta');
@@ -2274,6 +2291,87 @@
                 renderDebtorsList(data);
             } catch (e) {
                 console.warn('debtors-list load failed', e);
+            }
+        }
+
+        // Uzbek Latin weekday names — getDay() is 0=Sunday … 6=Saturday.
+        const UZ_WEEKDAYS = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
+
+        function uzWeekdayFor(dateStr) {
+            if (!dateStr) return '';
+            // Construct in local time intentionally — date input is calendar-day, no tz.
+            const [y, m, d] = dateStr.split('-').map(Number);
+            if (!y || !m || !d) return '';
+            const dt = new Date(y, m - 1, d);
+            return UZ_WEEKDAYS[dt.getDay()] || '';
+        }
+
+        function tashkentTodayISO() {
+            // Locale-independent: format in Asia/Tashkent and read parts.
+            const parts = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Tashkent', year: 'numeric', month: '2-digit', day: '2-digit'
+            }).formatToParts(new Date());
+            const y = parts.find(p => p.type === 'year').value;
+            const m = parts.find(p => p.type === 'month').value;
+            const d = parts.find(p => p.type === 'day').value;
+            return `${y}-${m}-${d}`;
+        }
+
+        function shortSetAtCaption(setAtIso) {
+            if (!setAtIso) return '';
+            // setAtIso is server-side UTC ('YYYY-MM-DD HH:MM:SS'). Show just the date in Tashkent.
+            const utc = setAtIso.replace(' ', 'T') + 'Z';
+            const dt = new Date(utc);
+            if (isNaN(dt.getTime())) return setAtIso.slice(0, 10);
+            return new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Asia/Tashkent', day: '2-digit', month: 'short'
+            }).format(dt);
+        }
+
+        function buildCallbackCell(it) {
+            const cbDate = it.callback_date || '';
+            const setBy = it.callback_set_by ? escapeHtml(it.callback_set_by) : '';
+            const setAt = it.callback_set_at ? shortSetAtCaption(it.callback_set_at) : '';
+            const weekday = uzWeekdayFor(cbDate);
+            const safeName = (it.client_name || '').replace(/"/g, '&quot;');
+            const dayLabel = weekday
+                ? `<span class="cb-weekday" style="font-size:10px; color:#8b8fa3; margin-left:6px;">${weekday}</span>`
+                : '';
+            const author = (setBy || setAt)
+                ? `<div style="font-size:10px; color:#8b8fa3; margin-top:2px;">👤 ${setBy}${setBy && setAt ? ' · ' : ''}${setAt}</div>`
+                : '';
+            return `
+                <div style="display:flex; flex-direction:column; gap:2px;">
+                    <div style="display:flex; align-items:center;">
+                        <input
+                            type="date"
+                            value="${cbDate}"
+                            data-client="${safeName}"
+                            onchange="saveCallback(this)"
+                            style="background:#1a1d28; color:#e4e6ee; border:1px solid #2a2d3a; border-radius:4px; padding:3px 6px; font-size:11px;"
+                        />
+                        ${dayLabel}
+                    </div>
+                    ${author}
+                </div>
+            `;
+        }
+
+        async function saveCallback(inputEl) {
+            const clientName = inputEl.dataset.client;
+            const newDate = inputEl.value || '';
+            inputEl.disabled = true;
+            try {
+                await apiPost('debtors-callback', {
+                    client_name_1c: clientName,
+                    callback_date: newDate,
+                });
+                // Reload to pick up the fresh set_by/set_at caption + amber tint.
+                await loadDebtorsList();
+            } catch (e) {
+                console.warn('callback save failed', e);
+                alert("Saqlanmadi — qayta urinib ko'ring");
+                inputEl.disabled = false;
             }
         }
 
@@ -2290,10 +2388,11 @@
                     : `as of ${asOf} · qarzdorlar yo'q`;
             }
             if (!items.length) {
-                body.innerHTML = `<tr><td colspan="10" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
+                body.innerHTML = `<tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
                 if (foot) foot.innerHTML = '';
                 return;
             }
+            const todayIso = tashkentTodayISO();
             body.innerHTML = items.map(it => {
                 const days = it.days_since_last_tx;
                 let daysCell;
@@ -2333,7 +2432,10 @@
                 const paidUsd = it.last_payment_usd > 0 ? `$${fmtFull(it.last_payment_usd)}` : '—';
                 const uzs = it.debt_uzs > 0 ? fmtFull(it.debt_uzs) : '—';
                 const usd = it.debt_usd > 0 ? `$${fmtFull(it.debt_usd)}` : '—';
-                return `<tr>
+                // Row tint: amber when there's an active callback whose date has arrived.
+                const dueToday = it.callback_date && it.callback_date <= todayIso;
+                const rowStyle = dueToday ? ' style="background: rgba(245, 158, 11, 0.08);"' : '';
+                return `<tr${rowStyle}>
                     <td class="table-number">${it.rank}</td>
                     <td>${escapeHtml(it.client_name)}</td>
                     <td style="font-size:11px;">${escapeHtml(it.last_transaction_date || '—')}</td>
@@ -2344,6 +2446,7 @@
                     <td>${payDaysCell}</td>
                     <td style="text-align:right;">${uzs}</td>
                     <td style="text-align:right;">${usd}</td>
+                    <td>${buildCallbackCell(it)}</td>
                 </tr>`;
             }).join('');
             if (foot) {
@@ -2352,6 +2455,7 @@
                     <td colspan="7">JAMI · ${data.count} ta</td>
                     <td style="text-align:right;">${fmtFull(data.total_uzs)}</td>
                     <td style="text-align:right;">$${fmtFull(data.total_usd)}</td>
+                    <td></td>
                 </tr>`;
             }
         }
@@ -2848,6 +2952,10 @@
                     </tr>
                 `;
             }).join('');
+
+            // Debtors List (manager's printed report + callback scheduler) lives
+            // on this tab too; loaded alongside Top Clients.
+            loadDebtorsList();
         }
 
         async function showClientHistory(clientName) {
