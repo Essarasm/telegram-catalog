@@ -211,7 +211,9 @@ async def handle_location(message: Message):
     prev_client_gps = None
     if user["client_id"]:
         prev_client_gps = conn.execute(
-            "SELECT gps_latitude, gps_longitude, gps_set_by_name, gps_set_by_role "
+            "SELECT name, client_id_1c, gps_latitude, gps_longitude, gps_address, "
+            "gps_region, gps_district, gps_set_at, gps_set_by_tg_id, "
+            "gps_set_by_name, gps_set_by_role "
             "FROM allowed_clients WHERE id = ?",
             (user["client_id"],),
         ).fetchone()
@@ -223,11 +225,42 @@ async def handle_location(message: Message):
     prev_lng = prev_client_gps["gps_longitude"] if prev_client_gps else None
 
     if user["client_id"]:
-        ac = conn.execute(
-            "SELECT client_id_1c FROM allowed_clients WHERE id = ?",
-            (user["client_id"],),
-        ).fetchone()
-        client_1c_name = ac["client_id_1c"] if ac else ""
+        client_1c_name = prev_client_gps["client_id_1c"] if prev_client_gps else ""
+        # Auto-snapshot the prior pin BEFORE overwrite so any accidental
+        # overwrite (stale users.client_id, wrong agent, fat-fingered share)
+        # is reversible via /api/locations/restore-pin. The location_attempts
+        # audit row preserves the raw incoming lat/lng on the OTHER side;
+        # this snapshot preserves what we're about to clobber on this side.
+        if had_location:
+            import json as _json
+            snap_args = _json.dumps({
+                "client_id": user["client_id"],
+                "client_name": prev_client_gps["name"],
+                "client_id_1c": prev_client_gps["client_id_1c"],
+                "prior_gps_latitude": prev_client_gps["gps_latitude"],
+                "prior_gps_longitude": prev_client_gps["gps_longitude"],
+                "prior_gps_address": prev_client_gps["gps_address"],
+                "prior_gps_region": prev_client_gps["gps_region"],
+                "prior_gps_district": prev_client_gps["gps_district"],
+                "prior_gps_set_at": prev_client_gps["gps_set_at"],
+                "prior_gps_set_by_tg_id": prev_client_gps["gps_set_by_tg_id"],
+                "prior_gps_set_by_name": prev_client_gps["gps_set_by_name"],
+                "prior_gps_set_by_role": prev_client_gps["gps_set_by_role"],
+                "overwritten_by_tg_id": telegram_id,
+                "overwritten_by_name": setter_name,
+                "overwritten_by_role": setter_role,
+                "overwritten_with_lat": loc.latitude,
+                "overwritten_with_lng": loc.longitude,
+            }, ensure_ascii=False)
+            try:
+                conn.execute(
+                    "INSERT INTO admin_action_log (telegram_id, user_name, command, args) "
+                    "VALUES (?, ?, ?, ?)",
+                    (telegram_id, setter_name, "auto_overwrite_snapshot", snap_args),
+                )
+            except Exception as e:
+                logger.error(f"auto_overwrite_snapshot failed (non-fatal): {e}")
+
         conn.execute(
             "UPDATE allowed_clients SET "
             "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "

@@ -659,6 +659,176 @@ def update_location(location_id: int, loc: LocationUpdate, admin_key: str = Quer
     return {"ok": True, "changed": True}
 
 
+@router.post("/clear-pin")
+def clear_client_pin(
+    client_id: int = Query(..., description="allowed_clients.id"),
+    admin_key: str = Query(...),
+    reason: Optional[str] = Query(None, max_length=500),
+):
+    """Admin: clear an agent/client-tagged GPS pin on `allowed_clients`.
+
+    Snapshots the prior `gps_*` columns into `admin_action_log` before
+    NULLing them, so the original pin (lat/lng, address, who set it, when)
+    is forensically recoverable from the audit row's `args` JSON. The raw
+    `location_attempts` row from when the pin was first shared is never
+    touched — that table is the immutable source-of-truth.
+
+    Admin role only. Agents cannot self-clear pins they set.
+    """
+    auth = resolve_auth(admin_key)
+    if not auth or auth["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin-only")
+
+    conn = get_db()
+    prior = conn.execute(
+        "SELECT id, name, client_id_1c, gps_latitude, gps_longitude, gps_address, "
+        "gps_region, gps_district, gps_set_at, gps_set_by_tg_id, gps_set_by_name, "
+        "gps_set_by_role FROM allowed_clients WHERE id = ?",
+        (client_id,),
+    ).fetchone()
+    if not prior:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Client not found")
+    if prior["gps_latitude"] is None and prior["gps_longitude"] is None:
+        conn.close()
+        return {"ok": True, "cleared": False, "reason": "no_pin_to_clear",
+                "client_id": client_id, "client_name": prior["name"]}
+
+    import json as _json
+    args_payload = _json.dumps({
+        "client_id": prior["id"],
+        "client_name": prior["name"],
+        "client_id_1c": prior["client_id_1c"],
+        "prior_gps_latitude": prior["gps_latitude"],
+        "prior_gps_longitude": prior["gps_longitude"],
+        "prior_gps_address": prior["gps_address"],
+        "prior_gps_region": prior["gps_region"],
+        "prior_gps_district": prior["gps_district"],
+        "prior_gps_set_at": prior["gps_set_at"],
+        "prior_gps_set_by_tg_id": prior["gps_set_by_tg_id"],
+        "prior_gps_set_by_name": prior["gps_set_by_name"],
+        "prior_gps_set_by_role": prior["gps_set_by_role"],
+        "reason": (reason or "").strip(),
+    }, ensure_ascii=False)
+    conn.execute(
+        "INSERT INTO admin_action_log (telegram_id, user_name, command, args) "
+        "VALUES (?, ?, ?, ?)",
+        (auth.get("telegram_id"), auth.get("name"), "clear_client_gps", args_payload),
+    )
+    conn.execute(
+        "UPDATE allowed_clients SET "
+        "gps_latitude = NULL, gps_longitude = NULL, gps_address = NULL, "
+        "gps_region = NULL, gps_district = NULL, gps_set_at = NULL, "
+        "gps_set_by_tg_id = NULL, gps_set_by_name = NULL, gps_set_by_role = NULL "
+        "WHERE id = ?",
+        (client_id,),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "ok": True,
+        "cleared": True,
+        "client_id": client_id,
+        "client_name": prior["name"],
+        "prior": {
+            "lat": prior["gps_latitude"],
+            "lng": prior["gps_longitude"],
+            "address": prior["gps_address"],
+            "set_by_name": prior["gps_set_by_name"],
+            "set_at": prior["gps_set_at"],
+        },
+    }
+
+
+@router.post("/restore-pin")
+def restore_client_pin(
+    client_id: int = Query(..., description="allowed_clients.id"),
+    admin_key: str = Query(...),
+):
+    """Admin: restore a client's GPS from the most recent snapshot in
+    `admin_action_log`. Recognises two snapshot sources:
+
+    - `clear_client_gps`: written by the admin-initiated POST /clear-pin
+      before it NULLs the columns. Restores the cleared pin.
+    - `auto_overwrite_snapshot`: written by `bot/handlers/location.py`
+      before an agent's location share overwrites an existing pin. Restores
+      whoever was the prior owner — useful when a stale `users.client_id`
+      caused a wrong agent to clobber a good pin.
+
+    Picks the newest snapshot for this client across either source. Logs
+    the restore as a new `admin_action_log` row with
+    `command='restore_client_gps'` so every round-trip is fully auditable.
+    """
+    auth = resolve_auth(admin_key)
+    if not auth or auth["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin-only")
+
+    import json as _json
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, args FROM admin_action_log "
+        "WHERE command IN ('clear_client_gps', 'auto_overwrite_snapshot') "
+        "ORDER BY id DESC"
+    ).fetchall()
+    snap = None
+    snap_audit_id = None
+    for row in rows:
+        try:
+            parsed = _json.loads(row["args"])
+        except Exception:
+            continue
+        if int(parsed.get("client_id", 0)) == client_id:
+            snap = parsed
+            snap_audit_id = row["id"]
+            break
+    if not snap:
+        conn.close()
+        raise HTTPException(status_code=404,
+                            detail="No prior clear-pin snapshot for this client")
+
+    conn.execute(
+        "UPDATE allowed_clients SET "
+        "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "
+        "gps_region = ?, gps_district = ?, gps_set_at = ?, "
+        "gps_set_by_tg_id = ?, gps_set_by_name = ?, gps_set_by_role = ? "
+        "WHERE id = ?",
+        (snap.get("prior_gps_latitude"), snap.get("prior_gps_longitude"),
+         snap.get("prior_gps_address"), snap.get("prior_gps_region"),
+         snap.get("prior_gps_district"), snap.get("prior_gps_set_at"),
+         snap.get("prior_gps_set_by_tg_id"), snap.get("prior_gps_set_by_name"),
+         snap.get("prior_gps_set_by_role"), client_id),
+    )
+    audit_args = _json.dumps({
+        "client_id": client_id,
+        "client_name": snap.get("client_name"),
+        "restored_from_audit_id": snap_audit_id,
+        "restored_lat": snap.get("prior_gps_latitude"),
+        "restored_lng": snap.get("prior_gps_longitude"),
+        "restored_set_by_name": snap.get("prior_gps_set_by_name"),
+        "restored_set_at": snap.get("prior_gps_set_at"),
+    }, ensure_ascii=False)
+    conn.execute(
+        "INSERT INTO admin_action_log (telegram_id, user_name, command, args) "
+        "VALUES (?, ?, ?, ?)",
+        (auth.get("telegram_id"), auth.get("name"), "restore_client_gps", audit_args),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "client_name": snap.get("client_name"),
+        "restored_from_audit_id": snap_audit_id,
+        "restored": {
+            "lat": snap.get("prior_gps_latitude"),
+            "lng": snap.get("prior_gps_longitude"),
+            "address": snap.get("prior_gps_address"),
+            "set_by_name": snap.get("prior_gps_set_by_name"),
+            "set_at": snap.get("prior_gps_set_at"),
+        },
+    }
+
+
 # ── Client location endpoints ───────────────────────────────
 
 client_router = APIRouter(prefix="/api/client-location", tags=["client-location"])

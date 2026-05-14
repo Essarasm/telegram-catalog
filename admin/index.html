@@ -4285,6 +4285,52 @@
                 .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
+        async function clearClientPin(clientId, label, lat, lng, setBy, setAt) {
+            // Admin-only "wipe this pin" helper. Confirms with prior-state context,
+            // optionally captures a reason for the audit row, POSTs to
+            // /api/locations/clear-pin (snapshots prior state to admin_action_log
+            // then NULLs gps_* on allowed_clients), then prunes the cleared point
+            // from coveragePoints and re-renders the heatmap in place.
+            const cid = Number(clientId);
+            if (!cid) return;
+            const whenStr = setAt ? String(setAt).slice(0, 16).replace('T', ' ') : '—';
+            const summary =
+                `Clear pin for:\n  ${label || ('#' + cid)}\n\n` +
+                `Pinned at: ${lat}, ${lng}\n` +
+                `Set by: ${setBy || '—'} on ${whenStr}\n\n` +
+                `Reason (optional, recorded in audit log):`;
+            const reason = window.prompt(summary, '');
+            if (reason === null) return;  // cancelled
+            if (!window.confirm(`This NULLs the canonical pin on allowed_clients.id=${cid}. ` +
+                                `Prior state is snapshotted to admin_action_log and can be ` +
+                                `restored manually if needed. Proceed?`)) return;
+            try {
+                const params = new URLSearchParams({
+                    admin_key: ADMIN_KEY,
+                    client_id: String(cid),
+                });
+                if (reason.trim()) params.set('reason', reason.trim());
+                const res = await fetch(`/api/locations/clear-pin?${params.toString()}`, {
+                    method: 'POST',
+                });
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok || !body.ok) {
+                    alert(`Clear failed: ${(body && body.detail) || res.status}`);
+                    return;
+                }
+                if (body.cleared === false) {
+                    alert(`No pin to clear (already empty).`);
+                } else {
+                    coveragePoints = coveragePoints.filter(p => Number(p.client_id) !== cid);
+                    coverageMap && coverageMap.closePopup();
+                    renderCoverage();
+                }
+            } catch (err) {
+                console.error('clearClientPin error:', err);
+                alert(`Clear failed: ${err.message || err}`);
+            }
+        }
+
         async function loadCoverageData() {
             try {
                 const role = document.getElementById('coverageRole').value || 'agent';
@@ -4412,6 +4458,12 @@
                           `<div style="margin-top:2px;"><span style="background:${color}; color:white; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600;">${aging} days</span></div>` +
                           `</div>`
                         : `<div style="margin-top:6px; color:#16a34a; font-size:11px;">✓ no outstanding debt</div>`;
+                    const clearBtn =
+                        `<button type="button" ` +
+                        `onclick="clearClientPin(${Number(p.client_id)}, ${JSON.stringify(p.client_label || '')}, ${p.lat}, ${p.lng}, ${JSON.stringify(p.agent_name || '')}, ${JSON.stringify(p.set_at || '')})" ` +
+                        `style="margin-top:8px; padding:6px 10px; background:#dc2626; color:#fff; border:none; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; width:100%;">` +
+                        `🗑 Clear this pin` +
+                        `</button>`;
                     const popup =
                         `<div style="font-size:13px; line-height:1.5;">` +
                         `<div style="font-weight:600; margin-bottom:4px;">${escHtml(p.client_label)}</div>` +
@@ -4420,6 +4472,7 @@
                         `<div style="color:#555;">When: ${escHtml(when)}</div>` +
                         (p.address ? `<div style="color:#555; margin-top:4px;">${escHtml(p.address)}</div>` : '') +
                         `<div style="margin-top:6px;"><a href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Open in Google Maps</a></div>` +
+                        clearBtn +
                         `</div>`;
                     marker.bindPopup(popup);
                     marker.addTo(coverageClusterLayer);
@@ -4429,6 +4482,12 @@
                 coverageClusterLayer = L.markerClusterGroup({ chunkedLoading: true });
                 pts.forEach(p => {
                     const when = p.set_at ? p.set_at.slice(0, 16).replace('T', ' ') : '—';
+                    const clearBtn =
+                        `<button type="button" ` +
+                        `onclick="clearClientPin(${Number(p.client_id)}, ${JSON.stringify(p.client_label || '')}, ${p.lat}, ${p.lng}, ${JSON.stringify(p.agent_name || '')}, ${JSON.stringify(p.set_at || '')})" ` +
+                        `style="margin-top:8px; padding:6px 10px; background:#dc2626; color:#fff; border:none; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; width:100%;">` +
+                        `🗑 Clear this pin` +
+                        `</button>`;
                     const popup =
                         `<div style="font-size:13px; line-height:1.5;">` +
                         `<div style="font-weight:600; margin-bottom:4px;">${escHtml(p.client_label)}</div>` +
@@ -4436,6 +4495,7 @@
                         `<div style="color:#555;">When: ${escHtml(when)}</div>` +
                         (p.address ? `<div style="color:#555; margin-top:4px;">${escHtml(p.address)}</div>` : '') +
                         `<div style="margin-top:6px;"><a href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Open in Google Maps</a></div>` +
+                        clearBtn +
                         `</div>`;
                     L.marker([p.lat, p.lng]).bindPopup(popup).addTo(coverageClusterLayer);
                 });
