@@ -51,6 +51,11 @@ OBJECTIVES = {
         "/perevod — yangi yozuv (mijoz → summa → foiz → kurs). "
         "/perevodlar — bugungi yozuvlar (✏️ O'zgartirish · ✖ Bekor)."
     ),
+    'agent_approval': (
+        "🔐 <b>Agent approval — Rol boshqaruvi</b>\n\n"
+        "Maqsad: yangi agent arizalarini tasdiqlash va admin-larga "
+        "rol almashtirib test qilish imkonini berish."
+    ),
 }
 
 # ── Command lists per chat role ─────────────────────────────────────
@@ -181,6 +186,14 @@ SPECS = {
             Cmd("/perevodlar", "Bugungi perevodlar — har bir yozuvda ✏️ va ✖"),
             Cmd("/bekor", "Joriy sessiyani bekor qilish"),
             Cmd("/chatid", "Chat va user ID"),
+        ]),
+    ],
+    'agent_approval': [
+        ("🔁 Rol almashtirish", [
+            Cmd("/role", "Test uchun rolingizni vaqtincha o'zgartirish (admin/agent/kassir/ishchi) — inline tugmalar"),
+        ]),
+        ("📥 Agent arizalari", [
+            Cmd("—", "Yangi arizalar avtomatik shu yerga keladi. Tasdiqlash inline ✅/❌ tugmalar orqali."),
         ]),
     ],
     'dm_user': [

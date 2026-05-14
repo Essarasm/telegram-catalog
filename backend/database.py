@@ -1241,6 +1241,14 @@ def init_db():
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_users_agent_role ON users(agent_role)"
     )
+
+    # view_as_role: per-user role override for admin self-testing. NULL = no
+    # override (use real agent_role). Set via /role bot command to see the
+    # Mini App / panel as another role without losing the real admin role.
+    user_cols_view_as = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    if "view_as_role" not in user_cols_view_as:
+        conn.execute("ALTER TABLE users ADD COLUMN view_as_role TEXT")
+
     order_cols4 = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}
     if "placed_by_telegram_id" not in order_cols4:
         conn.execute("ALTER TABLE orders ADD COLUMN placed_by_telegram_id INTEGER")

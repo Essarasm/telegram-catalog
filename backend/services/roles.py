@@ -5,13 +5,15 @@ This module is the single read-side helper — every backend role check
 should go through `get_role()` so the resolution rules stay consistent.
 
 Resolution order:
-1. `users.agent_role` from the DB (authoritative)
-2. Env fallbacks: ADMIN_IDS → admin, CASHIER_IDS → cashier (matches the
+1. `users.view_as_role` (admin self-impersonation via /role; takes precedence
+   so the override is honored everywhere — Mini App, panel, callbacks).
+2. `users.agent_role` from the DB (authoritative real role)
+3. Env fallbacks: ADMIN_IDS → admin, CASHIER_IDS → cashier (matches the
    pre-existing bot helpers in `bot/shared.py`); ensures a freshly-set env
    ID can use the panel before /makeagent has been called.
-3. Legacy `users.is_agent = 1` → agent (back-compat for old rows that
+4. Legacy `users.is_agent = 1` → agent (back-compat for old rows that
    never got migrated).
-4. None.
+5. None.
 """
 from __future__ import annotations
 
@@ -33,9 +35,12 @@ def get_role(conn, telegram_id: int) -> Optional[str]:
     if not telegram_id:
         return None
     row = conn.execute(
-        "SELECT agent_role, is_agent FROM users WHERE telegram_id = ?",
+        "SELECT agent_role, is_agent, view_as_role FROM users WHERE telegram_id = ?",
         (telegram_id,),
     ).fetchone()
+    override = (row["view_as_role"] if row else None) or None
+    if override in VALID_ROLES:
+        return override
     db_role = (row["agent_role"] if row else None) or None
     if db_role in VALID_ROLES:
         return db_role

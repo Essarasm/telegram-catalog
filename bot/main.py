@@ -564,6 +564,7 @@ async def main():
     from bot.handlers.bank_transfer import router as bank_transfer_router
     from bot.handlers.order_dispatch import router as order_dispatch_router
     from bot.handlers.zakazlar import router as zakazlar_router
+    from bot.handlers.role import router as role_router
 
     # cashier_router first — its FSM-state filters short-circuit messages
     # in the cashier group before any catch-all router can swallow them.
@@ -585,7 +586,8 @@ async def main():
     dp.include_router(zakazlar_router)
     dp.include_router(order_dispatch_router)
     dp.include_router(agent_approval_router)
-    logger.info("Loaded handler modules: cashier, bank_transfer, driver_location, testclient, admin, uploads, score, orders, location, registration, support, zakazlar, order_dispatch, agent_approval")
+    dp.include_router(role_router)
+    logger.info("Loaded handler modules: cashier, bank_transfer, driver_location, testclient, admin, uploads, score, orders, location, registration, support, zakazlar, order_dispatch, agent_approval, role")
 
     # Error alerter: any uncaught exception inside a bot handler now posts
     # to Admin group with full traceback (same infrastructure as the
