@@ -25,10 +25,16 @@ from aiogram.filters import Command
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.shared import (
-    AGENT_APPROVAL_GROUP_CHAT_ID, ADMIN_IDS, get_db, html_escape, logger,
+    ADMIN_GROUP_CHAT_ID, AGENT_APPROVAL_GROUP_CHAT_ID,
+    ADMIN_IDS, get_db, html_escape, logger,
 )
 
 router = Router()
+
+# Chats where /role and its callbacks are accepted. Keep this tight —
+# the override flips effective role globally, so we don't want random
+# group members triggering it. Both groups are admin-only.
+_ALLOWED_CHATS = {ADMIN_GROUP_CHAT_ID, AGENT_APPROVAL_GROUP_CHAT_ID}
 
 
 _ROLE_LABEL = {
@@ -125,11 +131,11 @@ def _render_state(conn, telegram_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
 @router.message(Command("role"))
 async def cmd_role(message: types.Message):
-    """Open the role-switch menu. Only works inside the agent-approval
-    group and only for real admins."""
+    """Open the role-switch menu. Only works inside admin-type groups
+    (admin group + agent-approval group) and only for real admins."""
     chat_id = message.chat.id if message.chat else None
-    if chat_id != AGENT_APPROVAL_GROUP_CHAT_ID:
-        return  # silent — /role is scoped to one group by design
+    if chat_id not in _ALLOWED_CHATS:
+        return  # silent — /role is scoped to admin chats by design
 
     uid = message.from_user.id if message.from_user else 0
     if not uid:
@@ -158,7 +164,7 @@ async def on_role_callback(cb: types.CallbackQuery):
     uid = cb.from_user.id
 
     chat_id = cb.message.chat.id if cb.message and cb.message.chat else None
-    if chat_id != AGENT_APPROVAL_GROUP_CHAT_ID:
+    if chat_id not in _ALLOWED_CHATS:
         await cb.answer("Ruxsat yo'q", show_alert=False)
         return
 

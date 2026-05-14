@@ -94,6 +94,7 @@ SPECS = {
             Cmd("/list", "Tasdiqlanmaganlar ro'yxati"),
             Cmd("/unlinked", "1C ga ulanmagan foydalanuvchilar"),
             Cmd("/makeagent <user_id>", "Savdo agenti qilish"),
+            Cmd("/role", "Test uchun rolingizni vaqtincha o'zgartirish (admin/agent/kassir/ishchi) — inline tugmalar"),
             Cmd("/testclient [имя или #ID]", "Test: o'zingizni mijoz sifatida bog'lash"),
             Cmd("/duplicateclients [qidiruv]", "Takrorlanuvchi mijozlar auditi"),
             Cmd("/clientmaster (reply XLSX)", "Client Master importi (1C cyrillic + phone)"),
