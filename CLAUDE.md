@@ -31,7 +31,7 @@ Load-bearing decisions. Stop and confirm with Ulugbek before touching:
 - **SQLite schema** (`backend/database.py`) — additive `ALTER TABLE` only, never destructive DDL
 - **1C XLS parser** — `xlrd` + `cp1251`; never assume UTF-8 for 1C files
 - **Cyrillic handling** — preserve cp1251 round-trip; NFC normalization for search
-- **Deploy mechanism** — `railway up` from local; GitHub push does NOT deploy
+- **Deploy mechanism** — `railway up` from local is the **only** deploy path. Railway's GitHub auto-deploy was disabled on 2026-05-14 after it silently overwrote a `railway up` upload by rebuilding from the `origin/main` head. The GitHub repo is still linked for code-backup browsing; pushes do not trigger builds. If a deployed change goes missing, suspect a stale `railway up` working tree — not a missed GitHub push.
 
 ## Common Commands
 
