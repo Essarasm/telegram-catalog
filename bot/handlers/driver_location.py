@@ -369,9 +369,10 @@ async def cb_cancel(cb: CallbackQuery, state: FSMContext):
     if not _is_driver_chat(cb):
         await cb.answer()
         return
-    await cb.answer()
     await state.clear()
     try:
-        await cb.message.edit_text("❌ Bekor qilindi. /lokatsiya orqali yangidan.")
+        await cb.message.edit_text("❌ Bekor qilindi.")
     except Exception:
-        await cb.message.answer("❌ Bekor qilindi. /lokatsiya orqali yangidan.")
+        pass
+    await cb.answer()
+    await _send_lokatsiya_menu(cb.message)
