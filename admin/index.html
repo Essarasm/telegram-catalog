@@ -4725,6 +4725,7 @@
             drivers: [],
             trucks: [],
             stops: [],            // [{id, display_name, phone, lat, lng, has_gps, address}]
+            lastSearchResults: [],// cached results of the most recent /clients/search call
             initialized: false,
             lastPlan: null,        // payload from /route/plan
             lastSaved: null,        // {route_id, ...} from /route/save
@@ -4799,6 +4800,7 @@
 
         function renderPrDropdown(results) {
             const dd = document.getElementById('prSearchDropdown');
+            prState.lastSearchResults = results;
             if (!results.length) {
                 dd.innerHTML = '<div style="padding:10px; color:#8b8fa3; font-size:12px;">No matches</div>';
                 dd.style.display = 'block';
@@ -4835,13 +4837,10 @@
             if (!dd.contains(e.target) && e.target !== inp) hidePrDropdown();
         });
 
-        async function addPrStop(clientId) {
+        function addPrStop(clientId) {
             if (prState.stops.length >= 8) { alert('Max 8 delivery stops per route.'); return; }
-            // Look up full client info by re-searching by id (cheap, returns the row).
-            const r = await fetch(`/api/collections/clients/search?q=${clientId}&admin_key=${encodeURIComponent(ADMIN_KEY)}`);
-            const data = await r.json();
-            const found = (data.results || []).find(x => x.id === clientId);
-            if (!found) { alert('Client lookup failed.'); return; }
+            const found = prState.lastSearchResults.find(x => x.id === clientId);
+            if (!found) { alert('Client lookup failed — search result expired, type again.'); return; }
             if (!found.has_gps) { alert('Client has no GPS — pin them first.'); return; }
             prState.stops.push(found);
             document.getElementById('prClientSearch').value = '';
