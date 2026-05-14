@@ -575,3 +575,651 @@ def build_route(req: BuildRouteRequest, admin_key: str = Query(...)):
         "telegram_message": telegram_text,
         "waypoint_count": len(waypoints),
     }
+
+
+# ── Session M Phase 3: Auto-planned delivery + return-leg route ──
+#
+# A complete planning flow:
+#   GET  /drivers                       — agents available as drivers
+#   POST /route/plan                    — preview a route (NN-ordered delivery +
+#                                          greedy-picked return-leg debtors).
+#                                          No DB writes.
+#   POST /route/save                    — persist + optionally dispatch
+#   GET  /routes                        — recent saved routes
+#   GET  /routes/{route_id}             — single route detail
+#
+# Algorithm:
+#   • Delivery sequence = nearest-neighbor from warehouse on haversine.
+#     ~80–90% of optimal for ≤8 stops; no external API.
+#   • Return-leg candidates = debtors within `return_buffer_km` of the
+#     last_delivery → warehouse segment AND whose perpendicular foot lies
+#     on the segment (t ∈ [0,1]). Detour cost = round-trip perp_dist ÷
+#     city_speed; greedy-fill by (debt × aging_days / detour_min) while
+#     sum ≤ return_time_budget_min.
+
+# Hardcoded truck catalogue. Free-text `users.vehicle` may contain other
+# values ("Жигули", "boshqa"); we accept those as truck_type=="other".
+TRUCK_CATALOGUE = {
+    "labo": ("Labo", 1.0),
+    "jac": ("Jac", 2.5),
+    "foton": ("Foton", 3.0),
+    "isuzu": ("Isuzu", 7.0),
+}
+
+CITY_SPEED_KMH_DEFAULT = 25.0  # rough Tashkent/Samarkand mixed-city avg
+MAX_DELIVERY_STOPS = 8
+
+
+class PlanRouteRequest(BaseModel):
+    truck_type: str                                  # 'labo' | 'jac' | 'foton' | 'isuzu' | 'other'
+    driver_tg_id: int
+    driver_name: Optional[str] = None
+    origin_lat: float
+    origin_lng: float
+    delivery_client_ids: List[int] = Field(default_factory=list, max_length=MAX_DELIVERY_STOPS)
+    return_buffer_km: float = 5.0
+    return_time_budget_min: float = 30.0
+    city_speed_kmh: float = CITY_SPEED_KMH_DEFAULT
+    # If non-empty, dispatcher has explicitly chosen these debtors for the
+    # return leg (overrides greedy pick). Order is ignored — return-leg
+    # sequence is computed by NN from the last delivery stop.
+    return_client_ids: Optional[List[int]] = None
+    dispatcher_name: Optional[str] = None
+    dispatcher_tg_id: Optional[int] = None
+
+
+class SaveRouteRequest(PlanRouteRequest):
+    dispatch: bool = False  # if True, also DM the driver via bot
+
+
+def _nearest_neighbor(stops: list, start_lat: float, start_lng: float) -> list:
+    """Greedy NN ordering. Mutates each chosen stop with `leg_distance_km`
+    (distance from the previous point — warehouse for stop #1).
+    Returns the stops in visit order. Empty input → []."""
+    remaining = list(stops)
+    cur_lat, cur_lng = start_lat, start_lng
+    ordered = []
+    while remaining:
+        best_i, best_d = 0, None
+        for i, s in enumerate(remaining):
+            d = _haversine_km(cur_lat, cur_lng, s["lat"], s["lng"])
+            if best_d is None or d < best_d:
+                best_i, best_d = i, d
+        chosen = remaining.pop(best_i)
+        chosen["leg_distance_km"] = best_d
+        ordered.append(chosen)
+        cur_lat, cur_lng = chosen["lat"], chosen["lng"]
+    return ordered
+
+
+def _fetch_clients_by_ids(conn, ids: list) -> dict:
+    """Bulk lookup of `allowed_clients` rows by id, with the fields we need
+    for route planning. Returns {id: dict}."""
+    if not ids:
+        return {}
+    ph = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"""SELECT id, name, client_id_1c, company_name, phone_normalized,
+                   gps_latitude, gps_longitude, gps_address,
+                   viloyat, tuman
+            FROM allowed_clients
+            WHERE id IN ({ph})
+              AND COALESCE(status, 'active') != 'merged'""",
+        ids,
+    ).fetchall()
+    return {r["id"]: r for r in rows}
+
+
+def _latest_debt_for(conn, client_ids: list) -> dict:
+    """Most recent `client_debts` row per client_id. Returns {id: row}."""
+    if not client_ids:
+        return {}
+    ph = ",".join("?" * len(client_ids))
+    rows = conn.execute(
+        f"""SELECT cd.*
+            FROM client_debts cd
+            JOIN (
+                SELECT client_id, MAX(report_date) AS rd
+                FROM client_debts
+                WHERE client_id IN ({ph})
+                GROUP BY client_id
+            ) latest ON cd.client_id = latest.client_id AND cd.report_date = latest.rd""",
+        client_ids,
+    ).fetchall()
+    return {r["client_id"]: r for r in rows}
+
+
+def _yandex_route_url(origin: tuple, stops: list, return_to_origin: bool = True) -> str:
+    """Build a Yandex Maps directions URL.
+
+    `stops` is a list of (lat, lng) tuples. Yandex's URL scheme:
+      https://yandex.com/maps/?rtext=lat1,lng1~lat2,lng2~...&rtt=auto
+    `rtt=auto` = driving. We end at the origin (round trip) when
+    `return_to_origin` is True so the driver gets a closed loop.
+    """
+    pts = [origin] + list(stops)
+    if return_to_origin:
+        pts.append(origin)
+    rtext = "~".join(f"{lat:.6f},{lng:.6f}" for lat, lng in pts)
+    return f"https://yandex.com/maps/?rtext={rtext}&rtt=auto"
+
+
+def _truck_label(truck_type: str, capacity_t: Optional[float]) -> str:
+    name = TRUCK_CATALOGUE.get(truck_type, (truck_type.title(), None))[0]
+    if capacity_t:
+        return f"{name} ({capacity_t:g}т)"
+    return name
+
+
+def _plan_route_payload(conn, req: PlanRouteRequest) -> dict:
+    """Shared core for /route/plan and /route/save. Returns the planned-route
+    payload (sequence + url + brief + totals). No DB writes."""
+    truck_type = (req.truck_type or "").lower()
+    if truck_type not in TRUCK_CATALOGUE and truck_type != "other":
+        raise HTTPException(status_code=400, detail=f"truck_type must be one of {sorted(TRUCK_CATALOGUE)} or 'other'")
+    capacity = TRUCK_CATALOGUE.get(truck_type, (None, None))[1]
+
+    # Driver lookup (and a sane fallback for driver_name)
+    driver_row = conn.execute(
+        """SELECT telegram_id, first_name, last_name, username, phone,
+                  vehicle, vehicle_capacity_tons, agent_role, is_agent
+           FROM users WHERE telegram_id = ?""",
+        (req.driver_tg_id,),
+    ).fetchone()
+    if not driver_row:
+        raise HTTPException(status_code=400, detail=f"driver {req.driver_tg_id} not found in users")
+    # Allow any user for now (some drivers may not be flagged is_agent); the
+    # frontend dropdown restricts to agents, but we don't enforce here.
+    driver_name = req.driver_name or (
+        (driver_row["first_name"] or "") + (f" {driver_row['last_name']}" if driver_row["last_name"] else "")
+    ).strip() or driver_row["username"] or f"#{driver_row['telegram_id']}"
+
+    # Delivery stops — must all have GPS
+    deliveries = []
+    if req.delivery_client_ids:
+        client_map = _fetch_clients_by_ids(conn, req.delivery_client_ids)
+        missing = [cid for cid in req.delivery_client_ids if cid not in client_map]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"client(s) not found: {missing}")
+        for cid in req.delivery_client_ids:
+            c = client_map[cid]
+            if c["gps_latitude"] is None or c["gps_longitude"] is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"client {cid} ({c['client_id_1c'] or c['name']}) has no GPS — drop or pin first",
+                )
+            deliveries.append({
+                "client_id": c["id"],
+                "client_id_1c": c["client_id_1c"],
+                "client_display_name": c["client_id_1c"] or c["company_name"] or c["name"] or f"#{c['id']}",
+                "phone_normalized": c["phone_normalized"],
+                "lat": float(c["gps_latitude"]),
+                "lng": float(c["gps_longitude"]),
+                "address": c["gps_address"],
+                "kind": "delivery",
+            })
+
+    # Order deliveries by nearest-neighbor from warehouse
+    ordered_deliveries = _nearest_neighbor(deliveries, req.origin_lat, req.origin_lng)
+
+    # Return-leg pivot = last delivery stop, or warehouse itself if no deliveries
+    if ordered_deliveries:
+        last_lat = ordered_deliveries[-1]["lat"]
+        last_lng = ordered_deliveries[-1]["lng"]
+    else:
+        last_lat, last_lng = req.origin_lat, req.origin_lng
+
+    direct_return_km = _haversine_km(last_lat, last_lng, req.origin_lat, req.origin_lng)
+
+    # Return-leg debtor candidates
+    # If `return_client_ids` is explicitly provided, use those; else, search
+    # the buffer + greedy-fill by score until time budget exhausted.
+    UZS_PER_USD = 12500.0
+    candidates_raw = []
+
+    if req.return_client_ids is not None:
+        # Explicit list — fetch + compute detour, no budget filter
+        cmap = _fetch_clients_by_ids(conn, req.return_client_ids)
+        debts = _latest_debt_for(conn, req.return_client_ids)
+        for cid in req.return_client_ids:
+            c = cmap.get(cid)
+            if not c or c["gps_latitude"] is None or c["gps_longitude"] is None:
+                continue
+            dist_km, t = _point_to_segment_km(
+                float(c["gps_latitude"]), float(c["gps_longitude"]),
+                last_lat, last_lng, req.origin_lat, req.origin_lng,
+            )
+            d = debts.get(cid)
+            d_uzs = float(d["debt_uzs"] or 0) if d else 0.0
+            d_usd = float(d["debt_usd"] or 0) if d else 0.0
+            aging = _oldest_aging_bucket(d) if d else None
+            detour_min = (2.0 * dist_km / max(req.city_speed_kmh, 1.0)) * 60.0
+            candidates_raw.append({
+                "client": c, "debt_uzs": d_uzs, "debt_usd": d_usd,
+                "aging": aging, "perp_km": dist_km, "detour_min": detour_min,
+                "client_id": cid,
+            })
+    else:
+        # Buffer search across all positive-debt clients
+        all_debts_rows = conn.execute(
+            """SELECT cd.*
+               FROM client_debts cd
+               JOIN (
+                   SELECT client_id, MAX(report_date) AS rd
+                   FROM client_debts
+                   WHERE client_id IS NOT NULL
+                   GROUP BY client_id
+               ) latest ON cd.client_id = latest.client_id AND cd.report_date = latest.rd
+               WHERE (cd.debt_uzs > 0 OR cd.debt_usd > 0)"""
+        ).fetchall()
+        debt_by_client = {r["client_id"]: r for r in all_debts_rows}
+        if debt_by_client:
+            ph = ",".join("?" * len(debt_by_client))
+            client_rows = conn.execute(
+                f"""SELECT id, name, client_id_1c, company_name, phone_normalized,
+                           gps_latitude, gps_longitude, gps_address, viloyat, tuman
+                    FROM allowed_clients
+                    WHERE id IN ({ph})
+                      AND gps_latitude IS NOT NULL AND gps_longitude IS NOT NULL
+                      AND COALESCE(status, 'active') != 'merged'""",
+                list(debt_by_client.keys()),
+            ).fetchall()
+            # Exclude the delivery clients from return-leg candidates (already on the route)
+            already_on_route = {s["client_id"] for s in ordered_deliveries}
+            for c in client_rows:
+                if c["id"] in already_on_route:
+                    continue
+                debt = debt_by_client[c["id"]]
+                dist_km, t = _point_to_segment_km(
+                    float(c["gps_latitude"]), float(c["gps_longitude"]),
+                    last_lat, last_lng, req.origin_lat, req.origin_lng,
+                )
+                if not (0.0 <= t <= 1.0 and dist_km <= req.return_buffer_km):
+                    continue
+                aging = _oldest_aging_bucket(debt)
+                if aging is None:
+                    continue
+                d_uzs = float(debt["debt_uzs"] or 0)
+                d_usd = float(debt["debt_usd"] or 0)
+                detour_min = (2.0 * dist_km / max(req.city_speed_kmh, 1.0)) * 60.0
+                candidates_raw.append({
+                    "client": c, "debt_uzs": d_uzs, "debt_usd": d_usd,
+                    "aging": aging, "perp_km": dist_km, "detour_min": detour_min,
+                    "client_id": c["id"],
+                })
+
+    # Score + greedy budget fill (skipped when explicit list given)
+    for cand in candidates_raw:
+        aging_days = _AGING_DAYS.get(cand["aging"], 30) if cand["aging"] else 30
+        debt_total = cand["debt_uzs"] + cand["debt_usd"] * UZS_PER_USD
+        cand["_score"] = (aging_days * debt_total) / max(cand["detour_min"], 1.0)
+    candidates_raw.sort(key=lambda x: -x["_score"])
+
+    picked = []
+    if req.return_client_ids is not None:
+        picked = candidates_raw  # all explicit picks, no budget filter
+    else:
+        budget = req.return_time_budget_min
+        used = 0.0
+        for cand in candidates_raw:
+            if used + cand["detour_min"] <= budget:
+                picked.append(cand)
+                used += cand["detour_min"]
+
+    # NN-order the picked collection stops on the return segment
+    coll_stops_unordered = []
+    for cand in picked:
+        c = cand["client"]
+        coll_stops_unordered.append({
+            "client_id": c["id"],
+            "client_id_1c": c["client_id_1c"],
+            "client_display_name": c["client_id_1c"] or c["company_name"] or c["name"] or f"#{c['id']}",
+            "phone_normalized": c["phone_normalized"],
+            "lat": float(c["gps_latitude"]),
+            "lng": float(c["gps_longitude"]),
+            "address": c["gps_address"],
+            "debt_uzs": cand["debt_uzs"],
+            "debt_usd": cand["debt_usd"],
+            "oldest_aging_bucket": cand["aging"],
+            "detour_minutes": cand["detour_min"],
+            "perp_km": cand["perp_km"],
+            "kind": "collection",
+        })
+    ordered_collections = _nearest_neighbor(coll_stops_unordered, last_lat, last_lng)
+
+    # Compose full sequence (origin → deliveries → collections → return)
+    all_stops = ordered_deliveries + ordered_collections
+    waypoints = [(s["lat"], s["lng"]) for s in all_stops]
+
+    # Distance + time totals (haversine; rough)
+    total_km = sum(s["leg_distance_km"] for s in all_stops)
+    # Plus return leg from last collection (or last delivery if no collections) to warehouse
+    if all_stops:
+        total_km += _haversine_km(all_stops[-1]["lat"], all_stops[-1]["lng"],
+                                  req.origin_lat, req.origin_lng)
+    estimated_min = (total_km / max(req.city_speed_kmh, 1.0)) * 60.0
+
+    maps_url = _yandex_route_url((req.origin_lat, req.origin_lng), waypoints, return_to_origin=True)
+
+    # Driver brief (Telegram HTML)
+    truck_label = _truck_label(truck_type, capacity)
+    lines = [
+        f"🚚 <b>Маршрут — {truck_label}</b>",
+        f"🧑‍💼 Driver: {driver_name}",
+        f"📦 {len(ordered_deliveries)} delivery, {len(ordered_collections)} collection",
+        f"⏱ ~{int(round(estimated_min))} min · {total_km:.1f} km",
+        f"📍 Old: склад ({req.origin_lat:.5f}, {req.origin_lng:.5f})",
+    ]
+    step = 1
+    for s in ordered_deliveries:
+        lines.append("")
+        lines.append(f"<b>{step}. {s['client_display_name']}</b> — delivery")
+        lines.append(f"   📍 {s['lat']:.5f}, {s['lng']:.5f}")
+        if s["phone_normalized"]:
+            lines.append(f"   ☎ {s['phone_normalized']}")
+        if s["address"]:
+            lines.append(f"   🏠 {s['address']}")
+        step += 1
+    for s in ordered_collections:
+        lines.append("")
+        owe_parts = []
+        if s["debt_uzs"] > 0:
+            owe_parts.append(f"{int(s['debt_uzs']):,} UZS")
+        if s["debt_usd"] > 0:
+            owe_parts.append(f"${s['debt_usd']:,.2f}")
+        lines.append(f"<b>{step}. {s['client_display_name']}</b> — collection")
+        lines.append(f"   💰 owes {' + '.join(owe_parts) or '—'} ({s['oldest_aging_bucket']})")
+        lines.append(f"   📍 {s['lat']:.5f}, {s['lng']:.5f} (+{s['detour_minutes']:.0f} min detour)")
+        if s["phone_normalized"]:
+            lines.append(f"   ☎ {s['phone_normalized']}")
+        step += 1
+    lines.append("")
+    lines.append("📍 Назад: склад")
+    driver_brief = "\n".join(lines)
+
+    return {
+        "truck_type": truck_type,
+        "truck_label": truck_label,
+        "truck_capacity_t": capacity,
+        "driver_tg_id": req.driver_tg_id,
+        "driver_name": driver_name,
+        "origin": {"lat": req.origin_lat, "lng": req.origin_lng},
+        "return_buffer_km": req.return_buffer_km,
+        "return_time_budget_min": req.return_time_budget_min,
+        "city_speed_kmh": req.city_speed_kmh,
+        "delivery_stops": ordered_deliveries,
+        "collection_stops": ordered_collections,
+        "total_distance_km": round(total_km, 2),
+        "estimated_minutes": round(estimated_min, 1),
+        "direct_return_km": round(direct_return_km, 2),
+        "maps_url": maps_url,
+        "driver_brief": driver_brief,
+    }
+
+
+@router.get("/clients/search")
+def search_clients_for_route(q: str = Query(..., min_length=1),
+                             limit: int = 15,
+                             admin_key: str = Query(...)):
+    """Tiny client search for the delivery-stop picker. Matches against
+    `client_id_1c`, `name`, `company_name`, `phone_normalized`. Returns
+    GPS-status so the UI can warn before the dispatcher adds a pinless
+    client (which the /route/plan endpoint will reject anyway)."""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    needle = f"%{q.strip()}%"
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT id, client_id_1c, name, company_name, phone_normalized,
+                  gps_latitude, gps_longitude, gps_address, tuman, viloyat
+           FROM allowed_clients
+           WHERE COALESCE(status,'active') != 'merged'
+             AND (client_id_1c LIKE ? OR name LIKE ?
+                  OR company_name LIKE ? OR phone_normalized LIKE ?)
+           ORDER BY (gps_latitude IS NULL),   -- pinned first
+                    client_id_1c
+           LIMIT ?""",
+        (needle, needle, needle, needle, max(1, min(limit, 50))),
+    ).fetchall()
+    conn.close()
+    return {"results": [
+        {
+            "id": r["id"],
+            "client_id_1c": r["client_id_1c"],
+            "display_name": r["client_id_1c"] or r["company_name"] or r["name"] or f"#{r['id']}",
+            "phone": r["phone_normalized"],
+            "has_gps": r["gps_latitude"] is not None and r["gps_longitude"] is not None,
+            "lat": r["gps_latitude"], "lng": r["gps_longitude"],
+            "address": r["gps_address"],
+            "tuman": r["tuman"], "viloyat": r["viloyat"],
+        } for r in rows
+    ]}
+
+
+@router.get("/drivers")
+def list_drivers(admin_key: str = Query(...)):
+    """Drivers picker = `users.agent_role='agent'`. Returns each agent's
+    name, telegram_id, phone, declared vehicle + capacity (so the frontend
+    can auto-fill the truck dropdown when a driver is picked)."""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT telegram_id, first_name, last_name, username, phone,
+                  vehicle, vehicle_capacity_tons
+           FROM users
+           WHERE agent_role = 'agent' OR is_agent = 1
+           ORDER BY COALESCE(first_name, username, '')"""
+    ).fetchall()
+    conn.close()
+    drivers = []
+    for r in rows:
+        name = ((r["first_name"] or "") + (f" {r['last_name']}" if r["last_name"] else "")).strip() \
+            or r["username"] or f"#{r['telegram_id']}"
+        drivers.append({
+            "telegram_id": r["telegram_id"],
+            "name": name,
+            "phone": r["phone"],
+            "vehicle": r["vehicle"],
+            "vehicle_capacity_tons": r["vehicle_capacity_tons"],
+        })
+    return {"drivers": drivers, "trucks": [
+        {"key": k, "label": v[0], "capacity_t": v[1]} for k, v in TRUCK_CATALOGUE.items()
+    ]}
+
+
+@router.post("/route/plan")
+def plan_route(req: PlanRouteRequest, admin_key: str = Query(...)):
+    """Preview a planned route. No DB writes — pure compute. Frontend
+    shows the sequenced stops on the map; dispatcher tweaks return params
+    or removes/adds collection stops; then calls /route/save to persist."""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    conn = get_db()
+    try:
+        return _plan_route_payload(conn, req)
+    finally:
+        conn.close()
+
+
+@router.post("/route/save")
+def save_route(req: SaveRouteRequest, admin_key: str = Query(...)):
+    """Persist a route to `delivery_routes` + `route_stops`. If
+    `dispatch=true`, also DM the driver the Yandex URL + brief via the bot.
+    Returns the saved `route_id` plus the same payload as `/route/plan`."""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    conn = get_db()
+    try:
+        payload = _plan_route_payload(conn, req)
+
+        cur = conn.execute(
+            """INSERT INTO delivery_routes
+                (created_by_tg_id, created_by_name, truck_type, truck_capacity_t,
+                 driver_tg_id, driver_name, status, origin_lat, origin_lng,
+                 return_buffer_km, return_time_budget_min,
+                 total_distance_km, estimated_minutes, maps_url, driver_brief)
+               VALUES (?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (req.dispatcher_tg_id, req.dispatcher_name,
+             payload["truck_type"], payload["truck_capacity_t"],
+             payload["driver_tg_id"], payload["driver_name"],
+             req.origin_lat, req.origin_lng,
+             req.return_buffer_km, req.return_time_budget_min,
+             payload["total_distance_km"], payload["estimated_minutes"],
+             payload["maps_url"], payload["driver_brief"]),
+        )
+        route_id = cur.lastrowid
+
+        seq = 0
+        conn.execute(
+            """INSERT INTO route_stops
+                (route_id, sequence_order, kind, lat, lng)
+               VALUES (?, ?, 'origin', ?, ?)""",
+            (route_id, seq, req.origin_lat, req.origin_lng),
+        )
+        seq += 1
+        for s in payload["delivery_stops"]:
+            conn.execute(
+                """INSERT INTO route_stops
+                    (route_id, sequence_order, kind, client_id, client_id_1c,
+                     client_display_name, phone_normalized, lat, lng, address,
+                     leg_distance_km)
+                   VALUES (?, ?, 'delivery', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (route_id, seq, s["client_id"], s["client_id_1c"],
+                 s["client_display_name"], s["phone_normalized"],
+                 s["lat"], s["lng"], s["address"], s["leg_distance_km"]),
+            )
+            seq += 1
+        for s in payload["collection_stops"]:
+            conn.execute(
+                """INSERT INTO route_stops
+                    (route_id, sequence_order, kind, client_id, client_id_1c,
+                     client_display_name, phone_normalized, lat, lng, address,
+                     leg_distance_km, detour_minutes, debt_uzs, debt_usd,
+                     oldest_aging_bucket)
+                   VALUES (?, ?, 'collection', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (route_id, seq, s["client_id"], s["client_id_1c"],
+                 s["client_display_name"], s["phone_normalized"],
+                 s["lat"], s["lng"], s["address"],
+                 s["leg_distance_km"], s["detour_minutes"],
+                 s["debt_uzs"], s["debt_usd"], s["oldest_aging_bucket"]),
+            )
+            seq += 1
+        # Closing 'return' marker
+        conn.execute(
+            """INSERT INTO route_stops
+                (route_id, sequence_order, kind, lat, lng)
+               VALUES (?, ?, 'return', ?, ?)""",
+            (route_id, seq, req.origin_lat, req.origin_lng),
+        )
+        conn.commit()
+
+        dispatch_result = None
+        if req.dispatch:
+            dispatch_result = _dispatch_route_to_driver(conn, route_id, payload)
+            conn.commit()
+
+        payload["route_id"] = route_id
+        payload["dispatch_result"] = dispatch_result
+        return payload
+    finally:
+        conn.close()
+
+
+def _dispatch_route_to_driver(conn, route_id: int, payload: dict) -> dict:
+    """Send the driver a Telegram DM with the Yandex URL + brief.
+    Fire-and-forget over httpx; on success mark `dispatched_at` + status.
+    Returns {ok, telegram_response|error}."""
+    import os
+    import httpx as _httpx
+    bot_token = os.getenv("BOT_TOKEN", "")
+    if not bot_token:
+        return {"ok": False, "error": "BOT_TOKEN not set"}
+    if not payload.get("driver_tg_id"):
+        return {"ok": False, "error": "no driver_tg_id"}
+
+    text = payload["driver_brief"] + f"\n\n🗺 <a href=\"{payload['maps_url']}\">Yandex Maps</a>"
+    try:
+        r = _httpx.post(
+            f"https://api.telegram.org/bot{bot_token}/sendMessage",
+            json={
+                "chat_id": payload["driver_tg_id"],
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+            },
+            timeout=10,
+        )
+        ok = r.status_code == 200 and r.json().get("ok") is True
+        if ok:
+            conn.execute(
+                "UPDATE delivery_routes SET status='dispatched', dispatched_at=datetime('now') WHERE id=?",
+                (route_id,),
+            )
+        return {"ok": ok, "telegram_response": r.json()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@router.post("/route/{route_id}/dispatch")
+def dispatch_existing_route(route_id: int, admin_key: str = Query(...)):
+    """Re-dispatch a previously-saved route to its driver."""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM delivery_routes WHERE id = ?", (route_id,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="route not found")
+        payload = {
+            "driver_tg_id": row["driver_tg_id"],
+            "maps_url": row["maps_url"],
+            "driver_brief": row["driver_brief"],
+        }
+        result = _dispatch_route_to_driver(conn, route_id, payload)
+        conn.commit()
+        return {"route_id": route_id, "dispatch_result": result}
+    finally:
+        conn.close()
+
+
+@router.get("/routes")
+def list_routes(limit: int = 20, admin_key: str = Query(...)):
+    """Recent saved routes (most-recent first), for the Collections-tab history."""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT id, created_at, created_by_name, truck_type, truck_capacity_t,
+                  driver_name, driver_tg_id, status, total_distance_km,
+                  estimated_minutes, dispatched_at, completed_at
+           FROM delivery_routes
+           ORDER BY created_at DESC
+           LIMIT ?""",
+        (max(1, min(limit, 200)),),
+    ).fetchall()
+    conn.close()
+    return {"routes": [dict(r) for r in rows]}
+
+
+@router.get("/routes/{route_id}")
+def get_route(route_id: int, admin_key: str = Query(...)):
+    """Full detail (route + stops) for a single saved route."""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    conn = get_db()
+    route = conn.execute(
+        "SELECT * FROM delivery_routes WHERE id = ?", (route_id,)
+    ).fetchone()
+    if not route:
+        conn.close()
+        raise HTTPException(status_code=404, detail="route not found")
+    stops = conn.execute(
+        "SELECT * FROM route_stops WHERE route_id = ? ORDER BY sequence_order",
+        (route_id,),
+    ).fetchall()
+    conn.close()
+    return {"route": dict(route), "stops": [dict(s) for s in stops]}

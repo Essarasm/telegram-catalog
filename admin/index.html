@@ -1948,7 +1948,7 @@
                 <!-- Collections tab -->
                 <div id="collections-tab" class="tab-content hidden">
                     <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
-                        <div style="color:#8b8fa3; font-size:13px;">Pick where your trucks are heading — see debtors along the way, call them, build the driver's route.</div>
+                        <div style="color:#8b8fa3; font-size:13px;">Plan a delivery route, or search debtors along a truck's path.</div>
                         <div style="display:flex; gap:8px; align-items:center;">
                             <span style="font-size:12px; color:#8b8fa3;">Logged in as:</span>
                             <select id="collDispatcher" style="background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:6px 10px; font-size:12px;">
@@ -1958,6 +1958,90 @@
                                 <option value="Ibrat">Ibrat</option>
                                 <option value="Shuxrat">Shuxrat</option>
                             </select>
+                        </div>
+                    </div>
+
+                    <!-- Plan delivery route (Session M Phase 3) -->
+                    <div class="chart-container" id="planRoutePanel" style="padding:16px; margin-bottom:16px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                            <div class="chart-title" style="margin:0;">Plan delivery route (маршрут)</div>
+                            <div style="display:flex; gap:8px; align-items:center;">
+                                <button onclick="resetPlanRoute()" style="background:none; color:#8b8fa3; border:1px solid #2a2d3a; border-radius:6px; padding:6px 12px; font-size:12px; cursor:pointer;">Reset</button>
+                                <button onclick="toggleRoutesHistory()" id="prHistoryBtn" style="background:none; color:#8b8fa3; border:1px solid #2a2d3a; border-radius:6px; padding:6px 12px; font-size:12px; cursor:pointer;">Recent routes</button>
+                            </div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;">
+                            <div>
+                                <div style="font-size:11px; color:#8b8fa3; margin-bottom:4px;">Truck</div>
+                                <select id="prTruck" style="width:100%; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:8px 10px; font-size:13px;">
+                                    <option value="">— pick truck —</option>
+                                </select>
+                            </div>
+                            <div>
+                                <div style="font-size:11px; color:#8b8fa3; margin-bottom:4px;">Driver</div>
+                                <select id="prDriver" onchange="onDriverPicked()" style="width:100%; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:8px 10px; font-size:13px;">
+                                    <option value="">— pick driver —</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom:14px;">
+                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                                <span style="font-size:12px; color:#e4e4e7;">Delivery stops</span>
+                                <span id="prStopsCount" style="font-size:11px; color:#8b8fa3;">(0 / 8)</span>
+                            </div>
+                            <div style="position:relative;">
+                                <input type="text" id="prClientSearch" oninput="onPrSearchInput(event)" placeholder="Type client name, 1C ID, or phone..." style="width:100%; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:8px 10px; font-size:13px;">
+                                <div id="prSearchDropdown" style="display:none; position:absolute; top:100%; left:0; right:0; background:#0f1117; border:1px solid #2a2d3a; border-radius:6px; margin-top:4px; max-height:240px; overflow-y:auto; z-index:50;"></div>
+                            </div>
+                            <div id="prStopsList" style="margin-top:8px;"></div>
+                        </div>
+
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; margin-bottom:14px;">
+                            <div>
+                                <div style="font-size:11px; color:#8b8fa3; margin-bottom:4px;">Return buffer</div>
+                                <select id="prBuffer" style="width:100%; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:8px 10px; font-size:13px;">
+                                    <option value="2">2 km</option>
+                                    <option value="5" selected>5 km</option>
+                                    <option value="10">10 km</option>
+                                    <option value="20">20 km</option>
+                                </select>
+                            </div>
+                            <div>
+                                <div style="font-size:11px; color:#8b8fa3; margin-bottom:4px;">Detour budget</div>
+                                <select id="prTimeBudget" style="width:100%; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:8px 10px; font-size:13px;">
+                                    <option value="0">0 min (delivery only)</option>
+                                    <option value="15">15 min</option>
+                                    <option value="30" selected>30 min</option>
+                                    <option value="60">60 min</option>
+                                    <option value="120">120 min</option>
+                                </select>
+                            </div>
+                            <div>
+                                <div style="font-size:11px; color:#8b8fa3; margin-bottom:4px;">City speed (km/h)</div>
+                                <input type="number" id="prCitySpeed" value="25" min="10" max="80" style="width:100%; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:8px 10px; font-size:13px;">
+                            </div>
+                        </div>
+
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <button onclick="planRoute()" id="prPlanBtn" style="background:#22c55e; color:white; border:none; border-radius:6px; padding:10px 18px; font-size:13px; font-weight:600; cursor:pointer;">Build route →</button>
+                            <span id="prPlanStatus" style="font-size:12px; color:#8b8fa3;"></span>
+                        </div>
+
+                        <div id="prResult" style="display:none; margin-top:16px; padding:14px; background:#0f1117; border:1px solid #2a2d3a; border-radius:8px;">
+                            <div id="prResultSummary" style="font-size:13px; color:#e4e4e7; margin-bottom:10px;"></div>
+                            <div id="prResultStops" style="margin-bottom:12px;"></div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button onclick="savePlannedRoute(false)" style="background:#6366f1; color:white; border:none; border-radius:6px; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer;">Save route</button>
+                                <button onclick="savePlannedRoute(true)" style="background:#22c55e; color:white; border:none; border-radius:6px; padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer;">Save + send to driver</button>
+                                <a id="prYandexLink" href="#" target="_blank" style="background:#1a1d27; color:#22d3ee; border:1px solid #2a2d3a; border-radius:6px; padding:8px 14px; font-size:12px; font-weight:600; text-decoration:none;">Open in Yandex Maps ↗</a>
+                                <button onclick="copyPlannedBrief()" style="background:#1a1d27; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px; padding:8px 14px; font-size:12px; cursor:pointer;">Copy brief</button>
+                            </div>
+                            <pre id="prDriverBrief" style="display:none; font-family:inherit; font-size:12px; background:#0a0c12; padding:10px; border-radius:6px; white-space:pre-wrap; color:#e4e4e7; margin-top:10px; max-height:240px; overflow-y:auto;"></pre>
+                        </div>
+
+                        <div id="prHistoryPanel" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid #2a2d3a;">
+                            <div id="prHistoryList" style="font-size:12px; color:#8b8fa3;">Loading…</div>
                         </div>
                     </div>
 
@@ -2314,6 +2398,11 @@
                 }
                 if (tabName === 'customers' && customersMap) {
                     customersMap.invalidateSize();
+                    // Re-run fitBounds now that the container has real dimensions
+                    // (the initial render likely skipped it for a 0×0 hidden div).
+                    if (typeof renderCustomers === 'function' && customersData && customersData.clients) {
+                        renderCustomers();
+                    }
                 }
                 if (tabName === 'collections' && collectionsMap) {
                     collectionsMap.invalidateSize();
@@ -4482,12 +4571,18 @@
                 }).join('')
                 : '<tr><td colspan="10" style="text-align:center; color:#8b8fa3;">No data for the current filters.</td></tr>';
 
-            // Fit bounds to filtered set
+            // Fit bounds to filtered set — only when the tab's actually visible.
+            // If renderCustomers fires while the tab is hidden (offsetWidth=0),
+            // Leaflet computes the wrong zoom from a 0×0 viewport and falls back
+            // to a world-level view. In that case, keep the initial setView and
+            // let the next visit trigger fitBounds via the user's filter change.
             try {
+                const container = customersMap.getContainer();
+                if (!container || container.offsetWidth === 0) return;
                 const latlngs = pts.filter(c => c.lat && c.lng).map(c => [c.lat, c.lng]);
                 if (latlngs.length) {
                     const b = L.latLngBounds(latlngs);
-                    if (b.isValid()) customersMap.fitBounds(b.pad(0.15), { maxZoom: 14, animate: false });
+                    if (b.isValid()) customersMap.fitBounds(b.pad(0.15), { maxZoom: 14, minZoom: 9, animate: false });
                 }
             } catch (e) { /* keep current view */ }
         }
@@ -4622,7 +4717,360 @@
         switchTab = function(tabName) {
             _origSwitchTab(tabName);
             if (tabName === 'collections' && !collectionsMap) initCollectionsTab();
+            if (tabName === 'collections') initPlanRouteIfNeeded();
         };
+
+        // ─── Plan delivery route (Session M Phase 3) ───────────
+        let prState = {
+            drivers: [],
+            trucks: [],
+            stops: [],            // [{id, display_name, phone, lat, lng, has_gps, address}]
+            initialized: false,
+            lastPlan: null,        // payload from /route/plan
+            lastSaved: null,        // {route_id, ...} from /route/save
+            planLayers: [],          // Leaflet markers/lines for the planned route
+            historyOpen: false,
+        };
+        let prSearchAbort = null;
+        let prSearchTimer = null;
+
+        async function initPlanRouteIfNeeded() {
+            if (prState.initialized) return;
+            prState.initialized = true;
+            try {
+                const r = await fetch(`/api/collections/drivers?admin_key=${encodeURIComponent(ADMIN_KEY)}`);
+                if (!r.ok) throw new Error(`drivers ${r.status}`);
+                const data = await r.json();
+                prState.drivers = data.drivers || [];
+                prState.trucks = data.trucks || [];
+                fillTruckSelect();
+                fillDriverSelect();
+            } catch (e) {
+                console.error('plan-route init:', e);
+                document.getElementById('prPlanStatus').textContent = 'Failed to load drivers: ' + e.message;
+            }
+        }
+
+        function fillTruckSelect() {
+            const sel = document.getElementById('prTruck');
+            sel.innerHTML = '<option value="">— pick truck —</option>' +
+                prState.trucks.map(t => `<option value="${t.key}">${escHtml(t.label)} (${t.capacity_t}т)</option>`).join('');
+        }
+
+        function fillDriverSelect() {
+            const sel = document.getElementById('prDriver');
+            sel.innerHTML = '<option value="">— pick driver —</option>' +
+                prState.drivers.map(d =>
+                    `<option value="${d.telegram_id}" data-vehicle="${escHtml(d.vehicle || '')}" data-cap="${d.vehicle_capacity_tons || ''}">${escHtml(d.name)}${d.vehicle ? ` (${escHtml(d.vehicle)})` : ''}</option>`
+                ).join('');
+        }
+
+        function onDriverPicked() {
+            const sel = document.getElementById('prDriver');
+            const opt = sel.options[sel.selectedIndex];
+            if (!opt || !opt.value) return;
+            const vehicle = (opt.dataset.vehicle || '').toLowerCase();
+            const truckSel = document.getElementById('prTruck');
+            if (truckSel.value) return; // don't override an explicit pick
+            const match = prState.trucks.find(t => t.key === vehicle || t.label.toLowerCase() === vehicle);
+            if (match) truckSel.value = match.key;
+        }
+
+        function onPrSearchInput(e) {
+            const q = e.target.value.trim();
+            if (prSearchTimer) clearTimeout(prSearchTimer);
+            if (!q) { hidePrDropdown(); return; }
+            prSearchTimer = setTimeout(() => runPrSearch(q), 220);
+        }
+
+        async function runPrSearch(q) {
+            if (prSearchAbort) prSearchAbort.abort();
+            prSearchAbort = new AbortController();
+            try {
+                const r = await fetch(`/api/collections/clients/search?q=${encodeURIComponent(q)}&admin_key=${encodeURIComponent(ADMIN_KEY)}`,
+                    { signal: prSearchAbort.signal });
+                if (!r.ok) throw new Error(`search ${r.status}`);
+                const data = await r.json();
+                renderPrDropdown(data.results || []);
+            } catch (e) {
+                if (e.name !== 'AbortError') console.error(e);
+            }
+        }
+
+        function renderPrDropdown(results) {
+            const dd = document.getElementById('prSearchDropdown');
+            if (!results.length) {
+                dd.innerHTML = '<div style="padding:10px; color:#8b8fa3; font-size:12px;">No matches</div>';
+                dd.style.display = 'block';
+                return;
+            }
+            const inIds = new Set(prState.stops.map(s => s.id));
+            dd.innerHTML = results.map(r => {
+                const already = inIds.has(r.id);
+                const gpsBadge = r.has_gps
+                    ? '<span style="color:#22c55e; font-size:11px;">📍 GPS</span>'
+                    : '<span style="color:#ef4444; font-size:11px;">⚠ no GPS</span>';
+                const disabled = already || !r.has_gps;
+                return `
+                    <div onclick="${disabled ? '' : `addPrStop(${r.id})`}" style="padding:8px 10px; border-bottom:1px solid #1a1d27; cursor:${disabled ? 'not-allowed' : 'pointer'}; opacity:${disabled ? 0.45 : 1}; display:flex; justify-content:space-between; gap:10px;">
+                        <div style="flex:1; min-width:0;">
+                            <div style="font-size:13px; color:#e4e4e7; font-weight:500;">${escHtml(r.display_name)}${already ? ' <span style="color:#8b8fa3; font-size:11px;">(already added)</span>' : ''}</div>
+                            <div style="font-size:11px; color:#8b8fa3;">${escHtml(r.phone || '')}${r.tuman ? ' · ' + escHtml(r.tuman) : ''}</div>
+                        </div>
+                        <div style="text-align:right;">${gpsBadge}</div>
+                    </div>`;
+            }).join('');
+            dd.style.display = 'block';
+        }
+
+        function hidePrDropdown() {
+            const dd = document.getElementById('prSearchDropdown');
+            dd.style.display = 'none';
+            dd.innerHTML = '';
+        }
+        document.addEventListener('click', (e) => {
+            const dd = document.getElementById('prSearchDropdown');
+            const inp = document.getElementById('prClientSearch');
+            if (!dd) return;
+            if (!dd.contains(e.target) && e.target !== inp) hidePrDropdown();
+        });
+
+        async function addPrStop(clientId) {
+            if (prState.stops.length >= 8) { alert('Max 8 delivery stops per route.'); return; }
+            // Look up full client info by re-searching by id (cheap, returns the row).
+            const r = await fetch(`/api/collections/clients/search?q=${clientId}&admin_key=${encodeURIComponent(ADMIN_KEY)}`);
+            const data = await r.json();
+            const found = (data.results || []).find(x => x.id === clientId);
+            if (!found) { alert('Client lookup failed.'); return; }
+            if (!found.has_gps) { alert('Client has no GPS — pin them first.'); return; }
+            prState.stops.push(found);
+            document.getElementById('prClientSearch').value = '';
+            hidePrDropdown();
+            renderPrStops();
+        }
+
+        function removePrStop(clientId) {
+            prState.stops = prState.stops.filter(s => s.id !== clientId);
+            renderPrStops();
+        }
+
+        function renderPrStops() {
+            const list = document.getElementById('prStopsList');
+            const count = document.getElementById('prStopsCount');
+            count.textContent = `(${prState.stops.length} / 8)`;
+            if (!prState.stops.length) {
+                list.innerHTML = '<div style="color:#8b8fa3; font-size:12px; font-style:italic; padding:6px 0;">No stops yet — search above to add.</div>';
+                return;
+            }
+            list.innerHTML = prState.stops.map((s, i) => `
+                <div style="display:flex; gap:8px; align-items:center; padding:6px 10px; background:#0a0c12; border:1px solid #2a2d3a; border-radius:6px; margin-bottom:4px;">
+                    <span style="color:#8b8fa3; font-size:12px; min-width:18px;">${i + 1}.</span>
+                    <span style="font-size:13px; color:#e4e4e7; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escHtml(s.display_name)}</span>
+                    <span style="font-size:11px; color:#8b8fa3;">${escHtml(s.phone || '')}</span>
+                    <button onclick="removePrStop(${s.id})" style="background:none; border:none; color:#ef4444; cursor:pointer; font-size:14px;">✕</button>
+                </div>
+            `).join('');
+        }
+
+        function resetPlanRoute() {
+            prState.stops = [];
+            prState.lastPlan = null;
+            prState.lastSaved = null;
+            document.getElementById('prTruck').value = '';
+            document.getElementById('prDriver').value = '';
+            document.getElementById('prResult').style.display = 'none';
+            document.getElementById('prPlanStatus').textContent = '';
+            renderPrStops();
+            clearPlanLayers();
+        }
+
+        function clearPlanLayers() {
+            if (!collectionsMap) return;
+            prState.planLayers.forEach(l => collectionsMap.removeLayer(l));
+            prState.planLayers = [];
+        }
+
+        async function planRoute() {
+            const truck = document.getElementById('prTruck').value;
+            const driver = document.getElementById('prDriver').value;
+            if (!truck) { alert('Pick a truck.'); return; }
+            if (!driver) { alert('Pick a driver.'); return; }
+            if (!prState.stops.length) { alert('Add at least one delivery stop.'); return; }
+
+            const driverObj = prState.drivers.find(d => String(d.telegram_id) === String(driver));
+            const body = {
+                truck_type: truck,
+                driver_tg_id: parseInt(driver, 10),
+                driver_name: driverObj ? driverObj.name : null,
+                origin_lat: WAREHOUSE.lat, origin_lng: WAREHOUSE.lng,
+                delivery_client_ids: prState.stops.map(s => s.id),
+                return_buffer_km: parseFloat(document.getElementById('prBuffer').value),
+                return_time_budget_min: parseFloat(document.getElementById('prTimeBudget').value),
+                city_speed_kmh: parseFloat(document.getElementById('prCitySpeed').value) || 25,
+                dispatcher_name: document.getElementById('collDispatcher').value || null,
+            };
+            const status = document.getElementById('prPlanStatus');
+            status.textContent = 'Planning…';
+            try {
+                const r = await fetch(`/api/collections/route/plan?admin_key=${encodeURIComponent(ADMIN_KEY)}`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    throw new Error(err.detail || `plan ${r.status}`);
+                }
+                prState.lastPlan = await r.json();
+                renderPlanResult();
+                renderPlanOnMap();
+                status.textContent = '✓ planned';
+            } catch (e) {
+                console.error(e);
+                status.textContent = '✗ ' + e.message;
+                alert('Plan failed: ' + e.message);
+            }
+        }
+
+        function renderPlanResult() {
+            const p = prState.lastPlan;
+            const wrap = document.getElementById('prResult');
+            wrap.style.display = 'block';
+            document.getElementById('prResultSummary').innerHTML = `
+                <b>${escHtml(p.truck_label)}</b> · driver ${escHtml(p.driver_name)} ·
+                ${p.delivery_stops.length} delivery + ${p.collection_stops.length} collection ·
+                <b>${p.total_distance_km} km</b> · ~${Math.round(p.estimated_minutes)} min
+            `;
+            const stops = [
+                ...p.delivery_stops.map((s, i) => ({...s, kind: 'delivery', idx: i + 1})),
+                ...p.collection_stops.map((s, i) => ({...s, kind: 'collection', idx: p.delivery_stops.length + i + 1})),
+            ];
+            document.getElementById('prResultStops').innerHTML = stops.map(s => {
+                const isColl = s.kind === 'collection';
+                const owe = isColl
+                    ? `<span style="color:#f59e0b;">💰 ${s.debt_uzs ? Math.round(s.debt_uzs).toLocaleString() + ' UZS' : ''}${s.debt_uzs && s.debt_usd ? ' + ' : ''}${s.debt_usd ? '$' + s.debt_usd.toFixed(2) : ''} (${escHtml(s.oldest_aging_bucket || '?')})</span>`
+                    : '';
+                const detour = isColl ? `<span style="color:#22d3ee;">+${Math.round(s.detour_minutes)} min</span>` : '';
+                return `
+                    <div style="display:flex; gap:8px; align-items:center; padding:6px 10px; background:${isColl ? '#1c1410' : '#0a0c12'}; border:1px solid #2a2d3a; border-radius:6px; margin-bottom:4px; font-size:12px;">
+                        <span style="color:#8b8fa3; min-width:22px;">${s.idx}.</span>
+                        <span style="color:${isColl ? '#fbbf24' : '#e4e4e7'}; font-weight:500;">${escHtml(s.client_display_name)}</span>
+                        <span style="color:#8b8fa3; font-size:11px;">${escHtml(s.phone_normalized || '')}</span>
+                        <span style="margin-left:auto;">${owe} ${detour}</span>
+                    </div>`;
+            }).join('');
+            document.getElementById('prYandexLink').href = p.maps_url;
+            const briefEl = document.getElementById('prDriverBrief');
+            briefEl.textContent = p.driver_brief.replace(/<[^>]+>/g, '');
+        }
+
+        function renderPlanOnMap() {
+            ensureCollectionsMap();
+            clearPlanLayers();
+            const p = prState.lastPlan;
+            if (!p) return;
+            const tagged = [
+                ...p.delivery_stops.map(s => ({ ...s, _kind: 'delivery' })),
+                ...p.collection_stops.map(s => ({ ...s, _kind: 'collection' })),
+            ];
+            const pts = [[WAREHOUSE.lat, WAREHOUSE.lng], ...tagged.map(s => [s.lat, s.lng]), [WAREHOUSE.lat, WAREHOUSE.lng]];
+            const line = L.polyline(pts, { color: '#22c55e', weight: 4, opacity: 0.9, dashArray: '6,4' }).addTo(collectionsMap);
+            prState.planLayers.push(line);
+            tagged.forEach((s, idx) => {
+                const isCollection = s._kind === 'collection';
+                const color = isCollection ? '#f59e0b' : '#22c55e';
+                const m = L.marker([s.lat, s.lng], {
+                    icon: L.divIcon({
+                        html: `<div style="background:${color}; color:white; border:2px solid white; border-radius:50%; width:24px; height:24px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; box-shadow:0 2px 6px rgba(0,0,0,0.4);">${idx + 1}</div>`,
+                        className: '', iconSize: [24, 24], iconAnchor: [12, 12]
+                    })
+                }).bindPopup(`<b>${idx + 1}. ${escHtml(s.client_display_name)}</b><br>${isCollection ? 'Collection' : 'Delivery'}<br>${escHtml(s.address || '')}`).addTo(collectionsMap);
+                prState.planLayers.push(m);
+            });
+            const bounds = L.latLngBounds(pts);
+            if (bounds.isValid()) collectionsMap.fitBounds(bounds.pad(0.15), { maxZoom: 13, animate: false });
+        }
+
+        async function savePlannedRoute(dispatch) {
+            if (!prState.lastPlan) { alert('Build the route first.'); return; }
+            const body = {
+                truck_type: prState.lastPlan.truck_type,
+                driver_tg_id: prState.lastPlan.driver_tg_id,
+                driver_name: prState.lastPlan.driver_name,
+                origin_lat: WAREHOUSE.lat, origin_lng: WAREHOUSE.lng,
+                delivery_client_ids: prState.stops.map(s => s.id),
+                return_buffer_km: prState.lastPlan.return_buffer_km,
+                return_time_budget_min: prState.lastPlan.return_time_budget_min,
+                city_speed_kmh: prState.lastPlan.city_speed_kmh,
+                return_client_ids: prState.lastPlan.collection_stops.map(s => s.client_id),
+                dispatcher_name: document.getElementById('collDispatcher').value || null,
+                dispatch: !!dispatch,
+            };
+            try {
+                const r = await fetch(`/api/collections/route/save?admin_key=${encodeURIComponent(ADMIN_KEY)}`,
+                    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    throw new Error(err.detail || `save ${r.status}`);
+                }
+                const saved = await r.json();
+                prState.lastSaved = saved;
+                const msg = `Saved route #${saved.route_id}` +
+                    (saved.dispatch_result ? (saved.dispatch_result.ok ? ' · ✓ sent to driver' : ' · ✗ DM failed: ' + (saved.dispatch_result.error || '?')) : '');
+                document.getElementById('prPlanStatus').textContent = msg;
+                if (prState.historyOpen) loadRoutesHistory();
+            } catch (e) {
+                console.error(e);
+                alert('Save failed: ' + e.message);
+            }
+        }
+
+        function copyPlannedBrief() {
+            if (!prState.lastPlan) return;
+            const text = prState.lastPlan.driver_brief.replace(/<[^>]+>/g, '');
+            navigator.clipboard.writeText(text + '\n\n' + prState.lastPlan.maps_url);
+            document.getElementById('prPlanStatus').textContent = '✓ brief copied';
+        }
+
+        async function toggleRoutesHistory() {
+            prState.historyOpen = !prState.historyOpen;
+            const panel = document.getElementById('prHistoryPanel');
+            panel.style.display = prState.historyOpen ? 'block' : 'none';
+            if (prState.historyOpen) loadRoutesHistory();
+        }
+
+        async function loadRoutesHistory() {
+            const el = document.getElementById('prHistoryList');
+            el.textContent = 'Loading…';
+            try {
+                const r = await fetch(`/api/collections/routes?limit=20&admin_key=${encodeURIComponent(ADMIN_KEY)}`);
+                if (!r.ok) throw new Error(`routes ${r.status}`);
+                const data = await r.json();
+                if (!data.routes.length) { el.innerHTML = '<i>No saved routes yet.</i>'; return; }
+                el.innerHTML = '<table style="width:100%; font-size:12px;"><thead><tr style="color:#8b8fa3; border-bottom:1px solid #2a2d3a;"><th style="text-align:left; padding:6px;">When</th><th style="text-align:left;">Truck</th><th style="text-align:left;">Driver</th><th style="text-align:right;">km</th><th style="text-align:right;">min</th><th style="text-align:left;">Status</th><th></th></tr></thead><tbody>' +
+                    data.routes.map(r => `
+                        <tr style="border-bottom:1px solid #1a1d27;">
+                            <td style="padding:6px; color:#e4e4e7;">${escHtml(r.created_at || '')}</td>
+                            <td>${escHtml(r.truck_type || '')}${r.truck_capacity_t ? ' ('+r.truck_capacity_t+'т)' : ''}</td>
+                            <td>${escHtml(r.driver_name || '')}</td>
+                            <td style="text-align:right;">${r.total_distance_km ?? ''}</td>
+                            <td style="text-align:right;">${r.estimated_minutes ? Math.round(r.estimated_minutes) : ''}</td>
+                            <td><span style="color:${r.status === 'dispatched' ? '#22c55e' : '#8b8fa3'};">${escHtml(r.status || '')}</span></td>
+                            <td><button onclick="redispatchRoute(${r.id})" style="background:none; color:#22d3ee; border:1px solid #2a2d3a; border-radius:4px; padding:3px 8px; font-size:11px; cursor:pointer;">Send</button></td>
+                        </tr>`).join('') + '</tbody></table>';
+            } catch (e) {
+                el.textContent = 'Failed: ' + e.message;
+            }
+        }
+
+        async function redispatchRoute(routeId) {
+            try {
+                const r = await fetch(`/api/collections/route/${routeId}/dispatch?admin_key=${encodeURIComponent(ADMIN_KEY)}`,
+                    { method: 'POST' });
+                const data = await r.json();
+                alert(data.dispatch_result?.ok ? '✓ Sent to driver' : '✗ ' + (data.dispatch_result?.error || 'failed'));
+                if (prState.historyOpen) loadRoutesHistory();
+            } catch (e) {
+                alert('Failed: ' + e.message);
+            }
+        }
 
         async function loadCollCandidates() {
             const valid = collRoutes.filter(r => r.destLat != null && r.destLng != null);
