@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -31,6 +31,11 @@ from backend.services.client_search import search_clients
 
 logger = logging.getLogger(__name__)
 router = Router(name="driver_location")
+
+# Module-level: id of the currently pinned menu, so /lokatsiya can unpin
+# the previous one before pinning a fresh one. Resets on bot restart; a
+# leftover pinned menu from before restart is harmless (it still works).
+_pinned_menu_message_id: int | None = None
 
 
 class DriverFlow(StatesGroup):
@@ -55,11 +60,28 @@ def _cancel_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text="🆕 Yangi mijoz lokatsiyasi",
+                                 callback_data="driver:new"),
+        ]]
+    )
+
+
+async def _send_lokatsiya_menu(target):
+    """Re-post the menu after a flow completes (or on /lokatsiya) so the next
+    capture starts with a tap instead of retyping the command. Mirrors the
+    cashier's _send_kassa_menu pattern."""
+    await target.answer(
+        "📍 <b>Lokatsiya</b>",
+        parse_mode="HTML",
+        reply_markup=_menu_keyboard(),
+    )
+
+
 async def _prompt_client_search(target, state: FSMContext, is_continuation: bool = False):
-    """Set state to client_search and prompt the user for a client name.
-    Used both as the initial /lokatsiya entry and as the auto-loop after each
-    successful save — the cashier's menu pattern has only one option here so
-    the menu step would be pure ceremony."""
+    """Set state to client_search and prompt the user for a client name."""
     await state.set_state(DriverFlow.client_search)
     text = (
         "🔎 <b>Yana mijoz nomini kiriting</b>"
@@ -76,11 +98,48 @@ async def _prompt_client_search(target, state: FSMContext, is_continuation: bool
 # ── Entry: /lokatsiya ───────────────────────────────────────────────
 
 @router.message(Command("lokatsiya"))
-async def cmd_lokatsiya(message: Message, state: FSMContext):
+async def cmd_lokatsiya(message: Message, state: FSMContext, bot: Bot):
+    """Post the menu and pin it. Tap "🆕 Yangi mijoz lokatsiyasi" to enter the
+    FSM — same flow as before, just button-first like the cashier group."""
+    global _pinned_menu_message_id
     if not _is_driver_chat(message):
         return
     await state.clear()
-    await _prompt_client_search(message, state, is_continuation=False)
+    sent = await message.answer(
+        "📍 <b>Lokatsiya</b>",
+        parse_mode="HTML",
+        reply_markup=_menu_keyboard(),
+    )
+    # Unpin the previous menu (if we tracked one) before pinning the new one,
+    # so the group doesn't accumulate pinned menus across /lokatsiya calls.
+    if _pinned_menu_message_id:
+        try:
+            await bot.unpin_chat_message(
+                chat_id=message.chat.id,
+                message_id=_pinned_menu_message_id,
+            )
+        except Exception:
+            pass  # already unpinned / deleted — harmless
+    try:
+        await bot.pin_chat_message(
+            chat_id=message.chat.id,
+            message_id=sent.message_id,
+            disable_notification=True,
+        )
+        _pinned_menu_message_id = sent.message_id
+    except Exception:
+        logger.warning("driver_location: pin failed (bot may lack admin rights)")
+
+
+@router.callback_query(F.data == "driver:new")
+async def cb_new(cb: CallbackQuery, state: FSMContext):
+    """Tap on the pinned/auto-posted menu — start the flow."""
+    if not _is_driver_chat(cb):
+        await cb.answer()
+        return
+    await cb.answer()
+    await state.clear()
+    await _prompt_client_search(cb.message, state, is_continuation=False)
 
 
 # ── Flow: client search → pick → awaiting location ──────────────────
@@ -275,9 +334,10 @@ async def handle_driver_location(message: Message, state: FSMContext):
     finally:
         conn.close()
 
-    # Auto-loop: prompt for the next client immediately so backfill / batch
-    # entry doesn't require typing /lokatsiya between each.
-    await _prompt_client_search(message, state, is_continuation=True)
+    # Auto-loop: re-post the menu (button) so the next capture is a tap away.
+    # Mirrors the cashier group's _send_kassa_menu pattern.
+    await state.clear()
+    await _send_lokatsiya_menu(message)
 
 
 # ── Orphan pin (driver group, no active FSM) ─────────────────────────
