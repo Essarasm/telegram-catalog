@@ -74,7 +74,7 @@ async def _send_morning_nudge(bot, chat_id: int) -> None:
         ck = get_checklist(today)
         header = "🌅 <b>Ertalab yangilanish / Утренняя сводка</b>\n"
         text = render_checklist_text(ck)
-        from bot.main import html_escape
+        from bot.shared import html_escape
         await bot.send_message(
             chat_id,
             f"{header}<pre>{html_escape(text)}</pre>",
@@ -87,7 +87,7 @@ async def _send_morning_nudge(bot, chat_id: int) -> None:
 
 async def _send_eod_check(bot, chat_id: int) -> None:
     from backend.services.daily_uploads import get_checklist, tashkent_today
-    from bot.main import html_escape
+    from bot.shared import html_escape
 
     today = tashkent_today()
     ok, reason = _should_send(today)
