@@ -355,6 +355,72 @@ def _today_list_keyboard(rows: list, max_records: int = 15) -> Optional[InlineKe
     return InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
 
+def _aggregate_today_by_client(rows: list) -> list:
+    """Collapse today's intake rows into one entry per client, summing
+    UZS and USD separately. Ordered by each client's first submission
+    time ascending (order of entrance). Used by the 18:00 cashier-group
+    auto-post."""
+    by_id: dict = {}
+    for r in rows:
+        cid = r["client_id"]
+        entry = by_id.get(cid)
+        if entry is None:
+            entry = {
+                "client_id": cid,
+                "client_name": (r.get("client_id_1c") or r.get("client_name")
+                                or f"ID {cid}"),
+                "first_submitted_at": r["submitted_at"],
+                "first_hhmm_tk": r.get("submitted_hhmm_tk") or "",
+                "uzs": 0.0,
+                "usd": 0.0,
+                "count": 0,
+            }
+            by_id[cid] = entry
+        if r["submitted_at"] < entry["first_submitted_at"]:
+            entry["first_submitted_at"] = r["submitted_at"]
+            entry["first_hhmm_tk"] = r.get("submitted_hhmm_tk") or ""
+        cur = (r.get("currency") or "").upper()
+        amt = float(r.get("amount") or 0)
+        if cur == "UZS":
+            entry["uzs"] += amt
+        elif cur == "USD":
+            entry["usd"] += amt
+        entry["count"] += 1
+    return sorted(by_id.values(), key=lambda x: x["first_submitted_at"])
+
+
+def _render_today_by_client(date: str, clients: list) -> str:
+    """One row per client, combined UZS + USD totals, sorted by first
+    submission time. Shows (N ta) only when a client has more than one
+    payment today. No status icons — this is a 'who paid us today'
+    digest, not a per-row status board."""
+    if not clients:
+        return (
+            f"💼 <b>Bugungi to'lovlar — {date}</b>\n\n"
+            f"📭 Hozircha qabul qilingan to'lov yo'q."
+        )
+    total_count = sum(c["count"] for c in clients)
+    lines = [
+        f"💼 <b>Bugungi to'lovlar — {date}</b> "
+        f"({total_count} ta · {len(clients)} mijoz)\n"
+    ]
+    num_width = len(str(len(clients)))
+    for i, c in enumerate(clients, 1):
+        parts = []
+        if c["uzs"] > 0:
+            parts.append(_fmt_uzs(c["uzs"]))
+        if c["usd"] > 0:
+            parts.append(_fmt_usd(c["usd"]))
+        amount_str = " + ".join(parts) if parts else "—"
+        count_seg = f" ({c['count']} ta)" if c["count"] > 1 else ""
+        ts = c["first_hhmm_tk"]
+        name = html_escape(c["client_name"])
+        lines.append(
+            f"{i:>{num_width}}. {ts} · <b>{name}</b> — {amount_str}{count_seg}"
+        )
+    return "\n".join(lines)
+
+
 def _confirm_row_keyboard(payment_id: int) -> InlineKeyboardMarkup:
     """Buttons attached to the fresh '✅ Qabul qilindi' message — one
     confirmation = one payment leg = one keyboard row of [✏️] [✖]."""
@@ -398,8 +464,8 @@ async def cmd_bugunpul(message: Message, state: FSMContext):
 
 
 def _render_summary(s: dict) -> str:
-    """Format the daily intake summary as an HTML message. Used by both
-    /bugun (on-demand) and the 18:00 auto-post."""
+    """Format the daily intake summary as an HTML message. Used by the
+    on-demand /bugun command (cashier group)."""
     date = s.get("date") or ""
     n = s.get("total_count", 0)
     uzs = s.get("uzs_total", 0.0)
