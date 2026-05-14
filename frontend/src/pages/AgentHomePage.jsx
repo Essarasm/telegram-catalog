@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { Fragment, useState, useEffect, useRef } from 'react';
 import t from '../i18n/uz.json';
 import {
   fetchAgentCommission,
@@ -618,6 +618,14 @@ function MyDeliveriesSection({ data }) {
   );
 }
 
+function FuzzyDivider() {
+  return (
+    <div className="px-3 py-1 text-[10px] uppercase tracking-wide font-semibold text-tg-hint">
+      {t.fuzzy_results}
+    </div>
+  );
+}
+
 function ClientRow({ label, sub, onClick, isNew }) {
   return (
     <button
@@ -790,23 +798,35 @@ export default function AgentHomePage({ onClientSwitched, previousClient, onResu
                 {t.agent_new_1c_hint}
               </div>
             )}
-            {results.new_1c.map((c) => (
-              <ClientRow
-                key={`new:${c.client_name_1c}`}
-                label={c.client_name_1c}
-                sub={`${c.balance_count} yozuv`}
-                isNew
-                onClick={() => pickClient({ client_name_1c: c.client_name_1c })}
-              />
-            ))}
-            {results.whitelisted.map((c) => (
-              <ClientRow
-                key={`wl:${c.id}`}
-                label={c.client_id_1c || c.name || `#${c.id}`}
-                sub={c.phone || (c.name && c.client_id_1c !== c.name ? c.name : '')}
-                onClick={() => pickClient({ client_id: c.id })}
-              />
-            ))}
+            {results.new_1c.map((c, i) => {
+              const prev = i > 0 ? results.new_1c[i - 1] : null;
+              const showDivider = c.match_type === 'fuzzy' && (!prev || prev.match_type !== 'fuzzy');
+              return (
+                <Fragment key={`new:${c.client_name_1c}`}>
+                  {showDivider && <FuzzyDivider />}
+                  <ClientRow
+                    label={c.client_name_1c}
+                    sub={`${c.balance_count} yozuv`}
+                    isNew
+                    onClick={() => pickClient({ client_name_1c: c.client_name_1c })}
+                  />
+                </Fragment>
+              );
+            })}
+            {results.whitelisted.map((c, i) => {
+              const prev = i > 0 ? results.whitelisted[i - 1] : null;
+              const showDivider = c.match_type === 'fuzzy' && (!prev || prev.match_type !== 'fuzzy');
+              return (
+                <Fragment key={`wl:${c.id}`}>
+                  {showDivider && <FuzzyDivider />}
+                  <ClientRow
+                    label={c.client_id_1c || c.name || `#${c.id}`}
+                    sub={c.phone || (c.name && c.client_id_1c !== c.name ? c.name : '')}
+                    onClick={() => pickClient({ client_id: c.id })}
+                  />
+                </Fragment>
+              );
+            })}
           </div>
         )}
 

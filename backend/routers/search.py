@@ -2,6 +2,12 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from backend.admin_auth import check_admin_key
 from backend.database import get_db, transliterate_to_latin, transliterate_to_cyrillic, normalize_uzbek
+from backend.routers.products import _fuzzy_match_products
+
+# Trigram threshold for typeahead fuzzy fill. Stricter than the 0.25 used in
+# /api/products zero-result fallback — suggestions fire after every keystroke,
+# so noise tolerance is lower.
+SUGGEST_FUZZY_MIN_SCORE = 0.45
 
 router = APIRouter(prefix="/api/search", tags=["search"])
 
@@ -510,11 +516,64 @@ def search_suggestions(
         }
 
     suggestions = [to_item(r) for _, _, _, r in scored[:limit]]
+    for item in suggestions:
+        item["match_type"] = "exact"
+
+    # Fuzzy fill: when exact-match results don't fill the dropdown, append
+    # trigram-similar products tagged "fuzzy" so the frontend can render a
+    # section break. Only fires for queries ≥2 chars (trigram similarity on
+    # single characters is meaningless).
+    fuzzy_count = 0
+    need = limit - len(suggestions)
+    if need > 0 and len(raw) >= 2:
+        exclude_ids = {s["id"] for s in suggestions}
+        fuzzy_pairs = _fuzzy_match_products(
+            conn,
+            raw,
+            transliterate_to_latin(raw),
+            normalize_uzbek(raw),
+            max_results=need + len(exclude_ids),
+            search_cyrillic=transliterate_to_cyrillic(raw),
+            lifecycle_filter=("active", "aging"),
+            min_score=SUGGEST_FUZZY_MIN_SCORE,
+        )
+        fuzzy_pairs = [(pid, sim) for pid, sim in fuzzy_pairs if pid not in exclude_ids][:need]
+        if fuzzy_pairs:
+            pid_list = [pid for pid, _ in fuzzy_pairs]
+            sim_by_id = {pid: sim for pid, sim in fuzzy_pairs}
+            placeholders = ",".join("?" for _ in pid_list)
+            fuzzy_rows = conn.execute(
+                f"""SELECT p.id, p.name, p.name_display, p.popularity_score,
+                           p.price_uzs, p.price_usd, p.unit, p.stock_status, p.stock_quantity,
+                           p.image_path,
+                           p.category_id, c.name as category_name,
+                           p.producer_id, pr.name as producer_name
+                    FROM products p
+                    LEFT JOIN producers pr ON pr.id = p.producer_id
+                    LEFT JOIN categories c ON c.id = p.category_id
+                    WHERE p.id IN ({placeholders})""",
+                pid_list,
+            ).fetchall()
+            rows_by_id = {r["id"]: r for r in fuzzy_rows}
+            # Preserve descending-similarity order from _fuzzy_match_products
+            for pid in pid_list:
+                row = rows_by_id.get(pid)
+                if not row:
+                    continue
+                item = to_item(row)
+                item["match_type"] = "fuzzy"
+                item["similarity"] = round(sim_by_id[pid], 3)
+                suggestions.append(item)
+                fuzzy_count += 1
 
     conn.close()
+    # total_matches reflects exact-LIKE matches only — it feeds the "See all N"
+    # footer, which navigates to /api/products?search=… (exact-first). Fuzzy
+    # hits are appended separately and counted in fuzzy_count.
     return {
         "suggestions": suggestions,
         "total_matches": total_matches,
+        "fuzzy_count": fuzzy_count,
     }
 
 

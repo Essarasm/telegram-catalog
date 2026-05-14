@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { Fragment, useState, useEffect, useRef, useCallback } from 'react';
 import { fetchCategories, fetchSearchSuggestions, formatPrice, getImageUrl } from '../utils/api';
 import t from '../i18n/uz.json';
 
@@ -167,25 +167,39 @@ export default function CatalogPage({ onSelectCategory, onSearch, onSelectProduc
             ref={suggestionsRef}
             className="absolute left-0 right-0 top-full mt-1 bg-tg-secondary rounded-xl shadow-lg z-50 overflow-hidden border border-tg-hint/20"
           >
-            {flatSuggestions.map((s, i) => (
-              <SuggestionRow
-                key={`${s.id}-${i}`}
-                s={s}
-                selected={i === selectedIdx}
-                approved={approved}
-                onClick={() => handleSuggestionProduct(s)}
-              />
-            ))}
-            {/* "See all X results" footer */}
-            <button
-              type="button"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={handleSeeAll}
-              className="w-full text-center px-4 py-2.5 text-xs font-semibold text-tg-link bg-tg-bg/40 border-t border-tg-hint/10 active:bg-tg-button/10"
-            >
-              {t.search_see_all ? t.search_see_all.replace('{n}', suggestions.total_matches || flatSuggestions.length) :
-                `Barcha natijalar (${suggestions.total_matches || flatSuggestions.length} ta) →`}
-            </button>
+            {flatSuggestions.map((s, i) => {
+              const prev = i > 0 ? flatSuggestions[i - 1] : null;
+              const showFuzzyDivider = s.match_type === 'fuzzy' && (!prev || prev.match_type !== 'fuzzy');
+              return (
+                <Fragment key={`${s.id}-${i}`}>
+                  {showFuzzyDivider && (
+                    <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide font-semibold text-tg-hint bg-tg-bg/40 border-y border-tg-hint/10">
+                      {t.fuzzy_results}
+                    </div>
+                  )}
+                  <SuggestionRow
+                    s={s}
+                    selected={i === selectedIdx}
+                    approved={approved}
+                    onClick={() => handleSuggestionProduct(s)}
+                  />
+                </Fragment>
+              );
+            })}
+            {/* "See all X results" footer — only when there are exact matches
+                beyond what's shown. Hidden when the dropdown is fuzzy-only,
+                since "See all" navigates through exact-first /api/products. */}
+            {suggestions.total_matches > 0 && (
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={handleSeeAll}
+                className="w-full text-center px-4 py-2.5 text-xs font-semibold text-tg-link bg-tg-bg/40 border-t border-tg-hint/10 active:bg-tg-button/10"
+              >
+                {t.search_see_all ? t.search_see_all.replace('{n}', suggestions.total_matches) :
+                  `Barcha natijalar (${suggestions.total_matches} ta) →`}
+              </button>
+            )}
           </div>
         )}
       </form>

@@ -27,6 +27,11 @@ from pydantic import BaseModel, Field
 
 from backend.database import get_db
 from backend.admin_auth import check_admin_key, resolve_auth
+from backend.services.client_search import (
+    CLIENT_FUZZY_MIN_SCORE,
+    _best_trigram,
+    _query_variants,
+)
 
 router = APIRouter(prefix="/api/collections", tags=["collections"])
 
@@ -967,7 +972,9 @@ def search_clients_for_route(q: str = Query(..., min_length=1),
     client (which the /route/plan endpoint will reject anyway)."""
     if not check_admin_key(admin_key):
         raise HTTPException(status_code=403, detail="Invalid admin key")
-    needle = f"%{q.strip()}%"
+    q_clean = q.strip()
+    needle = f"%{q_clean}%"
+    capped_limit = max(1, min(limit, 50))
     conn = get_db()
     rows = conn.execute(
         """SELECT id, client_id_1c, name, company_name, phone_normalized,
@@ -979,11 +986,11 @@ def search_clients_for_route(q: str = Query(..., min_length=1),
            ORDER BY (gps_latitude IS NULL),   -- pinned first
                     client_id_1c
            LIMIT ?""",
-        (needle, needle, needle, needle, max(1, min(limit, 50))),
+        (needle, needle, needle, needle, capped_limit),
     ).fetchall()
-    conn.close()
-    return {"results": [
-        {
+
+    def to_item(r, match_type, similarity=None):
+        item = {
             "id": r["id"],
             "client_id_1c": r["client_id_1c"],
             "display_name": r["client_id_1c"] or r["company_name"] or r["name"] or f"#{r['id']}",
@@ -992,8 +999,47 @@ def search_clients_for_route(q: str = Query(..., min_length=1),
             "lat": r["gps_latitude"], "lng": r["gps_longitude"],
             "address": r["gps_address"],
             "tuman": r["tuman"], "viloyat": r["viloyat"],
-        } for r in rows
-    ]}
+            "match_type": match_type,
+        }
+        if similarity is not None:
+            item["similarity"] = round(similarity, 3)
+        return item
+
+    results = [to_item(r, "exact") for r in rows]
+
+    fuzzy_count = 0
+    # Skip fuzzy on digit-only or very short queries — trigram is meaningless
+    # on phone fragments / numeric IDs, and short queries collide with too
+    # many unrelated names.
+    need = capped_limit - len(results)
+    if need > 0 and len(q_clean) >= 3 and not q_clean.isdigit():
+        variants = _query_variants(q_clean.lower())
+        exclude_ids = {r["id"] for r in rows}
+        candidates = conn.execute(
+            """SELECT id, client_id_1c, name, company_name, phone_normalized,
+                      gps_latitude, gps_longitude, gps_address, tuman, viloyat
+               FROM allowed_clients
+               WHERE COALESCE(status,'active') != 'merged'"""
+        ).fetchall()
+        scored = []
+        for r in candidates:
+            if r["id"] in exclude_ids:
+                continue
+            sim = _best_trigram(
+                variants,
+                r["name"] or "",
+                r["client_id_1c"] or "",
+                r["company_name"] or "",
+            )
+            if sim >= CLIENT_FUZZY_MIN_SCORE:
+                scored.append((sim, r))
+        scored.sort(key=lambda x: (-x[0], 0 if x[1]["gps_latitude"] is not None else 1))
+        for sim, r in scored[:need]:
+            results.append(to_item(r, "fuzzy", similarity=sim))
+            fuzzy_count += 1
+
+    conn.close()
+    return {"results": results, "fuzzy_count": fuzzy_count}
 
 
 @router.get("/drivers")

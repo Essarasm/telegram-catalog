@@ -354,7 +354,7 @@ def agent_search_clients(
             return JSONResponse({"ok": False, "error": "not an agent"}, status_code=403)
     finally:
         conn.close()
-    results = search_clients(q, limit=limit)
+    results = search_clients(q, limit=limit, fuzzy=True)
     return {"ok": True, **results}
 
 

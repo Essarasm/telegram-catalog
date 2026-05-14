@@ -9,7 +9,17 @@ import unicodedata
 from collections import OrderedDict
 from typing import Optional
 
-from backend.database import get_db
+from backend.database import (
+    get_db,
+    normalize_uzbek,
+    transliterate_to_cyrillic,
+    transliterate_to_latin,
+)
+from backend.routers.products import _trigram_similarity
+
+# Stricter than /api/products fallback (0.25). Typeahead fires after every
+# keystroke and the agent panel result set is small, so noise tolerance is low.
+CLIENT_FUZZY_MIN_SCORE = 0.45
 
 
 def _normalize(q: str) -> str:
@@ -23,26 +33,85 @@ def _register_unicode_lower(conn) -> None:
     conn.create_function("LOWER", 1, lambda s: s.lower() if s else s)
 
 
-def search_clients(query: str, limit: int = 30, new_limit: int = 15) -> dict:
+def _query_variants(q: str) -> set:
+    """Build the search variants for a normalized query string. Cyrillic and
+    Latin transliterations plus the Uzbek-apostrophe normalization — mirrors
+    the variant set used by /api/products fuzzy fallback so client search
+    and product search behave consistently for cross-script typing."""
+    variants = {q}
+    try:
+        variants.add(transliterate_to_latin(q))
+    except Exception:
+        pass
+    try:
+        variants.add(normalize_uzbek(q))
+    except Exception:
+        pass
+    try:
+        variants.add(transliterate_to_cyrillic(q))
+    except Exception:
+        pass
+    return {v for v in variants if v}
+
+
+def _best_trigram(variants: set, *fields: str) -> float:
+    """Highest trigram similarity between any query variant and any non-empty
+    field (or any ≥3-char word within those fields). Mirrors the per-word
+    matching in _fuzzy_match_products so short queries can hit one word inside
+    a multi-word client name."""
+    best = 0.0
+    for field in fields:
+        if not field:
+            continue
+        text = field.lower()
+        words = [w for w in text.split() if len(w) >= 3]
+        for v in variants:
+            if not v or len(v) < 2:
+                continue
+            sim = _trigram_similarity(v, text)
+            if sim > best:
+                best = sim
+            for w in words:
+                wsim = _trigram_similarity(v, w)
+                if wsim > best:
+                    best = wsim
+    return best
+
+
+def search_clients(
+    query: str,
+    limit: int = 30,
+    new_limit: int = 15,
+    fuzzy: bool = False,
+    min_score: float = CLIENT_FUZZY_MIN_SCORE,
+) -> dict:
     """Search allowed_clients + client_balances by name / client_id_1c.
 
     Returns:
         {
             "whitelisted": [
-                {id, name, client_id_1c, phone, balance_count}
+                {id, name, client_id_1c, phone, balance_count,
+                 match_type: "exact"|"fuzzy", similarity?: float}
             ],
             "new_1c": [
-                {client_name_1c, balance_count, latest_period}
+                {client_name_1c, balance_count, latest_period,
+                 match_type: "exact"|"fuzzy", similarity?: float}
             ],
+            "fuzzy_count": int,  # total fuzzy hits across both lists
         }
 
     Whitelisted results are deduplicated by client_id_1c so multi-phone
     siblings roll up into one entry (the first matching allowed_clients row
     is returned as the canonical anchor).
+
+    When fuzzy=True, after the exact LIKE pass, trigram-fill each list up to
+    its limit using CLIENT_FUZZY_MIN_SCORE. Fuzzy is skipped for digit-only
+    queries (phone fragments / client IDs — trigram on digit strings is
+    meaningless) and for queries shorter than 3 chars.
     """
     q = _normalize(query)
     if not q:
-        return {"whitelisted": [], "new_1c": []}
+        return {"whitelisted": [], "new_1c": [], "fuzzy_count": 0}
     search = f"%{q}%"
 
     conn = get_db()
@@ -77,32 +146,110 @@ def search_clients(query: str, limit: int = 30, new_limit: int = 15) -> dict:
                LIMIT ?""",
             (search, new_limit),
         ).fetchall()
+
+        grouped = OrderedDict()
+        for m in matches:
+            cid = (m["client_id_1c"] or "").strip()
+            key = cid if cid else f"__no1c_{m['id']}"
+            if key in grouped:
+                continue
+            grouped[key] = {
+                "id": m["id"],
+                "name": m["name"],
+                "client_id_1c": m["client_id_1c"],
+                "phone": m["phone_normalized"] or "",
+                "balance_count": m["bal_count"],
+                "match_type": "exact",
+            }
+
+        new_1c = [
+            {
+                "client_name_1c": r["client_name_1c"],
+                "balance_count": r["bal_count"],
+                "latest_period": r["latest_period"],
+                "match_type": "exact",
+            }
+            for r in cb_only
+        ]
+
+        fuzzy_count = 0
+        # Skip fuzzy for digit-only queries (phone fragments / client IDs)
+        # and very short queries — trigram is meaningless under both conditions.
+        if fuzzy and len(q) >= 3 and not q.isdigit():
+            variants = _query_variants(q)
+            wl_need = limit - len(grouped)
+            if wl_need > 0:
+                exclude_ids = {entry["id"] for entry in grouped.values()}
+                fuzzy_rows = conn.execute(
+                    """SELECT ac.id, ac.name, ac.client_id_1c, ac.phone_normalized,
+                              (SELECT COUNT(*) FROM client_balances
+                               WHERE client_id = ac.id) as bal_count
+                       FROM allowed_clients ac
+                       WHERE COALESCE(ac.status, 'active') != 'merged'
+                         AND ac.client_id_1c IS NOT NULL AND ac.client_id_1c != ''""",
+                ).fetchall()
+                scored = []
+                for r in fuzzy_rows:
+                    if r["id"] in exclude_ids:
+                        continue
+                    sim = _best_trigram(variants, r["name"] or "", r["client_id_1c"] or "")
+                    if sim >= min_score:
+                        scored.append((sim, r))
+                scored.sort(key=lambda x: -x[0])
+                for sim, r in scored[:wl_need]:
+                    cid = (r["client_id_1c"] or "").strip()
+                    key = cid if cid else f"__no1c_{r['id']}"
+                    if key in grouped:
+                        continue
+                    grouped[key] = {
+                        "id": r["id"],
+                        "name": r["name"],
+                        "client_id_1c": r["client_id_1c"],
+                        "phone": r["phone_normalized"] or "",
+                        "balance_count": r["bal_count"],
+                        "match_type": "fuzzy",
+                        "similarity": round(sim, 3),
+                    }
+                    fuzzy_count += 1
+
+            new_need = new_limit - len(new_1c)
+            if new_need > 0:
+                exclude_names = {entry["client_name_1c"] for entry in new_1c}
+                fuzzy_cb = conn.execute(
+                    """SELECT cb.client_name_1c,
+                              COUNT(*) as bal_count,
+                              MAX(cb.period_end) as latest_period
+                       FROM client_balances cb
+                       WHERE (cb.client_id IS NULL
+                              OR cb.client_id NOT IN (SELECT id FROM allowed_clients))
+                       GROUP BY cb.client_name_1c""",
+                ).fetchall()
+                scored_cb = []
+                for r in fuzzy_cb:
+                    name = r["client_name_1c"]
+                    if not name or name in exclude_names:
+                        continue
+                    sim = _best_trigram(variants, name)
+                    if sim >= min_score:
+                        scored_cb.append((sim, r))
+                scored_cb.sort(key=lambda x: -x[0])
+                for sim, r in scored_cb[:new_need]:
+                    new_1c.append({
+                        "client_name_1c": r["client_name_1c"],
+                        "balance_count": r["bal_count"],
+                        "latest_period": r["latest_period"],
+                        "match_type": "fuzzy",
+                        "similarity": round(sim, 3),
+                    })
+                    fuzzy_count += 1
     finally:
         conn.close()
 
-    grouped = OrderedDict()
-    for m in matches:
-        cid = (m["client_id_1c"] or "").strip()
-        key = cid if cid else f"__no1c_{m['id']}"
-        if key in grouped:
-            continue
-        grouped[key] = {
-            "id": m["id"],
-            "name": m["name"],
-            "client_id_1c": m["client_id_1c"],
-            "phone": m["phone_normalized"] or "",
-            "balance_count": m["bal_count"],
-        }
-
-    new_1c = [
-        {
-            "client_name_1c": r["client_name_1c"],
-            "balance_count": r["bal_count"],
-            "latest_period": r["latest_period"],
-        }
-        for r in cb_only
-    ]
-    return {"whitelisted": list(grouped.values()), "new_1c": new_1c}
+    return {
+        "whitelisted": list(grouped.values()),
+        "new_1c": new_1c,
+        "fuzzy_count": fuzzy_count,
+    }
 
 
 def relink_orphan_finance_rows(conn, client_id: int, client_name_1c: str) -> dict:
