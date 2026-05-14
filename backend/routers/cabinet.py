@@ -1,7 +1,8 @@
 """Personal cabinet — order history and reorder."""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from backend.database import get_db, get_sibling_client_ids
+from backend.services.user_auth import assert_init_data
 from backend.services.import_real_orders import (
     list_real_orders_for_client,
     get_real_order_detail,
@@ -188,12 +189,18 @@ def get_order_detail(order_id: int, telegram_id: int = Query(...)):
 
 
 @router.post("/orders/{order_id}/reorder")
-def reorder(order_id: int, telegram_id: int = Query(...), mode: str = Query("replace")):
+def reorder(
+    order_id: int,
+    request: Request,
+    telegram_id: int = Query(...),
+    mode: str = Query("replace"),
+):
     """
     Copy all items from a past order into the user's cart.
     mode='replace' clears cart first, mode='merge' adds to existing cart.
     Returns the new cart contents.
     """
+    assert_init_data(request, telegram_id)
     conn = get_db()
 
     # Verify ownership

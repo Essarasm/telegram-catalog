@@ -2702,3 +2702,39 @@ def reject_agent(payload: dict = Body(...), admin_key: str = Query(...)):
         return reject_application(conn, application_id, rejector_telegram_id, reason)
     finally:
         conn.close()
+
+
+@router.get("/hmac-failures")
+def hmac_failures(
+    admin_key: str = Query(...),
+    days: int = Query(14, ge=1, le=90),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Recent initData HMAC validation failures from the user-auth gate.
+    Trigger to escalate to Phase B (cover read endpoints): non-zero rows here.
+    """
+    _check_admin(admin_key)
+    conn = get_db()
+    try:
+        summary = conn.execute(
+            f"""SELECT reason, COUNT(*) as count
+                FROM hmac_audit_log
+                WHERE created_at >= datetime('now', '-{int(days)} days')
+                GROUP BY reason
+                ORDER BY count DESC"""
+        ).fetchall()
+        recent = conn.execute(
+            f"""SELECT id, claimed_telegram_id, parsed_telegram_id, path, reason, created_at
+                FROM hmac_audit_log
+                WHERE created_at >= datetime('now', '-{int(days)} days')
+                ORDER BY id DESC
+                LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return {
+            "days": days,
+            "summary": [dict(r) for r in summary],
+            "recent": [dict(r) for r in recent],
+        }
+    finally:
+        conn.close()

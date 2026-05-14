@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers, submitLegalTransferDoverennost, deleteLegalTransfer } from '../utils/api';
+import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers, submitLegalTransferDoverennost, deleteLegalTransfer, initDataHeader } from '../utils/api';
 import { roleTheme } from '../utils/roleTheme';
 import t from '../i18n/uz.json';
 
@@ -479,7 +479,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     try {
       const res = await fetch(
         `${API}/orders/${orderId}/reorder?telegram_id=${userId}&mode=${mode}`,
-        { method: 'POST' }
+        { method: 'POST', headers: initDataHeader() }
       );
       const data = await res.json();
       if (data.ok) {

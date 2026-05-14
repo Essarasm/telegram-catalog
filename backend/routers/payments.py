@@ -14,10 +14,11 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Body, File, Form, Query, UploadFile
+from fastapi import APIRouter, Body, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from backend.database import get_db, get_sibling_client_ids
+from backend.services.user_auth import assert_init_data
 from backend.services.payment_intake import (
     admin_cancel_payment,
     attach_doverennost,
@@ -73,7 +74,7 @@ def _is_agent(conn, telegram_id: int) -> bool:
 
 
 @router.post("/agent-cash-handover")
-def agent_cash_handover(payload: dict = Body(...)):
+def agent_cash_handover(request: Request, payload: dict = Body(...)):
     """Agent records a cash handover destined for the cashier. One call may
     create up to two intake_payments rows (UZS leg + USD leg) — both
     with status 'pending_handover'. Soft-dedupe: if a similar row exists
@@ -104,6 +105,7 @@ def agent_cash_handover(payload: dict = Body(...)):
             {"ok": False, "error": "telegram_id and client_id required"},
             status_code=400,
         )
+    assert_init_data(request, telegram_id)
     if uzs < 0 or usd < 0:
         return JSONResponse(
             {"ok": False, "error": "amounts must be non-negative"},
@@ -377,6 +379,7 @@ def _notify_cashier_group_legal_transfer(
 
 @router.post("/legal-transfer")
 async def submit_legal_transfer(
+    request: Request,
     telegram_id: int = Form(...),
     client_id: int = Form(...),
     amount_uzs: float = Form(...),
@@ -407,6 +410,7 @@ async def submit_legal_transfer(
             {"ok": False, "error": "telegram_id and client_id required"},
             status_code=400,
         )
+    assert_init_data(request, telegram_id)
     if amount_uzs <= 0:
         return JSONResponse(
             {"ok": False, "error": "amount_uzs must be > 0"}, status_code=400

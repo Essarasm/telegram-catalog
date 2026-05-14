@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { initDataHeader } from '../utils/api';
 
 const API = '/api/cart';
+
+const writeHeaders = () => ({ 'Content-Type': 'application/json', ...initDataHeader() });
 
 /**
  * Get the Telegram user ID. Returns 0 as fallback (for testing outside Telegram).
@@ -60,7 +63,7 @@ export function useCart() {
       // Fire-and-forget server sync
       fetch(`${API}/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: writeHeaders(),
         body: JSON.stringify({
           user_id: userId.current,
           product_id: product.id,
@@ -76,7 +79,7 @@ export function useCart() {
     setItems(prev => prev.filter(i => i.id !== productId));
     fetch(`${API}/set`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: writeHeaders(),
       body: JSON.stringify({
         user_id: userId.current,
         product_id: productId,
@@ -98,7 +101,7 @@ export function useCart() {
         // Sync server with the merged quantity
         fetch(`${API}/set`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: writeHeaders(),
           body: JSON.stringify({
             user_id: userId.current,
             product_id: item.id,
@@ -110,7 +113,7 @@ export function useCart() {
       // Item was fully removed — add the snapshot back as-is
       fetch(`${API}/set`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: writeHeaders(),
         body: JSON.stringify({
           user_id: userId.current,
           product_id: item.id,
@@ -131,7 +134,7 @@ export function useCart() {
     }
     fetch(`${API}/set`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: writeHeaders(),
       body: JSON.stringify({
         user_id: userId.current,
         product_id: productId,
@@ -144,7 +147,7 @@ export function useCart() {
     setItems([]);
     fetch(`${API}/clear`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: writeHeaders(),
       body: JSON.stringify({ user_id: userId.current }),
     }).catch(() => {});
   }, []);

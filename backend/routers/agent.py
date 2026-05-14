@@ -11,7 +11,7 @@ commission math yet — once we wire the Session T 3-tier producer table
 into the DB, we'll add a /earnings endpoint that applies the rates.
 """
 from datetime import date
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse
 
 from backend.database import get_db
@@ -22,6 +22,7 @@ from backend.services.client_search import (
     search_clients,
 )
 from backend.services.roles import role_in
+from backend.services.user_auth import assert_init_data
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -124,7 +125,7 @@ _PHASE1_COMMISSION_RATE = 0.005
 
 
 @router.get("/commission")
-def agent_commission(telegram_id: int = Query(...)):
+def agent_commission(request: Request, telegram_id: int = Query(...)):
     """Phase 1: flat 0.5% on collected money from this agent's registered
     shops, current month (Tashkent).
 
@@ -138,6 +139,7 @@ def agent_commission(telegram_id: int = Query(...)):
     see which intake stream (cash-handover / P2P / bank-transfer / legal-
     transfer) drove their commission this month.
     """
+    assert_init_data(request, telegram_id)
     conn = get_db()
     try:
         if not role_in(conn, telegram_id, _NON_WORKER_ROLES):

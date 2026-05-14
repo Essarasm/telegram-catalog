@@ -1,7 +1,8 @@
 """Server-side cart — eliminates all client-side storage reliability issues."""
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel
 from backend.database import get_db
+from backend.services.user_auth import assert_init_data
 
 router = APIRouter(prefix="/api/cart", tags=["cart"])
 
@@ -49,8 +50,9 @@ def get_cart(user_id: int = Query(...)):
 
 
 @router.post("/set")
-def set_cart_item(action: CartAction):
+def set_cart_item(action: CartAction, request: Request):
     """Add or update a cart item. quantity=0 removes it."""
+    assert_init_data(request, action.user_id)
     conn = get_db()
     if action.quantity <= 0:
         conn.execute(
@@ -71,8 +73,9 @@ def set_cart_item(action: CartAction):
 
 
 @router.post("/clear")
-def clear_cart(body: CartClear):
+def clear_cart(body: CartClear, request: Request):
     """Remove all items from a user's cart."""
+    assert_init_data(request, body.user_id)
     conn = get_db()
     conn.execute("DELETE FROM cart_items WHERE user_id = ?", (body.user_id,))
     conn.commit()

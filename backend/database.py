@@ -340,6 +340,69 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_ca_client ON collection_attempts(client_id, call_at DESC);
         CREATE INDEX IF NOT EXISTS idx_ca_call_at ON collection_attempts(call_at DESC);
 
+        -- ─────────────────────────────────────────────────────────────
+        -- Session M Phase 3: Driver route planner (delivery + return-leg collections)
+        -- ─────────────────────────────────────────────────────────────
+        --
+        -- A `delivery_route` is one planned trip: warehouse → ≤8 delivery stops
+        -- → optional debtor pickups on the return leg → warehouse. The dispatcher
+        -- picks truck + driver + delivery clients; the planner orders them with
+        -- nearest-neighbor on haversine and suggests return-leg debtors that fit
+        -- a time budget. Per-stop driver-completion fields are nullable now
+        -- (Phase 2 hook) so the schema doesn't change when we wire that up.
+        CREATE TABLE IF NOT EXISTS delivery_routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT DEFAULT (datetime('now')),
+            created_by_tg_id INTEGER,
+            created_by_name TEXT,
+            truck_type TEXT NOT NULL,            -- 'labo' | 'jac' | 'foton' | 'isuzu'
+            truck_capacity_t REAL,               -- 1.0 | 2.5 | 3.0 | 7.0
+            driver_tg_id INTEGER,                -- users.telegram_id (agent_role='agent')
+            driver_name TEXT,
+            status TEXT DEFAULT 'planned',       -- 'planned' | 'dispatched' | 'completed' | 'cancelled'
+            origin_lat REAL NOT NULL,
+            origin_lng REAL NOT NULL,
+            return_buffer_km REAL,
+            return_time_budget_min REAL,
+            total_distance_km REAL,
+            estimated_minutes REAL,
+            maps_url TEXT,                       -- Yandex Maps URL (rtext=… &rtt=auto)
+            driver_brief TEXT,                   -- Telegram-ready HTML
+            dispatched_at TEXT,
+            completed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_routes_driver ON delivery_routes(driver_tg_id);
+        CREATE INDEX IF NOT EXISTS idx_delivery_routes_status ON delivery_routes(status);
+        CREATE INDEX IF NOT EXISTS idx_delivery_routes_created ON delivery_routes(created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS route_stops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            route_id INTEGER NOT NULL,
+            sequence_order INTEGER NOT NULL,     -- 0 = warehouse start; 1..N = stops; last = warehouse return
+            kind TEXT NOT NULL,                  -- 'origin' | 'delivery' | 'collection' | 'return'
+            client_id INTEGER,                   -- allowed_clients.id (NULL for origin/return)
+            client_id_1c TEXT,
+            client_display_name TEXT,
+            phone_normalized TEXT,
+            lat REAL NOT NULL,
+            lng REAL NOT NULL,
+            address TEXT,
+            leg_distance_km REAL,                -- distance from previous stop
+            detour_minutes REAL,                 -- collection stops: minutes added vs direct return
+            debt_uzs REAL,
+            debt_usd REAL,
+            oldest_aging_bucket TEXT,
+            collection_attempt_id INTEGER,       -- collection_attempts.id (back-link)
+            stop_status TEXT,                    -- NULL | 'visited' | 'skipped' | 'failed' (Phase 2)
+            collected_uzs REAL,
+            collected_usd REAL,
+            completed_at TEXT,
+            FOREIGN KEY (route_id) REFERENCES delivery_routes(id) ON DELETE CASCADE,
+            UNIQUE(route_id, sequence_order)
+        );
+        CREATE INDEX IF NOT EXISTS idx_route_stops_route ON route_stops(route_id);
+        CREATE INDEX IF NOT EXISTS idx_route_stops_client ON route_stops(client_id);
+
         -- Demand signals: track orders on out-of-stock products
         CREATE TABLE IF NOT EXISTS demand_signals (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -939,6 +1002,23 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_action_log_created ON admin_action_log(created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_action_log_cmd ON admin_action_log(command)")
+
+    # Mini-App initData HMAC failure log (Phase A user-auth — 2026-05-13).
+    # Populated by backend/services/user_auth.assert_init_data on every 401.
+    # Trigger to escalate from Phase A (writes only) to Phase B (reads too):
+    # any non-zero rows over a 2-week window or a confirmed leak incident.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hmac_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            claimed_telegram_id INTEGER,
+            parsed_telegram_id INTEGER,
+            path TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hmac_audit_created ON hmac_audit_log(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hmac_audit_reason ON hmac_audit_log(reason)")
 
     # Migration: add location columns to orders
     order_cols = {row[1] for row in conn.execute("PRAGMA table_info(orders)").fetchall()}

@@ -1,5 +1,14 @@
 const API_BASE = '/api';
 
+// Telegram WebApp initData — signed by Telegram at WebApp launch. Sent as
+// X-Telegram-Init-Data on every request reaching a Phase-A protected
+// endpoint (cart writes, payment writes, agent/commission, cabinet/reorder).
+// Empty outside Telegram — protected endpoints will 401, catalog still works.
+export function initDataHeader() {
+  const d = window.Telegram?.WebApp?.initData;
+  return d ? { 'X-Telegram-Init-Data': d } : {};
+}
+
 export async function fetchCategories() {
   const res = await fetch(`${API_BASE}/categories`);
   return res.json();
@@ -208,7 +217,7 @@ export function getImageUrl(product) {
 export async function submitAgentCashHandover({ telegramId, clientId, uzsAmount, usdAmount, force = false }) {
   const res = await fetch(`${API_BASE}/payments/agent-cash-handover`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...initDataHeader() },
     body: JSON.stringify({
       telegram_id: telegramId,
       client_id: clientId,
@@ -322,7 +331,11 @@ export async function submitLegalTransfer({
   fd.append('legal_entity_name', legalEntityName || '');
   fd.append('legal_entity_inn', legalEntityInn || '');
   fd.append('extra_doc', extraDoc);
-  const res = await fetch(`${API_BASE}/payments/legal-transfer`, { method: 'POST', body: fd });
+  const res = await fetch(`${API_BASE}/payments/legal-transfer`, {
+    method: 'POST',
+    body: fd,
+    headers: initDataHeader(),
+  });
   const data = await res.json();
   return { status: res.status, ...data };
 }
@@ -338,7 +351,9 @@ export async function fetchP2PCards(telegramId) {
 
 export async function fetchAgentCommission(telegramId) {
   try {
-    const res = await fetch(`${API_BASE}/agent/commission?telegram_id=${telegramId}`);
+    const res = await fetch(`${API_BASE}/agent/commission?telegram_id=${telegramId}`, {
+      headers: initDataHeader(),
+    });
     return res.json();
   } catch (e) {
     return { ok: false };
