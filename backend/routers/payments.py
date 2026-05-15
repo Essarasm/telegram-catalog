@@ -36,6 +36,7 @@ from backend.services.payment_intake import (
     list_pending_legal_transfers_for_client,
     list_suppliers_in_category,
 )
+from backend.services.payment_reconciler import get_intake_match_status
 
 logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
@@ -232,6 +233,11 @@ def pending_for_client(
                 )
         rows = list_pending_for_client(conn, client_id, days=14)
         reconciliation = client_reconciliation_check(conn, client_id, days=14)
+        # Phase 3: per-row status from nightly reconciler. Falls back to
+        # Phase 2.5 aggregate when a row hasn't been reconciled yet (e.g.
+        # added since the last nightly run).
+        confirmed_ids = [r["id"] for r in rows if r["status"] == "confirmed"]
+        row_match_status = get_intake_match_status(conn, confirmed_ids)
     finally:
         conn.close()
 
@@ -247,11 +253,13 @@ def pending_for_client(
                 r.get("agent_first"), r.get("agent_last"), r.get("agent_username"),
                 r["handover_agent_id"],
             )
-        # Only confirmed rows are candidates for reconciliation; pending
-        # rows are awaiting cashier action, not a 1C match.
-        row_reconciled = (
-            reconciliation["reconciled"] and r["status"] == "confirmed"
-        )
+        if r["status"] != "confirmed":
+            # Pending rows are awaiting cashier action, not a 1C match.
+            row_reconciled = False
+        elif r["id"] in row_match_status:
+            row_reconciled = row_match_status[r["id"]] == "matched"
+        else:
+            row_reconciled = reconciliation["reconciled"]
         items.append({
             "id": r["id"],
             "amount": r["amount"],

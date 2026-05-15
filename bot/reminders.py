@@ -746,6 +746,50 @@ async def _run_group_health_check(bot, admin_chat_id: int) -> None:
         logger.error(f"group_health_check: failed to alert Admin: {e}")
 
 
+async def _run_payment_reconciler(bot, admin_chat_id: int) -> None:
+    """Nightly 02:00 Tashkent — populate payment_reconciliation by pairing
+    confirmed intake_payments against client_payments. Quiet on a clean
+    run; alerts Admin only when bot_only or kassa_only counts are unusual.
+    """
+    from backend.database import get_db
+    from backend.services.payment_reconciler import reconcile_payments
+
+    conn = get_db()
+    try:
+        summary = reconcile_payments(conn, lookback_days=30)
+    except Exception as e:
+        logger.exception("payment_reconciler failed: %s", e)
+        try:
+            await bot.send_message(
+                admin_chat_id,
+                f"⚠️ Payment reconciler failed: <code>{e}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+    finally:
+        conn.close()
+
+    logger.info("payment_reconciler done: %s", summary)
+    # Stay quiet on the common path. Only surface to Admin when there are
+    # bot_only rows worth investigating (real cashier↔1C divergence).
+    if summary["bot_only_rows"] > 0:
+        text = (
+            f"🔁 <b>Payment reconciler</b> — {summary['reconcile_date']}\n"
+            f"Clients examined: {summary['clients_examined']}\n"
+            f"Matched rows: {summary['matched_rows']} "
+            f"(aggregate-match clients: {summary['aggregate_matches']})\n"
+            f"⚠️ Bot-only (cashier saw, 1C didn't): "
+            f"<b>{summary['bot_only_rows']}</b>\n"
+            f"Kassa-only (1C has, cashier didn't): {summary['kassa_only_rows']}"
+        )
+        try:
+            await bot.send_message(admin_chat_id, text, parse_mode="HTML")
+        except Exception as e:
+            logger.error("payment_reconciler: failed to alert Admin: %s", e)
+
+
 def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     """Launch the reminder and sync background tasks. Returns the task handles.
 
@@ -823,6 +867,13 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 18, 0, _run_payment_notif_sweeper),
             name="daily-payment-notif-sweeper",
+        ),
+        # Daily 02:00 — Phase 3 cashier↔1C reconciler. Writes per-row
+        # match status to payment_reconciliation so the Kabinet's
+        # "Tekshirish kerak" red flag becomes per-row accurate.
+        asyncio.create_task(
+            run_daily_reminder(bot, chat_id, 2, 0, _run_payment_reconciler),
+            name="daily-payment-reconciler",
         ),
         # Daily 18:00 — Per-client payment list into the cashier group.
         # One row per client (combined UZS + USD), sorted by first-payment
