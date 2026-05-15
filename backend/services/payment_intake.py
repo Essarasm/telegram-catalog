@@ -592,6 +592,102 @@ def list_pending_for_client(conn, client_id: int, days: int = 14) -> List[dict]:
     return [dict(r) for r in rows]
 
 
+# ── Phase 2.5: cashier ↔ 1C reconciliation gate ─────────────────────
+#
+# Muqaddas records actual currency mix received; Alisher reshapes the same
+# payment in 1C to fit dual-pricing legs, so per-currency splits differ
+# even though USD-equivalent totals agree. Without this check, every
+# cashier row stayed "Tekshirish kerak (48h)" red forever, double-counting
+# in the client's Kabinet view.
+#
+# Tolerance was sampled across 97 active clients on 2026-05-13 — clean
+# matches clustered ≤2% relative; real mismatches started at ≥17%. The
+# 2%/$2 floor sits safely inside the gap. Per-row pairing is deferred to
+# the full Phase 3 reconciler that will populate `payment_reconciliation`.
+
+_FX_FALLBACK_UZS_PER_USD = 12200.0
+_RECONCILE_TOLERANCE_PCT = 0.02
+_RECONCILE_TOLERANCE_FLOOR_USD = 2.0
+
+
+def client_reconciliation_check(conn, client_id: int, days: int = 14) -> dict:
+    """Compare cashier (intake_payments) USD-eq vs 1C (client_payments)
+    USD-eq totals for a client over the last `days`. Used to decide
+    whether to suppress the "Tekshirish kerak" red flag on the Kabinet.
+
+    The 1C window extends one day past the cashier window because Alisher
+    routinely codes the previous day's cash on the next morning.
+
+    Returns:
+        {
+            "reconciled": bool,
+            "cashier_usdeq": float,
+            "onec_usdeq": float,
+            "diff_usdeq": float,       # cashier - 1C
+            "tolerance_usdeq": float,  # the threshold used
+        }
+    """
+    ids = get_sibling_client_ids(conn, client_id) or [client_id]
+    placeholders = ",".join("?" * len(ids))
+
+    cashier_row = conn.execute(
+        f"""SELECT COALESCE(SUM(
+                CASE WHEN ip.currency = 'USD' THEN ip.amount
+                     WHEN ip.currency = 'UZS'
+                       THEN ip.amount / COALESCE(fx.rate, ?)
+                     ELSE 0 END
+            ), 0) AS total
+            FROM intake_payments ip
+            LEFT JOIN daily_fx_rates fx
+                   ON fx.rate_date = date(ip.submitted_at)
+                  AND fx.currency_pair = 'USD_UZS'
+            WHERE ip.client_id IN ({placeholders})
+              AND ip.status = 'confirmed'
+              AND ip.submitted_at >= datetime('now', ?)""",
+        (_FX_FALLBACK_UZS_PER_USD,) + tuple(ids) + (f"-{int(days)} days",),
+    ).fetchone()
+
+    onec_row = conn.execute(
+        f"""SELECT COALESCE(SUM(
+                CASE WHEN cp.currency = 'USD' THEN cp.amount_currency
+                     WHEN cp.currency = 'UZS'
+                       THEN cp.amount_local / COALESCE(fx.rate, ?)
+                     ELSE 0 END
+            ), 0) AS total
+            FROM client_payments cp
+            LEFT JOIN daily_fx_rates fx
+                   ON fx.rate_date = date(cp.doc_date)
+                  AND fx.currency_pair = 'USD_UZS'
+            WHERE cp.client_id IN ({placeholders})
+              AND cp.doc_date >= date('now', ?)
+              AND cp.doc_date <= date('now', '+1 day')""",
+        (_FX_FALLBACK_UZS_PER_USD,) + tuple(ids) + (f"-{int(days)} days",),
+    ).fetchone()
+
+    cashier = float(cashier_row["total"] or 0)
+    onec = float(onec_row["total"] or 0)
+    diff = cashier - onec
+    tolerance = max(
+        _RECONCILE_TOLERANCE_FLOOR_USD,
+        _RECONCILE_TOLERANCE_PCT * max(cashier, onec),
+    )
+    # Edge case: no cashier rows at all → nothing to reconcile, trivially
+    # "reconciled" so callers don't false-flag. Same when both sides are
+    # zero.
+    if cashier == 0:
+        reconciled = True
+    else:
+        reconciled = abs(diff) <= tolerance
+
+    return {
+        "reconciled": reconciled,
+        "cashier_usdeq": round(cashier, 2),
+        "onec_usdeq": round(onec, 2),
+        "diff_usdeq": round(diff, 2),
+        "tolerance_usdeq": round(tolerance, 2),
+    }
+
+
 def list_today_confirmed(conn, limit: int = 100) -> List[dict]:
     """Today's confirmed intake — for the cashier's "today" view."""
     rows = conn.execute(

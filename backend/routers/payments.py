@@ -25,6 +25,7 @@ from backend.services.payment_intake import (
     check_recent_duplicate,
     create_intake_payment,
     create_legal_transfer,
+    client_reconciliation_check,
     format_card_number,
     get_category,
     insert_intake_raw,
@@ -230,6 +231,7 @@ def pending_for_client(
                     {"ok": False, "error": "not authorized"}, status_code=403
                 )
         rows = list_pending_for_client(conn, client_id, days=14)
+        reconciliation = client_reconciliation_check(conn, client_id, days=14)
     finally:
         conn.close()
 
@@ -245,6 +247,11 @@ def pending_for_client(
                 r.get("agent_first"), r.get("agent_last"), r.get("agent_username"),
                 r["handover_agent_id"],
             )
+        # Only confirmed rows are candidates for reconciliation; pending
+        # rows are awaiting cashier action, not a 1C match.
+        row_reconciled = (
+            reconciliation["reconciled"] and r["status"] == "confirmed"
+        )
         items.append({
             "id": r["id"],
             "amount": r["amount"],
@@ -256,8 +263,9 @@ def pending_for_client(
             "submitter_role": r["submitter_role"],
             "submitter_name": submitter_name,
             "agent_name": agent_name,
+            "reconciled": row_reconciled,
         })
-    return {"ok": True, "items": items}
+    return {"ok": True, "items": items, "reconciliation": reconciliation}
 
 
 def _fmt_uzs(amount: float) -> str:

@@ -1039,7 +1039,11 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
   const AktSverkiSection = () => {
     if (!akt || !akt.linked) return null;
     const events = akt.events || [];
-    const hasPending = pendingPayments && pendingPayments.length > 0;
+    // Hide confirmed cashier rows once 1C has reconciled them (server-side
+    // flag from /api/payments/pending-for-client). Pending rows — still
+    // awaiting cashier action — always stay visible.
+    const visiblePending = (pendingPayments || []).filter(p => !p.reconciled);
+    const hasPending = visiblePending.length > 0;
     const hasPendingLegal = pendingLegalTx && pendingLegalTx.length > 0;
     if (events.length === 0 && !hasPending && !hasPendingLegal) return null;
 
@@ -1064,7 +1068,7 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
 
         {hasPending && (
           <div className="space-y-2 mb-2">
-            {pendingPayments.map((p) => <PendingPaymentRow key={p.id} p={p} />)}
+            {visiblePending.map((p) => <PendingPaymentRow key={p.id} p={p} />)}
           </div>
         )}
 
