@@ -1,4 +1,4 @@
-"""Send uncaught exceptions to the Admin Telegram group so silent crashes
+"""Send uncaught exceptions to the Platform-Ops Telegram group so silent crashes
 don't rot in log files. Rate-limited and de-duplicated so a single recurring
 error can't flood the group.
 """
@@ -12,7 +12,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-from backend.services.group_config import ADMIN_GROUP_CHAT_ID
+from backend.services.group_config import PLATFORM_OPS_GROUP_CHAT_ID
 
 # Rate-limit: don't re-alert the same error signature within N seconds.
 _SUPPRESS_WINDOW_SEC = 300  # 5 minutes
@@ -44,7 +44,7 @@ def send_error_alert(
 ) -> bool:
     """Fire-and-forget alert. Returns True if a message was actually sent
     (False = rate-limited or missing config)."""
-    if not BOT_TOKEN or not ADMIN_GROUP_CHAT_ID:
+    if not BOT_TOKEN or not PLATFORM_OPS_GROUP_CHAT_ID:
         return False
 
     # Signature = source + exc_type + first line of message (to de-dup
@@ -77,7 +77,7 @@ def send_error_alert(
         resp = httpx.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
             json={
-                "chat_id": ADMIN_GROUP_CHAT_ID,
+                "chat_id": PLATFORM_OPS_GROUP_CHAT_ID,
                 "text": text,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,

@@ -30,6 +30,7 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 from backend.services.group_config import (
     ORDER_GROUP_CHAT_ID,
     ADMIN_GROUP_CHAT_ID,
+    PLATFORM_OPS_GROUP_CHAT_ID,
     AGENTS_GROUP_CHAT_ID,
     DAILY_GROUP_CHAT_ID,
     INVENTORY_GROUP_CHAT_ID,
@@ -48,6 +49,7 @@ from backend.services.group_config import (
 __all__ = [
     "ORDER_GROUP_CHAT_ID",
     "ADMIN_GROUP_CHAT_ID",
+    "PLATFORM_OPS_GROUP_CHAT_ID",
     "AGENTS_GROUP_CHAT_ID",
     "DAILY_GROUP_CHAT_ID",
     "INVENTORY_GROUP_CHAT_ID",

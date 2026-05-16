@@ -53,8 +53,15 @@ def _env_int_list(name: str) -> list[int]:
 
 # ── Canonical group chat IDs ─────────────────────────────────────────
 
-# Admin group — error alerts, registration notifications, ops chatter.
+# Admin group — registration notifications, support DMs, role/admin commands,
+# group-health alerts, PAT rotation reminder. Human-attention surface.
 ADMIN_GROUP_CHAT_ID: int = _env_int("ADMIN_GROUP_CHAT_ID", -5224656051)
+
+# Platform-ops group — automated cron output: offsite DB backups, payment
+# reconciler, payment-notif sweep, weekly Client Master cycle, data-consistency
+# audit, error alerts. Split off from ADMIN_GROUP_CHAT_ID on 2026-05-16 to
+# isolate machine chatter from human-facing admin traffic.
+PLATFORM_OPS_GROUP_CHAT_ID: int = _env_int("PLATFORM_OPS_GROUP_CHAT_ID", -1003987299154)
 
 # Daily group — morning/EOD upload nudges, daily checklist.
 DAILY_GROUP_CHAT_ID: int = _env_int("DAILY_GROUP_CHAT_ID", -5243912135)

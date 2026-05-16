@@ -699,11 +699,13 @@ async def _run_group_health_check(bot, admin_chat_id: int) -> None:
     deleted, we also alert Admin.
     """
     from bot.shared import (
-        ADMIN_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID,
-        ORDER_GROUP_CHAT_ID, AGENTS_GROUP_CHAT_ID, ERRORS_GROUP_CHAT_ID,
+        ADMIN_GROUP_CHAT_ID, PLATFORM_OPS_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID,
+        INVENTORY_GROUP_CHAT_ID, ORDER_GROUP_CHAT_ID, AGENTS_GROUP_CHAT_ID,
+        ERRORS_GROUP_CHAT_ID,
     )
     groups = [
         ("Admin",            ADMIN_GROUP_CHAT_ID),
+        ("Platform-Ops",     PLATFORM_OPS_GROUP_CHAT_ID),
         ("Daily",            DAILY_GROUP_CHAT_ID),
         ("Inventory",        INVENTORY_GROUP_CHAT_ID),
         ("Orders/Sales",     ORDER_GROUP_CHAT_ID),
@@ -799,8 +801,9 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     """
     from bot.shared import (
         ORDER_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID,
-        CASHIER_GROUP_CHAT_ID,
+        CASHIER_GROUP_CHAT_ID, PLATFORM_OPS_GROUP_CHAT_ID,
     )
+    ops = PLATFORM_OPS_GROUP_CHAT_ID
     tasks = [
         # Daily-upload reminders → Daily group (were Admin group).
         asyncio.create_task(
@@ -826,28 +829,31 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             run_daily_reminder(bot, INVENTORY_GROUP_CHAT_ID, 8, 0, _send_stock_alert),
             name="daily-stock-alert",
         ),
-        # Client Master weekly sync cycle (sender checks weekday internally).
+        # Client Master weekly sync cycle → Platform-Ops group.
+        # Whole cycle (Mon xlsx / Fri prompt / Sun nudge) moves together so
+        # the "reply with /clientmaster" UX stays in one chat.
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 8, 0, _send_master_auto_export),
+            run_daily_reminder(bot, ops, 8, 0, _send_master_auto_export),
             name="master-mon-auto-export",
         ),
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 17, 0, _send_master_sync_prompt),
+            run_daily_reminder(bot, ops, 17, 0, _send_master_sync_prompt),
             name="master-fri-sync-prompt",
         ),
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 12, 0, _send_master_sync_nudge),
+            run_daily_reminder(bot, ops, 12, 0, _send_master_sync_nudge),
             name="master-sun-sync-nudge",
         ),
-        # Daily 03:00 — offsite DB backup to Admin group (durability beyond
-        # Railway volume).
+        # Daily 03:00 — offsite DB backup → Platform-Ops group (durability
+        # beyond Railway volume).
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 3, 0, _send_offsite_db_backup),
+            run_daily_reminder(bot, ops, 3, 0, _send_offsite_db_backup),
             name="daily-offsite-db-backup",
         ),
-        # Daily 09:00 — data-consistency audit (silent when clean).
+        # Daily 09:00 — data-consistency audit → Platform-Ops group (silent
+        # when clean).
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 9, 0, _run_consistency_audit),
+            run_daily_reminder(bot, ops, 9, 0, _run_consistency_audit),
             name="daily-consistency-audit",
         ),
         # Daily 09:00 — check if the GitHub PAT is 75+ days old and nudge
@@ -862,17 +868,17 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             run_daily_reminder(bot, chat_id, 9, 5, _run_group_health_check),
             name="daily-group-health-check",
         ),
-        # Daily 18:00 — sweep stale pending payment notifications (Session N).
-        # Runs one hour after EOD check so /debtors has had its full window.
+        # Daily 18:00 — sweep stale pending payment notifications → Platform-Ops
+        # group. Runs one hour after EOD check so /debtors has had its full window.
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 18, 0, _run_payment_notif_sweeper),
+            run_daily_reminder(bot, ops, 18, 0, _run_payment_notif_sweeper),
             name="daily-payment-notif-sweeper",
         ),
-        # Daily 02:00 — Phase 3 cashier↔1C reconciler. Writes per-row
-        # match status to payment_reconciliation so the Kabinet's
+        # Daily 02:00 — cashier↔1C reconciler → Platform-Ops group. Writes
+        # per-row match status to payment_reconciliation so the Kabinet's
         # "Tekshirish kerak" red flag becomes per-row accurate.
         asyncio.create_task(
-            run_daily_reminder(bot, chat_id, 2, 0, _run_payment_reconciler),
+            run_daily_reminder(bot, ops, 2, 0, _run_payment_reconciler),
             name="daily-payment-reconciler",
         ),
         # Daily 19:00 — Per-client payment list into the cashier group.
@@ -904,7 +910,7 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     ]
     logger.info(
         f"Started {len(tasks)} background tasks "
-        f"(admin={chat_id}, daily={DAILY_GROUP_CHAT_ID}, "
+        f"(admin={chat_id}, ops={ops}, daily={DAILY_GROUP_CHAT_ID}, "
         f"sales={ORDER_GROUP_CHAT_ID}, inventory={INVENTORY_GROUP_CHAT_ID})"
     )
     return tasks
