@@ -621,7 +621,7 @@ async def _send_owner_morning_brief(bot, _ignored_chat_id: int) -> None:
 
 
 async def _send_cashbook_today_list(bot, chat_id: int) -> None:
-    """18:00 Tashkent — post today's per-client payment list to the
+    """19:00 Tashkent — post today's per-client payment list to the
     cashier group. One row per client (combined UZS + USD), sorted by
     first-payment time. Text-only (no inline keyboard — cashiers use
     /bugunpul on demand to edit/cancel). Quiet on a 0-row day."""
@@ -875,14 +875,14 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             run_daily_reminder(bot, chat_id, 2, 0, _run_payment_reconciler),
             name="daily-payment-reconciler",
         ),
-        # Daily 18:00 — Per-client payment list into the cashier group.
+        # Daily 19:00 — Per-client payment list into the cashier group.
         # One row per client (combined UZS + USD), sorted by first-payment
         # time. Text-only; quiet on a 0-row day.
         asyncio.create_task(
             run_daily_reminder(
                 bot,
                 CASHIER_GROUP_CHAT_ID,
-                18, 0,
+                19, 0,
                 _send_cashbook_today_list,
             ),
             name="daily-cashbook-today-list",
