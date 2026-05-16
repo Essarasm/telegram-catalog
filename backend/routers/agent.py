@@ -115,53 +115,30 @@ def agent_stats(telegram_id: int = Query(...)):
         conn.close()
 
 
-# ── Agent panel: commission (earned-on-orders + confirmed-on-payments) ───
+# ── Agent panel: commission (live tiered on placed orders) ──────────────
 #
-# Two surfaces, one endpoint:
-#   - earned    → live, per-line tiered (0.5/1/2%) on orders this agent
-#                 placed this month. Motivates the agent the moment they
-#                 submit an order; doesn't wait for Kassa.
-#   - confirmed → payment-based commission (Kassa-collected money on the
-#                 agent's registered shops). Matches the project rule
-#                 `04-data-handling.md` "Compensation basis: use Kassa,
-#                 NOT Realizatsiya" — this is the payout figure.
-#
-# The earned/confirmed gap closes as collections come in. Per-producer tier
-# lookup lives in `backend/services/producer_tiers.py` (shared with the
-# loyalty points multiplier).
-
-_CONFIRMED_COMMISSION_RATE = 0.005  # flat for now; tiered Kassa needs
-# product-level allocation that the intake_payments path doesn't carry.
+# Per-line tiered commission (0.5/1/2%) on orders this agent placed in the
+# current month, grouped by producer. Live the moment an order is submitted
+# — no waiting for Kassa. Tier lookup lives in
+# `backend/services/producer_tiers.py` (shared with the loyalty-points
+# multiplier).
 
 
 @router.get("/commission")
 def agent_commission(request: Request, telegram_id: int = Query(...)):
-    """Current-month commission for this agent. Returns two blocks:
-
-      earned    — tiered commission on order_items from orders placed by
-                  this agent (orders.placed_by_telegram_id = telegram_id),
-                  grouped by producer with rate 0.5/1/2% per Session T.
-      confirmed — flat-rate commission on Kassa-confirmed payments for
-                  this agent's registered shops (existing payout basis).
-    """
+    """Current-month tiered commission on this agent's placed orders.
+    Grouped by producer; rates 0.5/1/2% per the Session T 3-tier model."""
     assert_init_data(request, telegram_id)
     conn = get_db()
     try:
         if not role_in(conn, telegram_id, _NON_WORKER_ROLES):
             return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
 
-        today = date.today()
-        period_start = today.replace(day=1).isoformat()  # YYYY-MM-01
-        period_label = today.strftime("%Y-%m")
-
-        earned = _earned_block(conn, telegram_id, period_label)
-        confirmed = _confirmed_block(conn, telegram_id, period_start)
-
+        period_label = date.today().strftime("%Y-%m")
         return {
             "ok": True,
             "period": period_label,
-            "earned": earned,
-            "confirmed": confirmed,
+            **_earned_block(conn, telegram_id, period_label),
         }
     finally:
         conn.close()
@@ -255,76 +232,6 @@ def _earned_block(conn, telegram_id: int, period_label: str) -> dict:
         "order_count": order_count,
         "by_producer": by_producer,
         "rates": {tier: round(pct * 100, 2) for tier, pct in RATE.items()},
-    }
-
-
-def _confirmed_block(conn, telegram_id: int, period_start: str) -> dict:
-    """Flat-rate commission on confirmed payments for this agent's
-    registered shops. Mirrors the previous /commission endpoint's logic
-    (Kassa basis, registered-shop attribution)."""
-    client_ids = [
-        row["linked_client_id"]
-        for row in conn.execute(
-            "SELECT linked_client_id FROM agent_client_registrations "
-            "WHERE agent_telegram_id = ? "
-            "  AND linked_client_id IS NOT NULL "
-            "  AND status = 'created'",
-            (telegram_id,),
-        ).fetchall()
-    ]
-
-    if not client_ids:
-        return {
-            "uzs": 0,
-            "usd": 0.0,
-            "collected_uzs": 0,
-            "collected_usd": 0.0,
-            "registered_client_count": 0,
-            "rate_pct": _CONFIRMED_COMMISSION_RATE * 100,
-            "by_channel": [],
-        }
-
-    placeholders = ",".join("?" * len(client_ids))
-    rows = conn.execute(
-        f"""SELECT channel, currency, COALESCE(SUM(amount), 0) AS total
-            FROM intake_payments
-            WHERE status = 'confirmed'
-              AND date(COALESCE(confirmed_at, submitted_at)) >= ?
-              AND client_id IN ({placeholders})
-            GROUP BY channel, currency""",
-        [period_start, *client_ids],
-    ).fetchall()
-
-    collected_uzs = 0.0
-    collected_usd = 0.0
-    per_channel: dict = {}
-    for r in rows:
-        ch = r["channel"]
-        cur = r["currency"]
-        total = float(r["total"] or 0)
-        slot = per_channel.setdefault(ch, {"uzs": 0.0, "usd": 0.0})
-        if cur == "UZS":
-            slot["uzs"] += total
-            collected_uzs += total
-        else:
-            slot["usd"] += total
-            collected_usd += total
-
-    return {
-        "uzs": round(collected_uzs * _CONFIRMED_COMMISSION_RATE),
-        "usd": round(collected_usd * _CONFIRMED_COMMISSION_RATE, 2),
-        "collected_uzs": round(collected_uzs),
-        "collected_usd": round(collected_usd, 2),
-        "registered_client_count": len(client_ids),
-        "rate_pct": _CONFIRMED_COMMISSION_RATE * 100,
-        "by_channel": [
-            {
-                "channel": ch,
-                "uzs": round(v["uzs"]),
-                "usd": round(v["usd"], 2),
-            }
-            for ch, v in sorted(per_channel.items())
-        ],
     }
 
 
