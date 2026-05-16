@@ -8,24 +8,14 @@ This is read-only — doesn't write to any tables.
 """
 import logging
 from backend.database import get_db
+from backend.services.producer_tiers import points_multiplier
 
 logger = logging.getLogger(__name__)
 
-# Producer → points multiplier (from Session T 3-tier model)
-TIER_HIGH = 2.0    # 2.0% commission tier → 2x points
-TIER_STANDARD = 1.5  # 1.0% commission tier → 1.5x points
-TIER_LOW = 1.0     # 0.5% commission tier → 1x points (baseline)
-
-# Producers by tier (from Session T)
-_HIGH_MARGIN = {
-    'palizh', 'нюмикс', 'weber', 'qorasaroy', 'silkoat',
-    'юнитинт', 'oscar', 'dekoart', 'ofm', 'соудал', 'colormix',
-    'палиж', 'вебер', 'оскар', 'декоарт', 'силкоат', 'коррасарой',
-}
-_LOW_MARGIN = {
-    'hayat', 'eleron', 'узкабель', 'lama', 'kripteks',
-    'хаят', 'элерон', 'lama standart',
-}
+# Multiplier shorthands kept for readability in the loop below.
+TIER_HIGH = 2.0
+TIER_STANDARD = 1.5
+TIER_LOW = 1.0
 
 POINTS_PER_10K_UZS = 1
 POINTS_PER_USD = 10
@@ -33,16 +23,7 @@ POINTS_PER_USD = 10
 
 def _get_producer_tier(producer_name):
     """Determine point multiplier from producer name."""
-    if not producer_name:
-        return TIER_STANDARD
-    low = producer_name.strip().lower()
-    for p in _HIGH_MARGIN:
-        if p in low:
-            return TIER_HIGH
-    for p in _LOW_MARGIN:
-        if p in low:
-            return TIER_LOW
-    return TIER_STANDARD
+    return points_multiplier(producer_name)
 
 
 def simulate_all_months(conn=None):

@@ -21,6 +21,7 @@ from backend.services.client_search import (
     relink_orphan_finance_rows,
     search_clients,
 )
+from backend.services.producer_tiers import RATE, commission_rate, producer_tier
 from backend.services.roles import role_in
 from backend.services.user_auth import assert_init_data
 
@@ -114,30 +115,34 @@ def agent_stats(telegram_id: int = Query(...)):
         conn.close()
 
 
-# ── Agent panel: commission (Phase 1: flat 0.5%) ─────────────────────────
+# ── Agent panel: commission (earned-on-orders + confirmed-on-payments) ───
+#
+# Two surfaces, one endpoint:
+#   - earned    → live, per-line tiered (0.5/1/2%) on orders this agent
+#                 placed this month. Motivates the agent the moment they
+#                 submit an order; doesn't wait for Kassa.
+#   - confirmed → payment-based commission (Kassa-collected money on the
+#                 agent's registered shops). Matches the project rule
+#                 `04-data-handling.md` "Compensation basis: use Kassa,
+#                 NOT Realizatsiya" — this is the payout figure.
+#
+# The earned/confirmed gap closes as collections come in. Per-producer tier
+# lookup lives in `backend/services/producer_tiers.py` (shared with the
+# loyalty points multiplier).
 
-# Flat placeholder rate for Phase 1. Per-supplier tiered calc (0.5/1/2%) is
-# blocked on Session T's "Walk all 43 active suppliers + assign supplier→tier"
-# TODO — see `obsidian-vault/session-logs/Session T — log.md`. Don't move
-# this constant into env or DB until Phase 2 lands; keeping it inline + grep-
-# able makes the placeholder-vs-tiered pivot a single-PR change.
-_PHASE1_COMMISSION_RATE = 0.005
+_CONFIRMED_COMMISSION_RATE = 0.005  # flat for now; tiered Kassa needs
+# product-level allocation that the intake_payments path doesn't carry.
 
 
 @router.get("/commission")
 def agent_commission(request: Request, telegram_id: int = Query(...)):
-    """Phase 1: flat 0.5% on collected money from this agent's registered
-    shops, current month (Tashkent).
+    """Current-month commission for this agent. Returns two blocks:
 
-    Attribution: payments rows in `intake_payments` (status='confirmed') for
-    any `client_id` that this agent registered via `agent_client_registrations`
-    (status='created', linked_client_id NOT NULL). Legacy agents (Шерзод /
-    Дилшод / Шухрат) with no panel-registered shops will see zero until an
-    `agent_client_assignments` table is populated — captured as a follow-up.
-
-    Returns dual-currency totals + a per-channel breakdown so the agent can
-    see which intake stream (cash-handover / P2P / bank-transfer / legal-
-    transfer) drove their commission this month.
+      earned    — tiered commission on order_items from orders placed by
+                  this agent (orders.placed_by_telegram_id = telegram_id),
+                  grouped by producer with rate 0.5/1/2% per Session T.
+      confirmed — flat-rate commission on Kassa-confirmed payments for
+                  this agent's registered shops (existing payout basis).
     """
     assert_init_data(request, telegram_id)
     conn = get_db()
@@ -149,78 +154,178 @@ def agent_commission(request: Request, telegram_id: int = Query(...)):
         period_start = today.replace(day=1).isoformat()  # YYYY-MM-01
         period_label = today.strftime("%Y-%m")
 
-        client_ids = [
-            row["linked_client_id"]
-            for row in conn.execute(
-                "SELECT linked_client_id FROM agent_client_registrations "
-                "WHERE agent_telegram_id = ? "
-                "  AND linked_client_id IS NOT NULL "
-                "  AND status = 'created'",
-                (telegram_id,),
-            ).fetchall()
-        ]
-
-        if not client_ids:
-            return {
-                "ok": True,
-                "period": period_label,
-                "rate_pct": _PHASE1_COMMISSION_RATE * 100,
-                "rate_basis": "phase1_flat",
-                "client_count": 0,
-                "collected_uzs": 0,
-                "collected_usd": 0.0,
-                "commission_uzs": 0,
-                "commission_usd": 0.0,
-                "by_channel": [],
-            }
-
-        placeholders = ",".join("?" * len(client_ids))
-        rows = conn.execute(
-            f"""SELECT channel, currency, COALESCE(SUM(amount), 0) AS total
-                FROM intake_payments
-                WHERE status = 'confirmed'
-                  AND date(COALESCE(confirmed_at, submitted_at)) >= ?
-                  AND client_id IN ({placeholders})
-                GROUP BY channel, currency""",
-            [period_start, *client_ids],
-        ).fetchall()
-
-        collected_uzs = 0.0
-        collected_usd = 0.0
-        per_channel: dict = {}
-        for r in rows:
-            ch = r["channel"]
-            cur = r["currency"]
-            total = float(r["total"] or 0)
-            slot = per_channel.setdefault(ch, {"uzs": 0.0, "usd": 0.0})
-            if cur == "UZS":
-                slot["uzs"] += total
-                collected_uzs += total
-            else:
-                slot["usd"] += total
-                collected_usd += total
+        earned = _earned_block(conn, telegram_id, period_label)
+        confirmed = _confirmed_block(conn, telegram_id, period_start)
 
         return {
             "ok": True,
             "period": period_label,
-            "rate_pct": _PHASE1_COMMISSION_RATE * 100,
-            "rate_basis": "phase1_flat",
-            "client_count": len(client_ids),
-            "collected_uzs": round(collected_uzs),
-            "collected_usd": round(collected_usd, 2),
-            "commission_uzs": round(collected_uzs * _PHASE1_COMMISSION_RATE),
-            "commission_usd": round(collected_usd * _PHASE1_COMMISSION_RATE, 2),
-            "by_channel": [
-                {
-                    "channel": ch,
-                    "uzs": round(v["uzs"]),
-                    "usd": round(v["usd"], 2),
-                }
-                for ch, v in sorted(per_channel.items())
-            ],
+            "earned": earned,
+            "confirmed": confirmed,
         }
     finally:
         conn.close()
+
+
+def _earned_block(conn, telegram_id: int, period_label: str) -> dict:
+    """Live tiered commission on orders this agent placed this month.
+
+    Returns:
+        {
+          "uzs": int, "usd": float, "order_count": int,
+          "by_producer": [{name, tier, rate_pct, uzs, usd, line_total_uzs,
+                           line_total_usd}, ...],
+          "rates": {"high": 2.0, "standard": 1.0, "low": 0.5},
+        }
+    """
+    rows = conn.execute(
+        """SELECT oi.producer_name, oi.currency,
+                  COALESCE(SUM(oi.quantity * oi.price), 0) AS line_total
+           FROM orders o
+           JOIN order_items oi ON oi.order_id = o.id
+           WHERE o.placed_by_telegram_id = ?
+             AND substr(o.created_at, 1, 7) = ?
+           GROUP BY oi.producer_name, oi.currency""",
+        (telegram_id, period_label),
+    ).fetchall()
+
+    order_count = conn.execute(
+        """SELECT COUNT(*) AS n FROM orders
+           WHERE placed_by_telegram_id = ?
+             AND substr(created_at, 1, 7) = ?""",
+        (telegram_id, period_label),
+    ).fetchone()["n"]
+
+    # Aggregate per producer across UZS+USD lines so the breakdown shows
+    # both currencies on the same row when a producer sells in both.
+    by_producer_map: dict = {}
+    total_uzs = 0.0
+    total_usd = 0.0
+
+    for r in rows:
+        producer = r["producer_name"] or "—"
+        cur = (r["currency"] or "UZS").upper()
+        line = float(r["line_total"] or 0)
+        if line <= 0:
+            continue
+        tier = producer_tier(producer)
+        rate = commission_rate(producer)
+        commission = line * rate
+
+        slot = by_producer_map.setdefault(
+            producer,
+            {
+                "name": producer,
+                "tier": tier,
+                "rate_pct": round(rate * 100, 2),
+                "uzs": 0.0,
+                "usd": 0.0,
+                "line_total_uzs": 0.0,
+                "line_total_usd": 0.0,
+            },
+        )
+        if cur == "UZS":
+            slot["uzs"] += commission
+            slot["line_total_uzs"] += line
+            total_uzs += commission
+        else:
+            slot["usd"] += commission
+            slot["line_total_usd"] += line
+            total_usd += commission
+
+    by_producer = sorted(
+        [
+            {
+                "name": p["name"],
+                "tier": p["tier"],
+                "rate_pct": p["rate_pct"],
+                "uzs": round(p["uzs"]),
+                "usd": round(p["usd"], 2),
+                "line_total_uzs": round(p["line_total_uzs"]),
+                "line_total_usd": round(p["line_total_usd"], 2),
+            }
+            for p in by_producer_map.values()
+        ],
+        key=lambda p: -(p["uzs"] + p["usd"] * 12500),  # rough UZS-eq sort
+    )
+
+    return {
+        "uzs": round(total_uzs),
+        "usd": round(total_usd, 2),
+        "order_count": order_count,
+        "by_producer": by_producer,
+        "rates": {tier: round(pct * 100, 2) for tier, pct in RATE.items()},
+    }
+
+
+def _confirmed_block(conn, telegram_id: int, period_start: str) -> dict:
+    """Flat-rate commission on confirmed payments for this agent's
+    registered shops. Mirrors the previous /commission endpoint's logic
+    (Kassa basis, registered-shop attribution)."""
+    client_ids = [
+        row["linked_client_id"]
+        for row in conn.execute(
+            "SELECT linked_client_id FROM agent_client_registrations "
+            "WHERE agent_telegram_id = ? "
+            "  AND linked_client_id IS NOT NULL "
+            "  AND status = 'created'",
+            (telegram_id,),
+        ).fetchall()
+    ]
+
+    if not client_ids:
+        return {
+            "uzs": 0,
+            "usd": 0.0,
+            "collected_uzs": 0,
+            "collected_usd": 0.0,
+            "registered_client_count": 0,
+            "rate_pct": _CONFIRMED_COMMISSION_RATE * 100,
+            "by_channel": [],
+        }
+
+    placeholders = ",".join("?" * len(client_ids))
+    rows = conn.execute(
+        f"""SELECT channel, currency, COALESCE(SUM(amount), 0) AS total
+            FROM intake_payments
+            WHERE status = 'confirmed'
+              AND date(COALESCE(confirmed_at, submitted_at)) >= ?
+              AND client_id IN ({placeholders})
+            GROUP BY channel, currency""",
+        [period_start, *client_ids],
+    ).fetchall()
+
+    collected_uzs = 0.0
+    collected_usd = 0.0
+    per_channel: dict = {}
+    for r in rows:
+        ch = r["channel"]
+        cur = r["currency"]
+        total = float(r["total"] or 0)
+        slot = per_channel.setdefault(ch, {"uzs": 0.0, "usd": 0.0})
+        if cur == "UZS":
+            slot["uzs"] += total
+            collected_uzs += total
+        else:
+            slot["usd"] += total
+            collected_usd += total
+
+    return {
+        "uzs": round(collected_uzs * _CONFIRMED_COMMISSION_RATE),
+        "usd": round(collected_usd * _CONFIRMED_COMMISSION_RATE, 2),
+        "collected_uzs": round(collected_uzs),
+        "collected_usd": round(collected_usd, 2),
+        "registered_client_count": len(client_ids),
+        "rate_pct": _CONFIRMED_COMMISSION_RATE * 100,
+        "by_channel": [
+            {
+                "channel": ch,
+                "uzs": round(v["uzs"]),
+                "usd": round(v["usd"], 2),
+            }
+            for ch, v in sorted(per_channel.items())
+        ],
+    }
 
 
 # ── Agent panel: vehicle profile (Block A) ───────────────────────────────

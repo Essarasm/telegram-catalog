@@ -348,15 +348,20 @@ function AgentPanelCard({ data, stats, userRole }) {
     maximumFractionDigits: 2,
   }).format(v || 0);
   const channelLabel = (ch) => t[`agent_commission_channel_${ch}`] || ch;
-  const hasCollections = (data.collected_uzs || 0) > 0 || (data.collected_usd || 0) > 0;
+  const tierLabel = (tier) => t[`agent_commission_tier_${tier}`] || tier;
+
+  const earned = data.earned || {};
+  const confirmed = data.confirmed || {};
+  const hasEarned = (earned.uzs || 0) > 0 || (earned.usd || 0) > 0;
+  const hasConfirmedPayments =
+    (confirmed.collected_uzs || 0) > 0 || (confirmed.collected_usd || 0) > 0;
 
   return (
     <div
       className={`rounded-xl p-4 shadow-lg space-y-2.5 ${theme.bgClass}`}
       style={theme.style}
     >
-      {/* Top row — role label + Beta badge (replaces the standalone AGENT
-          PANELI banner that lived at the top of the page) */}
+      {/* Top row — role label + Beta badge */}
       <div className="flex items-center justify-between">
         <div className="text-[11px] uppercase tracking-wider opacity-90">
           {theme.label}
@@ -372,38 +377,96 @@ function AgentPanelCard({ data, stats, userRole }) {
         <div className="text-[11px] opacity-80 font-mono">{data.period}</div>
       </div>
 
-      {data.client_count === 0 ? (
-        <div className="text-xs opacity-80 py-1">{t.agent_commission_no_clients}</div>
-      ) : !hasCollections ? (
-        <div className="text-xs opacity-80 py-1">{t.agent_commission_no_payments}</div>
-      ) : (
-        <>
-          <div className="flex items-baseline gap-2 flex-wrap">
-            <span className="text-2xl font-bold">{fmtUzs(data.commission_uzs)}</span>
-            <span className="text-xs opacity-80">so'm</span>
-            {data.commission_usd > 0 && (
-              <span className="text-xl font-bold ml-1">+ ${fmtUsd(data.commission_usd)}</span>
-            )}
-            <span className="text-[11px] opacity-95 ml-auto bg-white/20 px-1.5 py-0.5 rounded">
-              {t.agent_commission_rate_badge}
-            </span>
+      {/* Earned block — live, tiered (0.5/1/2%) per producer */}
+      <div className="space-y-1">
+        <div className="flex items-baseline justify-between">
+          <div className="text-[11px] opacity-85 uppercase tracking-wide">
+            {t.agent_commission_earned_label}
           </div>
-          <div className="text-xs opacity-85">
-            {t.agent_commission_collected_label}: {fmtUzs(data.collected_uzs)} so'm
-            {data.collected_usd > 0 && ` · $${fmtUsd(data.collected_usd)}`}
-          </div>
-          {data.by_channel && data.by_channel.length > 0 && (
-            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] opacity-80 pt-1">
-              {data.by_channel.map((c) => (
-                <span key={c.channel}>
-                  {channelLabel(c.channel)}: {fmtUzs(c.uzs)}
-                  {c.usd > 0 && ` · $${fmtUsd(c.usd)}`}
-                </span>
-              ))}
+          <div className="text-[10px] opacity-70">{t.agent_commission_earned_rate_hint}</div>
+        </div>
+        {!hasEarned ? (
+          <div className="text-xs opacity-80 py-1">{t.agent_commission_earned_no_orders}</div>
+        ) : (
+          <>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="text-2xl font-bold">{fmtUzs(earned.uzs)}</span>
+              <span className="text-xs opacity-80">so'm</span>
+              {(earned.usd || 0) > 0 && (
+                <span className="text-xl font-bold ml-1">+ ${fmtUsd(earned.usd)}</span>
+              )}
+              <span className="text-[11px] opacity-90 ml-auto">
+                {earned.order_count || 0} {t.agent_commission_earned_orders}
+              </span>
             </div>
-          )}
-        </>
-      )}
+            {(earned.by_producer || []).length > 0 && (
+              <div className="space-y-0.5 pt-1">
+                <div className="text-[10px] opacity-70 uppercase">
+                  {t.agent_commission_by_brand}
+                </div>
+                {earned.by_producer.slice(0, 5).map((p) => (
+                  <div key={p.name} className="flex items-baseline gap-2 text-[11px]">
+                    <span className="opacity-90 flex-1 truncate">{p.name}</span>
+                    <span className="opacity-60 whitespace-nowrap">
+                      {tierLabel(p.tier)} · {p.rate_pct}%
+                    </span>
+                    <span className="font-mono whitespace-nowrap">
+                      {p.uzs > 0 ? fmtUzs(p.uzs) : ''}
+                      {p.uzs > 0 && p.usd > 0 ? ' · ' : ''}
+                      {p.usd > 0 ? `$${fmtUsd(p.usd)}` : ''}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Confirmed block — Kassa-based payout figure */}
+      <div className="pt-2 border-t border-white/15 space-y-1">
+        <div className="flex items-baseline justify-between">
+          <div className="text-[11px] opacity-85 uppercase tracking-wide">
+            {t.agent_commission_confirmed_label}
+          </div>
+          <span className="text-[10px] opacity-70">
+            {t.agent_commission_confirmed_rate_badge}
+          </span>
+        </div>
+        {confirmed.registered_client_count === 0 ? (
+          <div className="text-xs opacity-80 py-1">
+            {t.agent_commission_confirmed_no_clients}
+          </div>
+        ) : !hasConfirmedPayments ? (
+          <div className="text-xs opacity-80 py-1">
+            {t.agent_commission_confirmed_no_payments}
+          </div>
+        ) : (
+          <>
+            <div className="flex items-baseline gap-2 flex-wrap">
+              <span className="text-lg font-bold">{fmtUzs(confirmed.uzs)}</span>
+              <span className="text-[11px] opacity-80">so'm</span>
+              {(confirmed.usd || 0) > 0 && (
+                <span className="text-base font-bold ml-1">+ ${fmtUsd(confirmed.usd)}</span>
+              )}
+            </div>
+            <div className="text-[11px] opacity-85">
+              {t.agent_commission_collected_label}: {fmtUzs(confirmed.collected_uzs)} so'm
+              {(confirmed.collected_usd || 0) > 0 && ` · $${fmtUsd(confirmed.collected_usd)}`}
+            </div>
+            {(confirmed.by_channel || []).length > 0 && (
+              <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] opacity-80 pt-1">
+                {confirmed.by_channel.map((c) => (
+                  <span key={c.channel}>
+                    {channelLabel(c.channel)}: {fmtUzs(c.uzs)}
+                    {(c.usd || 0) > 0 && ` · $${fmtUsd(c.usd)}`}
+                  </span>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       {/* Order stats — absorbed from the now-removed CabinetPage
           AgentStatsCard. Today + this-month order counts, totals,
@@ -462,7 +525,7 @@ function AgentPanelCard({ data, stats, userRole }) {
       )}
 
       <div className="text-[10px] opacity-70 italic pt-1 border-t border-white/15">
-        {t.agent_commission_phase1_note}
+        {t.agent_commission_basis_note}
       </div>
     </div>
   );
