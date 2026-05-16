@@ -292,12 +292,10 @@ async def handle_location(message: Message):
     if had_location:
         try:
             import httpx as _httpx
-            # Pre-renovation, the fallback was -5085083917 — that's actually
-            # REPORT_GROUP_CHAT_ID, not ERRORS_GROUP_CHAT_ID. The location
-            # overwrite alerts were silently shipping to the wrong group when
-            # the env var was unset. Audit-caught and fixed 2026-05-10.
-            from bot.shared import ERRORS_GROUP_CHAT_ID
-            ERRORS_CHAT = ERRORS_GROUP_CHAT_ID
+            # Overwrite alerts are automated/system output — route to
+            # PLATFORM_OPS per the 2026-05-16 admin/ops group split.
+            from bot.shared import PLATFORM_OPS_GROUP_CHAT_ID
+            target_chat = PLATFORM_OPS_GROUP_CHAT_ID
             client_label = client_1c_name or setter_name
             prev_maps = f"https://maps.google.com/?q={prev_lat},{prev_lng}" if prev_lat else "—"
             new_maps = f"https://maps.google.com/?q={loc.latitude},{loc.longitude}"
@@ -314,7 +312,7 @@ async def handle_location(message: Message):
             ]
             _httpx.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": ERRORS_CHAT, "text": "\n".join(lines),
+                json={"chat_id": target_chat, "text": "\n".join(lines),
                       "parse_mode": "HTML", "disable_web_page_preview": True},
                 timeout=10,
             )
