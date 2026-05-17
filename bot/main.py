@@ -10,6 +10,9 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
+    BotCommand,
+    BotCommandScopeChat,
+    BotCommandScopeDefault,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     MenuButtonWebApp,
@@ -611,12 +614,107 @@ async def main():
         logger.warning(f"Could not set menu button: {e}")
 
     try:
+        await _register_command_menus(bot)
+    except Exception as e:
+        logger.warning(f"Could not register command menus: {e}")
+
+    try:
         from bot.reminders import start_reminder_tasks
         start_reminder_tasks(bot, ADMIN_GROUP_CHAT_ID)
     except Exception as e:
         logger.error(f"Failed to start daily-upload reminder tasks: {e}")
 
     await dp.start_polling(bot)
+
+
+async def _register_command_menus(bot: Bot) -> None:
+    """Register Telegram's per-scope command menu (the `/` popup hint).
+
+    Reads `bot.help_spec.SPECS` and calls `bot.set_my_commands()` once per
+    chat scope, so typing `/` in the admin group shows admin commands,
+    in the daily group shows daily-upload commands, and so on.
+
+    Closes the long-standing gap (open CC TODO since 2026-05-10) where
+    14+ registered commands had no discoverability via Telegram's native
+    menu — clients/staff had to know the command name to use it.
+
+    Idempotent — safe on every bot startup. Gracefully skips any scope
+    whose chat_id env var is unset (0).
+    """
+    import re
+    from bot.help_spec import SPECS
+    from bot.shared import (
+        DAILY_GROUP_CHAT_ID, ORDER_GROUP_CHAT_ID,
+        INVENTORY_GROUP_CHAT_ID, CASHIER_GROUP_CHAT_ID,
+        BANK_TRANSFER_GROUP_CHAT_ID, AGENT_APPROVAL_GROUP_CHAT_ID,
+        DRIVER_GROUP_CHAT_ID,
+    )
+
+    scope_map = {
+        'daily':          DAILY_GROUP_CHAT_ID,
+        'admin':          ADMIN_GROUP_CHAT_ID,
+        'sales':          ORDER_GROUP_CHAT_ID,
+        'inventory':      INVENTORY_GROUP_CHAT_ID,
+        'cashier':        CASHIER_GROUP_CHAT_ID,
+        'bank_transfer':  BANK_TRANSFER_GROUP_CHAT_ID,
+        'agent_approval': AGENT_APPROVAL_GROUP_CHAT_ID,
+        'driver':         DRIVER_GROUP_CHAT_ID,
+    }
+
+    for role, sections in SPECS.items():
+        chat_id = scope_map.get(role)
+        if not chat_id:
+            continue  # env var unset → skip silently
+
+        commands = []
+        seen: set[str] = set()
+        for _section_title, cmds in sections:
+            for cmd in cmds:
+                if not cmd.syntax.strip().startswith('/'):
+                    continue  # placeholder rows like "—"
+                # Some entries pack multiple commands into one row
+                # ("/calcpoints, /clientpoints, /leaderboard") — extract each.
+                # Telegram enforces command name max 32 chars, [a-z0-9_].
+                for name in re.findall(r'/([a-z0-9_]+)', cmd.syntax):
+                    if name in seen or len(name) > 32:
+                        continue
+                    seen.add(name)
+                    commands.append(BotCommand(
+                        command=name,
+                        description=cmd.purpose[:256],
+                    ))
+
+        if not commands:
+            continue
+        try:
+            await bot.set_my_commands(
+                commands=commands,
+                scope=BotCommandScopeChat(chat_id=chat_id),
+            )
+            logger.info(
+                f"Registered {len(commands)} commands for scope '{role}' "
+                f"(chat_id={chat_id})"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to register commands for scope '{role}' "
+                f"(chat_id={chat_id}): {e}"
+            )
+
+    # Default scope — private chats / clients DM'ing the bot.
+    # Mini App users mostly interact via the WebApp button, but /start
+    # and /help should be discoverable.
+    try:
+        await bot.set_my_commands(
+            commands=[
+                BotCommand(command="start", description="Botni boshlash"),
+                BotCommand(command="help", description="Yordam"),
+            ],
+            scope=BotCommandScopeDefault(),
+        )
+        logger.info("Registered default-scope commands (private chats)")
+    except Exception as e:
+        logger.error(f"Failed to register default-scope commands: {e}")
 
 
 if __name__ == "__main__":

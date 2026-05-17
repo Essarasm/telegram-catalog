@@ -134,8 +134,14 @@ SPECS = {
             Cmd("/backfillrealordertotals", "RO'larda yo'qolgan jami narxlarni qayta hisoblash"),
             Cmd("/rebuildsearch", "products.search_text indeksini qayta qurish"),
             Cmd("/addmissing", "Mahsulot so'rovlarini ko'rish"),
-            Cmd("/aliases, /seedaliases", "Ishlab chiqaruvchi aliaslari"),
+            Cmd("/aliases", "Ishlab chiqaruvchi aliaslari — ro'yxat"),
+            Cmd("/seedaliases", "Standart aliaslarni seed qilish (bir martalik)"),
             Cmd("/holiday <YYYY-MM-DD>", "Sanani bayram deb belgilash (checklist o'tkazib yuborish)"),
+            Cmd("/announce", "Onboarding spec'ni guruhlarga post qilish (bir martalik)"),
+            Cmd("/migrategps", "GPS migratsiya (bir martalik)"),
+            Cmd("/patrotated", "GitHub PAT rotatsiya tasdiqi"),
+            Cmd("/fixclientws", "Mijoz nomidagi bo'sh joylar tozalash"),
+            Cmd("/resendmissed", "Yetkazilmagan bildirishnomalarni qayta yuborish"),
         ]),
         ("⚠️ Ehtiyotkorlik", [
             Cmd("/wipewishlists CONFIRM", "Demo wish-list ma'lumotlarini tozalash (bir martalik)"),
@@ -143,7 +149,16 @@ SPECS = {
             Cmd("/cards", "P2P qabul kartalari — ro'yxat + qo'shish/o'chirish (Session Z)"),
             Cmd("/sweepmissed [dry]", "Missed notifications — avto-hal qilish (Session N)"),
         ]),
-        ("🔧 Diagnostika", [
+        ("🔍 Diagnostika va operatsion", [
+            Cmd("/audit", "Foundation audit (ishga tushirish)"),
+            Cmd("/consistencycheck", "Ma'lumotlar to'g'riligi auditi"),
+            Cmd("/grouphealth", "Forwarding guruhlar yetib borishini tekshirish"),
+            Cmd("/inspectclient <name|#id>", "Mijoz to'liq diagnostika"),
+            Cmd("/reviewclients", "Ko'rib chiqiladigan mijozlar"),
+            Cmd("/exportmaster", "Client Master xlsx export"),
+            Cmd("/producercoverage", "Ishlab chiqaruvchi qamrovi"),
+            Cmd("/supplycoverage", "Yetkazib berish qamrovi"),
+            Cmd("/panel", "Test mijoz paneli"),
             Cmd("/chatid", "Chat va user ID"),
         ]),
     ],
@@ -195,6 +210,12 @@ SPECS = {
         ]),
         ("📥 Agent arizalari", [
             Cmd("—", "Yangi arizalar avtomatik shu yerga keladi. Tasdiqlash inline ✅/❌ tugmalar orqali."),
+        ]),
+    ],
+    'driver': [
+        ("📍 Haydovchi buyruqlari", [
+            Cmd("/lokatsiya", "Mijoz GPS pin qo'yish — haydovchi/agent flow"),
+            Cmd("/chatid", "Chat va user ID"),
         ]),
     ],
     'dm_user': [
