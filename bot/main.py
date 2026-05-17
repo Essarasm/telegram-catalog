@@ -503,7 +503,7 @@ async def cmd_list(message: types.Message):
         lines.append(
             f"{i}. <b>{name}</b>{username}\n"
             f"   📱 {r['phone']} | 🆔 <code>{r['telegram_id']}</code>\n"
-            f"   → /approve {r['telegram_id']}"
+            f"   → <code>/approve {r['telegram_id']}</code>"
         )
 
     await message.reply("\n".join(lines), parse_mode="HTML")

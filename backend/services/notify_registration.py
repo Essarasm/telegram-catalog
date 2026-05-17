@@ -73,7 +73,10 @@ def send_registration_notification(
         lines.append("\u2705 Avtomatik tasdiqlangan")
     else:
         lines.append("\u23f3 Tasdiqlanmagan (narxlar yashirin)")
-        lines.append(f"\U0001f449 Tasdiqlash: /approve {telegram_id}")
+        # <code>...</code> makes Telegram tap-to-copy the FULL command incl.
+        # the telegram_id (otherwise tapping bare `/approve` only copies the
+        # command name and drops the ID).
+        lines.append(f"\U0001f449 Tasdiqlash: <code>/approve {telegram_id}</code>")
         lines.append("")
         lines.append("<i>\U0001f4dd Javob bering: 1C mijoz nomi yoki 'new'</i>")
 
