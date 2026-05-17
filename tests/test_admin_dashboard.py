@@ -31,9 +31,18 @@ ADMIN_KEY = os.environ["ADMIN_API_KEY"]
 
 
 def _client(db) -> TestClient:
+    # admin endpoints are split across 4 routers (admin, admin_data_ops,
+    # admin_debtors, admin_revenue) — mount them all so tests covering
+    # endpoints in any module work uniformly.
     from backend.routers.admin import router
+    from backend.routers.admin_data_ops import router as data_ops_router
+    from backend.routers.admin_debtors import router as debtors_router
+    from backend.routers.admin_revenue import router as revenue_router
     app = FastAPI()
     app.include_router(router)
+    app.include_router(data_ops_router)
+    app.include_router(debtors_router)
+    app.include_router(revenue_router)
     return TestClient(app)
 
 

@@ -118,9 +118,15 @@ find frontend/src -type f \( -name "*.jsx" -o -name "*.js" \) 2>/dev/null \
     | xargs wc -l 2>/dev/null | sort -rn | head -6 | tail -5 \
     | awk '{printf "        %s lines  %s\n", $1, $2}'
 
-# Flag any file over 2000 lines as worth refactoring
-big=$(find backend bot frontend/src -type f \( -name "*.py" -o -name "*.jsx" -o -name "*.js" \) -not -path "*/__pycache__/*" 2>/dev/null \
-    | xargs wc -l 2>/dev/null | awk '$1 > 2000 && $2 != "total" {print $2}' | head -3)
+# Flag any file over 2000 lines as worth refactoring.
+# Exemption: backend/database.py is intentionally monolithic per CLAUDE.md's
+# schema-version doctrine — single source of truth for all CREATE TABLE +
+# init_db() migrations. Splitting it would fragment the schema-version
+# discipline. (Other large files are tracked in Notion Command Center's
+# "Later (deferred until trigger)" bucket — they warn on purpose until a
+# trigger fires.)
+big=$(find backend bot frontend/src -type f \( -name "*.py" -o -name "*.jsx" -o -name "*.js" \) -not -path "*/__pycache__/*" -not -path "backend/database.py" 2>/dev/null \
+    | xargs wc -l 2>/dev/null | awk '$1 > 2000 && $2 != "total" && $2 != "backend/database.py" {print $2}' | head -3)
 if [ -n "$big" ]; then
     echo "    ${YELLOW}🟡${RESET} Files over 2000 lines (consider refactoring):"
     echo "$big" | awk '{printf "          %s\n", $0}'

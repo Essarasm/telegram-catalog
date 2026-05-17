@@ -238,6 +238,12 @@ app.include_router(finance.router)
 app.include_router(admin.router)
 from backend.routers import admin_supply
 app.include_router(admin_supply.router)
+from backend.routers import admin_data_ops
+app.include_router(admin_data_ops.router)
+from backend.routers import admin_debtors
+app.include_router(admin_debtors.router)
+from backend.routers import admin_revenue
+app.include_router(admin_revenue.router)
 app.include_router(feedback.router)
 app.include_router(locations.router)
 from backend.routers import agent
