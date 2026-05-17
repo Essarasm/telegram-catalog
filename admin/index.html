@@ -1791,7 +1791,6 @@
                             <div class="currency-toggle" id="coverageLayerToggle">
                                 <button class="currency-btn active" data-clayer="heat" onclick="setCoverageLayer('heat')">Heat</button>
                                 <button class="currency-btn" data-clayer="cluster" onclick="setCoverageLayer('cluster')">Pins</button>
-                                <button class="currency-btn" data-clayer="both" onclick="setCoverageLayer('both')">Both</button>
                             </div>
                         </div>
                     </div>
@@ -4257,7 +4256,7 @@
         let coverageMap = null;
         let coverageHeatLayer = null;
         let coverageClusterLayer = null;
-        let coverageLayer = 'heat';   // 'heat' | 'cluster' | 'both'
+        let coverageLayer = 'heat';   // 'heat' | 'cluster'
         let coveragePoints = [];      // last loaded points (full result for current role+date filter)
         let coverageDebtByClient = {}; // { client_id: { debt_uzs, debt_usd, oldest_aging } } — latest snapshot
         let coverageDebtSnapshot = null; // ISO date string of the snapshot powering the debt overlay
@@ -4408,7 +4407,7 @@
 
             const latlngs = pts.map(p => [p.lat, p.lng]);
 
-            if (coverageLayer === 'heat' || coverageLayer === 'both') {
+            if (coverageLayer === 'heat') {
                 coverageHeatLayer = L.heatLayer(latlngs, {
                     radius: 28,
                     blur: 22,
@@ -4476,28 +4475,6 @@
                         `</div>`;
                     marker.bindPopup(popup);
                     marker.addTo(coverageClusterLayer);
-                });
-                coverageMap.addLayer(coverageClusterLayer);
-            } else if (coverageLayer === 'both') {
-                coverageClusterLayer = L.markerClusterGroup({ chunkedLoading: true });
-                pts.forEach(p => {
-                    const when = p.set_at ? p.set_at.slice(0, 16).replace('T', ' ') : '—';
-                    const clearBtn =
-                        `<button type="button" ` +
-                        `onclick="clearClientPin(${Number(p.client_id)}, ${JSON.stringify(p.client_label || '')}, ${p.lat}, ${p.lng}, ${JSON.stringify(p.agent_name || '')}, ${JSON.stringify(p.set_at || '')})" ` +
-                        `style="margin-top:8px; padding:6px 10px; background:#dc2626; color:#fff; border:none; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; width:100%;">` +
-                        `🗑 Clear this pin` +
-                        `</button>`;
-                    const popup =
-                        `<div style="font-size:13px; line-height:1.5;">` +
-                        `<div style="font-weight:600; margin-bottom:4px;">${escHtml(p.client_label)}</div>` +
-                        `<div style="color:#555;">Setter: ${escHtml(p.agent_name || '—')} <span style="color:#999;">(${escHtml(p.role || '—')})</span></div>` +
-                        `<div style="color:#555;">When: ${escHtml(when)}</div>` +
-                        (p.address ? `<div style="color:#555; margin-top:4px;">${escHtml(p.address)}</div>` : '') +
-                        `<div style="margin-top:6px;"><a href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Open in Google Maps</a></div>` +
-                        clearBtn +
-                        `</div>`;
-                    L.marker([p.lat, p.lng]).bindPopup(popup).addTo(coverageClusterLayer);
                 });
                 coverageMap.addLayer(coverageClusterLayer);
             }
