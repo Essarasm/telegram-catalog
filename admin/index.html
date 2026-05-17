@@ -4496,11 +4496,16 @@
                 coverageMap.addLayer(coverageClusterLayer);
             }
 
-            // Fit bounds to data on first render or when filter shrinks the set significantly
-            try {
-                const b = L.latLngBounds(latlngs);
-                if (b.isValid()) coverageMap.fitBounds(b.pad(0.15), { maxZoom: 14, animate: false });
-            } catch (e) { /* keep current view */ }
+            // Fit bounds only when narrowed to a specific agent — the unfiltered
+            // "All setters" view stays at the Samarkand default (set in ensureCoverageMap)
+            // so the tab opens at a sensible regional scope instead of zooming
+            // out to fit the full 200+ km pin spread.
+            if (agentFilter) {
+                try {
+                    const b = L.latLngBounds(latlngs);
+                    if (b.isValid()) coverageMap.fitBounds(b.pad(0.15), { maxZoom: 14, animate: false });
+                } catch (e) { /* keep current view */ }
+            }
         }
 
         // ==================== CUSTOMER COVERAGE (route planning view) ====================
