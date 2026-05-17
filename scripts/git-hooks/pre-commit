@@ -8,10 +8,13 @@
 #   2. Chat-ID env-getters with hardcoded fallbacks must live in
 #      backend/services/group_config.py — never duplicated across files.
 #      Closes the WRONG_FALLBACK_FROM_COPY_PASTE class (Error Log #46).
+#   3. Bare `check_admin_key(...)` statement-calls with return discarded
+#      silently bypass auth — closes BOOL_AUTH_RESULT_DISCARDED (Error Log #51).
 #
 # Override env vars for the rare legitimate exception:
 #   SKIP_SCHEMA_CHECK=1   — bypass the schema-DDL guard
 #   SKIP_CHATID_CHECK=1   — bypass the chat-ID guard
+#   SKIP_AUTHCALL_CHECK=1 — bypass the discarded-bool-auth guard
 #   SKIP_RUFF=1           — skip ruff lint
 #   SKIP_FRONTEND_BUILD=1 — skip the frontend rebuild
 #   SKIP_BUNDLE_CHECK=1   — skip the bundle-size budget check
@@ -79,6 +82,37 @@ if [ "$SKIP_CHATID_CHECK" != "1" ]; then
         echo "   This prevents the WRONG_FALLBACK_FROM_COPY_PASTE class"
         echo "   (Error Log #46 — location.py shipped to wrong group via copy-paste)."
         echo "   Override (rare): SKIP_CHATID_CHECK=1 git commit ..."
+        exit 1
+    fi
+fi
+
+# ── Foundation guard 3: discarded-bool-auth ───────────────────────────────
+# A bare `check_admin_key(...)` call as a whole statement discards the bool
+# return value and silently bypasses auth (Error Log #51).
+# Correct forms (any of these pass):
+#   if not check_admin_key(key): raise HTTPException(403, ...)
+#   ok = check_admin_key(key)
+#   assert check_admin_key(key)
+# Hazard form (caught here):
+#   check_admin_key(admin_key)        # ← return discarded, auth no-op
+if [ "$SKIP_AUTHCALL_CHECK" != "1" ]; then
+    BAD_AUTHCALL=""
+    for f in $(git diff --cached --name-only --diff-filter=ACM | grep '\.py$'); do
+        if [ -f "$f" ] && git diff --cached -- "$f" | grep -qE '^\+[[:space:]]*check_admin_key\([^)]*\)[[:space:]]*$'; then
+            BAD_AUTHCALL="$BAD_AUTHCALL $f"
+        fi
+    done
+    if [ -n "$BAD_AUTHCALL" ]; then
+        echo "❌ Bare check_admin_key(...) statement-call (return value discarded):"
+        for f in $BAD_AUTHCALL; do echo "    $f"; done
+        echo ""
+        echo "   check_admin_key() returns a bool — it does NOT raise."
+        echo "   A bare statement-form call silently bypasses authentication."
+        echo "   Use one of:"
+        echo "     if not check_admin_key(key): raise HTTPException(403, ...)"
+        echo "     auth = resolve_auth(key); if not auth or auth[\"role\"] not in (...): raise ..."
+        echo "   (Error Log #51 BOOL_AUTH_RESULT_DISCARDED.)"
+        echo "   Override (rare): SKIP_AUTHCALL_CHECK=1 git commit ..."
         exit 1
     fi
 fi
