@@ -22,6 +22,18 @@
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
 
+# ── Python interpreter resolution ─────────────────────────────────────────
+# Prefer the venv (matches runtime.txt: 3.10.14) over whatever `python3` is
+# on PATH (macOS ships /usr/bin/python3 = 3.9.x, which lacks our dev deps).
+# Mirrors tools/audit.sh's resolution so hook + audit stay in lockstep.
+if [ -x .venv/bin/python ]; then
+    PY=".venv/bin/python"
+elif command -v python3.10 >/dev/null; then
+    PY="python3.10"
+else
+    PY="python3"
+fi
+
 # ── Python syntax ─────────────────────────────────────────────────────────
 STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$')
 
@@ -29,7 +41,7 @@ if [ -n "$STAGED_PY" ]; then
     echo "🔍 Checking Python syntax..."
     for f in $STAGED_PY; do
         if [ -f "$f" ]; then
-            python3 -m py_compile "$f" 2>&1
+            "$PY" -m py_compile "$f" 2>&1
             if [ $? -ne 0 ]; then
                 echo "❌ Syntax error in $f"
                 exit 1
@@ -125,8 +137,8 @@ fi
 # clear failure.
 if [ "$SKIP_RUFF" != "1" ]; then
     echo "🧹 Ruff lint..."
-    if ! python3 -m ruff check backend bot 2>&1; then
-        echo "❌ Ruff found issues. Fix or run \`python3 -m ruff check backend bot --fix\`."
+    if ! "$PY" -m ruff check backend bot 2>&1; then
+        echo "❌ Ruff found issues. Fix or run \`$PY -m ruff check backend bot --fix\`."
         echo "   Override (rare): SKIP_RUFF=1 git commit ..."
         exit 1
     fi
@@ -137,7 +149,7 @@ fi
 # `pytest -q` runs both suites — the auth-fallback rot from 2026-05-10 is now
 # loud rather than hiding behind manual invocation.
 echo "🧪 Running tests..."
-python3 -m pytest -q --tb=short 2>&1
+"$PY" -m pytest -q --tb=short 2>&1
 if [ $? -ne 0 ]; then
     echo "❌ Tests failed. Fix before committing."
     exit 1
@@ -163,7 +175,7 @@ if [ -n "$STAGED_FE_SRC" ] && [ "$SKIP_FRONTEND_BUILD" != "1" ]; then
     fi
     # Enforce bundle budget from CLAUDE.md (<400K JS + <50K CSS main chunk).
     if [ "$SKIP_BUNDLE_CHECK" != "1" ]; then
-        if ! python3 tools/check_bundle_size.py; then
+        if ! "$PY" tools/check_bundle_size.py; then
             echo ""
             echo "   Override (rare): SKIP_BUNDLE_CHECK=1 git commit ..."
             exit 1

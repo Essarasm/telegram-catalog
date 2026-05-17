@@ -2,3 +2,4 @@
 pytest>=8.0
 ruff>=0.6
 vulture>=2.13
+xlwt>=1.3.0  # test-only — synthesize .xls fixtures for 1C XLS importer tests (balances/debts/prices)
