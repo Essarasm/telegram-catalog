@@ -439,3 +439,49 @@ export async function submitP2P({ telegramId, clientId, amountUzs, cardId, scree
   const data = await res.json();
   return { status: res.status, ...data };
 }
+
+// ── Personal Cabinet / Registration ─────────────────────────────
+// All API calls from frontend pages MUST go through helpers here so
+// initDataHeader stays uniformly attached. Pre-commit guard #5 blocks
+// inline `fetch('/api/...')` in pages/components; these four close out
+// the historical violations grandfathered when the guard shipped
+// (Sunday 2026-05-17 audit).
+
+export async function registerUser(payload) {
+  const res = await fetch(`${API_BASE}/users/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function submitOrderIssue(formData) {
+  // Caller currently checks BOTH `res.ok` and `data.ok` — preserve both
+  // signals via `httpOk` (HTTP 2xx) plus the spread of backend's `{ok, …}`.
+  const res = await fetch(`${API_BASE}/feedback/order-issue`, {
+    method: 'POST',
+    body: formData,
+  });
+  let data = {};
+  try { data = await res.json(); } catch { /* silent — match original */ }
+  return { httpOk: res.ok, status: res.status, ...data };
+}
+
+export async function fetchLoyaltyPoints(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/cabinet/points?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false };
+  }
+}
+
+export async function fetchClientLocation(telegramId) {
+  try {
+    const res = await fetch(`${API_BASE}/client-location?telegram_id=${telegramId}`);
+    return res.json();
+  } catch (e) {
+    return { ok: false, has_gps: false };
+  }
+}

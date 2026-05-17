@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers, submitLegalTransferDoverennost, deleteLegalTransfer, initDataHeader } from '../utils/api';
+import { formatCartPrice, fetchPendingForClient, cancelIntakePayment, fetchPendingLegalTransfers, submitLegalTransferDoverennost, deleteLegalTransfer, initDataHeader, submitOrderIssue, fetchLoyaltyPoints, fetchClientLocation } from '../utils/api';
 import { roleTheme } from '../utils/roleTheme';
 import t from '../i18n/uz.json';
 
@@ -185,10 +185,8 @@ function OrderIssueForm({ order, onDone, t }) {
       fd.append('order_doc_number', order.doc_number || '');
       fd.append('order_date', order.date || '');
       files.forEach(f => fd.append('files', f));
-      const res = await fetch('/api/feedback/order-issue', { method: 'POST', body: fd });
-      let data = {};
-      try { data = await res.json(); } catch { data = {}; }
-      if (res.ok && data.ok) {
+      const result = await submitOrderIssue(fd);
+      if (result.httpOk && result.ok) {
         setSent(true);
         setTimeout(onDone, 900);
       } else {
@@ -412,14 +410,12 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
       .catch(() => setScoreLoading(false));
 
     // Loyalty Points
-    fetch(`/api/cabinet/points?telegram_id=${userId}`)
-      .then(r => r.json())
+    fetchLoyaltyPoints(userId)
       .then(data => { if (data.ok && data.total_points > 0) setLoyaltyPoints(data); })
       .catch(() => {});
 
     // Fetch saved location
-    fetch(`/api/client-location?telegram_id=${userId}`)
-      .then(r => r.json())
+    fetchClientLocation(userId)
       .then(data => {
         if (data.has_gps && data.gps) setUserLocation(data.gps);
       })

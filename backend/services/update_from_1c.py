@@ -11,6 +11,22 @@ Usage:
 
 The FINAL.xlsx should already have the "1c raw data" sheet with fresh data.
 producer_script.py should be run BEFORE this script (or this script runs import directly).
+
+---
+
+STATUS (audit 2026-05-17): UNKNOWN — preserved pending confirmation.
+
+This file has zero call-graph references in `railway.toml`, the bot, or
+any router. The functionality also lives in
+`backend/services/import_products.import_from_catalog_clean()` which runs
+automatically on Railway startup via the `railway.toml` startCommand chain.
+
+If you (Ulugbek) still run this CLI manually outside the Railway pipeline,
+leave it. If not, it's safe to delete — `git rm backend/services/update_from_1c.py`.
+
+DO NOT delete in an automated cleanup sweep without first confirming with
+Ulugbek. Tracked in `obsidian-vault/session-logs/Command Center — log.md`
+Active TODOs.
 """
 
 import sys

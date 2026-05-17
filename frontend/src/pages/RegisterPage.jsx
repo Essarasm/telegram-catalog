@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { cloudSave } from '../utils/cloudStorage';
+import { registerUser } from '../utils/api';
 
 // Feature flag: registration location step.
 // Temporarily disabled while presenting in-store to clients (Apr 2026).
@@ -19,13 +20,7 @@ export default function RegisterPage({ onRegistered }) {
   const [phoneCollected, setPhoneCollected] = useState(false);
   const [userData, setUserData] = useState(null);
 
-  const saveToServer = (data) => {
-    return fetch('/api/users/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    }).then(r => r.json());
-  };
+  const saveToServer = (data) => registerUser(data);
 
   const getLocation = () => {
     return new Promise((resolve, reject) => {

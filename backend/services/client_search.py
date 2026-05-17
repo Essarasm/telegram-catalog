@@ -294,9 +294,7 @@ def heal_finance_orphans_by_1c_name(conn, table: str) -> int:
     return cur.rowcount
 
 
-def create_and_link_new_1c_client(
-    client_name_1c: str, agent_telegram_id: int
-) -> Optional[dict]:
+def create_and_link_new_1c_client(client_name_1c: str) -> Optional[dict]:
     """Resolve a 1C-only client to an allowed_clients row, creating one if
     missing. Always relinks any orphan finance rows (client_id IS NULL) to
     the resolved id — previously this only ran on the create-new branch,

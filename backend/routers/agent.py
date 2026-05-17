@@ -404,7 +404,7 @@ def agent_switch_client(payload: dict = Body(...)):
         client_name_1c = payload.get("client_name_1c")
 
         if client_id is None and client_name_1c:
-            created = create_and_link_new_1c_client(client_name_1c, telegram_id)
+            created = create_and_link_new_1c_client(client_name_1c)
             if not created:
                 return JSONResponse(
                     {"ok": False, "error": f"'{client_name_1c}' not found in 1C"},
