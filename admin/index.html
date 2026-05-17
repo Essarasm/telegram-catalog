@@ -4399,22 +4399,39 @@
             const last = pts.reduce((acc, p) => (p.set_at && (!acc || p.set_at > acc) ? p.set_at : acc), null);
             document.getElementById('coverage-kpi-last').textContent = last ? last.slice(0, 16).replace('T', ' ') : '—';
 
-            // Clear old layers
-            if (coverageHeatLayer) { coverageMap.removeLayer(coverageHeatLayer); coverageHeatLayer = null; }
-            if (coverageClusterLayer) { coverageMap.removeLayer(coverageClusterLayer); coverageClusterLayer = null; }
+            // Clear old layers. eachLayer sweep (not just reference null-check)
+            // because leaflet.heat 0.2.0 throws IndexSizeError in onAdd when the map
+            // container is 0×0 (e.g. hidden tab at initial load) — the canvas is
+            // appended before the throw, so the JS reference is never assigned but
+            // the orphan canvas stays in the DOM and re-paints once the tab becomes
+            // visible. Reference-based cleanup would skip orphans; eachLayer catches them.
+            coverageMap.eachLayer(l => {
+                if (l instanceof L.HeatLayer || l instanceof L.MarkerClusterGroup) {
+                    coverageMap.removeLayer(l);
+                }
+            });
+            coverageHeatLayer = null;
+            coverageClusterLayer = null;
 
             if (!pts.length) return;
 
             const latlngs = pts.map(p => [p.lat, p.lng]);
 
             if (coverageLayer === 'heat') {
-                coverageHeatLayer = L.heatLayer(latlngs, {
-                    radius: 28,
-                    blur: 22,
-                    maxZoom: 14,
-                    minOpacity: 0.4,
-                    gradient: { 0.2: '#3b82f6', 0.4: '#22d3ee', 0.6: '#facc15', 0.8: '#f97316', 1.0: '#ef4444' }
-                }).addTo(coverageMap);
+                try {
+                    coverageHeatLayer = L.heatLayer(latlngs, {
+                        radius: 28,
+                        blur: 22,
+                        maxZoom: 14,
+                        minOpacity: 0.4,
+                        gradient: { 0.2: '#3b82f6', 0.4: '#22d3ee', 0.6: '#facc15', 0.8: '#f97316', 1.0: '#ef4444' }
+                    }).addTo(coverageMap);
+                } catch (e) {
+                    // leaflet.heat onAdd throws when the map container is 0×0.
+                    // The eachLayer sweep above will remove any orphan canvas on the
+                    // next render once the tab becomes visible.
+                    console.warn('heatLayer addTo failed (likely hidden tab):', e);
+                }
             }
 
             // Toggle debt legend: only meaningful in pins-only mode
