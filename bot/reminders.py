@@ -530,6 +530,50 @@ async def _send_pat_rotation_reminder(bot, chat_id: int) -> None:
         logger.error(f"pat_rotation_reminder failed: {e}")
 
 
+async def _send_sunday_infra_nudge(bot, chat_id: int) -> None:
+    """Sunday 09:00 Tashkent — infra-maintenance day reminder → Platform-Ops.
+
+    Posted to PLATFORM_OPS_GROUP_CHAT_ID per the "every Sunday is infrastructure
+    day" rhythm (Notion Command Center, 2026-05-17). Includes a quarterly
+    add-on line on the first Sunday of Mar/Jun/Sep/Dec for the deep
+    foundation-auditor run.
+
+    No-ops Mon–Sat (function fires daily via run_daily_reminder; the date
+    check is the only gate). Silent on send failure — operator can re-check
+    audit.sh manually.
+    """
+    today = datetime.now(TASHKENT).date()
+    if today.weekday() != 6:  # 6 = Sunday
+        return
+
+    # First Sunday of Mar/Jun/Sep/Dec → also nudge the deep audit
+    is_first_sunday = today.day <= 7
+    is_quarter_month = today.month in {3, 6, 9, 12}
+    is_quarterly = is_first_sunday and is_quarter_month
+
+    base = (
+        "🛠 <b>Sunday infrastructure maintenance</b>\n\n"
+        "• <code>bash tools/audit.sh</code> — 30-sec foundation snapshot\n"
+        "• Address any 🟡 / ❌ in the summary\n"
+        "• Skim <code>obsidian-vault/🐛 Error Log.md</code> for new patterns"
+    )
+    if is_quarterly:
+        base += (
+            "\n\n📊 <b>Quarterly deep audit also due today</b>\n"
+            f"• Q{(today.month - 1) // 3 + 1} {today.year} — run <code>/audit</code> "
+            "for the 5-dimension foundation-auditor analysis"
+        )
+
+    try:
+        await bot.send_message(chat_id, base, parse_mode="HTML")
+        logger.info(
+            f"Sunday infra nudge sent to {chat_id} "
+            f"(quarterly={is_quarterly})"
+        )
+    except Exception as e:
+        logger.error(f"Sunday infra nudge failed: {e}")
+
+
 async def _send_master_sync_nudge(bot, chat_id: int) -> None:
     """Sunday 12:00 — gentle nudge if no /clientmaster upload this week."""
     today = datetime.now(TASHKENT)
@@ -897,6 +941,15 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 4, 30, _recompute_units_score),
             name="daily-units-score-recompute",
+        ),
+        # Sunday 09:00 — infra-maintenance day reminder → Platform-Ops group.
+        # Fires daily at 09:00 but no-ops Mon–Sat (internal date gate). On
+        # first Sunday of Mar/Jun/Sep/Dec, the message also includes the
+        # quarterly deep-audit nudge. Established 2026-05-17 per the
+        # "every Sunday is infrastructure day" rhythm.
+        asyncio.create_task(
+            run_daily_reminder(bot, ops, 9, 0, _send_sunday_infra_nudge),
+            name="sunday-infra-nudge",
         ),
         # Daily 09:00 — owner daily reconciliation brief to configured
         # targets (OWNER_DAILY_BRIEF_TARGETS env). Fans out to its own

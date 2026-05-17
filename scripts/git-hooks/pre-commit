@@ -10,14 +10,22 @@
 #      Closes the WRONG_FALLBACK_FROM_COPY_PASTE class (Error Log #46).
 #   3. Bare `check_admin_key(...)` statement-calls with return discarded
 #      silently bypass auth — closes BOOL_AUTH_RESULT_DISCARDED (Error Log #51).
+#   4. `F.chat.type.in_({...})` filter in bot handlers without a sibling
+#      `chat.id ==` / `_CHAT_ID` gate — closes HANDLER_ORDER_SWALLOW
+#      (Error Log #17/#28/#33, 3 recurrences).
+#   5. Inline `fetch('/api/...)` in frontend pages/components — must go
+#      through frontend/src/utils/api.js so initDataHeader stays uniform
+#      (closes the CabinetPage drift class).
 #
 # Override env vars for the rare legitimate exception:
-#   SKIP_SCHEMA_CHECK=1   — bypass the schema-DDL guard
-#   SKIP_CHATID_CHECK=1   — bypass the chat-ID guard
-#   SKIP_AUTHCALL_CHECK=1 — bypass the discarded-bool-auth guard
-#   SKIP_RUFF=1           — skip ruff lint
-#   SKIP_FRONTEND_BUILD=1 — skip the frontend rebuild
-#   SKIP_BUNDLE_CHECK=1   — skip the bundle-size budget check
+#   SKIP_SCHEMA_CHECK=1        — bypass the schema-DDL guard
+#   SKIP_CHATID_CHECK=1        — bypass the chat-ID guard
+#   SKIP_AUTHCALL_CHECK=1      — bypass the discarded-bool-auth guard
+#   SKIP_CHATTYPE_CHECK=1      — bypass the chat-type-without-id guard
+#   SKIP_INLINE_FETCH_CHECK=1  — bypass the frontend inline-fetch guard
+#   SKIP_RUFF=1                — skip ruff lint
+#   SKIP_FRONTEND_BUILD=1      — skip the frontend rebuild
+#   SKIP_BUNDLE_CHECK=1        — skip the bundle-size budget check
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
@@ -125,6 +133,82 @@ if [ "$SKIP_AUTHCALL_CHECK" != "1" ]; then
         echo "     auth = resolve_auth(key); if not auth or auth[\"role\"] not in (...): raise ..."
         echo "   (Error Log #51 BOOL_AUTH_RESULT_DISCARDED.)"
         echo "   Override (rare): SKIP_AUTHCALL_CHECK=1 git commit ..."
+        exit 1
+    fi
+fi
+
+# ── Foundation guard 4: HANDLER_ORDER_SWALLOW prevention ─────────────────
+# Sub-router handlers that catch a message shape in groups must gate by
+# exact `chat.id == GROUP_CHAT_ID` (or chat-id-set from group_config),
+# never by `chat.type.in_({"group","supergroup"})` alone — otherwise they
+# eat messages from every group the bot joins. Error Log #17/#28/#33 (3
+# recurrences); rule codified in .claude/rules/06-bot-operations.md.
+# Heuristic: any new `F.chat.type.in_(...)` filter in bot/*.py must appear
+# in a diff hunk that also references `chat.id` or a `*_CHAT_ID` constant
+# (added line OR context line). Lean toward false positives; override env
+# var lets you bypass when the design really doesn't need a chat-id gate.
+if [ "$SKIP_CHATTYPE_CHECK" != "1" ]; then
+    BAD_CHATTYPE=""
+    for f in $(git diff --cached --name-only --diff-filter=ACM | grep -E '^bot/.*\.py$'); do
+        if [ ! -f "$f" ]; then continue; fi
+        # Did the staged change ADD a chat.type.in_ filter?
+        if ! git diff --cached -- "$f" | grep -qE '^\+[^-].*chat\.type\.in_\('; then
+            continue
+        fi
+        # If so, the same diff hunk (with 10-line context) must also reference
+        # chat.id or a *_CHAT_ID constant somewhere.
+        if ! git diff --cached -U10 -- "$f" | grep -qE '^[+ ].*(chat\.id|_CHAT_ID)'; then
+            BAD_CHATTYPE="$BAD_CHATTYPE $f"
+        fi
+    done
+    if [ -n "$BAD_CHATTYPE" ]; then
+        echo "❌ HANDLER_ORDER_SWALLOW risk — chat.type.in_() filter added without a chat.id gate:"
+        for f in $BAD_CHATTYPE; do echo "    $f"; done
+        echo ""
+        echo "   Sub-router handlers that catch a message shape (F.document,"
+        echo "   F.photo, F.location, ...) in groups MUST gate by exact"
+        echo "   chat.id == GROUP_CHAT_ID (or a chat-id-set from group_config),"
+        echo "   never by chat.type alone — otherwise they eat messages from"
+        echo "   every group the bot joins."
+        echo "   Correct:"
+        echo "     @router.message(F.document, F.chat.id == ADMIN_GROUP_CHAT_ID)"
+        echo "     @router.message(F.document, F.chat.id.in_(ALL_OPS_GROUPS))"
+        echo "   (Error Log #17/#28/#33 HANDLER_ORDER_SWALLOW;"
+        echo "    rule in .claude/rules/06-bot-operations.md.)"
+        echo "   Override (rare): SKIP_CHATTYPE_CHECK=1 git commit ..."
+        exit 1
+    fi
+fi
+
+# ── Foundation guard 5: frontend fetch-discipline ────────────────────────
+# All frontend API calls must go through frontend/src/utils/api.js so the
+# initDataHeader (X-Telegram-Init-Data) is uniformly attached and the API
+# surface stays auditable from one place. Inline `fetch('/api/...')` in
+# pages/components is the drift class that produced 18+ scattered fetches
+# in CabinetPage.jsx over time — surfaced by 2026-05-17 foundation audit.
+# Heuristic: block any NEW inline fetch('/api/...) or fetch(`/api/...`) in
+# frontend/src/{pages,components}/. Existing violations are grandfathered
+# (tracked separately in Notion Command Center "Next (when convenient)").
+if [ "$SKIP_INLINE_FETCH_CHECK" != "1" ]; then
+    BAD_FETCH=""
+    for f in $(git diff --cached --name-only --diff-filter=ACM | grep -E '^frontend/src/(pages|components)/.*\.(js|jsx)$'); do
+        if [ ! -f "$f" ]; then continue; fi
+        # Match added lines containing fetch( with /api/ in the URL — single quote,
+        # double quote, or backtick (template literal).
+        if git diff --cached -- "$f" | grep -qE "^\+[^-].*fetch\([\"'\`]/api/"; then
+            BAD_FETCH="$BAD_FETCH $f"
+        fi
+    done
+    if [ -n "$BAD_FETCH" ]; then
+        echo "❌ Inline fetch('/api/...) added in a frontend page/component:"
+        for f in $BAD_FETCH; do echo "    $f"; done
+        echo ""
+        echo "   All API calls should go through frontend/src/utils/api.js —"
+        echo "   that's where initDataHeader (X-Telegram-Init-Data) is attached"
+        echo "   uniformly. Inline fetches drift over time (CabinetPage.jsx grew"
+        echo "   to 18+ scattered fetches that way)."
+        echo "   Pattern: add an exported helper in api.js, import it in the page."
+        echo "   Override (rare): SKIP_INLINE_FETCH_CHECK=1 git commit ..."
         exit 1
     fi
 fi

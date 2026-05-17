@@ -15,3 +15,6 @@ node_modules/
 /Catalog_Cleanup_*.xlsx
 /Product_Lifecycle_*.xlsx
 # Product images are committed to git for Railway persistence
+# pytest-cov artifacts (run `pytest --cov=backend --cov=bot` to refresh)
+.coverage
+htmlcov/

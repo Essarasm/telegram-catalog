@@ -170,8 +170,11 @@ echo ""
 echo "── 7. Pre-commit guards (sanity check)"
 if grep -q "SKIP_SCHEMA_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
    && grep -q "SKIP_CHATID_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
+   && grep -q "SKIP_AUTHCALL_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
+   && grep -q "SKIP_CHATTYPE_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
+   && grep -q "SKIP_INLINE_FETCH_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
    && grep -q "SKIP_BUNDLE_CHECK" scripts/git-hooks/pre-commit 2>/dev/null; then
-    check OK "All three foundation guards present in tracked hook"
+    check OK "All five foundation guards present in tracked hook"
 else
     check FAIL "Foundation guards missing from scripts/git-hooks/pre-commit"
 fi
