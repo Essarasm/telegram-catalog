@@ -16,16 +16,21 @@
 #   5. Inline `fetch('/api/...)` in frontend pages/components — must go
 #      through frontend/src/utils/api.js so initDataHeader stays uniform
 #      (closes the CabinetPage drift class).
+#   6. Status-column values with structured suffix (e.g. 'merged_into:N')
+#      must be registered in .claude/contracts/soft_delete_vocabulary.md
+#      so readers can be swept for naïve `!= 'bare'` filters. Closes
+#      TOMBSTONE_STATUS_FILTER_MISMATCH (Error Log #56).
 #
 # Override env vars for the rare legitimate exception:
 #   SKIP_SCHEMA_CHECK=1        — bypass the schema-DDL guard
 #   SKIP_CHATID_CHECK=1        — bypass the chat-ID guard
 #   SKIP_AUTHCALL_CHECK=1      — bypass the discarded-bool-auth guard
 #   SKIP_CHATTYPE_CHECK=1      — bypass the chat-type-without-id guard
-#   SKIP_INLINE_FETCH_CHECK=1  — bypass the frontend inline-fetch guard
-#   SKIP_RUFF=1                — skip ruff lint
-#   SKIP_FRONTEND_BUILD=1      — skip the frontend rebuild
-#   SKIP_BUNDLE_CHECK=1        — skip the bundle-size budget check
+#   SKIP_INLINE_FETCH_CHECK=1       — bypass the frontend inline-fetch guard
+#   SKIP_STATUS_VOCABULARY_CHECK=1  — bypass the structured-suffix status guard
+#   SKIP_RUFF=1                     — skip ruff lint
+#   SKIP_FRONTEND_BUILD=1           — skip the frontend rebuild
+#   SKIP_BUNDLE_CHECK=1             — skip the bundle-size budget check
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT" || exit 1
@@ -209,6 +214,84 @@ if [ "$SKIP_INLINE_FETCH_CHECK" != "1" ]; then
         echo "   to 18+ scattered fetches that way)."
         echo "   Pattern: add an exported helper in api.js, import it in the page."
         echo "   Override (rare): SKIP_INLINE_FETCH_CHECK=1 git commit ..."
+        exit 1
+    fi
+fi
+
+# ── Foundation guard 6: status-vocabulary contract enforcement ────────────
+# Closes TOMBSTONE_STATUS_FILTER_MISMATCH (Error Log #56). When a writer
+# introduces a status value with a structured suffix (e.g. 'merged_into:N',
+# 'archived_by:N', 'pending:reason'), every reader filtering with
+# `!= '<bare>'` (exact equality) will silently fail open — letting tombstones
+# leak into supposedly tombstone-free reads. The 2026-05-15→18 incident:
+# merge tool wrote 'merged_into:<canonical_id>' tombstones; 41 readers used
+# `!= 'merged'` (exact); 3 days of finance writes landed on tombstones; 198
+# clients saw 0 balance in Cabinet when today's read-side filter was fixed.
+#
+# Heuristic: detect added (NEW) literal strings of the shape
+#   status = 'word:'   or   status='word:'   or   status='word:val'
+# in staged Python diffs. If any are NOT already documented in
+# .claude/contracts/soft_delete_vocabulary.md, alert the author to:
+#   (1) record the new vocabulary in the contract doc
+#   (2) sweep `!= '<bareword>'` and `= '<bareword>'` callsites
+#   (3) add a regression test in backend/tests/test_tombstone_routing.py
+# Override SKIP_STATUS_VOCABULARY_CHECK=1 once reviewed (commit message
+# should record the justification).
+if [ "$SKIP_STATUS_VOCABULARY_CHECK" != "1" ] && [ -n "$STAGED_PY" ]; then
+    NEW_SUFFIX_LITERALS=""
+    for f in $STAGED_PY; do
+        if [ ! -f "$f" ]; then continue; fi
+        # Skip files that don't mention 'status' at all — the vocabulary
+        # concern is status-column-specific.
+        if ! git diff --cached -- "$f" | grep -qE "(status\s*[=:]|SET status|'status'|\"status\")"; then
+            continue
+        fi
+        # Look for ADDED lines (+ prefix, not +++) introducing a literal that
+        # looks like 'bareword:...' or f"bareword:..." — capture bareword.
+        # The suffix-character-set is permissive so f-strings with {var}
+        # interpolation are caught too.
+        ADDED=$(git diff --cached -- "$f" | grep -E "^\+[^+]" | \
+                grep -oE "[\"']([a-zA-Z_][a-zA-Z0-9_]*):" | \
+                grep -oE "[a-zA-Z_][a-zA-Z0-9_]*" | sort -u)
+        for bare in $ADDED; do
+            # Skip well-known non-status patterns (urls, time formats,
+            # protocols, log levels, common dict keys).
+            case "$bare" in
+                http|https|ftp|file|tel|mailto|tcp|udp|ws|wss|ssh|git) continue ;;
+                strftime|format|encoding|content|charset) continue ;;
+                msg|info|warn|warning|error|debug|trace|log|fatal|critical) continue ;;
+                bot|user|chat|admin|client|tg|api|auth) continue ;;
+                HEAD|GET|POST|PUT|DELETE|PATCH|OPTIONS) continue ;;
+                key|val|value|type|id|name|date|time|when|where|who) continue ;;
+                from|to|src|dst|source|target) continue ;;
+            esac
+            # Check if this prefix is already documented in the contract.
+            # Match only on the explicit `<!-- vocab-registered: X -->` marker
+            # so prose examples don't count.
+            if [ -f ".claude/contracts/soft_delete_vocabulary.md" ] && \
+               grep -qF "<!-- vocab-registered: ${bare} -->" \
+                    .claude/contracts/soft_delete_vocabulary.md 2>/dev/null; then
+                continue  # already known
+            fi
+            NEW_SUFFIX_LITERALS="$NEW_SUFFIX_LITERALS\n  $f: '${bare}:…'"
+        done
+    done
+    if [ -n "$NEW_SUFFIX_LITERALS" ]; then
+        echo "⚠️  New structured-suffix status value(s) detected in staged Python:"
+        printf "$NEW_SUFFIX_LITERALS\n"
+        echo ""
+        echo "   Per .claude/contracts/soft_delete_vocabulary.md, this requires:"
+        echo "   (1) Add an entry in the contract doc for the new value"
+        echo "   (2) Sweep the codebase for readers using \`!= '<bareword>'\` or"
+        echo "       \`= '<bareword>'\` against the same column — migrate to a"
+        echo "       prefix-match (NOT LIKE 'bareword%') in this commit"
+        echo "   (3) Add a regression case in backend/tests/test_tombstone_routing.py"
+        echo ""
+        echo "   The 2026-05-15→18 incident (Error Log #56) cost 3 days of silent"
+        echo "   data orphan accumulation across 198 clients because step (2) was"
+        echo "   skipped when 'merged_into:N' was introduced. Don't repeat it."
+        echo ""
+        echo "   Override after review: SKIP_STATUS_VOCABULARY_CHECK=1 git commit ..."
         exit 1
     fi
 fi

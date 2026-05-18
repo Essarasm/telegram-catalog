@@ -322,9 +322,117 @@ def run_audit(fix: bool = False) -> dict:
     return result
 
 
-def format_audit_message(findings: dict) -> str | None:
+# ── Severity thresholds ────────────────────────────────────────────────
+# Each finding's count gets mapped to CRITICAL / WARNING / INFO using
+# these tier-boundaries. The 2026-05-18 incident (Error Log #56) was a
+# 329-row accumulation that was reported with the same visual weight as
+# benign 2-row edge cases for 3 days. With tiers, the same alert would
+# have rendered as 🔴 CRITICAL — impossible to tune out.
+SEVERITY_THRESHOLDS = {
+    # finding-key: (critical-at, warning-at)
+    "phone_duplicates":         (10, 1),
+    "orphaned_real_orders":     (10, 1),
+    "active_no_1c_name":        (5, 1),
+    "stale_needs_review":       (20, 5),
+    "stuck_orders":             (1, 1),    # any stuck order is at least warning
+    "healable_orphans":         (50, 1),
+    "tombstoned_fk_pointers":   (10, 1),   # this is the #56 class — alarm early
+    "debt_usd_coverage_zero":   (1, 1),    # schema-drift class, always critical
+    "trend_currency_drift":     (5, 1),
+    "fuzzy_client_1c_dups":     (10, 1),
+    # Informational only — never critical
+    "recent_phone_changes_7d":  (None, None),
+}
+
+
+def _severity(key: str, item: dict) -> str:
+    """Map a finding to CRITICAL / WARNING / INFO using its row count."""
+    n = item.get("count", 0)
+    if key in SEVERITY_THRESHOLDS:
+        crit, warn = SEVERITY_THRESHOLDS[key]
+        if crit is None:
+            return "INFO"
+        if n >= crit:
+            return "CRITICAL"
+        if n >= warn:
+            return "WARNING"
+    return "INFO"
+
+
+def _spike_marker(key: str, item: dict, prior: dict | None) -> str:
+    """Return ' 📈 SPIKE +N' if this finding grew sharply since prior run.
+
+    A spike is +10 rows AND ≥50% growth (so going from 2→3 doesn't fire
+    but 329→339 from yesterday's run would). Empty string otherwise.
+    """
+    if not prior or key not in prior:
+        return ""
+    now = item.get("count", 0)
+    then = prior.get(key, {}).get("count", 0) if isinstance(prior.get(key), dict) else 0
+    delta = now - then
+    if delta >= 10 and (then == 0 or delta / then >= 0.5):
+        return f" 📈 <b>SPIKE +{delta}</b>"
+    return ""
+
+
+def _snapshot_path() -> str:
+    """Filesystem path for yesterday's findings snapshot.
+
+    Lives in /data/ (Railway persistent volume) so the snapshot survives
+    deploys. Simple JSON; one file, overwritten each successful run.
+    """
+    import os
+    base = os.environ.get("DATABASE_PATH", "./data/catalog.db")
+    return os.path.join(os.path.dirname(base) or ".", "audit_snapshot.json")
+
+
+def load_prior_snapshot() -> dict | None:
+    """Read yesterday's audit findings if available. Failures are silent —
+    spike detection just falls back to None (no markers shown)."""
+    import json
+    try:
+        with open(_snapshot_path()) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def save_snapshot(findings: dict) -> None:
+    """Persist today's findings for tomorrow's spike comparison.
+
+    Strips _table_sizes (changes every minute, not useful for spike
+    detection) and the sample arrays (only counts matter for diffs).
+    """
+    import json
+    snapshot = {}
+    for k, v in findings.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, dict):
+            snapshot[k] = {"count": v.get("count", 0)}
+    try:
+        with open(_snapshot_path(), "w") as fh:
+            json.dump(snapshot, fh)
+    except OSError:
+        pass  # don't break the audit on snapshot-write failure
+
+
+def format_audit_message(findings: dict, prior_findings: dict | None = None) -> str | None:
     """Render findings into a Telegram-ready HTML message. Returns None
-    if nothing to report (all checks passed)."""
+    if nothing to report (all checks passed).
+
+    Each finding is tiered into one of three severities (CRITICAL,
+    WARNING, INFO) using thresholds from SEVERITY_THRESHOLDS below. The
+    Telegram output prefixes each finding with the tier emoji so 329-row
+    surges visually outrank 2-row edge-cases — preventing the
+    signal-fatigue that caused the 2026-05-15→18 incident (Error Log #56)
+    to be tuned out as background noise for 3 days.
+
+    When prior_findings is supplied (typically yesterday's snapshot), any
+    finding that grew by ≥10 rows OR ≥50% gets a 📈 SPIKE marker. This
+    is the diff-based detection that would have caught the 329-cluster
+    accumulation on day 2 of the May incident.
+    """
     # Strip _table_sizes (informational only, always present)
     significant = {k: v for k, v in findings.items() if not k.startswith("_")}
     if not significant:
@@ -345,16 +453,27 @@ def format_audit_message(findings: dict) -> str | None:
         "fuzzy_client_1c_dups":    "👥 client_id_1c dublikat (case/whitespace)",
     }
 
+    # Group findings by severity. Render CRITICAL first so the most
+    # urgent items aren't buried below benign INFO findings.
+    grouped: dict[str, list[tuple[str, str, dict]]] = {
+        "CRITICAL": [], "WARNING": [], "INFO": [],
+    }
     for key, label in issue_labels.items():
         if key in findings:
+            item = findings[key]
+            tier = _severity(key, item)
+            grouped[tier].append((key, label, item))
+
+    for tier, prefix in (("CRITICAL", "🔴"), ("WARNING", "🟡"), ("INFO", "🔵")):
+        for key, label, item in grouped[tier]:
             # Healable orphans surface auto-heal status so the cron's report
             # distinguishes "we just fixed N rows" from "alert: N rows need
             # investigation" (the on-demand /consistencycheck path).
-            if key == "healable_orphans" and findings[key].get("auto_healed"):
+            if key == "healable_orphans" and item.get("auto_healed"):
                 label = label + " — auto-healed ✓"
-            item = findings[key]
             n = item.get("count", 0)
-            lines.append(f"<b>{label}:</b> {n}")
+            spike_marker = _spike_marker(key, item, prior_findings)
+            lines.append(f"{prefix} <b>{label}:</b> {n}{spike_marker}")
             sample = item.get("sample") or []
             for s in sample[:3]:
                 # Compact sample rendering

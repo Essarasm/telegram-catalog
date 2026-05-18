@@ -365,12 +365,22 @@ async def _run_consistency_audit(bot, chat_id: int) -> None:
     """Daily 04:00 — run the data-consistency audit and post to Admin group
     if any issues are found. Silent if everything looks clean."""
     try:
-        from backend.services.consistency_audit import run_audit, format_audit_message
+        from backend.services.consistency_audit import (
+            run_audit, format_audit_message,
+            load_prior_snapshot, save_snapshot,
+        )
         # 09:00 cron auto-heals healable_orphans (defense-in-depth on top of
         # per-mutator heal from Session F refactor phase 8). Other audit
         # checks remain alert-only.
         findings = run_audit(fix=True)
-        msg = format_audit_message(findings)
+        # Diff against yesterday's snapshot for spike detection — closes
+        # the signal-fatigue gap that let the 2026-05-15→18 incident
+        # accumulate for 3 days as unchanged-looking noise (Error Log #56).
+        prior = load_prior_snapshot()
+        msg = format_audit_message(findings, prior_findings=prior)
+        # Persist today's counts for tomorrow's comparison whether or not
+        # we posted (a clean run still updates the baseline).
+        save_snapshot(findings)
         if not msg:
             logger.info("consistency_audit: clean, nothing to report")
             return
