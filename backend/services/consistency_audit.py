@@ -118,13 +118,18 @@ def run_audit(fix: bool = False) -> dict:
         if stale and stale["n"]:
             result["stale_needs_review"] = {"count": stale["n"]}
 
-        # 5. Stuck orders — never reached Sales group, older than 24h
+        # 5. Stuck orders — never reached Sales group, older than 24h.
+        # Exclude terminal statuses: cancelled (rejected) and delivered
+        # (fulfilled — closed business, not stuck). The sentinel
+        # sales_group_message_id=-1 is the "post-hoc closure" marker for
+        # legacy orders that were fulfilled OOB before the broadcast was
+        # wired up; treat as not-NULL so they don't surface here either.
         stuck = conn.execute(
             """SELECT id, client_name, created_at
                FROM orders
                WHERE sales_group_message_id IS NULL
                  AND created_at < datetime('now', '-1 day')
-                 AND status != 'cancelled'
+                 AND status NOT IN ('cancelled', 'delivered')
                ORDER BY id DESC
                LIMIT 20"""
         ).fetchall()
