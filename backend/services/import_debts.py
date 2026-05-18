@@ -200,6 +200,23 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
            FROM client_debts"""
     ).fetchone()
 
+    # Per-client snapshot of pre-import state, keyed by client_name_1c so we
+    # can compute today's debt delta after the truncate-replace. Aggregated
+    # because client_debts has no UNIQUE(client_name_1c) — repeat rows per
+    # client are possible.
+    prev_by_name: dict[str, tuple[float, float]] = {}
+    for row in conn.execute(
+        """SELECT client_name_1c,
+                  COALESCE(SUM(debt_uzs), 0) AS uzs,
+                  COALESCE(SUM(debt_usd), 0) AS usd
+           FROM client_debts
+           GROUP BY client_name_1c"""
+    ):
+        prev_by_name[row["client_name_1c"]] = (
+            float(row["uzs"] or 0),
+            float(row["usd"] or 0),
+        )
+
     if not force:
         regression_reasons = _check_debtors_regression(
             prev, incoming_total_uzs, incoming_total_usd, len(clients)
@@ -304,6 +321,26 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
     pseudo_uzs = total_uzs - real_uzs
     pseudo_usd = total_usd - real_usd
 
+    # Top 5 clients whose debt INCREASED today vs the previous /debtors
+    # snapshot (positive delta only — clients who paid down debt don't count).
+    # New clients (absent from prev_by_name) appear with full incoming amount.
+    # Pseudo accounts excluded. Ranked by UZS delta primary, USD as tiebreaker
+    # — never converting between currencies.
+    deltas = []
+    for c in real:
+        name = c["client_name_1c"]
+        prev_uzs, prev_usd = prev_by_name.get(name, (0.0, 0.0))
+        d_uzs = c["debt_uzs"] - prev_uzs
+        d_usd = c["debt_usd"] - prev_usd
+        if d_uzs > 0 or d_usd > 0:
+            deltas.append({
+                "name": name,
+                "delta_uzs": d_uzs,
+                "delta_usd": d_usd,
+            })
+    deltas.sort(key=lambda x: (x["delta_uzs"], x["delta_usd"]), reverse=True)
+    top_new_debtors = deltas[:5]
+
     return {
         "ok": True,
         "report_date": report_date,
@@ -324,6 +361,8 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
         "n_pseudo": n_total - n_real,
         "pseudo_uzs": pseudo_uzs,
         "pseudo_usd": pseudo_usd,
+        # Top 5 clients with biggest debt INCREASE vs previous snapshot
+        "top_new_debtors": top_new_debtors,
     }
 
 

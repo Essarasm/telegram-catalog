@@ -991,15 +991,10 @@ async def cmd_debtors(message: types.Message):
         # Headline = real client receivables only (pseudo accounting
         # buckets like Наличка/СТРОЙКА/ИСПРАВЛЕНИЕ are real ledger rows in
         # the 1C report but represent cash-in-register / internal work /
-        # supplier returns — not money clients owe us). Pseudo total is
-        # surfaced as a one-line footnote so we still notice if a bucket
-        # explodes.
+        # supplier returns — not money clients owe us).
         n_real = result.get('n_real', result['total_clients'])
         real_uzs = result.get('real_uzs', result['total_uzs'])
         real_usd = result.get('real_usd', result['total_usd'])
-        n_pseudo = result.get('n_pseudo', 0)
-        pseudo_uzs = result.get('pseudo_uzs', 0)
-        pseudo_usd = result.get('pseudo_usd', 0)
 
         lines = [
             f"✅ <b>Дебиторка yuklandi!</b>\n",
@@ -1010,11 +1005,21 @@ async def cmd_debtors(message: types.Message):
             f"💵 Jami USD: ${real_usd:,.2f}",
         ]
 
-        if n_pseudo > 0:
-            lines.append(
-                f"\n<i>+ {n_pseudo} ta hisob bukleti (Наличка/СТРОЙКА/Возврат): "
-                f"{round(pseudo_uzs):,} UZS + ${pseudo_usd:,.0f} — mijoz qarzi emas</i>".replace(',', ' ')
-            )
+        # Top 5 clients whose debt grew today (delta vs previous snapshot).
+        # Importer ranks by UZS delta with USD tiebreaker; we display both.
+        top_new = result.get('top_new_debtors', [])
+        if top_new:
+            lines.append("\n📈 <b>Bugun qarzi oshganlar (top 5):</b>")
+            for row in top_new:
+                d_uzs = row.get('delta_uzs', 0) or 0
+                d_usd = row.get('delta_usd', 0) or 0
+                parts = []
+                if d_uzs > 0:
+                    parts.append(f"{round(d_uzs):,} UZS".replace(',', ' '))
+                if d_usd > 0:
+                    parts.append(f"${d_usd:,.2f}")
+                amt = " + ".join(parts) if parts else "—"
+                lines.append(f"  • {html_escape(row.get('name', '?'))}: {amt}")
 
         unmatched_real = result.get('unmatched_real_count', 0)
         if unmatched_real > 0:
@@ -1381,22 +1386,73 @@ async def cmd_realorders(message: types.Message):
         if total_currency:
             lines.append(f"💵 Jami (valyuta): {total_currency:,.2f}".replace(",", " "))
 
+        # Top 5 buyers for the imported period — pseudo accounts filtered out
+        # in the service. Dual currency per row; ranked by UZS primary.
+        top_buyers = result.get("top_buyers", [])
+        if top_buyers:
+            lines.append("\n🏆 <b>Eng ko'p xarid qilganlar (top 5):</b>")
+            for row in top_buyers:
+                uzs = row.get("uzs", 0) or 0
+                usd = row.get("usd", 0) or 0
+                parts = []
+                if uzs > 0:
+                    parts.append(f"{round(uzs):,} UZS".replace(",", " "))
+                if usd > 0:
+                    parts.append(f"${usd:,.2f}")
+                amt = " + ".join(parts) if parts else "—"
+                lines.append(f"  • {html_escape(row.get('name', '?'))}: {amt}")
+
         unmatched_c = result.get("unmatched_clients_count", 0)
         unmatched_p = result.get("unmatched_products_count", 0)
-
-        if unmatched_c:
-            lines.append(f"\n⚠️ Mijozlar bog'lanmagan ({unmatched_c}):")
-            for name in result.get("unmatched_clients_sample", [])[:8]:
-                lines.append(f"  • {html_escape(name)}")
-
-        if unmatched_p:
-            lines.append(f"\n⚠️ Mahsulotlar mos kelmadi ({unmatched_p}):")
-            for name in result.get("unmatched_products_sample", [])[:8]:
-                lines.append(f"  • {html_escape(name[:60])}")
 
         lines.append(f"\n💾 DBda jami: {result.get('db_total_docs', 0)} hujjat / {result.get('db_total_items', 0)} qator")
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+
+        # Data-quality report → Platform-Ops group. Unmatched clients +
+        # unmatched products from this upload, posted separately so the
+        # daily-uploads group reply stays focused on the headline.
+        if unmatched_c or unmatched_p:
+            try:
+                from bot.shared import PLATFORM_OPS_GROUP_CHAT_ID
+
+                ops_lines = [
+                    "🔎 <b>Реализация — bog'lanmagan ma'lumotlar</b>",
+                    f"📅 Davr: {date_range}",
+                    "",
+                ]
+                if unmatched_c:
+                    full_clients = result.get("unmatched_clients_all") or result.get("unmatched_clients_sample", [])
+                    ops_lines.append(f"👤 <b>Mijozlar bog'lanmagan ({unmatched_c}):</b>")
+                    for name in full_clients[:50]:
+                        ops_lines.append(f"  • {html_escape(name)}")
+                    if len(full_clients) > 50:
+                        ops_lines.append(f"  … va yana {len(full_clients) - 50}")
+                    ops_lines.append("")
+                if unmatched_p:
+                    full_products = result.get("unmatched_products_all") or result.get("unmatched_products_sample", [])
+                    ops_lines.append(f"📦 <b>Mahsulotlar mos kelmadi ({unmatched_p}):</b>")
+                    for name in full_products[:50]:
+                        ops_lines.append(f"  • {html_escape(name[:80])}")
+                    if len(full_products) > 50:
+                        ops_lines.append(f"  … va yana {len(full_products) - 50}")
+
+                msg = "\n".join(ops_lines)
+                if len(msg) > 3800:
+                    msg = msg[:3800] + "\n…(qisqartirildi)"
+
+                async with httpx.AsyncClient(timeout=15) as ops_client:
+                    await ops_client.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                        json={
+                            "chat_id": PLATFORM_OPS_GROUP_CHAT_ID,
+                            "text": msg,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": True,
+                        },
+                    )
+            except Exception as e:
+                logger.error(f"Failed to post realorders unmatched report to Platform-Ops: {e}")
 
     except Exception as e:
         logger.error(f"Realorders import error: {e}")
@@ -1521,6 +1577,22 @@ async def cmd_cash(message: types.Message):
         if st.get("total_usd"):
             lines.append(f"💵 USD jami: ${st['total_usd']:,.2f}")
         lines.append(f"\n💾 DBda jami: {result.get('db_total', 0)} qator")
+
+        # Top 5 payers for this date — pseudo-accounts already filtered out
+        # in the service. Dual currency per row; ranked by UZS primary.
+        top_payers = result.get("top_payers", [])
+        if top_payers:
+            lines.append("\n💰 <b>Eng katta to'lov qilganlar (top 5):</b>")
+            for row in top_payers:
+                uzs = row.get("uzs", 0) or 0
+                usd = row.get("usd", 0) or 0
+                parts = []
+                if uzs > 0:
+                    parts.append(f"{round(uzs):,} UZS".replace(",", " "))
+                if usd > 0:
+                    parts.append(f"${usd:,.2f}")
+                amt = " + ".join(parts) if parts else "—"
+                lines.append(f"  • {html_escape(row.get('name', '?'))}: {amt}")
 
         # Show today's checklist status for cash
         from backend.services.daily_uploads import get_checklist

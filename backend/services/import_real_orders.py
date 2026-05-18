@@ -939,6 +939,41 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
     unique_unmatched_clients = sorted(set(unmatched_clients))
     unique_unmatched_products = sorted(set(unmatched_products))
 
+    # Top 5 buyers for the period covered by this import. UZS column reads
+    # total_sum for UZS docs; USD reads total_sum_currency for USD docs —
+    # matching the dual-currency rule (no conversion). Pseudo-clients
+    # (Наличка/СТРОЙКА/Возврат/etc.) filtered out.
+    top_buyers: List[dict] = []
+    date_min = stats.get("date_min") if isinstance(stats, dict) else None
+    date_max = stats.get("date_max") if isinstance(stats, dict) else None
+    if date_min and date_max:
+        conn_q = get_db()
+        rows = conn_q.execute(
+            """SELECT client_name_1c,
+                      COALESCE(SUM(CASE WHEN currency='UZS' THEN total_sum          END), 0) AS uzs,
+                      COALESCE(SUM(CASE WHEN currency='USD' THEN total_sum_currency END), 0) AS usd
+               FROM real_orders
+               WHERE doc_date BETWEEN ? AND ?
+                 AND client_name_1c IS NOT NULL
+                 AND client_name_1c != ''
+               GROUP BY client_name_1c
+               ORDER BY uzs DESC, usd DESC
+               LIMIT 30""",
+            (date_min, date_max),
+        ).fetchall()
+        conn_q.close()
+        for r in rows:
+            name = r["client_name_1c"]
+            if is_pseudo_client(name):
+                continue
+            top_buyers.append({
+                "name": name,
+                "uzs": float(r["uzs"] or 0),
+                "usd": float(r["usd"] or 0),
+            })
+            if len(top_buyers) >= 5:
+                break
+
     return {
         "ok": True,
         "stats": stats,
@@ -951,9 +986,16 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
         "unmatched_products_count": len(unique_unmatched_products),
         "unmatched_clients_sample": unique_unmatched_clients[:15],
         "unmatched_products_sample": unique_unmatched_products[:15],
+        # Full unmatched lists for the separate Platform-Ops data-quality
+        # report (sample arrays above stay capped for the inline reply,
+        # though the inline reply no longer shows them).
+        "unmatched_clients_all": unique_unmatched_clients,
+        "unmatched_products_all": unique_unmatched_products,
         "orphans_healed": orphans_healed,
         "db_total_docs": db_total_docs,
         "db_total_items": db_total_items,
+        # Top 5 buyers ranked by UZS primary, USD tiebreaker
+        "top_buyers": top_buyers,
     }
 
 

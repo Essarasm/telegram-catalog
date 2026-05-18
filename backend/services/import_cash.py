@@ -44,6 +44,7 @@ from backend.services.import_real_orders import (
     _Sheet,
 )
 from backend.services import client_identity
+from backend.services.pseudo_clients import is_pseudo_client
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +350,39 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = 
 
         db_total = conn.execute("SELECT COUNT(*) FROM client_payments").fetchone()[0]
 
+        # Top 5 payers for the date(s) in this file — drawn from the DB so
+        # morning+evening uploads each show the cumulative daily ranking
+        # (not just the rows in the current file). Pseudo-clients (Наличка,
+        # СТРОЙКА, Возврат, etc.) filtered out.
+        top_payers: List[dict] = []
+        date_min = stats.get("date_min")
+        date_max = stats.get("date_max")
+        if date_min and date_max:
+            rows = conn.execute(
+                """SELECT client_name_1c,
+                          COALESCE(SUM(CASE WHEN currency='UZS' THEN amount_local   END), 0) AS uzs,
+                          COALESCE(SUM(CASE WHEN currency='USD' THEN amount_currency END), 0) AS usd
+                   FROM client_payments
+                   WHERE doc_date BETWEEN ? AND ?
+                     AND client_name_1c IS NOT NULL
+                     AND client_name_1c != ''
+                   GROUP BY client_name_1c
+                   ORDER BY uzs DESC, usd DESC
+                   LIMIT 30""",
+                (date_min, date_max),
+            ).fetchall()
+            for r in rows:
+                name = r["client_name_1c"]
+                if is_pseudo_client(name):
+                    continue
+                top_payers.append({
+                    "name": name,
+                    "uzs": float(r["uzs"] or 0),
+                    "usd": float(r["usd"] or 0),
+                })
+                if len(top_payers) >= 5:
+                    break
+
         return {
             "ok": True,
             "inserted": inserted,
@@ -360,6 +394,7 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = 
             "notifications_missed_no_bind": notif_counts.get("missed_no_bind", 0),
             "stats": stats,
             "db_total": db_total,
+            "top_payers": top_payers,
         }
     finally:
         conn.close()
