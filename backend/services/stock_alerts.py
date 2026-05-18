@@ -174,7 +174,7 @@ def _get_weekly_top_sellers(conn, week_start_tk_date: str, limit: int = 10) -> l
     try:
         rows = conn.execute(
             """SELECT roi.product_id,
-                      COALESCE(p.name_display, p.name) AS display_name,
+                      COALESCE(p.name, p.name_display) AS display_name,
                       p.unit AS unit,
                       SUM(roi.quantity) AS units_sold
                FROM real_order_items roi
@@ -368,7 +368,7 @@ def get_refilled_today(conn=None, today_start_utc: Optional[str] = None) -> list
         return [
             {
                 "id": r["id"],
-                "name": ((r["name_display"] or r["name"]) or "—")[:50],
+                "name": ((r["name"] or r["name_display"]) or "—")[:50],
                 "producer": r["producer"] or "",
                 "qty": float(r["stock_quantity"] or 0),
                 "unit": r["unit"] or "шт",
@@ -441,7 +441,7 @@ def get_last_week_recap(conn=None) -> dict:
         out_of_stock = [
             {
                 "id": r["id"],
-                "name": ((r["name_display"] or r["name"]) or "—")[:50],
+                "name": ((r["name"] or r["name_display"]) or "—")[:50],
                 "producer": r["producer_name"] or "",
                 "qty": float(r["stock_quantity"] or 0),
                 "unit": r["unit"] or "шт",
@@ -468,7 +468,7 @@ def get_last_week_recap(conn=None) -> dict:
         try:
             sold_rows = conn.execute(
                 """SELECT roi.product_id,
-                          COALESCE(p.name_display, p.name) AS display_name,
+                          COALESCE(p.name, p.name_display) AS display_name,
                           p.unit AS unit,
                           SUM(roi.quantity) AS units_sold
                    FROM real_order_items roi
