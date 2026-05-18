@@ -146,7 +146,7 @@ def get_agent_heatmap(
     where = [
         "ac.gps_latitude IS NOT NULL",
         "ac.gps_longitude IS NOT NULL",
-        "COALESCE(ac.status, 'active') != 'merged'",
+        "COALESCE(ac.status, 'active') = 'active'",
     ]
     params: list = []
     if role == "agent":
