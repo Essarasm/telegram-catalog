@@ -1,7 +1,7 @@
 """Per-supplier reorder recommendation engine — drives /zakazlar.
 
 Formula (lead-time aware, with year-over-year seasonality):
-    sold_window        = real sales over last `window_days` (default 60)
+    sold_window        = real sales over last `window_days` (default 30)
     sold_window       += demand_signals.quantity over same window (lost demand)
     daily_rate         = sold_window / window_days
     seasonal_mult      = (last-year same-month daily) / (last-year prior-60d daily)
@@ -34,7 +34,7 @@ from typing import List, Optional, Tuple
 from backend.database import get_db
 
 
-DEFAULT_WINDOW_DAYS = 60
+DEFAULT_WINDOW_DAYS = 30
 DEFAULT_REVIEW_PERIOD_DAYS = 7
 DEFAULT_GLOBAL_LEAD_TIME_DAYS = 14
 DEFAULT_SAFETY_FACTOR = 1.5

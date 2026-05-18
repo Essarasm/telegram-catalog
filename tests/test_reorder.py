@@ -166,7 +166,7 @@ class TestForecastCore:
             _seed_sale(db, 1000 + i, 1, 1.0, d)
         db.commit()
 
-        items = list_supplier_full(300, today=FIXED_TODAY)
+        items = list_supplier_full(300, window_days=60, today=FIXED_TODAY)
         assert len(items) == 1
         it = items[0]
         assert it["sold_window"] == 60
@@ -227,7 +227,7 @@ class TestForecastCore:
             _seed_sale(db, 4200 + i, 1, 1.0, d)
         db.commit()
 
-        items = list_supplier_full(330, today=FIXED_TODAY)
+        items = list_supplier_full(330, window_days=60, today=FIXED_TODAY)
         it = items[0]
         assert it["seasonal_source"] == "yoy"
         assert it["seasonal_mult"] == 2.0
@@ -263,7 +263,7 @@ class TestForecastCore:
             _seed_demand_signal(db, 7000 + i, 1, 1, ts)
         db.commit()
 
-        items = list_supplier_full(340, today=FIXED_TODAY)
+        items = list_supplier_full(340, window_days=60, today=FIXED_TODAY)
         it = items[0]
         assert it["sold_window"] == 30
         assert it["demand_signal_qty"] == 30
@@ -322,7 +322,7 @@ class TestForecastCore:
                        (FIXED_TODAY - _dt.timedelta(days=i)).isoformat())
         db.commit()
 
-        items = compute_supplier_reorder(None, today=FIXED_TODAY)
+        items = compute_supplier_reorder(None, window_days=60, today=FIXED_TODAY)
         p1 = next(it for it in items if it["product_id"] == 1)
         assert p1["lead_time_source"] == "global"
         assert p1["suggested_buy"] == 63

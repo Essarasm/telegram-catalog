@@ -7,7 +7,7 @@ clicking one returns BOTH:
   (b) an xlsx attachment with 4 sheets for desktop analysis:
       Tushuntirish (trilingual guide) / Buyurtma / Hammasi / Yig'ma.
 
-Formula: 60d demand × seasonal YoY multiplier × (lead_time + 7d review) × 1.5 safety.
+Formula: 30d demand × seasonal YoY multiplier × (lead_time + 7d review) × 1.5 safety.
 Lead time is the median inter-delivery gap from supply history (product-level
 → supplier-level → 14d global fallback). Demand-signal augmentation adds lost
 demand from stockout days. No prices (per memory feedback_order_prep_no_prices).
