@@ -988,19 +988,38 @@ async def cmd_debtors(message: types.Message):
             upload_date=snapshot_date,
         )
 
+        # Headline = real client receivables only (pseudo accounting
+        # buckets like Наличка/СТРОЙКА/ИСПРАВЛЕНИЕ are real ledger rows in
+        # the 1C report but represent cash-in-register / internal work /
+        # supplier returns — not money clients owe us). Pseudo total is
+        # surfaced as a one-line footnote so we still notice if a bucket
+        # explodes.
+        n_real = result.get('n_real', result['total_clients'])
+        real_uzs = result.get('real_uzs', result['total_uzs'])
+        real_usd = result.get('real_usd', result['total_usd'])
+        n_pseudo = result.get('n_pseudo', 0)
+        pseudo_uzs = result.get('pseudo_uzs', 0)
+        pseudo_usd = result.get('pseudo_usd', 0)
+
         lines = [
             f"✅ <b>Дебиторка yuklandi!</b>\n",
             f"📅 Sana: {result.get('report_date', '?')}",
-            f"👥 Qarzdorlar: {result['total_clients']}",
+            f"👥 Qarzdorlar: {n_real}",
             f"🔗 Ilovaga bog'langan: {result['matched_to_app']}",
-            f"\n💴 Jami UZS: {round(result['total_uzs']):,}".replace(',', ' '),
-            f"💵 Jami USD: ${result['total_usd']:,.2f}",
+            f"\n💴 Jami UZS: {round(real_uzs):,}".replace(',', ' '),
+            f"💵 Jami USD: ${real_usd:,.2f}",
         ]
 
-        unmatched = result.get('unmatched_count', 0)
-        if unmatched > 0:
-            lines.append(f"\n⚠️ Bog'lanmagan ({unmatched}):")
-            for name in result.get('unmatched_sample', [])[:10]:
+        if n_pseudo > 0:
+            lines.append(
+                f"\n<i>+ {n_pseudo} ta hisob bukleti (Наличка/СТРОЙКА/Возврат): "
+                f"{round(pseudo_uzs):,} UZS + ${pseudo_usd:,.0f} — mijoz qarzi emas</i>".replace(',', ' ')
+            )
+
+        unmatched_real = result.get('unmatched_real_count', 0)
+        if unmatched_real > 0:
+            lines.append(f"\n⚠️ Bog'lanmagan mijozlar ({unmatched_real}):")
+            for name in result.get('unmatched_real_sample', [])[:10]:
                 lines.append(f"  • {html_escape(name)}")
 
         await status_msg.edit_text("\n".join(lines), parse_mode="HTML")

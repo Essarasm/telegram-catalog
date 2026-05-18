@@ -227,6 +227,7 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
 
     matched = 0
     unmatched_names = []
+    unmatched_real_names = []
     total_uzs = 0.0
     total_usd = 0.0
 
@@ -237,6 +238,8 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
             matched += 1
         else:
             unmatched_names.append(c["client_name_1c"])
+            if not is_pseudo_client(c["client_name_1c"]):
+                unmatched_real_names.append(c["client_name_1c"])
 
         total_uzs += c["debt_uzs"]
         total_usd += c["debt_usd"]
@@ -298,6 +301,9 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
     except Exception as e:
         logger.error(f"payment_notifications.fire dispatch failed: {e}")
 
+    pseudo_uzs = total_uzs - real_uzs
+    pseudo_usd = total_usd - real_usd
+
     return {
         "ok": True,
         "report_date": report_date,
@@ -308,6 +314,16 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
         "orphans_healed": orphans_healed,
         "total_uzs": total_uzs,
         "total_usd": total_usd,
+        # Real clients (pseudo-accounts excluded) — headline values
+        "n_real": n_real,
+        "real_uzs": real_uzs,
+        "real_usd": real_usd,
+        "unmatched_real_count": len(unmatched_real_names),
+        "unmatched_real_sample": unmatched_real_names[:15],
+        # Pseudo accounting buckets (cash desks, internal work, returns)
+        "n_pseudo": n_total - n_real,
+        "pseudo_uzs": pseudo_uzs,
+        "pseudo_usd": pseudo_usd,
     }
 
 
