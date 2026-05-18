@@ -1043,12 +1043,8 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     const hasPendingLegal = pendingLegalTx && pendingLegalTx.length > 0;
     if (events.length === 0 && !hasPending && !hasPendingLegal) return null;
 
-    // newest first, capped at 8 orders + 8 payments, interleaved chronologically
-    const reversed = [...events].reverse();
-    const orderRows = reversed.filter(e => e.type === 'order').slice(0, 8);
-    const payRows = reversed.filter(e => e.type === 'payment').slice(0, 8);
-    const rowsSet = new Set([...orderRows, ...payRows]);
-    const rows = reversed.filter(e => rowsSet.has(e));
+    // newest first, capped at 10 total (orders + payments combined)
+    const rows = [...events].reverse().slice(0, 10);
 
     return (
       <div className="mb-4">
