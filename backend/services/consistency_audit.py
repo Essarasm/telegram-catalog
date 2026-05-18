@@ -201,6 +201,30 @@ def run_audit(fix: bool = False) -> dict:
                     "by_table": healable,
                 }
 
+        # 8b. Tombstone-pointer orphans — rows whose client_id points at a
+        # soft-merged (status LIKE 'merged_into:%') allowed_clients row.
+        # Error Log #56 second-order finding: pre-fix importers wrote new
+        # rows onto tombstones for ~3 days; the new heal logic (phase 3)
+        # auto-resolves these, so any non-zero count here means a new
+        # mutator path is still landing on tombstones.
+        tombstoned = {}
+        for table in ("client_balances", "real_orders",
+                      "client_payments", "client_debts"):
+            row = conn.execute(
+                f"""SELECT COUNT(*) AS n FROM {table} t
+                    WHERE t.client_id IN (
+                        SELECT id FROM allowed_clients
+                         WHERE status LIKE 'merged_into:%'
+                    )"""
+            ).fetchone()
+            if row and row["n"]:
+                tombstoned[table] = row["n"]
+        if tombstoned:
+            result["tombstoned_fk_pointers"] = {
+                "count": sum(tombstoned.values()),
+                "by_table": tombstoned,
+            }
+
         # 9. Debt-USD coverage collapse — if client_debts has significant
         # row count but zero USD anywhere, the 1C report probably lost its
         # «В Валюте» column again (Error Log #20). Phase 1 blocks this at
@@ -315,6 +339,7 @@ def format_audit_message(findings: dict) -> str | None:
         "stuck_orders":            "🚫 Sales guruhga yetmagan buyurtmalar (>24s)",
         "recent_phone_changes_7d": "📱 Oxirgi 7 kunda telefon o'zgarishi",
         "healable_orphans":        "🧩 Healable orphan qatorlar (client_id NULL, 1C nomi mavjud)",
+        "tombstoned_fk_pointers":  "💀 Tombstone'ga ko'rsatuvchi finance qatorlari (merged_into rowga FK)",
         "debt_usd_coverage_zero":  "💵 client_debts: USD butunlay yo'q (В Валюте column?)",
         "trend_currency_drift":    "📉 Cabinet trend: valyuta yo'qoldi (oldin bor edi, oxirgi 6 oyda yo'q)",
         "fuzzy_client_1c_dups":    "👥 client_id_1c dublikat (case/whitespace)",

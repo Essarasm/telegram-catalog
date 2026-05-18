@@ -159,13 +159,21 @@ _FINANCE_TABLES = ('client_balances', 'client_payments', 'real_orders', 'client_
 
 
 def heal_finance_orphans(conn, table: str) -> int:
-    """Resolve client_id on `client_id IS NULL` rows in one finance table.
+    """Resolve client_id on rows in one finance table that have lost their
+    link to the canonical allowed_clients row.
 
-    Idempotent. Safe — only touches NULL, never overwrites a link. Runs in two
-    phases:
-        1. Bulk SQL UPDATE for direct client_id_1c matches (fast, batch-mode)
+    Idempotent. Safe — only redirects to canonical, never severs an existing
+    canonical link. Three phases:
+        1. Bulk SQL UPDATE for direct client_id_1c matches on NULL client_id
+           (fast, batch-mode — covers pre-existing import-time orphans)
         2. Per-alias SQL UPDATE for ALIAS_MAP left-name → canonical mapping
            (only fires when ALIAS_MAP is populated — Layer 4)
+        3. Tombstone-pointer remap — rows where client_id points at a row
+           with status='merged_into:<canonical_id>'. Subsequence of Error
+           Log #56: pre-fix importers wrote new rows onto tombstones for
+           ~3 days; once the tombstone-status filter was corrected, those
+           rows became invisible to client_id-scoped reads. This phase
+           sweeps them onto the canonical at every heal pass.
 
     Returns total rows healed.
     """
@@ -203,6 +211,24 @@ def heal_finance_orphans(conn, table: str) -> int:
                 (canonical, left_name),
             )
             healed += cur2.rowcount
+
+    # Phase 3: tombstone-pointer remap. Redirects rows whose client_id
+    # points at a soft-merged row to that row's canonical_id, parsed from
+    # the status suffix 'merged_into:<canonical_id>'.
+    cur3 = conn.execute(
+        f"""UPDATE {table}
+               SET client_id = (
+                    SELECT CAST(SUBSTR(ac.status, INSTR(ac.status, ':') + 1) AS INTEGER)
+                      FROM allowed_clients ac
+                     WHERE ac.id = {table}.client_id
+                       AND ac.status LIKE 'merged_into:%'
+                   )
+             WHERE client_id IN (
+                    SELECT id FROM allowed_clients
+                     WHERE status LIKE 'merged_into:%'
+                   )"""
+    )
+    healed += cur3.rowcount
 
     return healed
 
