@@ -127,7 +127,7 @@ def search_clients(
                       SELECT DISTINCT client_id FROM client_balances
                       WHERE LOWER(client_name_1c) LIKE ? AND client_id IS NOT NULL
                   ))
-                 AND COALESCE(ac.status, 'active') != 'merged'
+                 AND COALESCE(ac.status, 'active') NOT LIKE 'merged%'
                  AND ac.client_id_1c IS NOT NULL AND ac.client_id_1c != ''
                ORDER BY bal_count DESC
                LIMIT ?""",
@@ -185,7 +185,7 @@ def search_clients(
                               (SELECT COUNT(*) FROM client_balances
                                WHERE client_id = ac.id) as bal_count
                        FROM allowed_clients ac
-                       WHERE COALESCE(ac.status, 'active') != 'merged'
+                       WHERE COALESCE(ac.status, 'active') NOT LIKE 'merged%'
                          AND ac.client_id_1c IS NOT NULL AND ac.client_id_1c != ''""",
                 ).fetchall()
                 scored = []
@@ -282,13 +282,13 @@ def heal_finance_orphans_by_1c_name(conn, table: str) -> int:
         f"""UPDATE {table} SET client_id = (
                 SELECT ac.id FROM allowed_clients ac
                 WHERE ac.client_id_1c = {table}.client_name_1c
-                  AND COALESCE(ac.status, 'active') != 'merged'
+                  AND COALESCE(ac.status, 'active') NOT LIKE 'merged%'
                 ORDER BY ac.id LIMIT 1
             )
             WHERE client_id IS NULL
               AND client_name_1c IN (
                   SELECT client_id_1c FROM allowed_clients
-                  WHERE COALESCE(status, 'active') != 'merged'
+                  WHERE COALESCE(status, 'active') NOT LIKE 'merged%'
               )"""
     )
     return cur.rowcount

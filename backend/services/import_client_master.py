@@ -173,7 +173,7 @@ def apply_client_master_import(file_bytes: bytes, filename_hint: str = "") -> Di
                                          # phoneless dedupe path only)
     for rid, ph, nm in conn.execute(
         "SELECT id, phone_normalized, name FROM allowed_clients "
-        "WHERE COALESCE(status, 'active') != 'merged' ORDER BY id"
+        "WHERE COALESCE(status, 'active') NOT LIKE 'merged%' ORDER BY id"
     ):
         if ph:
             phone_index.setdefault(ph, rid)
@@ -360,7 +360,7 @@ def apply_client_master_import(file_bytes: bytes, filename_hint: str = "") -> Di
             continue
         match = conn.execute(
             "SELECT id FROM allowed_clients "
-            "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+            "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
             "ORDER BY id LIMIT 1",
             (ph,),
         ).fetchone()

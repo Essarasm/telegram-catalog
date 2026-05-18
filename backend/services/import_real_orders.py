@@ -1286,7 +1286,7 @@ def relink_real_orders() -> dict:
     #   id_1c_index: raw client_id_1c → allowed_clients.id
     #   name_index:  py-normalized name → allowed_clients.id (first wins on collision)
     allowed = conn.execute(
-        "SELECT id, name, client_id_1c FROM allowed_clients WHERE COALESCE(status, 'active') != 'merged' ORDER BY id"
+        "SELECT id, name, client_id_1c FROM allowed_clients WHERE COALESCE(status, 'active') NOT LIKE 'merged%' ORDER BY id"
     ).fetchall()
 
     id_1c_index: Dict[str, int] = {}

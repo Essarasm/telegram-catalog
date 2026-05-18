@@ -628,7 +628,7 @@ def _build_allowed_indexes(conn) -> tuple:
     """
     allowed = conn.execute(
         "SELECT id, name, client_id_1c FROM allowed_clients "
-        "WHERE COALESCE(status, 'active') != 'merged' ORDER BY id"
+        "WHERE COALESCE(status, 'active') NOT LIKE 'merged%' ORDER BY id"
     ).fetchall()
 
     id_1c_index: Dict[str, int] = {}

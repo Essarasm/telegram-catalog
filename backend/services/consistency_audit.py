@@ -183,7 +183,7 @@ def run_audit(fix: bool = False) -> dict:
                         WHERE t.client_id IS NULL
                           AND t.client_name_1c IN (
                               SELECT client_id_1c FROM allowed_clients
-                              WHERE COALESCE(status, 'active') != 'merged'
+                              WHERE COALESCE(status, 'active') NOT LIKE 'merged%'
                                 AND client_id_1c IS NOT NULL
                                 AND client_id_1c != ''
                           )"""
@@ -275,7 +275,7 @@ def run_audit(fix: bool = False) -> dict:
                       COUNT(*) AS n,
                       GROUP_CONCAT(id || ':' || client_id_1c, ' | ') AS rows
                FROM allowed_clients
-               WHERE COALESCE(status, 'active') != 'merged'
+               WHERE COALESCE(status, 'active') NOT LIKE 'merged%'
                  AND client_id_1c IS NOT NULL AND client_id_1c != ''
                GROUP BY LOWER(TRIM(client_id_1c))
                HAVING COUNT(*) > 1

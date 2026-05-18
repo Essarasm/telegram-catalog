@@ -182,7 +182,7 @@ async def cmd_add(message: types.Message):
 
     existing = conn.execute(
         "SELECT id, name FROM allowed_clients "
-        "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+        "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
         "ORDER BY id LIMIT 1",
         (phone_norm,),
     ).fetchone()
@@ -209,7 +209,7 @@ async def cmd_add(message: types.Message):
         if normalize_phone(u["phone"]) == phone_norm:
             client_id = conn.execute(
                 "SELECT id FROM allowed_clients "
-                "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+                "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
                 "ORDER BY id LIMIT 1",
                 (phone_norm,),
             ).fetchone()["id"]
@@ -277,7 +277,7 @@ async def cmd_approve(message: types.Message):
     phone_norm = normalize_phone(user["phone"])
     existing_client = conn.execute(
         "SELECT id FROM allowed_clients "
-        "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+        "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
         "ORDER BY id LIMIT 1",
         (phone_norm,),
     ).fetchone()
@@ -379,21 +379,21 @@ async def cmd_link(message: types.Message):
     if len(lookup_norm) >= 9:
         target_client = conn.execute(
             "SELECT id, client_id_1c, name, phone_normalized FROM allowed_clients "
-            "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' LIMIT 1",
+            "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' LIMIT 1",
             (lookup_norm,),
         ).fetchone()
 
     if not target_client:
         target_client = conn.execute(
             "SELECT id, client_id_1c, name, phone_normalized FROM allowed_clients "
-            "WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged' LIMIT 1",
+            "WHERE client_id_1c = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' LIMIT 1",
             (lookup,),
         ).fetchone()
 
     if not target_client:
         target_client = conn.execute(
             "SELECT id, client_id_1c, name, phone_normalized FROM allowed_clients "
-            "WHERE client_id_1c LIKE ? AND COALESCE(status, 'active') != 'merged' LIMIT 1",
+            "WHERE client_id_1c LIKE ? AND COALESCE(status, 'active') NOT LIKE 'merged%' LIMIT 1",
             (f"%{lookup}%",),
         ).fetchone()
 
@@ -419,7 +419,7 @@ async def cmd_link(message: types.Message):
     user_phone_norm = normalize_phone(user["phone"])
     existing_row = conn.execute(
         "SELECT id, client_id_1c FROM allowed_clients "
-        "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+        "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
         "ORDER BY id LIMIT 1",
         (user_phone_norm,),
     ).fetchone()
@@ -457,7 +457,7 @@ async def cmd_link(message: types.Message):
 
     siblings = conn.execute(
         "SELECT phone_normalized, name FROM allowed_clients "
-        "WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged'",
+        "WHERE client_id_1c = ? AND COALESCE(status, 'active') NOT LIKE 'merged%'",
         (client_id_1c,),
     ).fetchall()
 

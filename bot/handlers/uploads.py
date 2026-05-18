@@ -2407,7 +2407,7 @@ async def cmd_duplicateclients(message: types.Message):
                 """SELECT client_id_1c, COUNT(*) as cnt
                    FROM allowed_clients
                    WHERE client_id_1c IS NOT NULL AND client_id_1c != ''
-                     AND COALESCE(status, 'active') != 'merged'
+                     AND COALESCE(status, 'active') NOT LIKE 'merged%'
                      AND LOWER(client_id_1c) LIKE ?
                    GROUP BY client_id_1c
                    HAVING COUNT(*) > 1
@@ -2431,7 +2431,7 @@ async def cmd_duplicateclients(message: types.Message):
                 """SELECT client_id_1c, COUNT(*) as cnt
                    FROM allowed_clients
                    WHERE client_id_1c IS NOT NULL AND client_id_1c != ''
-                     AND COALESCE(status, 'active') != 'merged'
+                     AND COALESCE(status, 'active') NOT LIKE 'merged%'
                    GROUP BY client_id_1c
                    HAVING COUNT(*) > 1
                    ORDER BY cnt DESC, client_id_1c"""
@@ -2461,7 +2461,7 @@ async def cmd_duplicateclients(message: types.Message):
             for g in groups[:50]:  # Sample first 50 for speed
                 recs = conn.execute(
                     """SELECT id FROM allowed_clients
-                       WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged'""",
+                       WHERE client_id_1c = ? AND COALESCE(status, 'active') NOT LIKE 'merged%'""",
                     (g["client_id_1c"],),
                 ).fetchall()
                 ids_with_data = 0
@@ -2499,7 +2499,7 @@ async def cmd_duplicateclients(message: types.Message):
                           (SELECT COUNT(*) FROM client_balances WHERE client_id = ac.id) as bal,
                           (SELECT COUNT(*) FROM users WHERE client_id = ac.id) as usr
                    FROM allowed_clients ac
-                   WHERE ac.client_id_1c = ? AND COALESCE(ac.status, 'active') != 'merged'
+                   WHERE ac.client_id_1c = ? AND COALESCE(ac.status, 'active') NOT LIKE 'merged%'
                    ORDER BY ac.id""",
                 (cid_1c,),
             ).fetchall()

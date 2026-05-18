@@ -164,7 +164,7 @@ def register_user(user: UserRegister):
     # sync). See `tools/dedup_allowed_clients.py` for the migration context.
     client_row = conn.execute(
         "SELECT id, name, location, client_id_1c FROM allowed_clients "
-        "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+        "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
         "ORDER BY id LIMIT 1",
         (phone_norm,),
     ).fetchone()

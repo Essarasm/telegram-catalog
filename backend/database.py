@@ -59,7 +59,7 @@ def get_sibling_client_ids(conn, client_id):
     if not row or not row["client_id_1c"]:
         return [client_id]
     siblings = conn.execute(
-        "SELECT id FROM allowed_clients WHERE client_id_1c = ? AND COALESCE(status, 'active') != 'merged'",
+        "SELECT id FROM allowed_clients WHERE client_id_1c = ? AND COALESCE(status, 'active') NOT LIKE 'merged%'",
         (row["client_id_1c"],),
     ).fetchall()
     ids = [s["id"] for s in siblings]

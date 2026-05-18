@@ -29,7 +29,7 @@ def _check_phone_collision(conn, phone_norm: str) -> Optional[dict]:
     row = conn.execute(
         """SELECT id, name, client_id_1c
            FROM allowed_clients
-           WHERE COALESCE(status, 'active') != 'merged'
+           WHERE COALESCE(status, 'active') NOT LIKE 'merged%'
              AND (phone_normalized = ? OR raqam_02 = ? OR raqam_03 = ?)
            ORDER BY id LIMIT 1""",
         (phone_norm, phone_norm, phone_norm),

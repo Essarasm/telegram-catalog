@@ -383,7 +383,7 @@ async def cmd_testclient(message: types.Message, _override_arg: str | None = Non
                       SELECT DISTINCT client_id FROM client_balances
                       WHERE LOWER(client_name_1c) LIKE ? AND client_id IS NOT NULL
                   ))
-                 AND COALESCE(ac.status, 'active') != 'merged'
+                 AND COALESCE(ac.status, 'active') NOT LIKE 'merged%'
                  AND ac.client_id_1c IS NOT NULL AND ac.client_id_1c != ''
                ORDER BY bal_count DESC
                LIMIT 15""",

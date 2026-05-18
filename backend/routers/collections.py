@@ -184,7 +184,7 @@ def tumans_with_centroids(admin_key: str = Query(...)):
         FROM locations l
         LEFT JOIN locations vil ON vil.id = l.parent_id
         LEFT JOIN allowed_clients ac ON ac.location_district_id = l.id
-            AND COALESCE(ac.status, 'active') != 'merged'
+            AND COALESCE(ac.status, 'active') NOT LIKE 'merged%'
         WHERE l.type = 'district' AND l.is_active = 1
         GROUP BY l.id
         ORDER BY vil.sort_order, l.sort_order, l.name
@@ -294,7 +294,7 @@ def get_candidates(req: CandidatesRequest, admin_key: str = Query(...)):
                viloyat, tuman, location_district_id
         FROM allowed_clients
         WHERE id IN ({placeholders})
-          AND COALESCE(status, 'active') != 'merged'
+          AND COALESCE(status, 'active') NOT LIKE 'merged%'
         """,
         client_ids,
     ).fetchall()
@@ -669,7 +669,7 @@ def _fetch_clients_by_ids(conn, ids: list) -> dict:
                    viloyat, tuman
             FROM allowed_clients
             WHERE id IN ({ph})
-              AND COALESCE(status, 'active') != 'merged'""",
+              AND COALESCE(status, 'active') NOT LIKE 'merged%'""",
         ids,
     ).fetchall()
     return {r["id"]: r for r in rows}
@@ -826,7 +826,7 @@ def _plan_route_payload(conn, req: PlanRouteRequest) -> dict:
                     FROM allowed_clients
                     WHERE id IN ({ph})
                       AND gps_latitude IS NOT NULL AND gps_longitude IS NOT NULL
-                      AND COALESCE(status, 'active') != 'merged'""",
+                      AND COALESCE(status, 'active') NOT LIKE 'merged%'""",
                 list(debt_by_client.keys()),
             ).fetchall()
             # Exclude the delivery clients from return-leg candidates (already on the route)
@@ -980,7 +980,7 @@ def search_clients_for_route(q: str = Query(..., min_length=1),
         """SELECT id, client_id_1c, name, company_name, phone_normalized,
                   gps_latitude, gps_longitude, gps_address, tuman, viloyat
            FROM allowed_clients
-           WHERE COALESCE(status,'active') != 'merged'
+           WHERE COALESCE(status,'active') NOT LIKE 'merged%'
              AND (client_id_1c LIKE ? OR name LIKE ?
                   OR company_name LIKE ? OR phone_normalized LIKE ?)
            ORDER BY (gps_latitude IS NULL),   -- pinned first
@@ -1019,7 +1019,7 @@ def search_clients_for_route(q: str = Query(..., min_length=1),
             """SELECT id, client_id_1c, name, company_name, phone_normalized,
                       gps_latitude, gps_longitude, gps_address, tuman, viloyat
                FROM allowed_clients
-               WHERE COALESCE(status,'active') != 'merged'"""
+               WHERE COALESCE(status,'active') NOT LIKE 'merged%'"""
         ).fetchall()
         scored = []
         for r in candidates:

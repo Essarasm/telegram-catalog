@@ -93,7 +93,7 @@ def match_by_client_id_1c(name: str, conn) -> Optional[int]:
     row = conn.execute(
         "SELECT id FROM allowed_clients "
         "WHERE client_id_1c = ? "
-        "AND COALESCE(status, 'active') != 'merged' "
+        "AND COALESCE(status, 'active') NOT LIKE 'merged%' "
         "ORDER BY id LIMIT 1",
         (name,),
     ).fetchone()
@@ -111,7 +111,7 @@ def match_by_name_fallback(name: str, conn) -> Optional[int]:
     row = conn.execute(
         "SELECT id FROM allowed_clients "
         "WHERE LOWER(TRIM(name)) = ? "
-        "AND COALESCE(status, 'active') != 'merged' "
+        "AND COALESCE(status, 'active') NOT LIKE 'merged%' "
         "ORDER BY id LIMIT 1",
         (normalized,),
     ).fetchone()
@@ -178,13 +178,13 @@ def heal_finance_orphans(conn, table: str) -> int:
         f"""UPDATE {table} SET client_id = (
                 SELECT ac.id FROM allowed_clients ac
                 WHERE ac.client_id_1c = {table}.client_name_1c
-                  AND COALESCE(ac.status, 'active') != 'merged'
+                  AND COALESCE(ac.status, 'active') NOT LIKE 'merged%'
                 ORDER BY ac.id LIMIT 1
             )
             WHERE client_id IS NULL
               AND client_name_1c IN (
                   SELECT client_id_1c FROM allowed_clients
-                  WHERE COALESCE(status, 'active') != 'merged'
+                  WHERE COALESCE(status, 'active') NOT LIKE 'merged%'
               )"""
     )
     healed = cur.rowcount
@@ -196,7 +196,7 @@ def heal_finance_orphans(conn, table: str) -> int:
                 f"""UPDATE {table} SET client_id = (
                         SELECT ac.id FROM allowed_clients ac
                         WHERE ac.client_id_1c = ?
-                          AND COALESCE(ac.status, 'active') != 'merged'
+                          AND COALESCE(ac.status, 'active') NOT LIKE 'merged%'
                         ORDER BY ac.id LIMIT 1
                     )
                     WHERE client_id IS NULL AND client_name_1c = ?""",

@@ -108,7 +108,7 @@ def import_clients():
             # branch below) or update the wrong row.
             existing = conn.execute(
                 "SELECT id, COALESCE(status, 'active') as status FROM allowed_clients "
-                "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+                "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
                 "ORDER BY id LIMIT 1",
                 (phone,),
             ).fetchone()
@@ -169,7 +169,7 @@ def import_clients():
     for u in existing_users:
         phone_norm = normalize_phone(u[1])
         match = conn.execute(
-            "SELECT id FROM allowed_clients WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' LIMIT 1",
+            "SELECT id FROM allowed_clients WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' LIMIT 1",
             (phone_norm,),
         ).fetchone()
         if match:
@@ -386,7 +386,7 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
         # duplicate and the importer would skip the upsert entirely.
         existing = conn.execute(
             "SELECT id, COALESCE(status, 'active') FROM allowed_clients "
-            "WHERE phone_normalized = ? AND COALESCE(status, 'active') != 'merged' "
+            "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
             "ORDER BY id LIMIT 1",
             (phone,),
         ).fetchone()
