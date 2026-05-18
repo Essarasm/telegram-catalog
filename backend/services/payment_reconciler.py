@@ -302,6 +302,169 @@ def reconcile_payments(
     return summary
 
 
+def get_yesterday_client_totals(
+    conn, reconcile_date: Optional[str] = None
+) -> dict:
+    """Per-client total reconciliation for yesterday's morning 08:00 report.
+
+    Bookkeeper (Alisher) can split a dual-currency payment differently in
+    1C than the cashier originally recorded (e.g. cashier saw 1M UZS +
+    $100; Alisher enters 2.2M UZS + $0 at rate 12,000 — total USD-eq
+    unchanged). Per-row matching falsely flags these. Per-client totals,
+    USD-eq using yesterday's FX rate, catch real bookkeeper errors only:
+    missed clients, typo'd amounts, swapped clients.
+
+    Returns:
+        {
+            "report_date":   "YYYY-MM-DD",   # yesterday Tashkent
+            "fx_rate":       float,          # yesterday's UZS-per-USD
+            "fx_source":     "actual"|"fallback",
+            "matched_clients": int,
+            "mismatched": [
+                {
+                    "client":          str,
+                    "cashier_usd_eq":  float,
+                    "onec_usd_eq":     float,
+                    "delta_usd":       float,    # cashier - 1C
+                    "cashier_rows":    [{amount, currency, time}, ...],
+                    "onec_rows":       [{amount_local, amount_currency,
+                                          currency, doc_no}, ...],
+                }, ...
+            ],   # sorted by abs(delta_usd) descending
+            "orphan_onec_rows": [   # 1C rows yesterday with no client_id link
+                {doc_no, currency, amount_local, amount_currency,
+                  client_name_1c}, ...
+            ],
+        }
+    """
+    if reconcile_date is None:
+        reconcile_date = conn.execute(
+            "SELECT date('now', '+5 hours') AS d"
+        ).fetchone()["d"]
+    yesterday = conn.execute(
+        "SELECT date(?, '-1 day') AS d", (reconcile_date,)
+    ).fetchone()["d"]
+
+    fx_row = conn.execute(
+        """SELECT rate FROM daily_fx_rates
+           WHERE rate_date = ? AND currency_pair = 'USD_UZS'""",
+        (yesterday,),
+    ).fetchone()
+    if fx_row and fx_row["rate"] and fx_row["rate"] > 0:
+        fx_rate = float(fx_row["rate"])
+        fx_source = "actual"
+    else:
+        fx_rate = _FX_FALLBACK_UZS_PER_USD
+        fx_source = "fallback"
+
+    intake_rows = conn.execute(
+        """SELECT ip.client_id,
+                  ip.amount,
+                  ip.currency,
+                  time(ip.submitted_at) AS submit_time,
+                  COALESCE(ac.name, ac.company_name, 'unknown') AS client
+           FROM intake_payments ip
+           LEFT JOIN allowed_clients ac ON ac.id = ip.client_id
+           WHERE ip.status = 'confirmed'
+             AND date(ip.submitted_at) = ?
+             AND ip.client_id IS NOT NULL
+           ORDER BY ip.submitted_at""",
+        (yesterday,),
+    ).fetchall()
+
+    onec_rows = conn.execute(
+        """SELECT cp.client_id,
+                  cp.doc_number_1c AS doc_no,
+                  cp.doc_time,
+                  cp.currency,
+                  cp.amount_local,
+                  cp.amount_currency,
+                  COALESCE(cp.client_name_1c, 'unknown') AS client
+           FROM client_payments cp
+           WHERE cp.doc_date = ?""",
+        (yesterday,),
+    ).fetchall()
+
+    by_client: dict[int, dict] = defaultdict(
+        lambda: {
+            "client": None,
+            "cashier_usd_eq": 0.0,
+            "onec_usd_eq": 0.0,
+            "cashier_rows": [],
+            "onec_rows": [],
+        }
+    )
+    orphan_onec_rows: list[dict] = []
+
+    for r in intake_rows:
+        cid = r["client_id"]
+        usdeq = _to_usd_eq(r["amount"], r["currency"], fx_rate)
+        bucket = by_client[cid]
+        bucket["client"] = r["client"]
+        bucket["cashier_usd_eq"] += usdeq
+        bucket["cashier_rows"].append({
+            "amount": float(r["amount"] or 0),
+            "currency": r["currency"],
+            "time": (r["submit_time"] or "")[:5],
+        })
+
+    for r in onec_rows:
+        cid = r["client_id"]
+        if cid is None:
+            orphan_onec_rows.append({
+                "doc_no": r["doc_no"],
+                "currency": r["currency"],
+                "amount_local": float(r["amount_local"] or 0),
+                "amount_currency": float(r["amount_currency"] or 0),
+                "client_name_1c": r["client"],
+            })
+            continue
+        if r["currency"] == "USD":
+            usdeq = float(r["amount_currency"] or 0)
+        else:
+            usdeq = _to_usd_eq(r["amount_local"], "UZS", fx_rate)
+        bucket = by_client[cid]
+        # 1C client name wins if intake didn't supply (kassa-only client).
+        if bucket["client"] is None:
+            bucket["client"] = r["client"]
+        bucket["onec_usd_eq"] += usdeq
+        bucket["onec_rows"].append({
+            "doc_no": r["doc_no"],
+            "currency": r["currency"],
+            "amount_local": float(r["amount_local"] or 0),
+            "amount_currency": float(r["amount_currency"] or 0),
+        })
+
+    matched_clients = 0
+    mismatched: list[dict] = []
+    for cid, bucket in by_client.items():
+        c_total = bucket["cashier_usd_eq"]
+        o_total = bucket["onec_usd_eq"]
+        if c_total == 0 and o_total == 0:
+            continue
+        if _within_tolerance(c_total, o_total):
+            matched_clients += 1
+            continue
+        mismatched.append({
+            "client": bucket["client"],
+            "cashier_usd_eq": round(c_total, 2),
+            "onec_usd_eq": round(o_total, 2),
+            "delta_usd": round(c_total - o_total, 2),
+            "cashier_rows": bucket["cashier_rows"],
+            "onec_rows": bucket["onec_rows"],
+        })
+    mismatched.sort(key=lambda m: abs(m["delta_usd"]), reverse=True)
+
+    return {
+        "report_date": yesterday,
+        "fx_rate": fx_rate,
+        "fx_source": fx_source,
+        "matched_clients": matched_clients,
+        "mismatched": mismatched,
+        "orphan_onec_rows": orphan_onec_rows,
+    }
+
+
 def get_intake_match_status(conn, intake_ids: list[int]) -> dict[int, str]:
     """Look up the latest payment_reconciliation match_status for each
     intake_payments.id. Returns id -> 'matched' / 'bot_only' / 'unknown'.

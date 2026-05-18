@@ -792,22 +792,45 @@ async def _run_group_health_check(bot, admin_chat_id: int) -> None:
         logger.error(f"group_health_check: failed to alert Admin: {e}")
 
 
-async def _run_payment_reconciler(bot, admin_chat_id: int) -> None:
-    """Nightly 02:00 Tashkent — populate payment_reconciliation by pairing
-    confirmed intake_payments against client_payments. Quiet on a clean
-    run; alerts Admin only when bot_only or kassa_only counts are unusual.
+def _fmt_uzs(amount: float) -> str:
+    """1234567 → '1 234 567'."""
+    return f"{int(round(amount or 0)):,}".replace(",", " ")
+
+
+def _fmt_usd(amount: float) -> str:
+    """123.5 → '123.50'."""
+    return f"{float(amount or 0):,.2f}"
+
+
+async def _run_payment_reconciler(bot, target_chat_id: int) -> None:
+    """Daily 08:00 Tashkent — refresh payment_reconciliation and post the
+    morning mismatch report to the dedicated reconciliation group.
+
+    Bookkeeper (Alisher) uploads the 1C /cash file at end of day; we
+    rerun the reconciler at 08:00 the next morning (idempotent within a
+    day) so the snapshot reflects last night's upload, then post a
+    yesterday-only breakdown: matched count + bot_only rows (cashier saw,
+    1C didn't) + kassa_only rows (1C has, cashier didn't).
+
+    Always posts — even on clean days, so the reconciler's heartbeat is
+    visible and failures are noticed.
     """
     from backend.database import get_db
-    from backend.services.payment_reconciler import reconcile_payments
+    from backend.services.payment_reconciler import (
+        reconcile_payments,
+        get_yesterday_client_totals,
+    )
+    from bot.shared import html_escape
 
     conn = get_db()
     try:
         summary = reconcile_payments(conn, lookback_days=30)
+        detail = get_yesterday_client_totals(conn, summary["reconcile_date"])
     except Exception as e:
         logger.exception("payment_reconciler failed: %s", e)
         try:
             await bot.send_message(
-                admin_chat_id,
+                target_chat_id,
                 f"⚠️ Payment reconciler failed: <code>{e}</code>",
                 parse_mode="HTML",
             )
@@ -818,22 +841,92 @@ async def _run_payment_reconciler(bot, admin_chat_id: int) -> None:
         conn.close()
 
     logger.info("payment_reconciler done: %s", summary)
-    # Stay quiet on the common path. Only surface to Admin when there are
-    # bot_only rows worth investigating (real cashier↔1C divergence).
-    if summary["bot_only_rows"] > 0:
-        text = (
-            f"🔁 <b>Payment reconciler</b> — {summary['reconcile_date']}\n"
-            f"Clients examined: {summary['clients_examined']}\n"
-            f"Matched rows: {summary['matched_rows']} "
-            f"(aggregate-match clients: {summary['aggregate_matches']})\n"
-            f"⚠️ Bot-only (cashier saw, 1C didn't): "
-            f"<b>{summary['bot_only_rows']}</b>\n"
-            f"Kassa-only (1C has, cashier didn't): {summary['kassa_only_rows']}"
+
+    report_date = detail["report_date"]
+    fx_rate = detail["fx_rate"]
+    fx_source = detail["fx_source"]
+    matched_clients = detail["matched_clients"]
+    mismatched = detail["mismatched"]
+    orphans = detail["orphan_onec_rows"]
+    clean = not mismatched and not orphans
+
+    fx_note = (
+        f"FX (kecha): <b>{_fmt_uzs(fx_rate)}</b> so'm/$"
+        + ("" if fx_source == "actual" else "  <i>(default — /fxrate yo'q)</i>")
+    )
+
+    lines = [
+        f"🔁 <b>Kassa ↔ 1C sverka</b> — {report_date}",
+        fx_note,
+    ]
+    if clean:
+        lines.append(
+            f"✅ Mos keldi: <b>{matched_clients}</b> ta mijoz. "
+            f"Kechagi to'lovlar bo'yicha farq yo'q."
         )
-        try:
-            await bot.send_message(admin_chat_id, text, parse_mode="HTML")
-        except Exception as e:
-            logger.error("payment_reconciler: failed to alert Admin: %s", e)
+    else:
+        bits = [f"✅ Mos: <b>{matched_clients}</b> mijoz"]
+        if mismatched:
+            bits.append(f"⚠️ Farq: <b>{len(mismatched)}</b> mijoz")
+        if orphans:
+            bits.append(f"❓ 1C-da ulanmagan: <b>{len(orphans)}</b>")
+        lines.append(" · ".join(bits))
+
+    def _fmt_amt(amount: float, currency: str) -> str:
+        if currency == "USD":
+            return f"${_fmt_usd(amount)}"
+        return f"{_fmt_uzs(amount)} so'm"
+
+    def _fmt_onec_amt(row: dict) -> str:
+        if row["currency"] == "USD":
+            return f"${_fmt_usd(row['amount_currency'])}"
+        return f"{_fmt_uzs(row['amount_local'])} so'm"
+
+    for i, m in enumerate(mismatched, 1):
+        lines.append("")
+        client = html_escape(m["client"] or "unknown")
+        delta = m["delta_usd"]
+        sign = "+" if delta > 0 else ""
+        lines.append(
+            f"<b>{i}) {client}</b>  "
+            f"(farq: {sign}${_fmt_usd(delta)})"
+        )
+
+        cashier_total = f"${_fmt_usd(m['cashier_usd_eq'])}"
+        if m["cashier_rows"]:
+            leg_parts = [
+                f"{r['time']} {_fmt_amt(r['amount'], r['currency'])}"
+                for r in m["cashier_rows"]
+            ]
+            legs = "; ".join(leg_parts)
+            lines.append(f"   Kassa: {cashier_total}  →  {legs}")
+        else:
+            lines.append("   Kassa: <i>(yozuv yo'q)</i>")
+
+        onec_total = f"${_fmt_usd(m['onec_usd_eq'])}"
+        if m["onec_rows"]:
+            leg_parts = []
+            for r in m["onec_rows"]:
+                doc = html_escape(r["doc_no"] or "")
+                leg_parts.append(f"{_fmt_onec_amt(r)} (#{doc})")
+            legs = "; ".join(leg_parts)
+            lines.append(f"   1C:    {onec_total}  →  {legs}")
+        else:
+            lines.append("   1C:    <i>(yozuv yo'q)</i>")
+
+    if orphans:
+        lines.append("")
+        lines.append("❓ <b>1C-da bor, mijoz aniqlanmagan</b>:")
+        for r in orphans:
+            client = html_escape(r["client_name_1c"] or "?")
+            doc = html_escape(r["doc_no"] or "")
+            lines.append(f"• {client} — {_fmt_onec_amt(r)} (1C #{doc})")
+
+    text = "\n".join(lines)
+    try:
+        await bot.send_message(target_chat_id, text, parse_mode="HTML")
+    except Exception as e:
+        logger.error("payment_reconciler: failed to post morning report: %s", e)
 
 
 def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
@@ -846,8 +939,10 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     from bot.shared import (
         ORDER_GROUP_CHAT_ID, INVENTORY_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID,
         CASHIER_GROUP_CHAT_ID, PLATFORM_OPS_GROUP_CHAT_ID,
+        RECONCILIATION_GROUP_CHAT_ID,
     )
     ops = PLATFORM_OPS_GROUP_CHAT_ID
+    reconciliation = RECONCILIATION_GROUP_CHAT_ID
     tasks = [
         # Daily-upload reminders → Daily group (were Admin group).
         asyncio.create_task(
@@ -918,11 +1013,15 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
             run_daily_reminder(bot, ops, 18, 0, _run_payment_notif_sweeper),
             name="daily-payment-notif-sweeper",
         ),
-        # Daily 02:00 — cashier↔1C reconciler → Platform-Ops group. Writes
-        # per-row match status to payment_reconciliation so the Kabinet's
-        # "Tekshirish kerak" red flag becomes per-row accurate.
+        # Daily 08:00 — cashier↔1C reconciler → dedicated Reconciliation
+        # group. Refreshes payment_reconciliation (also feeds the Kabinet's
+        # per-row "Tekshirish kerak" flag) and posts yesterday's matched /
+        # bot_only / kassa_only breakdown for bookkeeper review. Runs after
+        # Alisher's EOD /cash upload so the morning report reflects last
+        # night's 1C input. Always posts — clean days included — so silent
+        # failures are visible.
         asyncio.create_task(
-            run_daily_reminder(bot, ops, 2, 0, _run_payment_reconciler),
+            run_daily_reminder(bot, reconciliation, 8, 0, _run_payment_reconciler),
             name="daily-payment-reconciler",
         ),
         # Daily 19:00 — Per-client payment list into the cashier group.
@@ -964,6 +1063,7 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     logger.info(
         f"Started {len(tasks)} background tasks "
         f"(admin={chat_id}, ops={ops}, daily={DAILY_GROUP_CHAT_ID}, "
-        f"sales={ORDER_GROUP_CHAT_ID}, inventory={INVENTORY_GROUP_CHAT_ID})"
+        f"sales={ORDER_GROUP_CHAT_ID}, inventory={INVENTORY_GROUP_CHAT_ID}, "
+        f"reconciliation={reconciliation})"
     )
     return tasks

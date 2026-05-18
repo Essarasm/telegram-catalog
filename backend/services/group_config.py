@@ -63,6 +63,13 @@ ADMIN_GROUP_CHAT_ID: int = _env_int("ADMIN_GROUP_CHAT_ID", -5224656051)
 # isolate machine chatter from human-facing admin traffic.
 PLATFORM_OPS_GROUP_CHAT_ID: int = _env_int("PLATFORM_OPS_GROUP_CHAT_ID", -1003987299154)
 
+# Reconciliation group — dedicated morning cashier↔1C mismatch report
+# (08:00 Tashkent, after Alisher's EOD /cash upload). Bookkeeper + owner
+# review yesterday's matched / bot_only / kassa_only rows here. Split off
+# from PLATFORM_OPS on 2026-05-18 because mismatch review needs a human-
+# attention surface, not the silent ops feed.
+RECONCILIATION_GROUP_CHAT_ID: int = _env_int("RECONCILIATION_GROUP_CHAT_ID", -1003949360710)
+
 # Daily group — morning/EOD upload nudges, daily checklist.
 DAILY_GROUP_CHAT_ID: int = _env_int("DAILY_GROUP_CHAT_ID", -5243912135)
 
