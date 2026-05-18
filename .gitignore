@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+.venv/
+.DS_Store
 .env
 .credentials
 data/catalog.db
@@ -7,6 +9,7 @@ data/catalog.db-wal
 data/catalog.db-shm
 data/master_archive/
 data/db_backups/
+data/snapshots/
 node_modules/
 # frontend/dist/ — included for Railway deployment
 *.egg-info/
