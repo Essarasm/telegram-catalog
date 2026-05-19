@@ -584,6 +584,42 @@ async def _send_sunday_infra_nudge(bot, chat_id: int) -> None:
         logger.error(f"Sunday infra nudge failed: {e}")
 
 
+async def _send_p6_followup_reminder(bot, chat_id: int) -> None:
+    """One-shot 09:00 Tashkent reminder on 2026-05-24: follow up on P6
+    schema migration deferred from 2026-05-18 Session Ops.
+
+    Fires once on that date; no-op on every other day. The wiring in the
+    daily loop can be removed in a cleanup pass after the date passes
+    (it'll keep silently no-op'ing indefinitely if left in place).
+    """
+    from datetime import date as _date
+    today = datetime.now(TASHKENT).date()
+    if today != _date(2026, 5, 24):
+        return
+
+    text = (
+        "📋 <b>P6 follow-up — schema migration (deferred from 2026-05-18)</b>\n\n"
+        "Today's the day we set aside last Tuesday. Migration scope:\n"
+        "• <code>allowed_clients.status</code>: retire <code>'merged_into:&lt;id&gt;'</code> string format\n"
+        "• Add <code>is_merged BOOLEAN</code> + <code>merged_into_canonical_id INTEGER</code>\n"
+        "• Backfill existing tombstones\n"
+        "• Replace 41 callsites' <code>NOT LIKE 'merged%'</code> → <code>is_merged = 0</code>\n"
+        "• Update <code>tools/merge_duplicate_1c_clients.py</code> to write new shape\n"
+        "• Update Guard 6 + <code>.claude/contracts/soft_delete_vocabulary.md</code>\n"
+        "• Update <code>tests/test_tombstone_routing.py</code>\n\n"
+        "<b>Why this matters</b>: eliminates the TOMBSTONE_STATUS_FILTER_MISMATCH "
+        "failure class entirely (Error Log #56 — Жамшед Сифат Гагарин incident, "
+        "198 clients / 667 finance rows / 3-day exposure window).\n\n"
+        "<b>Estimated effort</b>: half-day session. Recommend booking a dedicated "
+        "Session Ops block rather than squeezing into another session's tail."
+    )
+    try:
+        await bot.send_message(chat_id, text, parse_mode="HTML")
+        logger.info(f"P6 follow-up reminder sent to {chat_id}")
+    except Exception as e:
+        logger.error(f"P6 follow-up reminder failed: {e}")
+
+
 async def _send_master_sync_nudge(bot, chat_id: int) -> None:
     """Sunday 12:00 — gentle nudge if no /clientmaster upload this week."""
     today = datetime.now(TASHKENT)
@@ -1016,6 +1052,14 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 9, 5, _run_group_health_check),
             name="daily-group-health-check",
+        ),
+        # One-shot 09:00 on 2026-05-24 — P6 follow-up reminder → Platform-Ops.
+        # Function gates by date; no-ops on every other day. Wiring kept in
+        # the daily loop for simplicity (idempotent no-op after target date).
+        # Set 2026-05-18 (Session Ops, Error Log #56 prevention measures).
+        asyncio.create_task(
+            run_daily_reminder(bot, ops, 9, 0, _send_p6_followup_reminder),
+            name="oneshot-p6-followup-2026-05-24",
         ),
         # Daily 18:00 — sweep stale pending payment notifications → Platform-Ops
         # group. Runs one hour after EOD check so /debtors has had its full window.
