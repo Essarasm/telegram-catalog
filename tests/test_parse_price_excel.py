@@ -81,7 +81,8 @@ def _write_price_xls(rows_of_cells: list[dict]) -> bytes:
 
 def test_parse_price_excel_basic_filters():
     """A mix of valid products and rows that must be filtered out:
-       services (TYPE != Товар), short names, zero-USD rows, blank rows.
+       services (TYPE != Товар), short names, blank rows.
+       UZS-only Собственный products are valid and must survive.
     """
     file_bytes = _write_price_xls(
         [
@@ -96,9 +97,12 @@ def test_parse_price_excel_basic_filters():
             # Short name (<3 chars) — filtered
             {"name": "AB", "type": "Товар",
              "unit": "шт", "uzs": 1, "usd": 1, "weight": 1},
-            # USD=0 — filtered (price list rule)
+            # UZS-only Собственный product (no USD) — KEPT
+            {"name": "Мегамикс сатин 51 /20 кг/", "type": "Товар",
+             "unit": "шт", "uzs": 37000, "usd": 0, "weight": 20},
+            # No prices at all (uzs=0, usd=0) — filtered
             {"name": "Товар без цены", "type": "Товар",
-             "unit": "шт", "uzs": 100, "usd": 0, "weight": 1},
+             "unit": "шт", "uzs": 0, "usd": 0, "weight": 1},
             # Another real product — kept
             {"name": "Кирпич красный 250x120", "type": "Товар",
              "unit": "шт", "uzs": 800, "usd": 0.07, "weight": 3.5},
@@ -107,10 +111,18 @@ def test_parse_price_excel_basic_filters():
 
     result = parse_price_excel(file_bytes)
     assert isinstance(result, dict)
-    # Only the two real products survive filtering
-    assert set(result.keys()) == {"Цемент М400 50кг", "Кирпич красный 250x120"}, (
+    expected = {
+        "Цемент М400 50кг",
+        "Мегамикс сатин 51 /20 кг/",
+        "Кирпич красный 250x120",
+    }
+    assert set(result.keys()) == expected, (
         f"unexpected keys: {sorted(result.keys())}"
     )
+    # Sanity: UZS-only product carries uzs but zero usd
+    satin = result["Мегамикс сатин 51 /20 кг/"]
+    assert satin["uzs"] == 37000
+    assert satin["usd"] == 0
 
     cement = result["Цемент М400 50кг"]
     assert cement["usd"] == 4.5

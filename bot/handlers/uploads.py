@@ -130,10 +130,17 @@ async def cmd_prices(message: types.Message):
         if result['changes']:
             lines.append("\n<b>Narx o'zgarishlar:</b>")
             for c in result['changes'][:15]:
-                old = c['old_usd']
-                new = c['new_usd']
-                arrow = "📈" if new > old else "📉"
-                lines.append(f"{arrow} {html_escape(c['name'])}: ${old:.2f} → ${new:.2f}")
+                old_usd = c.get('old_usd', 0) or 0
+                new_usd = c.get('new_usd', 0) or 0
+                old_uzs = c.get('old_uzs', 0) or 0
+                new_uzs = c.get('new_uzs', 0) or 0
+                if new_usd > 0 and abs(new_usd - old_usd) > 0.001:
+                    arrow = "📈" if new_usd > old_usd else "📉"
+                    body = f"${old_usd:.2f} → ${new_usd:.2f}"
+                else:
+                    arrow = "📈" if new_uzs > old_uzs else "📉"
+                    body = f"{int(old_uzs):,} → {int(new_uzs):,} so'm"
+                lines.append(f"{arrow} {html_escape(c['name'])}: {body}")
             if len(result['changes']) > 15:
                 lines.append(f"... va yana {len(result['changes']) - 15} ta")
 

@@ -122,15 +122,17 @@ def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
         except (ValueError, TypeError):
             usd = 0
 
-        if usd <= 0:
-            continue
-
         # Parse UZS price
         try:
             uzs_raw = str(row[COL_UZS]).strip()
             uzs = float(uzs_raw) if uzs_raw else 0
         except (ValueError, TypeError):
             uzs = 0
+
+        # UZS-only "Собственный" products have a blank USD column in 1C —
+        # skip only when BOTH are missing, never on USD alone.
+        if usd <= 0 and uzs <= 0:
+            continue
 
         # Parse weight — from Excel column first, fallback to product name
         try:
@@ -307,7 +309,7 @@ def apply_price_updates(file_bytes: bytes) -> dict:
             new_uzs = ep['uzs']
 
             needs_update = False
-            if abs(old_usd - new_usd) > 0.001:
+            if new_usd > 0 and abs(old_usd - new_usd) > 0.001:
                 needs_update = True
             if new_uzs > 0 and abs(old_uzs - new_uzs) > 0.5:
                 needs_update = True
@@ -321,7 +323,10 @@ def apply_price_updates(file_bytes: bytes) -> dict:
 
             if needs_update or weight_changed:
                 update_sql = "UPDATE products SET price_usd = ?, price_uzs = ?"
-                params = [new_usd, new_uzs if new_uzs > 0 else old_uzs]
+                params = [
+                    new_usd if new_usd > 0 else old_usd,
+                    new_uzs if new_uzs > 0 else old_uzs,
+                ]
 
                 if weight_changed:
                     update_sql += ", weight = ?"
@@ -336,6 +341,8 @@ def apply_price_updates(file_bytes: bytes) -> dict:
                     "name": (product["name_display"] or product["name"])[:50],
                     "old_usd": old_usd,
                     "new_usd": new_usd,
+                    "old_uzs": old_uzs,
+                    "new_uzs": new_uzs,
                 }
                 if weight_changed:
                     change_record["old_weight"] = old_weight
