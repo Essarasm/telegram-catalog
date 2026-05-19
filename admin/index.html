@@ -5534,9 +5534,11 @@
                     ? `<button onclick="acceptWeight(${p.id})" style="padding:3px 8px; background:#6366f1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:11px;">✓</button>`
                     : '';
                 const photoCell = p.has_image
-                    ? `<img src="/images/${p.id}.webp" loading="lazy" style="height:32px; width:32px; object-fit:cover; border-radius:4px; cursor:pointer;" onclick="document.getElementById('cleanupFile_${p.id}').click()" title="Click to replace">`
+                    ? `<img src="/images/${p.id}.webp" loading="lazy" style="height:32px; width:32px; object-fit:cover; border-radius:4px;">`
                     : `<button onclick="document.getElementById('cleanupFile_${p.id}').click()" style="padding:3px 8px; background:#2a2d3a; color:#e4e4e7; border:1px dashed #4b5563; border-radius:4px; cursor:pointer; font-size:11px;">+ Upload</button>`;
-                const fileInput = `<input type="file" id="cleanupFile_${p.id}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="uploadCleanupPhoto(${p.id}, this.files[0])">`;
+                const fileInput = p.has_image
+                    ? ''
+                    : `<input type="file" id="cleanupFile_${p.id}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="uploadCleanupPhoto(${p.id}, this.files[0])">`;
                 return `
                     <tr data-pid="${p.id}">
                         <td><input type="checkbox" ${checked} ${checkboxDisabled} onchange="toggleCleanupRow(${p.id}, this.checked)"></td>
