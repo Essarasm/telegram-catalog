@@ -187,9 +187,9 @@ export async function registerNewShop(payload) {
   return res.json();
 }
 
-export async function fetchRecentAgentClients(telegramId) {
+export async function fetchRecentAgentClients(telegramId, limit = 10) {
   try {
-    const res = await fetch(`${API_BASE}/agent/recent-clients?telegram_id=${telegramId}`);
+    const res = await fetch(`${API_BASE}/agent/recent-clients?telegram_id=${telegramId}&limit=${limit}`);
     return res.json();
   } catch (e) {
     return { ok: false, recent: [] };
