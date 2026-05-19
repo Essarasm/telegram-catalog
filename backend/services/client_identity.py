@@ -17,10 +17,16 @@ Module split rationale:
     - client_search.py — agent-panel partial-name search (different concern)
     - client_identity.py (this) — match + heal + mutator chokepoint
 """
+import logging
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Optional, Callable, Any, Dict
 
 from backend.services.pseudo_clients import is_pseudo_client
+
+_logger = logging.getLogger(__name__)
+_CYRILLIC_RE = re.compile(r'[Ѐ-ӿԀ-ԯ]')
 
 
 # ── Loyalty merge map (Layer 4 — populate from finances_client_merge_map.md) ──
@@ -239,6 +245,159 @@ def heal_all_finance_tables(conn) -> Dict[str, int]:
 
 
 # ── Mutator chokepoint ────────────────────────────────────────────────────────
+
+
+# ── Auto-link sweep for unbound allowed_clients rows ──────────────────────────
+
+
+def _normalize_for_match(name: str) -> str:
+    """Canonical form for comparing allowed_clients.name against client_name_1c.
+
+    NFC → strip → lower → Uzbek-apostrophe fold → Latin-to-Cyrillic
+    transliteration → whitespace collapse. Both scripts collide on the same
+    key, so an admin who typed a shop name in Latin still matches the 1C
+    Cyrillic card."""
+    if not name:
+        return ""
+    s = unicodedata.normalize('NFC', name).strip().lower()
+    try:
+        from backend.database import normalize_uzbek, transliterate_to_cyrillic
+        s = normalize_uzbek(s)
+        s = transliterate_to_cyrillic(s)
+    except Exception:
+        pass
+    return ' '.join(s.split())
+
+
+def _is_name_quality_ok(name: str) -> bool:
+    """Heuristic to skip Telegram-first-name rows ('Ulugbek', 'Ali').
+    Real 1C cards are multi-word or Cyrillic-bearing; first-names produce
+    zero signal and risk false positives."""
+    if not name:
+        return False
+    s = name.strip()
+    if len(s) < 4:
+        return False
+    return ' ' in s or bool(_CYRILLIC_RE.search(s))
+
+
+def auto_link_unbound_clients(conn) -> Dict[str, Any]:
+    """Sweep allowed_clients rows that lack a client_id_1c (admin/agent/bot
+    creations awaiting their 1C card) and fill it from any matching 1C name
+    that has now appeared in the finance tables.
+
+    Exact match on normalized form only — no fuzzy. Ambiguous matches and
+    rows whose name already belongs to a different allowed_clients row are
+    skipped. Mislinking would corrupt users.client_id (read by 7 modules).
+
+    Caller is responsible for commit. Returns:
+        {
+            'linked':              [{id, name, client_id_1c, source_sheet}],
+            'ambiguous_skipped':   int,
+            'low_quality_skipped': int,
+            'total_unbound':       int,
+        }
+    """
+    candidate_rows = conn.execute("""
+        SELECT DISTINCT client_name_1c FROM (
+            SELECT client_name_1c FROM client_balances
+                WHERE client_name_1c IS NOT NULL AND client_name_1c != ''
+            UNION
+            SELECT client_name_1c FROM real_orders
+                WHERE client_name_1c IS NOT NULL AND client_name_1c != ''
+            UNION
+            SELECT client_name_1c FROM client_payments
+                WHERE client_name_1c IS NOT NULL AND client_name_1c != ''
+            UNION
+            SELECT client_name_1c FROM client_debts
+                WHERE client_name_1c IS NOT NULL AND client_name_1c != ''
+        )
+    """).fetchall()
+
+    candidate_index: Dict[str, list] = {}
+    for r in candidate_rows:
+        original = r[0]
+        if is_excluded(original):
+            continue
+        norm = _normalize_for_match(original)
+        if not norm:
+            continue
+        candidate_index.setdefault(norm, []).append(original)
+
+    pending = conn.execute("""
+        SELECT id, name, source_sheet
+        FROM allowed_clients
+        WHERE (client_id_1c IS NULL OR client_id_1c = '')
+          AND COALESCE(status, 'active') NOT LIKE 'merged%'
+          AND source_sheet IN ('admin_panel', 'agent_panel',
+                               'bot_new', 'bot_new_client', 'bot_approved')
+    """).fetchall()
+
+    linked = []
+    ambiguous_skipped = 0
+    low_quality_skipped = 0
+
+    for row in pending:
+        ac_id = row[0]
+        name = (row[1] or "").strip()
+        source_sheet = row[2]
+
+        if not _is_name_quality_ok(name):
+            low_quality_skipped += 1
+            continue
+
+        norm = _normalize_for_match(name)
+        if not norm:
+            low_quality_skipped += 1
+            continue
+
+        matches = candidate_index.get(norm)
+        if not matches:
+            continue
+
+        if len(matches) > 1:
+            ambiguous_skipped += 1
+            _logger.warning(
+                "auto_link_unbound_clients: ambiguous match for "
+                "allowed_clients.id=%s name=%r -> %d candidates: %s",
+                ac_id, name, len(matches), matches,
+            )
+            continue
+
+        canonical_1c = matches[0]
+        existing = conn.execute(
+            "SELECT id FROM allowed_clients "
+            "WHERE client_id_1c = ? "
+            "AND COALESCE(status, 'active') NOT LIKE 'merged%' "
+            "AND id != ? LIMIT 1",
+            (canonical_1c, ac_id),
+        ).fetchone()
+        if existing:
+            ambiguous_skipped += 1
+            _logger.warning(
+                "auto_link_unbound_clients: 1C name %r already owned by "
+                "allowed_clients.id=%s — skipping pending id=%s",
+                canonical_1c, existing[0], ac_id,
+            )
+            continue
+
+        conn.execute(
+            "UPDATE allowed_clients SET client_id_1c = ? WHERE id = ?",
+            (canonical_1c, ac_id),
+        )
+        linked.append({
+            "id": ac_id,
+            "name": name,
+            "client_id_1c": canonical_1c,
+            "source_sheet": source_sheet,
+        })
+
+    return {
+        "linked": linked,
+        "ambiguous_skipped": ambiguous_skipped,
+        "low_quality_skipped": low_quality_skipped,
+        "total_unbound": len(pending),
+    }
 
 
 def mutate_allowed_clients_then_heal(

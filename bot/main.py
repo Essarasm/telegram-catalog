@@ -561,6 +561,7 @@ async def main():
     from bot.handlers.driver_location import router as driver_location_router
     from bot.handlers.orders import router as orders_router
     from bot.handlers.registration import router as registration_router
+    from bot.handlers.registration_link import router as registration_link_router
     from bot.handlers.support import router as support_router
     from bot.handlers.cashier import router as cashier_router
     from bot.handlers.agent_approval import router as agent_approval_router
@@ -584,13 +585,18 @@ async def main():
     dp.include_router(score_router)
     dp.include_router(orders_router)
     dp.include_router(location_router)
+    # registration_link_router BEFORE registration_router — the new
+    # button-driven flow owns reg:* callbacks + FSM text handlers, and
+    # the legacy reply-based router (registration.py) catches anything
+    # the buttons don't (manual `/link`-less workflow remains intact).
+    dp.include_router(registration_link_router)
     dp.include_router(registration_router)
     dp.include_router(support_router)
     dp.include_router(zakazlar_router)
     dp.include_router(order_dispatch_router)
     dp.include_router(agent_approval_router)
     dp.include_router(role_router)
-    logger.info("Loaded handler modules: cashier, bank_transfer, driver_location, testclient, admin, uploads, score, orders, location, registration, support, zakazlar, order_dispatch, agent_approval, role")
+    logger.info("Loaded handler modules: cashier, bank_transfer, driver_location, testclient, admin, uploads, score, orders, location, registration_link, registration, support, zakazlar, order_dispatch, agent_approval, role")
 
     # Error alerter: any uncaught exception inside a bot handler now posts
     # to Admin group with full traceback (same infrastructure as the

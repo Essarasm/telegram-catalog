@@ -334,6 +334,21 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = 
                 )
                 inserted += 1
 
+        # Auto-link unbound allowed_clients rows before heal so the heal pass
+        # picks up freshly-set client_id_1c values from admin/agent creations.
+        try:
+            autolink = client_identity.auto_link_unbound_clients(conn)
+            if autolink.get("linked"):
+                try:
+                    from backend.services.notify_registration import (
+                        notify_unbound_clients_linked,
+                    )
+                    notify_unbound_clients_linked(autolink["linked"])
+                except Exception as _e:
+                    logger.warning(f"notify_unbound_clients_linked failed: {_e}")
+        except Exception as _e:
+            logger.warning(f"auto_link_unbound_clients failed: {_e}")
+
         # Post-import orphan heal — re-homed to client_identity (refactor phase 5a).
         orphans_healed = client_identity.heal_finance_orphans(conn, "client_payments")
 

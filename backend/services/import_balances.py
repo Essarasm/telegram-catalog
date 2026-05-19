@@ -408,6 +408,25 @@ def apply_balance_import(file_bytes: bytes) -> dict:
             "matched": sec_matched,
         })
 
+    # Auto-link unbound allowed_clients rows (admin "Yangi klient" + agent
+    # "Yangi do'kon" + bot_new fallback) whose names now match a 1C card
+    # present in the finance tables. Runs BEFORE heal_finance_orphans so the
+    # heal pass picks up freshly-set client_id_1c values.
+    try:
+        autolink = client_identity.auto_link_unbound_clients(conn)
+        if autolink.get("linked"):
+            try:
+                from backend.services.notify_registration import (
+                    notify_unbound_clients_linked,
+                )
+                notify_unbound_clients_linked(autolink["linked"])
+            except Exception as _e:
+                logger.warning(f"notify_unbound_clients_linked failed: {_e}")
+    except Exception as _e:
+        logger.warning(f"auto_link_unbound_clients failed: {_e}")
+        autolink = {"linked": [], "ambiguous_skipped": 0,
+                    "low_quality_skipped": 0, "total_unbound": 0}
+
     # Post-import orphan heal — catches rows the per-row resolve missed
     # (late-added allowed_clients entries, stale caches, Cyrillic LOWER
     # mismatches). Safe: only touches client_id IS NULL.
