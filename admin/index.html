@@ -832,6 +832,7 @@
                 <div class="nav-tab" data-tab="coverage" onclick="switchTab('coverage')">Agent Coverage</div>
                 <div class="nav-tab" data-tab="customers" onclick="switchTab('customers')">Customer Coverage</div>
                 <div class="nav-tab" data-tab="collections" onclick="switchTab('collections')">Collections</div>
+                <div class="nav-tab" data-tab="cleanup" onclick="switchTab('cleanup')">Product Cleanup</div>
             </div>
             <div class="nav-footer">
                 <button class="logout-btn" onclick="logout()">Logout</button>
@@ -2096,6 +2097,77 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Product Cleanup Tab — weight + photo + supplier-display review queue -->
+                <div id="cleanup-tab" class="tab-content hidden">
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">In queue (60d)</div>
+                            <div class="kpi-value" id="cleanupKpiTotal">—</div>
+                            <div class="kpi-sub" style="font-size:11px; color:#8b8fa3;">active products with orders in last 60 days</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">Weight needs fix</div>
+                            <div class="kpi-value" id="cleanupKpiWeight">—</div>
+                            <div class="kpi-sub" style="font-size:11px; color:#8b8fa3;">name says different than DB (mismatch + fill)</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">No photo</div>
+                            <div class="kpi-value" id="cleanupKpiNoPhoto">—</div>
+                            <div class="kpi-sub" style="font-size:11px; color:#8b8fa3;">priority queue products lacking image</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">No supplier</div>
+                            <div class="kpi-value" id="cleanupKpiNoSupplier">—</div>
+                            <div class="kpi-sub" style="font-size:11px; color:#8b8fa3;">1C supplier link missing (Phase 2)</div>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:16px 0 12px;">
+                        <input type="search" id="cleanupSearch" placeholder="Search by name…"
+                               oninput="renderCleanupTable()"
+                               style="flex:1; min-width:220px; padding:8px 12px; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px;">
+                        <select id="cleanupFilter" onchange="renderCleanupTable()"
+                                style="padding:8px 12px; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px;">
+                            <option value="all">All products</option>
+                            <option value="needs_weight">Weight: fill or mismatch</option>
+                            <option value="no_photo">No photo</option>
+                            <option value="no_supplier">No supplier</option>
+                            <option value="no_weight_extractable">Manual weight only (no regex match)</option>
+                        </select>
+                        <button onclick="loadCleanupData()" class="btn" style="padding:8px 14px; background:#2a2d3a; color:#e4e4e7; border:none; border-radius:6px; cursor:pointer;">Reload</button>
+                        <span id="cleanupCountLabel" style="margin-left:auto; color:#8b8fa3; font-size:13px;"></span>
+                    </div>
+
+                    <div id="cleanupBulkBar" style="display:none; background:#1f2937; padding:10px 14px; border-radius:6px; margin-bottom:8px; align-items:center; gap:12px;">
+                        <span id="cleanupBulkCount" style="color:#e4e4e7;">0 selected</span>
+                        <button onclick="acceptSelectedWeights()" style="padding:6px 14px; background:#6366f1; color:white; border:none; border-radius:6px; cursor:pointer;">Accept selected weights</button>
+                        <button onclick="clearCleanupSelection()" style="padding:6px 14px; background:#2a2d3a; color:#e4e4e7; border:none; border-radius:6px; cursor:pointer;">Clear</button>
+                    </div>
+
+                    <div class="table-wrapper">
+                        <table class="data-table" id="cleanupTable" style="font-size:12px;">
+                            <thead>
+                                <tr>
+                                    <th style="width:28px;"><input type="checkbox" id="cleanupSelectAll" onchange="toggleCleanupSelectAll()"></th>
+                                    <th style="width:38px;">#</th>
+                                    <th style="width:48px;">60d</th>
+                                    <th>Name (1C)</th>
+                                    <th style="width:90px;">Current</th>
+                                    <th style="width:120px;">Suggested</th>
+                                    <th style="width:60px;">Apply</th>
+                                    <th style="width:90px;">Photo</th>
+                                    <th>Category</th>
+                                    <th>Producer</th>
+                                    <th>Supplier (1C)</th>
+                                </tr>
+                            </thead>
+                            <tbody id="cleanupRows">
+                                <tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:32px;">Loading…</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -2138,6 +2210,8 @@
         let ALLOWED_TABS = null;        // null = all (admin); array = restricted set
         let DASHBOARD_USER_NAME = null; // set on Telegram-WebApp auth
         let charts = {};
+        let cleanupData = null;            // {products: [...], count, window_days} once loaded
+        const cleanupSelected = new Set(); // selected product_ids for bulk actions
 
         // ==================== HELPERS ====================
         function fmt(n) {
@@ -2371,9 +2445,17 @@
                 search: 'Search',
                 coverage: 'Agent Coverage',
                 customers: 'Customer Coverage',
-                collections: 'Collection Route Planner'
+                collections: 'Collection Route Planner',
+                cleanup: 'Product Cleanup'
             };
             document.getElementById('pageTitle').textContent = titles[tabName];
+
+            // Lazy-load: cleanup queue is expensive (joins ~131K order lines)
+            // — fetch only when the tab is opened, and only once per session
+            // unless the user hits Reload.
+            if (tabName === 'cleanup' && !cleanupData) {
+                loadCleanupData();
+            }
 
             // On mobile, auto-close the drawer after picking a tab.
             if (isMobileViewport()) {
@@ -5380,6 +5462,217 @@
                     setTimeout(() => { el.textContent = orig; }, 1500);
                 }
             });
+        }
+
+        // ==================== PRODUCT CLEANUP ====================
+        async function loadCleanupData() {
+            const tbody = document.getElementById('cleanupRows');
+            tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:32px;">Loading…</td></tr>';
+            try {
+                const data = await apiCall('cleanup-queue?window_days=60&min_orders=1&limit=1500');
+                cleanupData = data;
+                cleanupSelected.clear();
+                renderCleanupKpis();
+                renderCleanupTable();
+            } catch (err) {
+                tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; color:#ef4444; padding:32px;">Error: ${esc(err.message)}</td></tr>`;
+            }
+        }
+
+        function renderCleanupKpis() {
+            if (!cleanupData) return;
+            const p = cleanupData.products;
+            const weightFix = p.filter(x => x.weight_action === 'fill' || x.weight_action === 'mismatch').length;
+            const noPhoto = p.filter(x => !x.has_image).length;
+            const noSupplier = p.filter(x => !x.supplier_name).length;
+            document.getElementById('cleanupKpiTotal').textContent = p.length;
+            document.getElementById('cleanupKpiWeight').textContent = weightFix;
+            document.getElementById('cleanupKpiNoPhoto').textContent = noPhoto;
+            document.getElementById('cleanupKpiNoSupplier').textContent = noSupplier;
+        }
+
+        function filteredCleanupRows() {
+            if (!cleanupData) return [];
+            const filter = document.getElementById('cleanupFilter').value;
+            const q = (document.getElementById('cleanupSearch').value || '').toLowerCase().trim();
+            return cleanupData.products.filter(p => {
+                if (q) {
+                    const hay = ((p.name || '') + ' ' + (p.name_display || '')).toLowerCase();
+                    if (!hay.includes(q)) return false;
+                }
+                if (filter === 'needs_weight') return p.weight_action === 'fill' || p.weight_action === 'mismatch';
+                if (filter === 'no_photo') return !p.has_image;
+                if (filter === 'no_supplier') return !p.supplier_name;
+                if (filter === 'no_weight_extractable') return p.weight_action === 'manual';
+                return true;
+            });
+        }
+
+        function renderCleanupTable() {
+            const tbody = document.getElementById('cleanupRows');
+            const rows = filteredCleanupRows();
+            const countLabel = document.getElementById('cleanupCountLabel');
+            countLabel.textContent = cleanupData ? `${rows.length} shown / ${cleanupData.count} total` : '';
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:32px;">No products match the current filter.</td></tr>';
+                return;
+            }
+            const actionBadge = {
+                match:    '<span style="color:#10b981;">✓ ok</span>',
+                fill:     '<span style="color:#f59e0b;">fill</span>',
+                mismatch: '<span style="color:#ef4444;">mismatch</span>',
+                manual:   '<span style="color:#8b8fa3;">no match</span>',
+            };
+            const html = rows.map((p, i) => {
+                const cur = p.current_weight_kg != null ? p.current_weight_kg + ' kg' : '<span style="color:#8b8fa3;">(none)</span>';
+                const sug = p.suggested_weight_kg != null
+                    ? `${p.suggested_weight_kg} kg <span style="color:#8b8fa3;">(${esc(p.suggested_source || '')})</span>`
+                    : '<span style="color:#8b8fa3;">—</span>';
+                const checked = cleanupSelected.has(p.id) ? 'checked' : '';
+                const checkboxDisabled = (p.weight_action === 'manual' || p.weight_action === 'match') ? 'disabled' : '';
+                const applyBtn = (p.weight_action === 'fill' || p.weight_action === 'mismatch')
+                    ? `<button onclick="acceptWeight(${p.id})" style="padding:3px 8px; background:#6366f1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:11px;">✓</button>`
+                    : '';
+                const photoCell = p.has_image
+                    ? `<img src="/images/${p.id}.webp" loading="lazy" style="height:32px; width:32px; object-fit:cover; border-radius:4px; cursor:pointer;" onclick="document.getElementById('cleanupFile_${p.id}').click()" title="Click to replace">`
+                    : `<button onclick="document.getElementById('cleanupFile_${p.id}').click()" style="padding:3px 8px; background:#2a2d3a; color:#e4e4e7; border:1px dashed #4b5563; border-radius:4px; cursor:pointer; font-size:11px;">+ Upload</button>`;
+                const fileInput = `<input type="file" id="cleanupFile_${p.id}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="uploadCleanupPhoto(${p.id}, this.files[0])">`;
+                return `
+                    <tr data-pid="${p.id}">
+                        <td><input type="checkbox" ${checked} ${checkboxDisabled} onchange="toggleCleanupRow(${p.id}, this.checked)"></td>
+                        <td style="color:#8b8fa3;">${i + 1}</td>
+                        <td style="text-align:right;">${p.order_count_60d}</td>
+                        <td>
+                            <div style="font-weight:500;">${esc(p.name || '')}</div>
+                            <div style="color:#8b8fa3; font-size:11px;">${esc(p.name_display || '')}</div>
+                        </td>
+                        <td>${cur}<div style="color:#8b8fa3; font-size:10px;">${esc(p.current_unit || '')}</div></td>
+                        <td>${sug} ${actionBadge[p.weight_action] || ''}</td>
+                        <td>${applyBtn}</td>
+                        <td>${photoCell}${fileInput}</td>
+                        <td>${esc(p.category_name || '')}</td>
+                        <td>${esc(p.producer_name || '')}</td>
+                        <td>${esc(p.supplier_name || '') || '<span style="color:#ef4444;">—</span>'}</td>
+                    </tr>
+                `;
+            }).join('');
+            tbody.innerHTML = html;
+            updateCleanupBulkBar();
+        }
+
+        function toggleCleanupRow(productId, checked) {
+            if (checked) cleanupSelected.add(productId);
+            else cleanupSelected.delete(productId);
+            updateCleanupBulkBar();
+        }
+
+        function toggleCleanupSelectAll() {
+            const master = document.getElementById('cleanupSelectAll').checked;
+            // Only target rows currently visible AND action-eligible (fill/mismatch).
+            filteredCleanupRows().forEach(p => {
+                if (p.weight_action === 'fill' || p.weight_action === 'mismatch') {
+                    if (master) cleanupSelected.add(p.id);
+                    else cleanupSelected.delete(p.id);
+                }
+            });
+            renderCleanupTable();
+        }
+
+        function clearCleanupSelection() {
+            cleanupSelected.clear();
+            const all = document.getElementById('cleanupSelectAll');
+            if (all) all.checked = false;
+            renderCleanupTable();
+        }
+
+        function updateCleanupBulkBar() {
+            const bar = document.getElementById('cleanupBulkBar');
+            const n = cleanupSelected.size;
+            if (n === 0) {
+                bar.style.display = 'none';
+                return;
+            }
+            bar.style.display = 'flex';
+            document.getElementById('cleanupBulkCount').textContent = `${n} selected`;
+        }
+
+        async function postJsonAdmin(endpoint, payload) {
+            const res = await fetch(`/api/admin/${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ...payload, admin_key: ADMIN_KEY }),
+            });
+            if (!res.ok) throw new Error(`API error: ${res.status}`);
+            return res.json();
+        }
+
+        async function acceptWeight(productId) {
+            const p = cleanupData.products.find(x => x.id === productId);
+            if (!p || p.suggested_weight_kg == null) return;
+            try {
+                await postJsonAdmin('confirm-weight', { items: [
+                    { product_id: productId, weight_kg: p.suggested_weight_kg, unit: p.suggested_unit }
+                ]});
+                p.current_weight_kg = p.suggested_weight_kg;
+                p.current_unit = p.suggested_unit;
+                p.weight_action = 'match';
+                cleanupSelected.delete(productId);
+                renderCleanupKpis();
+                renderCleanupTable();
+            } catch (err) {
+                alert(`Failed: ${err.message}`);
+            }
+        }
+
+        async function acceptSelectedWeights() {
+            if (cleanupSelected.size === 0) return;
+            const items = [];
+            cleanupSelected.forEach(pid => {
+                const p = cleanupData.products.find(x => x.id === pid);
+                if (p && p.suggested_weight_kg != null) {
+                    items.push({ product_id: pid, weight_kg: p.suggested_weight_kg, unit: p.suggested_unit });
+                }
+            });
+            if (!items.length) return;
+            if (!confirm(`Apply suggested weights to ${items.length} products?`)) return;
+            try {
+                const res = await postJsonAdmin('confirm-weight', { items });
+                // Mark applied rows in-place so the UI updates without a reload.
+                res.results.filter(r => r.ok).forEach(r => {
+                    const p = cleanupData.products.find(x => x.id === r.product_id);
+                    if (p) {
+                        p.current_weight_kg = p.suggested_weight_kg;
+                        p.current_unit = p.suggested_unit;
+                        p.weight_action = 'match';
+                    }
+                });
+                cleanupSelected.clear();
+                renderCleanupKpis();
+                renderCleanupTable();
+                const failed = res.results.length - res.updated;
+                if (failed > 0) alert(`${res.updated} updated, ${failed} failed.`);
+            } catch (err) {
+                alert(`Failed: ${err.message}`);
+            }
+        }
+
+        async function uploadCleanupPhoto(productId, file) {
+            if (!file) return;
+            const fd = new FormData();
+            fd.append('product_id', productId);
+            fd.append('file', file);
+            fd.append('admin_key', ADMIN_KEY);
+            try {
+                const res = await fetch('/api/admin/upload-single-image', { method: 'POST', body: fd });
+                const data = await res.json();
+                if (!data.ok) throw new Error(data.error || 'Upload failed');
+                const p = cleanupData.products.find(x => x.id === productId);
+                if (p) p.has_image = true;
+                renderCleanupKpis();
+                renderCleanupTable();
+            } catch (err) {
+                alert(`Upload failed: ${err.message}`);
+            }
         }
     </script>
 </body>

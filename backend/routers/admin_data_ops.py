@@ -5,7 +5,7 @@ Extracted from `admin.py` to keep that file under the 2,000-line god-module
 canary. Endpoints kept on their original `/api/admin/...` URLs so the admin
 dashboard frontend and any external scripts do not have to change.
 """
-from fastapi import APIRouter, Query, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Query, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import JSONResponse
 
 from backend.admin_auth import check_admin_key
@@ -471,4 +471,223 @@ def reassign_product(
     return {"ok": True, "product_id": product_id,
             "category_id": category_id, "producer_id": producer_id}
 
+
+@router.get("/cleanup-queue")
+def cleanup_queue(
+    admin_key: str = Query(...),
+    window_days: int = Query(60, ge=1, le=365),
+    min_orders: int = Query(1, ge=0),
+    limit: int = Query(1500, ge=1, le=5000),
+):
+    """Active products ranked by recent order frequency, with weight suggestions
+    and photo/supplier status, for the Product Cleanup admin tab.
+
+    Each row carries enough context that the UI can render current-vs-suggested
+    weight, the matched source substring, photo state, and producer/supplier
+    without follow-up requests.
+    """
+    _check_admin(admin_key)
+    from backend.services.parse_weight import parse_weight_detailed
+
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT
+          p.id,
+          p.name,
+          p.name_display,
+          p.weight        AS current_weight,
+          p.unit          AS current_unit,
+          p.image_path,
+          p.category_id,
+          p.producer_id,
+          p.latest_supplier_id,
+          c.name          AS category_name,
+          pr.name         AS producer_name,
+          s.name_1c       AS supplier_name,
+          COUNT(DISTINCT roi.real_order_id) AS order_count
+        FROM products p
+        JOIN real_order_items roi ON roi.product_id = p.id
+        JOIN real_orders ro       ON ro.id = roi.real_order_id
+        LEFT JOIN categories c    ON c.id = p.category_id
+        LEFT JOIN producers pr    ON pr.id = p.producer_id
+        LEFT JOIN suppliers s     ON s.id = p.latest_supplier_id
+        WHERE p.is_active = 1
+          AND ro.doc_date >= date('now', ?)
+        GROUP BY p.id
+        HAVING order_count >= ?
+        ORDER BY order_count DESC, p.id ASC
+        LIMIT ?
+        """,
+        (f'-{window_days} days', min_orders, limit),
+    ).fetchall()
+
+    products = []
+    for r in rows:
+        parsed = parse_weight_detailed(r["name"] or "")
+        cur_w = r["current_weight"]
+        suggested_weight_kg = parsed["weight_kg"] if parsed else None
+        action = "manual"
+        if parsed is None:
+            action = "manual"
+        elif cur_w is None or cur_w == 0:
+            action = "fill"
+        elif round(float(cur_w), 4) != round(parsed["weight_kg"], 4):
+            action = "mismatch"
+        else:
+            action = "match"
+
+        products.append({
+            "id": r["id"],
+            "name": r["name"],
+            "name_display": r["name_display"],
+            "category_name": r["category_name"],
+            "producer_name": r["producer_name"],
+            "supplier_name": r["supplier_name"],
+            "current_weight_kg": cur_w,
+            "current_unit": r["current_unit"],
+            "suggested_weight_kg": suggested_weight_kg,
+            "suggested_value": parsed["value"] if parsed else None,
+            "suggested_unit": parsed["unit"] if parsed else None,
+            "suggested_source": parsed["source"] if parsed else None,
+            "weight_action": action,
+            "has_image": bool(r["image_path"]),
+            "order_count_60d": r["order_count"],
+        })
+
+    conn.close()
+    return {
+        "ok": True,
+        "count": len(products),
+        "window_days": window_days,
+        "products": products,
+    }
+
+
+@router.post("/confirm-weight")
+def confirm_weight(payload: dict = Body(...)):
+    """Apply a weight + unit to one or more products from the Product Cleanup tab.
+
+    payload shape:
+      {
+        "admin_key": "...",
+        "items": [
+          {"product_id": 1, "weight_kg": 0.5, "unit": "kg"},
+          ...
+        ]
+      }
+
+    Each item writes products.weight (kg) and optionally products.unit. Returns
+    per-item ok/error so a batch can partially succeed without rolling back.
+    """
+    admin_key = payload.get("admin_key", "")
+    _check_admin(admin_key)
+
+    items = payload.get("items") or []
+    if not isinstance(items, list) or not items:
+        raise HTTPException(status_code=400, detail="items required")
+
+    conn = get_db()
+    results = []
+    updated = 0
+    for it in items:
+        pid = it.get("product_id")
+        weight = it.get("weight_kg")
+        unit = it.get("unit")
+        if not isinstance(pid, int) or pid <= 0:
+            results.append({"product_id": pid, "ok": False, "error": "bad product_id"})
+            continue
+        if weight is None or not isinstance(weight, (int, float)) or weight <= 0:
+            results.append({"product_id": pid, "ok": False, "error": "bad weight_kg"})
+            continue
+
+        exists = conn.execute(
+            "SELECT 1 FROM products WHERE id = ?", (pid,)
+        ).fetchone()
+        if not exists:
+            results.append({"product_id": pid, "ok": False, "error": "not found"})
+            continue
+
+        if unit and isinstance(unit, str) and unit.strip():
+            conn.execute(
+                "UPDATE products SET weight = ?, unit = ? WHERE id = ?",
+                (float(weight), unit.strip(), pid),
+            )
+        else:
+            conn.execute(
+                "UPDATE products SET weight = ? WHERE id = ?",
+                (float(weight), pid),
+            )
+        updated += 1
+        results.append({"product_id": pid, "ok": True})
+
+    conn.commit()
+    conn.close()
+    return {"ok": True, "updated": updated, "results": results}
+
+
+@router.post("/upload-single-image")
+async def upload_single_image(
+    product_id: int = Form(...),
+    file: UploadFile = File(...),
+    admin_key: str = Form(""),
+):
+    """Upload one product photo from the cleanup tab. Mirrors /upload-images'
+    WebP conversion + sibling-extension cleanup, but for a single file keyed by
+    product_id (not the filename).
+    """
+    _check_admin(admin_key)
+
+    import os
+    from pathlib import Path
+    from backend.services.convert_to_webp import encode_webp_from_bytes
+
+    data = await file.read()
+    if not data:
+        return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
+
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        return JSONResponse(
+            {"ok": False, "error": f"Unsupported extension: {ext}"},
+            status_code=400,
+        )
+
+    conn = get_db()
+    exists = conn.execute("SELECT 1 FROM products WHERE id = ?", (product_id,)).fetchone()
+    conn.close()
+    if not exists:
+        return JSONResponse({"ok": False, "error": "Product not found"}, status_code=404)
+
+    images_dir = Path(os.getenv("IMAGES_DIR", "./images"))
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = images_dir / f"{product_id}.webp"
+    existed = any(
+        (images_dir / f"{product_id}{e}").exists()
+        for e in (".webp", ".png", ".jpg", ".jpeg")
+    )
+    try:
+        if ext == ".webp":
+            with open(dest, "wb") as dst:
+                dst.write(data)
+        else:
+            encode_webp_from_bytes(data, dest)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": repr(e)[:200]}, status_code=500)
+
+    for stale_ext in (".png", ".jpg", ".jpeg"):
+        stale = images_dir / f"{product_id}{stale_ext}"
+        if stale.exists():
+            stale.unlink(missing_ok=True)
+
+    from backend.services.sync_images import sync
+    sync()
+
+    return {
+        "ok": True,
+        "product_id": product_id,
+        "action": "replaced" if existed else "added",
+        "path": f"{product_id}.webp",
+    }
 

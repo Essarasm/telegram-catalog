@@ -44,6 +44,16 @@ _TO_KG = {
 
 def parse_weight_from_name(name: str) -> float | None:
     """Return weight in kg parsed from product name, or None if not found."""
+    parsed = parse_weight_detailed(name)
+    return parsed["weight_kg"] if parsed else None
+
+
+def parse_weight_detailed(name: str) -> dict | None:
+    """Return {weight_kg, value, unit, source} or None if no match.
+
+    value+unit preserve what was actually in the name (e.g. 500 г, 0.9 л) so a UI
+    can display the original units; weight_kg is the normalized kg-equivalent.
+    """
     if not name:
         return None
 
@@ -60,6 +70,14 @@ def parse_weight_from_name(name: str) -> float | None:
         return None
 
     multiplier = _TO_KG.get(unit, 1)
-    result = round(value * multiplier, 4)
+    weight_kg = round(value * multiplier, 4)
 
-    return result if result > 0 else None
+    if weight_kg <= 0:
+        return None
+
+    return {
+        "weight_kg": weight_kg,
+        "value": value,
+        "unit": unit,
+        "source": m.group(0).strip(),
+    }
