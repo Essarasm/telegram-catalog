@@ -43,10 +43,11 @@ export function useCart() {
     }
   }, []);
 
-  const addItem = useCallback((product) => {
+  const addItem = useCallback((product, qty = 1) => {
+    const addQty = Math.max(1, Number(qty) || 1);
     setItems(prev => {
       const existing = prev.find(i => i.id === product.id);
-      const newQty = existing ? existing.quantity + 1 : 1;
+      const newQty = existing ? existing.quantity + addQty : addQty;
       const next = existing
         ? prev.map(i => i.id === product.id ? { ...i, quantity: newQty } : i)
         : [...prev, {
@@ -57,7 +58,7 @@ export function useCart() {
             currency: product.currency,
             unit: product.unit,
             weight: Number(product.weight) || 0,
-            quantity: 1,
+            quantity: addQty,
           }];
 
       // Fire-and-forget server sync

@@ -116,6 +116,7 @@ def update_display_names():
     updated_weights = 0
     updated_units = 0
     updated_cats = 0
+    updated_packs = 0
     skipped = 0
 
     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -124,6 +125,7 @@ def update_display_names():
         name = row[4]           # Column E = Ilovadagi nomi (Latin)
         unit = row[6]           # Column G = Birlik (unit type)
         weight = row[9]         # Column J = Og'irligi (kg)
+        pack_qty = row[10] if len(row) > 10 else None  # Column K = Qadoqdagi soni
         if excel_id is None or name is None:
             skipped += 1
             continue
@@ -191,6 +193,21 @@ def update_display_names():
             )
             updated_cats += 1
 
+        # Update package_quantity from master col K (Qadoqdagi soni).
+        # Integer cast — float pack sizes don't make sense ("3.5 nails per box").
+        # NULL in xlsx leaves the column untouched (no overwrite-to-NULL).
+        if pack_qty is not None:
+            try:
+                pq = int(float(pack_qty))
+                if pq > 0:
+                    conn.execute(
+                        "UPDATE products SET package_quantity = ? WHERE id = ?",
+                        (pq, db_id)
+                    )
+                    updated_packs += 1
+            except (ValueError, TypeError):
+                pass
+
     conn.commit()
 
     # Rebuild search_text index to reflect updated names, units, categories
@@ -202,8 +219,8 @@ def update_display_names():
     wb.close()
     print(f"update_display_names: Renamed {renamed_cats} categories, "
           f"updated {updated_names} names, {updated_weights} weights, "
-          f"{updated_units} units, {updated_cats} category assignments "
-          f"({skipped} skipped).")
+          f"{updated_units} units, {updated_cats} category assignments, "
+          f"{updated_packs} package sizes ({skipped} skipped).")
 
 
 if __name__ == '__main__':

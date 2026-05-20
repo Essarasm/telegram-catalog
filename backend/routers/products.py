@@ -216,7 +216,7 @@ def list_products(
                     f"""SELECT p.id, p.name, p.name_display, p.lifecycle, p.popularity_score,
                                p.category_id, c.name as category_name,
                                p.producer_id, pr.name as producer_name,
-                               p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path,
+                               p.unit, p.price_usd, p.price_uzs, p.weight, p.package_quantity, p.image_path,
                                p.stock_quantity, p.stock_status
                         FROM products p
                         JOIN categories c ON c.id = p.category_id
@@ -235,7 +235,7 @@ def list_products(
             f"""SELECT p.id, p.name, p.name_display, p.lifecycle, p.search_text, p.popularity_score,
                        p.category_id, c.name as category_name,
                        p.producer_id, pr.name as producer_name,
-                       p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path,
+                       p.unit, p.price_usd, p.price_uzs, p.weight, p.package_quantity, p.image_path,
                        p.stock_quantity, p.stock_status
                 FROM products p
                 JOIN categories c ON c.id = p.category_id
@@ -265,7 +265,7 @@ def list_products(
         rows = conn.execute(
             f"""SELECT p.id, p.name, p.name_display, p.lifecycle, p.category_id, c.name as category_name,
                        p.producer_id, pr.name as producer_name,
-                       p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path,
+                       p.unit, p.price_usd, p.price_uzs, p.weight, p.package_quantity, p.image_path,
                        p.stock_quantity, p.stock_status
                 FROM products p
                 JOIN categories c ON c.id = p.category_id
@@ -354,7 +354,7 @@ def list_products(
                     f"""SELECT p.id, p.name, p.name_display, p.lifecycle,
                                p.category_id, c.name as category_name,
                                p.producer_id, pr.name as producer_name,
-                               p.unit, p.price_usd, p.price_uzs, p.weight, p.image_path,
+                               p.unit, p.price_usd, p.price_uzs, p.weight, p.package_quantity, p.image_path,
                                p.stock_quantity, p.stock_status
                         FROM products p
                         JOIN categories c ON c.id = p.category_id
@@ -401,7 +401,7 @@ def get_products_by_ids(ids: str = Query(..., description="Comma-separated produ
     conn = get_db()
     rows = conn.execute(
         f"""SELECT p.id, p.name, p.name_display, p.unit,
-                   p.price_usd, p.price_uzs, p.image_path,
+                   p.price_usd, p.price_uzs, p.package_quantity, p.image_path,
                    p.stock_quantity, p.stock_status
             FROM products p
             WHERE p.id IN ({placeholders})""",

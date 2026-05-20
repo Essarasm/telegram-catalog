@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { fetchProducts, formatPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest, logSearchClick, logInterestClick, fetchDidYouMean } from '../utils/api';
+import { fetchProducts, formatPrice, formatPackPrice, getPriceCurrency, getPriceValue, getImageUrl, submitProductRequest, logSearchClick, logInterestClick, fetchDidYouMean } from '../utils/api';
 import { useLongPress } from '../hooks/useLongPress';
 import t from '../i18n/uz.json';
 
@@ -303,6 +303,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
           const isLast = idx === products.length - 1;
           const displayName = product.name || product.name_display;
           const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
+          const packStr = approved ? formatPackPrice(product.price_usd, product.price_uzs, product.package_quantity) : null;
 
           return (
             <div
@@ -348,8 +349,15 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                   )}
                   <div className="flex items-center gap-2 mt-1.5">
                     {approved ? (
-                      <div className="text-base font-bold text-tg-link">
-                        {priceStr}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-base font-bold text-tg-link">
+                          {priceStr}
+                        </div>
+                        {packStr && (
+                          <div className="text-[10px] text-tg-hint leading-tight mt-0.5">
+                            {packStr} / {t.pack_unit || 'qadoq'} ({product.package_quantity} {t.pieces || 'dona'})
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-xs text-tg-hint italic leading-tight">

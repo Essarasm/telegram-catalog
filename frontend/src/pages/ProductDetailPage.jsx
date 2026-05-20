@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { getImageUrl, formatPrice, submitReport } from '../utils/api';
+import { getImageUrl, formatPrice, formatPackPrice, submitReport } from '../utils/api';
 import t from '../i18n/uz.json';
 
 const MAX_ZOOM = 4;
@@ -32,6 +32,7 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
   const imgUrl = getImageUrl(product);
   const displayName = product.name || product.name_display;
   const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
+  const packPriceStr = approved ? formatPackPrice(product.price_usd, product.price_uzs, product.package_quantity) : null;
   const inCart = cart.items.find(i => i.id === product.id);
 
   // ── Pinch / double-tap zoom on the product image ──────────────────────────
@@ -282,45 +283,67 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
 
         {/* Price + add-to-cart in a single row — hidden if product.hidden (banner above replaces it) */}
         {product.hidden ? null : approved ? (
-          <div className="flex items-center gap-3 pt-1">
-            <div className="text-xl font-bold text-tg-link shrink-0">
-              {priceStr}
-            </div>
-            <div className="flex-1">
-              {inCart ? (
-                <div className="flex items-center justify-center gap-3 bg-tg-secondary rounded-xl py-2">
-                  <button
-                    onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
-                    className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
-                  >
-                    −
-                  </button>
-                  <button
-                    onClick={openQtyPicker}
-                    className="text-lg font-semibold min-w-[36px] text-center px-2 py-0.5 rounded-lg bg-tg-button/15 active:bg-tg-button/30 transition-colors"
-                  >
-                    {inCart.quantity}
-                  </button>
-                  <button
-                    onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
-                    className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
-                  >
-                    +
-                  </button>
+          <div className="pt-1">
+            <div className="flex items-center gap-3">
+              <div className="shrink-0">
+                <div className="text-xl font-bold text-tg-link">
+                  {priceStr}
                 </div>
-              ) : (
-                <button
-                  onClick={() => cart.addItem({
-                    ...product,
-                    price: getPriceValue(),
-                    currency: getCurrency(),
-                  })}
-                  className="w-full bg-tg-button text-tg-button-text font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform"
-                >
-                  + {t.add_to_cart}
-                </button>
-              )}
+                {packPriceStr && (
+                  <div className="text-[10px] text-tg-hint leading-tight mt-0.5">
+                    {packPriceStr} / {t.pack_unit || 'qadoq'}
+                  </div>
+                )}
+              </div>
+              <div className="flex-1">
+                {inCart ? (
+                  <div className="flex items-center justify-center gap-3 bg-tg-secondary rounded-xl py-2">
+                    <button
+                      onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
+                      className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
+                    >
+                      −
+                    </button>
+                    <button
+                      onClick={openQtyPicker}
+                      className="text-lg font-semibold min-w-[36px] text-center px-2 py-0.5 rounded-lg bg-tg-button/15 active:bg-tg-button/30 transition-colors"
+                    >
+                      {inCart.quantity}
+                    </button>
+                    <button
+                      onClick={() => cart.updateQuantity(product.id, inCart.quantity + 1)}
+                      className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
+                    >
+                      +
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => cart.addItem({
+                      ...product,
+                      price: getPriceValue(),
+                      currency: getCurrency(),
+                    })}
+                    className="w-full bg-tg-button text-tg-button-text font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform"
+                  >
+                    + {t.add_to_cart}
+                  </button>
+                )}
+              </div>
             </div>
+            {/* Secondary "Add 1 pack" — only when pack size is set and product isn't already in cart */}
+            {product.package_quantity > 0 && !inCart && (
+              <button
+                onClick={() => cart.addItem({
+                  ...product,
+                  price: getPriceValue(),
+                  currency: getCurrency(),
+                }, product.package_quantity)}
+                className="w-full mt-1.5 bg-tg-secondary text-tg-link rounded-lg py-1.5 text-xs active:scale-[0.98] transition-transform"
+              >
+                + {t.add_pack_button || 'Qadoq qo\'shish'} ({product.package_quantity} {t.pieces || 'dona'})
+              </button>
+            )}
           </div>
         ) : (
           <div className="bg-tg-secondary rounded-xl p-3 text-center">

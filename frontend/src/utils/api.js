@@ -117,6 +117,19 @@ export function getPriceValue(priceUsd, priceUzs) {
   return 0;
 }
 
+// Per-pack derived price label, e.g. "441.60 USD / qadoq" or "240,000 so'm / qadoq".
+// Returns null if no pack qty is set (caller should not render the line).
+export function formatPackPrice(priceUsd, priceUzs, packQty) {
+  if (!packQty || packQty <= 0) return null;
+  if (priceUsd && priceUsd > 0) {
+    return `$${(Number(priceUsd) * packQty).toFixed(2)}`;
+  }
+  if (priceUzs && priceUzs > 0) {
+    return `${Math.round(Number(priceUzs) * packQty).toLocaleString('uz-UZ')} so'm`;
+  }
+  return null;
+}
+
 // Format a single price with known currency (used in cart)
 export function formatCartPrice(amount, currency) {
   if (!amount || amount <= 0) return '—';

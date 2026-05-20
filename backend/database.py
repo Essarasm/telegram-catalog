@@ -1457,6 +1457,14 @@ def init_db():
     if "auto_classified" not in prod_cols:
         conn.execute("ALTER TABLE products ADD COLUMN auto_classified INTEGER DEFAULT 0")
 
+    # Number of pieces per wholesale pack (col K "Qadoqdagi soni" in
+    # Rassvet_Master.xlsx). NULL = pack size not yet curated; UI falls
+    # back to per-piece display. When set, mini-app catalog shows a
+    # derived per-pack price line and the product-detail page renders a
+    # secondary "Add 1 pack" button.
+    if "package_quantity" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN package_quantity INTEGER")
+
     # Product alias table: maps 1C name variants to canonical product IDs.
     # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
     # each successful fuzzy match in /stock or /prices auto-adds an alias.
