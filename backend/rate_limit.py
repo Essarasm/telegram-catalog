@@ -61,13 +61,14 @@ def _classify(path: str, method: str) -> str | None:
     """Return bucket name or None for exempt paths."""
     if not path.startswith("/api/"):
         return None
-    # Exempt internal / infra endpoints. Also exempt /api/users/check: the
-    # Telegram Mini App polls it on every viewportChanged / visibility event,
-    # and rate-limiting it was causing approved users to flip back to the
-    # "unapproved" view when their session burned 20 polls/minute (121 users
-    # hit on 2026-04-21 — Musobek incident).
-    if path.startswith(("/api/health", "/api/debug",
-                         "/api/rate-limit-stats", "/api/users/check")):
+    # Exempt internal / infra endpoints only.
+    # /api/users/check was previously exempted (2026-04-21 Musobek incident)
+    # because App.jsx subscribed checkApproval to Telegram's viewportChanged
+    # event, producing 20+ polls/min and flipping rate-limited users to
+    # "unapproved" UI. That subscription was removed 2026-05-20, so the
+    # endpoint now falls under the normal `read` bucket (120 req/min) —
+    # comfortably above the post-fix rate while restoring storm protection.
+    if path.startswith(("/api/health", "/api/debug", "/api/rate-limit-stats")):
         return None
     # Export & admin-heavy endpoints — tightest bucket
     if path.startswith("/api/export") or "/export" in path:

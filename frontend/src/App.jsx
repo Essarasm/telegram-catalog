@@ -148,11 +148,8 @@ export default function App() {
       if (document.visibilityState === 'visible') checkApproval();
     };
     document.addEventListener('visibilitychange', handleVisibility);
-    const tg = window.Telegram?.WebApp;
-    if (tg?.onEvent) tg.onEvent('viewportChanged', checkApproval);
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility);
-      if (tg?.offEvent) tg.offEvent('viewportChanged', checkApproval);
     };
   }, [checkApproval]);
 
