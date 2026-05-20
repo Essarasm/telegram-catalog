@@ -947,6 +947,13 @@ def init_db():
         ("gps_set_by_tg_id", "INTEGER"),
         ("gps_set_by_name", "TEXT"),
         ("gps_set_by_role", "TEXT"),
+        # Manual agent assignment — overrides the auto-derived
+        # latest-`agent_client_switches` agent in the Debtors List Agent column.
+        # NULL = no manual override → fall back to auto-derive.
+        ("assigned_agent_tg_id", "INTEGER"),
+        ("assigned_agent_set_at", "TEXT"),
+        ("assigned_agent_set_by_tg_id", "INTEGER"),
+        ("assigned_agent_set_by_name", "TEXT"),
     ]:
         if col not in ac_cols:
             conn.execute(f"ALTER TABLE allowed_clients ADD COLUMN {col} {coltype}")

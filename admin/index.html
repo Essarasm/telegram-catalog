@@ -1081,7 +1081,7 @@
                     </div>
                     <div id="debtorsListSection" class="collapsible-content">
                         <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
-                            Per-client current debt from latest 1C 'Дебиторская задолженность' upload. Real clients only (pseudo-accounts excluded). Sorted by combined USD-equivalent debt. <strong>Days since</strong> = today − <code>last_transaction_date</code>; large values indicate stuck debt. <strong>Qayta qo'ng'iroq</strong> — pick a date when the client asked to be called back; the row tints amber when that date arrives. History is preserved (every reschedule appends).
+                            Per-client current debt from latest 1C 'Дебиторская задолженность' upload. Real clients only (pseudo-accounts excluded). Sorted by combined USD-equivalent debt. <strong>Agent</strong> — manually assign the responsible agent from the dropdown; defaults to "—" until you (or another admin) pick one. Select "—" to clear. <strong>Days since</strong> = today − <code>last_transaction_date</code>; large values indicate stuck debt. <strong>Qayta qo'ng'iroq</strong> — pick a date when the client asked to be called back; the row tints amber when that date arrives. History is preserved (every reschedule appends).
                         </div>
                         <div class="table-container">
                             <div class="table-wrapper">
@@ -1090,6 +1090,7 @@
                                         <tr>
                                             <th class="table-number">#</th>
                                             <th>Client</th>
+                                            <th title="Responsible agent. Manually assigned only — pick from dropdown to set, '—' to clear. Caption below shows who assigned it.">Agent</th>
                                             <th>Last deal</th>
                                             <th>Days since</th>
                                             <th>Last payment</th>
@@ -2683,6 +2684,60 @@
             }
         }
 
+        function buildAgentCell(it, availableAgents) {
+            const clientId = it.client_id;
+            if (!clientId) {
+                // No allowed_clients row to write to — read-only fallback.
+                return '<span style="color:#8b8fa3;">—</span>';
+            }
+            const selectedTg = it.agent_telegram_id || '';
+            const opts = [
+                `<option value="">—</option>`,
+                ...(availableAgents || []).map(ag => {
+                    const sel = String(ag.telegram_id) === String(selectedTg) ? ' selected' : '';
+                    return `<option value="${ag.telegram_id}"${sel}>${escapeHtml(ag.name)}</option>`;
+                }),
+            ].join('');
+            // If the selected agent isn't in the agent_role='agent' list (e.g. they
+            // were demoted), still show their name as a selected option so the row
+            // doesn't silently change.
+            const knownIds = new Set((availableAgents || []).map(a => String(a.telegram_id)));
+            let extraOpt = '';
+            if (selectedTg && !knownIds.has(String(selectedTg)) && it.agent_name) {
+                extraOpt = `<option value="${selectedTg}" selected>${escapeHtml(it.agent_name)} (off-list)</option>`;
+            }
+            const caption = selectedTg
+                ? `<div style="font-size:10px; color:#8b8fa3; margin-top:2px;">👤 ${escapeHtml(it.assigned_agent_set_by || 'admin')}${it.assigned_agent_set_at ? ' · ' + shortSetAtCaption(it.assigned_agent_set_at) : ''}</div>`
+                : '';
+            return `
+                <div style="display:flex; flex-direction:column; gap:2px;">
+                    <select
+                        data-client-id="${clientId}"
+                        onchange="saveAgentAssignment(this)"
+                        style="background:#1a1d28; color:#e4e6ee; border:1px solid #2a2d3a; border-radius:4px; padding:3px 6px; font-size:11px; max-width:140px;"
+                    >${extraOpt}${opts}</select>
+                    ${caption}
+                </div>
+            `;
+        }
+
+        async function saveAgentAssignment(selEl) {
+            const clientId = selEl.dataset.clientId;
+            const newTg = selEl.value || '';
+            selEl.disabled = true;
+            try {
+                const payload = { client_id: clientId };
+                if (newTg) payload.agent_telegram_id = newTg;
+                // Empty value = clear (apiPost drops null/undefined; no field = clear on backend).
+                await apiPost('client-assign-agent', payload);
+                await loadDebtorsList();
+            } catch (e) {
+                console.warn('agent assignment failed', e);
+                alert("Agentni saqlab bo'lmadi — qayta urinib ko'ring");
+                selEl.disabled = false;
+            }
+        }
+
         function renderDebtorsList(data) {
             const body = document.getElementById('debtorsListBody');
             const foot = document.getElementById('debtorsListFooter');
@@ -2696,11 +2751,12 @@
                     : `as of ${asOf} · qarzdorlar yo'q`;
             }
             if (!items.length) {
-                body.innerHTML = `<tr><td colspan="12" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
+                body.innerHTML = `<tr><td colspan="13" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
                 if (foot) foot.innerHTML = '';
                 return;
             }
             const todayIso = tashkentTodayISO();
+            const availableAgents = (data && data.available_agents) || [];
             body.innerHTML = items.map(it => {
                 const days = it.days_since_last_tx;
                 let daysCell;
@@ -2743,9 +2799,11 @@
                 // Row tint: amber when there's an active callback whose date has arrived.
                 const dueToday = it.callback_date && it.callback_date <= todayIso;
                 const rowStyle = dueToday ? ' style="background: rgba(245, 158, 11, 0.08);"' : '';
+                const agentCell = buildAgentCell(it, availableAgents);
                 return `<tr${rowStyle}>
                     <td class="table-number">${it.rank}</td>
                     <td>${escapeHtml(it.client_name)}</td>
+                    <td>${agentCell}</td>
                     <td style="font-size:11px;">${escapeHtml(it.last_transaction_date || '—')}</td>
                     <td>${daysCell}</td>
                     <td style="font-size:11px;">${payCell}</td>
@@ -2761,7 +2819,7 @@
             if (foot) {
                 foot.innerHTML = `<tr style="background: rgba(255,255,255,0.03);">
                     <td></td>
-                    <td colspan="7">JAMI · ${data.count} ta</td>
+                    <td colspan="8">JAMI · ${data.count} ta</td>
                     <td style="text-align:right;">${fmtFull(data.total_uzs)}</td>
                     <td style="text-align:right;">$${fmtFull(data.total_usd)}</td>
                     <td></td>

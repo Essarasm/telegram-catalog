@@ -257,6 +257,9 @@ def debtors_list(admin_key: str = Query(...)):
                   JOIN max_cb mc ON mc.client_name_1c = cc.client_name_1c
                                 AND mc.max_id = cc.id
             )
+            -- Agent column is purely manual — sourced from
+            -- allowed_clients.assigned_agent_tg_id only. No auto-derive
+            -- from acting-as switches or any other signal.
             SELECT cd.client_name_1c, cd.client_id, cd.debt_uzs, cd.debt_usd,
                    cd.last_transaction_date, cd.last_transaction_no,
                    cd.aging_0_30, cd.aging_31_60, cd.aging_61_90,
@@ -267,11 +270,17 @@ def debtors_list(admin_key: str = Query(...)):
                    lcb.callback_date, lcb.set_by_name AS callback_set_by,
                    lcb.set_at AS callback_set_at, lcb.note AS callback_note,
                    ac.phone_normalized AS anchor_phone,
-                   sib.phones AS sibling_phones
+                   sib.phones AS sibling_phones,
+                   ac.assigned_agent_tg_id,
+                   ac.assigned_agent_set_at,
+                   ac.assigned_agent_set_by_name,
+                   ma.first_name AS assigned_agent_first_name,
+                   ma.last_name  AS assigned_agent_last_name
               FROM client_debts cd
               LEFT JOIN last_pay lp ON lp.client_name_1c = cd.client_name_1c
               LEFT JOIN last_cb lcb ON lcb.client_name_1c = cd.client_name_1c
               LEFT JOIN allowed_clients ac ON ac.id = cd.client_id
+              LEFT JOIN users ma ON ma.telegram_id = ac.assigned_agent_tg_id
               LEFT JOIN (
                   SELECT client_id_1c,
                          GROUP_CONCAT(DISTINCT phone_normalized) AS phones
@@ -286,7 +295,25 @@ def debtors_list(admin_key: str = Query(...)):
                AND {excl_clause}""",
         (report_date, *sql_exclusion_params()),
     ).fetchall()
+
+    # Agent dropdown options — every user with agent_role='agent' is selectable.
+    agent_rows = conn.execute(
+        """SELECT telegram_id, first_name, last_name
+             FROM users
+            WHERE agent_role = 'agent'
+            ORDER BY COALESCE(first_name, '') || ' ' || COALESCE(last_name, '')"""
+    ).fetchall()
     conn.close()
+
+    available_agents = []
+    for ag in agent_rows:
+        first = (ag["first_name"] or "").strip()
+        last = (ag["last_name"] or "").strip()
+        full = " ".join(p for p in (first, last) if p) or f"#{ag['telegram_id']}"
+        available_agents.append({
+            "telegram_id": ag["telegram_id"],
+            "name": full,
+        })
 
     today_tk = datetime.now(ZoneInfo("Asia/Tashkent")).date()
 
@@ -315,6 +342,9 @@ def debtors_list(admin_key: str = Query(...)):
             p.strip() for p in str(phones_raw).split(",")
             if p and p.strip()
         }) if phones_raw else []
+        manual_first = (r["assigned_agent_first_name"] or "").strip()
+        manual_last = (r["assigned_agent_last_name"] or "").strip()
+        agent_name = " ".join(p for p in (manual_first, manual_last) if p) or None
         items.append({
             "client_name": r["client_name_1c"],
             "client_id": r["client_id"],
@@ -332,6 +362,10 @@ def debtors_list(admin_key: str = Query(...)):
             "callback_set_by": r["callback_set_by"],
             "callback_set_at": r["callback_set_at"],
             "callback_note": r["callback_note"],
+            "agent_name": agent_name,
+            "agent_telegram_id": r["assigned_agent_tg_id"],
+            "assigned_agent_set_at": r["assigned_agent_set_at"],
+            "assigned_agent_set_by": r["assigned_agent_set_by_name"],
             "phones": phones,
             "aging_uzs": {
                 "0_30": round(r["aging_0_30"] or 0, 2),
@@ -355,6 +389,105 @@ def debtors_list(admin_key: str = Query(...)):
         "total_uzs": round(total_uzs, 2),
         "total_usd": round(total_usd, 2),
         "items": items,
+        "available_agents": available_agents,
+    }
+
+
+@router.post("/client-assign-agent")
+def client_assign_agent(
+    admin_key: str = Form(...),
+    client_id: int = Form(...),
+    agent_telegram_id: int = Form(None),
+):
+    """Manually assign (or clear) the responsible agent for a client.
+
+    Persists to `allowed_clients.assigned_agent_tg_id`. The Debtors List
+    Agent column reads this in preference to the auto-derived latest-switch
+    agent. Pass `agent_telegram_id` empty/null to clear the override and
+    fall back to auto-derive.
+
+    Admin role only. The setter's identity is captured in
+    `assigned_agent_set_by_*` so the next operator can see who made the
+    change. The env-var admin path (no session identity) records
+    `set_by_name='admin'`.
+    """
+    from backend.admin_auth import resolve_auth
+
+    auth = resolve_auth(admin_key)
+    if not auth or auth.get("role") != "admin":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    conn = get_db()
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM allowed_clients WHERE id = ?", (client_id,)
+        ).fetchone():
+            raise HTTPException(status_code=404, detail="client_id not found")
+
+        if agent_telegram_id is not None:
+            agent_row = conn.execute(
+                "SELECT telegram_id, first_name, last_name, agent_role "
+                "FROM users WHERE telegram_id = ?",
+                (agent_telegram_id,),
+            ).fetchone()
+            if not agent_row:
+                raise HTTPException(status_code=404, detail="agent not found")
+            if agent_row["agent_role"] != "agent":
+                raise HTTPException(
+                    status_code=400,
+                    detail="user is not an agent (agent_role != 'agent')",
+                )
+
+        set_by_name = auth.get("name") or "admin"
+        set_by_tg = auth.get("telegram_id")
+
+        if agent_telegram_id is None:
+            conn.execute(
+                """UPDATE allowed_clients
+                      SET assigned_agent_tg_id = NULL,
+                          assigned_agent_set_at = datetime('now'),
+                          assigned_agent_set_by_tg_id = ?,
+                          assigned_agent_set_by_name = ?
+                    WHERE id = ?""",
+                (set_by_tg, set_by_name, client_id),
+            )
+        else:
+            conn.execute(
+                """UPDATE allowed_clients
+                      SET assigned_agent_tg_id = ?,
+                          assigned_agent_set_at = datetime('now'),
+                          assigned_agent_set_by_tg_id = ?,
+                          assigned_agent_set_by_name = ?
+                    WHERE id = ?""",
+                (agent_telegram_id, set_by_tg, set_by_name, client_id),
+            )
+        conn.commit()
+
+        # Re-read for response (and to surface the joined agent name).
+        row = conn.execute(
+            """SELECT ac.assigned_agent_tg_id,
+                      ac.assigned_agent_set_at,
+                      ac.assigned_agent_set_by_name,
+                      u.first_name, u.last_name
+                 FROM allowed_clients ac
+                 LEFT JOIN users u ON u.telegram_id = ac.assigned_agent_tg_id
+                WHERE ac.id = ?""",
+            (client_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    first = (row["first_name"] or "").strip() if row else ""
+    last = (row["last_name"] or "").strip() if row else ""
+    agent_name = " ".join(p for p in (first, last) if p) or None
+
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "assigned_agent_tg_id": row["assigned_agent_tg_id"] if row else None,
+        "agent_name": agent_name,
+        "set_at": row["assigned_agent_set_at"] if row else None,
+        "set_by_name": row["assigned_agent_set_by_name"] if row else None,
     }
 
 
