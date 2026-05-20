@@ -492,15 +492,20 @@ def get_effective_debt(client_id) -> Optional[dict]:
 
     Algorithm (per currency, independently):
         1. If client_debts has structurally-valid data for this currency
-           (≥1 row globally with a non-zero value), use client_debts.
-           Preserves "client not listed = settled" semantics.
-        2. Otherwise fall back to the most recent client_balances closing
-           (closing_debit − closing_credit on MAX(period_start)).
+           (≥1 row globally with a non-zero value), AND the client's row is
+           present, use client_debts.
+        2. If the column is valid but the client's row is absent, cross-check
+           with оборотка: if оборотка closing ~ 0, treat as settled; if
+           оборотка closing is non-zero, trust оборотка (the 1C Дебиторская
+           report can omit clients with real debts via account-scope / aging
+           filters — акт сверки stays authoritative).
+        3. If the column is globally dark (no non-zero values anywhere), fall
+           back unconditionally to the most recent оборотка closing.
 
-    Self-healing: when the 1C template for Дебиторская задолженность restores
-    its В Валюте column and a good /debtors upload lands, the USD leg will
-    have non-zero rows again and this function switches USD back to debts
-    automatically. Same logic covers any currency leg going dark in the future.
+    Self-healing on both axes: a fresh debtors upload that restores the
+    missing column flips the picker back to (1); a fresh debtors upload that
+    includes the previously-absent client also flips back to (1) for that
+    client.
 
     Returns None when no data is available from either source.
     """
@@ -544,7 +549,15 @@ def get_effective_debt(client_id) -> Optional[dict]:
         if has_debts_table and column_valid:
             if debts_row:
                 return float(debts_row[f"debt_{ccy_lower}"] or 0), "debts"
-            return 0.0, "debts_settled"  # Client absent from debtors = settled
+            # Client absent from debtors export. Treat as settled only if оборотка
+            # agrees (closing ~ 0); else trust оборотка — the 1C debtors report
+            # can omit clients with non-zero balances (account-scope / aging /
+            # status filters), and a real debt visible in акт сверки must not be
+            # silently zeroed.
+            ob = ob_closings.get(ccy_lower.upper())
+            if ob is not None and abs(float(ob["debt"] or 0)) > 0.01:
+                return float(ob["debt"]), "ob_closing_absent_debts"
+            return 0.0, "debts_settled"
         ob = ob_closings.get(ccy_lower.upper())
         if ob is not None:
             return float(ob["debt"] or 0), "ob_closing"
