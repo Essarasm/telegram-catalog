@@ -158,10 +158,25 @@ async def _send_eod_check(bot, chat_id: int) -> None:
         logger.error(f"EOD check failed: {e}")
 
 
-async def run_daily_reminder(bot, chat_id: int, hour: int, minute: int, sender) -> None:
-    """Forever loop that sleeps until the next trigger and calls ``sender``."""
+async def run_daily_reminder(bot, chat_id: int, hour: int, minute: int, sender,
+                              catchup_grace_hours: float = 4.0) -> None:
+    """Forever loop that fires ``sender`` at the next trigger; on startup, fires immediately if today's slot was missed by < ``catchup_grace_hours`` (Error Log #32, pattern CRON_RESTART_PAST_FIRE_DROPS_DAY)."""
+    first_iter = True
     while True:
         try:
+            if first_iter:
+                first_iter = False
+                now = datetime.now(TASHKENT)
+                today_target = now.replace(hour=hour, minute=minute,
+                                           second=0, microsecond=0)
+                missed_s = (now - today_target).total_seconds()
+                if 0 < missed_s < catchup_grace_hours * 3600:
+                    logger.info(
+                        f"{sender.__name__}: catch-up fire — missed "
+                        f"{hour:02d}:{minute:02d} by {int(missed_s/60)}m "
+                        f"(< {catchup_grace_hours}h grace)"
+                    )
+                    await sender(bot, chat_id)
             target = _next_trigger(hour, minute)
             logger.info(f"Next {sender.__name__} at {target.isoformat()}")
             await _sleep_until(target)
