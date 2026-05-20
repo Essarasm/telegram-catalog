@@ -204,8 +204,11 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
     today = date.today().isoformat()
     wb = Workbook()
 
-    ws_g = wb.active
-    ws_g.title = "Tushuntirish (Guide)"
+    ws = wb.active
+    ws.title = "Buyurtma (Order)"
+    ws_all = wb.create_sheet(f"Hammasi ({len(full_items)})")
+    ws_y = wb.create_sheet("Yig'ma (Summary)")
+    ws_g = wb.create_sheet("Tushuntirish (Guide)")
 
     ws_g["A1"] = f"{supplier_label} — Buyurtma Tahlili / Анализ заказа / Order Analysis"
     ws_g["A1"].font = Font(bold=True, size=15)
@@ -379,7 +382,6 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
     for col, w in [("A", 22), ("B", 32), ("C", 48), ("D", 48)]:
         ws_g.column_dimensions[col].width = w
 
-    ws = wb.create_sheet("Buyurtma (Order)")
     ws["A1"] = f"{supplier_label} — Buyurtma kerak ({len(reorder_items)} ta mahsulot)"
     ws["A1"].font = Font(bold=True, size=14)
     ws.merge_cells(f"A1:{get_column_letter(len(COL_DEFS))}1")
@@ -416,7 +418,6 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
             ws.cell(row=r_idx, column=ci).fill = head_fill
     ws.freeze_panes = "A5"
 
-    ws_all = wb.create_sheet(f"Hammasi ({len(full_items)})")
     ws_all["A1"] = f"{supplier_label} — barcha aktiv mahsulotlar ({len(full_items)} ta)"
     ws_all["A1"].font = Font(bold=True, size=14)
     ws_all.merge_cells(f"A1:{get_column_letter(len(COL_DEFS) + 1)}1")
@@ -442,7 +443,6 @@ def _build_xlsx(supplier_label: str, reorder_items: List[dict],
                      status_fill=STATUS_FILL)
     ws_all.freeze_panes = "A4"
 
-    ws_y = wb.create_sheet("Yig'ma (Summary)")
     ws_y["A1"] = f"{supplier_label} — Yig'ma / Summary"
     ws_y["A1"].font = Font(bold=True, size=14)
     ws_y.merge_cells("A1:C1")
