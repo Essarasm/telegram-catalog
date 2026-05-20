@@ -1465,6 +1465,25 @@ def init_db():
     if "package_quantity" not in prod_cols:
         conn.execute("ALTER TABLE products ADD COLUMN package_quantity INTEGER")
 
+    # Audit trail for products.package_quantity writes. Currently populated by
+    # tools/backfill_pack_qty.py (supply_gcd source); future writes from the
+    # admin cleanup-tab review queue should also append here. Every row is
+    # reversible: read old_value, UPDATE products SET package_quantity = old.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pack_qty_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id INTEGER NOT NULL,
+            old_value INTEGER,
+            new_value INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            supply_count INTEGER NOT NULL,
+            applied_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pack_qty_audit_product ON pack_qty_audit(product_id)")
+
     # Product alias table: maps 1C name variants to canonical product IDs.
     # Seeded from Rassvet_Master Ibrat.xlsx + supply history. Self-improving:
     # each successful fuzzy match in /stock or /prices auto-adds an alias.
