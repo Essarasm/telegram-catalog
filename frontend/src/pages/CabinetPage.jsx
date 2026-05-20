@@ -1729,17 +1729,17 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
             <div className="w-10 h-1 bg-tg-hint/30 rounded-full mx-auto mb-4" />
             {aktSheet.type === 'payment' ? (
               <>
-                <div className="text-center mb-4">
-                  <div className="text-[11px] text-tg-hint uppercase tracking-wide">{t.akt_payment}</div>
-                  <div className="mt-1 space-y-0.5">
+                <div className="text-center mb-3">
+                  <div className="text-[9px] text-tg-hint uppercase tracking-wide">{t.akt_payment}</div>
+                  <div className="mt-0.5 space-y-0">
                     {(aktSheet.uzs_amount || 0) > 0 && (
-                      <div className="text-xl font-bold text-emerald-600">+{fmtUzs(aktSheet.uzs_amount)}</div>
+                      <div className="text-base font-bold text-emerald-600">+{fmtUzs(aktSheet.uzs_amount)}</div>
                     )}
                     {(aktSheet.usd_amount || 0) > 0 && (
-                      <div className="text-xl font-bold text-emerald-600">+{fmtUsd(aktSheet.usd_amount)}</div>
+                      <div className="text-base font-bold text-emerald-600">+{fmtUsd(aktSheet.usd_amount)}</div>
                     )}
                   </div>
-                  <div className="text-xs text-tg-hint mt-1">{formatDocDate(aktSheet.date)}</div>
+                  <div className="text-[10px] text-tg-hint mt-0.5">{formatDocDate(aktSheet.date)}</div>
                 </div>
                 {['uzs', 'usd'].map((ccy) => {
                   const covers = aktSheet[`${ccy}_covers`] || [];
@@ -1748,39 +1748,53 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
                   const amt = aktSheet[`${ccy}_amount`] || 0;
                   if (amt <= 0) return null;
                   return (
-                    <div key={ccy} className="mb-3">
-                      <div className="text-[11px] text-tg-hint uppercase tracking-wide mb-1.5">
+                    <div key={ccy} className="mb-2">
+                      <div className="text-[9px] text-tg-hint uppercase tracking-wide mb-1">
                         {ccy.toUpperCase()} — {t.akt_covers_fifo}
                       </div>
                       {covers.length > 0 ? (
-                        <div className="space-y-1.5">
+                        <div className="space-y-1">
                           {covers.map((c, i) => (
-                            <div key={i} className="bg-tg-secondary rounded-lg px-3 py-2 flex items-center gap-2">
-                              <span className="text-xs">{c.fully_closed ? '✅' : '🟡'}</span>
+                            <div key={i} className="bg-tg-secondary rounded-md px-2 py-1 flex items-center gap-1.5">
+                              <span className="text-[10px]">{c.fully_closed ? '✅' : '🟡'}</span>
                               <div className="flex-1 min-w-0">
-                                <div className="text-sm font-medium">
+                                <div className="text-[11px] font-medium leading-tight">
                                   {t.akt_order_doc} {c.order_doc || `#${c.order_id}`}
                                 </div>
-                                <div className="text-[11px] text-tg-hint">
+                                <div className="text-[9px] text-tg-hint leading-tight">
                                   {formatDocDate(c.order_date)} · {c.fully_closed ? t.akt_fully_closed : t.akt_partially_closed}
                                 </div>
                               </div>
-                              <div className="text-sm font-semibold">{fmt(c.amount)}</div>
+                              <div className="text-[11px] font-semibold">{fmt(c.amount)}</div>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <div className="text-[11px] text-tg-hint italic">{t.akt_no_links}</div>
+                        <div className="text-[10px] text-tg-hint italic">{t.akt_no_links}</div>
                       )}
                       {adv > 0.01 && (
-                        <div className="mt-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-emerald-800">
+                        <div className="mt-1.5 bg-emerald-50 border border-emerald-200 rounded-md px-2 py-1 text-[10px] text-emerald-800">
                           💚 {t.akt_created_advance_full}: <b>{fmt(adv)}</b>
                         </div>
                       )}
                     </div>
                   );
                 })}
-                <div className="mt-2 text-[10px] text-tg-hint opacity-70">
+                {(aktSheet.attachments || []).length > 0 && (
+                  <div className="mb-2">
+                    <div className="text-[9px] text-tg-hint uppercase tracking-wide mb-1">
+                      {t.akt_attachments}
+                    </div>
+                    <div className="bg-tg-secondary rounded-md px-2 py-1 space-y-0.5">
+                      {aktSheet.attachments.map((a, i) => (
+                        <div key={i} className="text-[10px] leading-snug break-words">
+                          • {a}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="mt-2 text-[9px] text-tg-hint opacity-70 leading-snug">
                   {t.akt_fifo_disclaimer}
                 </div>
               </>

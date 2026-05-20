@@ -62,7 +62,8 @@ def _fetch_events(conn, client_ids: list[int]) -> list[dict]:
                             THEN amount_currency
                             ELSE 0 END) AS usd_amount,
                    GROUP_CONCAT(id) AS ids,
-                   MAX(doc_number_1c) AS doc_number
+                   MAX(doc_number_1c) AS doc_number,
+                   GROUP_CONCAT(IFNULL(attachment, ''), '|||') AS attachments_raw
             FROM client_payments
             WHERE client_id IN ({placeholders})
             GROUP BY doc_date""",
@@ -73,6 +74,13 @@ def _fetch_events(conn, client_ids: list[int]) -> list[dict]:
         usd = _as_float(r["usd_amount"])
         if uzs <= 0 and usd <= 0:
             continue
+        attachments: list[str] = []
+        seen: set[str] = set()
+        for piece in (r["attachments_raw"] or "").split("|||"):
+            s = (piece or "").strip()
+            if s and s not in seen:
+                seen.add(s)
+                attachments.append(s)
         events.append({
             "type": "payment",
             "id": "pay-" + str(r["ids"] or ""),
@@ -81,6 +89,7 @@ def _fetch_events(conn, client_ids: list[int]) -> list[dict]:
             "date": r["doc_date"],
             "uzs_amount": uzs,
             "usd_amount": usd,
+            "attachments": attachments,
         })
 
     # Sort: by date asc, then type (orders before payments on same date), then id.
