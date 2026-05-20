@@ -2156,7 +2156,7 @@
                                     <th style="width:90px;">Current</th>
                                     <th style="width:120px;">Suggested</th>
                                     <th style="width:60px;">Apply</th>
-                                    <th style="width:90px;">Photo</th>
+                                    <th style="width:84px;">Photo</th>
                                     <th>Category</th>
                                     <th>Producer</th>
                                     <th>Supplier (1C)</th>
@@ -2188,6 +2188,12 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Cleanup Tab — Photo Lightbox -->
+    <div id="cleanupLightbox" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:200; align-items:center; justify-content:center; cursor:zoom-out;" onclick="closeCleanupLightbox()">
+        <img id="cleanupLightboxImg" style="max-width:90vw; max-height:85vh; object-fit:contain; border-radius:8px;">
+        <div id="cleanupLightboxCaption" style="position:absolute; bottom:24px; left:0; right:0; text-align:center; color:#e4e4e7; font-size:14px; padding:0 24px; pointer-events:none;"></div>
     </div>
 
     <!-- Client Detail Modal -->
@@ -5534,11 +5540,17 @@
                     ? `<button onclick="acceptWeight(${p.id})" style="padding:3px 8px; background:#6366f1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:11px;">✓</button>`
                     : '';
                 const photoCell = p.has_image
-                    ? `<img src="/images/${p.id}.webp" loading="lazy" style="height:32px; width:32px; object-fit:cover; border-radius:4px;">`
-                    : `<button onclick="document.getElementById('cleanupFile_${p.id}').click()" style="padding:3px 8px; background:#2a2d3a; color:#e4e4e7; border:1px dashed #4b5563; border-radius:4px; cursor:pointer; font-size:11px;">+ Upload</button>`;
-                const fileInput = p.has_image
-                    ? ''
-                    : `<input type="file" id="cleanupFile_${p.id}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="uploadCleanupPhoto(${p.id}, this.files[0])">`;
+                    ? `<div style="display:flex; flex-direction:column; align-items:center; gap:3px;">
+                         <img src="/images/${p.id}.webp" loading="lazy"
+                              style="height:64px; width:64px; object-fit:cover; border-radius:4px; cursor:zoom-in;"
+                              onclick="openCleanupLightbox(${p.id}, ${JSON.stringify(p.name || '').replace(/"/g, '&quot;')})">
+                         <button onclick="replaceCleanupPhoto(${p.id})"
+                                 title="Replace photo"
+                                 style="padding:1px 8px; background:#2a2d3a; color:#8b8fa3; border:1px solid #2a2d3a; border-radius:3px; cursor:pointer; font-size:10px;">↻ Replace</button>
+                       </div>`
+                    : `<button onclick="document.getElementById('cleanupFile_${p.id}').click()"
+                               style="padding:6px 10px; background:#2a2d3a; color:#e4e4e7; border:1px dashed #4b5563; border-radius:4px; cursor:pointer; font-size:11px; height:64px; width:64px;">+ Upload</button>`;
+                const fileInput = `<input type="file" id="cleanupFile_${p.id}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="uploadCleanupPhoto(${p.id}, this.files[0])">`;
                 return `
                     <tr data-pid="${p.id}">
                         <td><input type="checkbox" ${checked} ${checkboxDisabled} onchange="toggleCleanupRow(${p.id}, this.checked)"></td>
@@ -5660,6 +5672,14 @@
 
         async function uploadCleanupPhoto(productId, file) {
             if (!file) return;
+            const p = cleanupData && cleanupData.products.find(x => x.id === productId);
+            // Replace requires explicit confirm (file picker fired from ↻ Replace, not first-time upload)
+            if (p && p.has_image) {
+                if (!confirm(`Replace existing photo for "${p.name_display || p.name}"?\n\nThe current image will be permanently overwritten.`)) {
+                    document.getElementById(`cleanupFile_${productId}`).value = '';
+                    return;
+                }
+            }
             const fd = new FormData();
             fd.append('product_id', productId);
             fd.append('file', file);
@@ -5668,13 +5688,35 @@
                 const res = await fetch('/api/admin/upload-single-image', { method: 'POST', body: fd });
                 const data = await res.json();
                 if (!data.ok) throw new Error(data.error || 'Upload failed');
-                const p = cleanupData.products.find(x => x.id === productId);
                 if (p) p.has_image = true;
                 renderCleanupKpis();
                 renderCleanupTable();
+                // Cache-bust the lightbox preview if it was open on this product
+                const cbImg = document.getElementById('cleanupLightboxImg');
+                if (cbImg && cbImg.dataset.pid === String(productId)) {
+                    cbImg.src = `/images/${productId}.webp?cb=${Date.now()}`;
+                }
             } catch (err) {
                 alert(`Upload failed: ${err.message}`);
             }
+        }
+
+        function replaceCleanupPhoto(productId) {
+            // Triggers the file picker; uploadCleanupPhoto runs the confirm dialog
+            document.getElementById(`cleanupFile_${productId}`).click();
+        }
+
+        function openCleanupLightbox(productId, name) {
+            const img = document.getElementById('cleanupLightboxImg');
+            const caption = document.getElementById('cleanupLightboxCaption');
+            img.src = `/images/${productId}.webp?cb=${Date.now()}`;
+            img.dataset.pid = String(productId);
+            caption.textContent = `${name} — click anywhere to close`;
+            document.getElementById('cleanupLightbox').style.display = 'flex';
+        }
+
+        function closeCleanupLightbox() {
+            document.getElementById('cleanupLightbox').style.display = 'none';
         }
     </script>
 </body>
