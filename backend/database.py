@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 15  # 2026-05-10: foundation-renovation pass — v14 added three missing indexes (orders.client_id, users.client_id, allowed_clients.phone_normalized partial UNIQUE); v15 rebuilds real_orders + client_payments with composite UNIQUE(doc_number_1c, doc_date) to fix the 1C year-rollover collision class (client_payments was previously only patched via the manual /api/finance/migrate-payments-unique HTTP endpoint; real_orders had the same latent bug with no migration shipped)
+SCHEMA_VERSION = 16  # 2026-05-21: v16 adds client_balance_overrides for admin-managed authoritative balance values per client. Solves the "credit-balance clients invisible to /debtors export" problem (Error Log #59 / Бахтиёр Кафтархона case) — admin manually sets the override value after verifying in 1C акт сверки; cabinet's get_effective_debt() reads it before falling through to the daily-upload picker. Override is per-client_id, soft (no FK cascade), with set_by + source provenance for audit. Optional expires_at lets us auto-revert overrides when daily uploads can be trusted again.
 
 
 def init_db():
@@ -2113,11 +2113,35 @@ def init_db():
                 f"Run tools/dedup_allowed_clients.py and redeploy to land the unique index."
             )
 
+    # v16 (2026-05-21): admin-managed balance overrides. Per-client authoritative
+    # value that get_effective_debt() reads BEFORE the daily-upload picker. Solves
+    # the structural "1C Дебиторская excludes credit-balance clients → cabinet
+    # shows 0 when client actually has money in their favor" gap (Бахтиёр case).
+    # Override is intentionally soft — no FK cascade — so a client_id retirement
+    # doesn't silently nuke an audit-trail row. Audit fields (set_by_user_id,
+    # set_by_name, source, set_at) make every override traceable to a human
+    # decision + the 1C document/report it was verified against.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS client_balance_overrides (
+            client_id INTEGER PRIMARY KEY,
+            debt_uzs REAL NOT NULL DEFAULT 0,
+            debt_usd REAL NOT NULL DEFAULT 0,
+            source TEXT,
+            reason TEXT,
+            set_by_user_id INTEGER,
+            set_by_name TEXT,
+            set_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT,
+            notes TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_balance_overrides_set_at ON client_balance_overrides(set_at)")
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "Foundation renovation 2026-05-10: v14 = three missing indexes (orders.client_id, users.client_id, allowed_clients.phone_normalized partial UNIQUE folded into init_db from tools/dedup_allowed_clients.py); v15 = real_orders + client_payments rebuilt with composite UNIQUE(doc_number_1c, doc_date) to fix 1C year-rollover collision class (Error Log #20)"),
+            (SCHEMA_VERSION, "v16 = client_balance_overrides table — admin-managed authoritative balance values per client; get_effective_debt() reads overrides first. Solves the credit-balance-clients-invisible-to-/debtors gap (Бахтиёр case, Error Log #59 closure). Earlier history: v14 = three missing indexes; v15 = real_orders + client_payments rebuilt with composite UNIQUE."),
         )
 
     conn.commit()

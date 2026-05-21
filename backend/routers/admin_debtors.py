@@ -748,3 +748,94 @@ def client_history(
         "history": history,
         "history_usd_eq": history_usd_eq,
     }
+
+
+# ─── client_balance_overrides — admin-managed authoritative balance values ────
+#
+# Solves the structural gap where 1C's Дебиторская задолженность report omits
+# credit-balance clients (Бахтиёр case): cabinet shows 0 when the client
+# actually has money in their favor. Admin verifies the real balance in 1C
+# акт сверки, POSTs it here, and get_effective_debt() reads it BEFORE the
+# daily-upload picker. Override is per-client_id; older row for the same
+# client is upserted (so an updated override replaces the previous value).
+
+
+@router.get("/balance-overrides")
+def list_balance_overrides(admin_key: str = Query(...)):
+    _check_admin(admin_key)
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT o.client_id, o.debt_uzs, o.debt_usd, o.source, o.reason,
+                  o.set_by_user_id, o.set_by_name, o.set_at, o.expires_at, o.notes,
+                  ac.name AS client_name, ac.client_id_1c, ac.phone_normalized
+           FROM client_balance_overrides o
+           LEFT JOIN allowed_clients ac ON ac.id = o.client_id
+           ORDER BY o.set_at DESC"""
+    ).fetchall()
+    conn.close()
+    return {"ok": True, "count": len(rows), "overrides": [dict(r) for r in rows]}
+
+
+@router.post("/balance-override")
+def set_balance_override(
+    admin_key: str = Form(...),
+    client_id: int = Form(...),
+    debt_uzs: float = Form(0.0),
+    debt_usd: float = Form(0.0),
+    source: str = Form(""),
+    reason: str = Form(""),
+    set_by_name: str = Form(""),
+    set_by_user_id: int = Form(0),
+    expires_at: str = Form(""),
+    notes: str = Form(""),
+):
+    """Upsert an override. Semantics match get_effective_debt: positive
+    debt_uzs/debt_usd = client owes us; negative = we owe the client.
+    `source` should cite the 1C document/report verified against
+    (e.g. 'akt_sverki_2026-05-19')."""
+    _check_admin(admin_key)
+    conn = get_db()
+    ac = conn.execute("SELECT id, name FROM allowed_clients WHERE id=?", (client_id,)).fetchone()
+    if not ac:
+        conn.close()
+        raise HTTPException(status_code=404, detail=f"client_id={client_id} not in allowed_clients")
+    conn.execute(
+        """INSERT INTO client_balance_overrides
+              (client_id, debt_uzs, debt_usd, source, reason,
+               set_by_user_id, set_by_name, set_at, expires_at, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?)
+           ON CONFLICT(client_id) DO UPDATE SET
+              debt_uzs=excluded.debt_uzs,
+              debt_usd=excluded.debt_usd,
+              source=excluded.source,
+              reason=excluded.reason,
+              set_by_user_id=excluded.set_by_user_id,
+              set_by_name=excluded.set_by_name,
+              set_at=datetime('now'),
+              expires_at=excluded.expires_at,
+              notes=excluded.notes""",
+        (client_id, debt_uzs, debt_usd, source or None, reason or None,
+         set_by_user_id or None, set_by_name or None,
+         expires_at or None, notes or None),
+    )
+    conn.commit()
+    conn.close()
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "client_name": ac["name"],
+        "debt_uzs": debt_uzs,
+        "debt_usd": debt_usd,
+        "source": source,
+    }
+
+
+@router.delete("/balance-override/{client_id}")
+def delete_balance_override(client_id: int, admin_key: str = Query(...)):
+    _check_admin(admin_key)
+    conn = get_db()
+    cur = conn.execute("DELETE FROM client_balance_overrides WHERE client_id=?", (client_id,))
+    conn.commit()
+    deleted = cur.rowcount
+    conn.close()
+    return {"ok": True, "client_id": client_id, "deleted": deleted}

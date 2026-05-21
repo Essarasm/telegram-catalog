@@ -503,6 +503,13 @@ def get_effective_debt(client_id) -> Optional[dict]:
     automatically. Same logic covers any currency leg going dark in the future.
 
     Returns None when no data is available from either source.
+
+    **Override layer (added 2026-05-21)**: if any sibling client_id has a row in
+    `client_balance_overrides` (and it isn't expired), the override is
+    authoritative — returned with source tag "manual_override". This is the
+    escape hatch for cases the daily-upload picker can't handle (notably
+    credit-balance clients absent from 1C's Дебиторская задолженность export —
+    Бахтиёр case, Error Log #59).
     """
     conn = get_db()
     if isinstance(client_id, (list, tuple)):
@@ -510,8 +517,39 @@ def get_effective_debt(client_id) -> Optional[dict]:
     else:
         ids = [client_id]
 
-    # Fetch the client's debtors row (if any) and оборотка closings
     placeholders = ",".join("?" * len(ids))
+
+    # Override layer — checked FIRST. If a row exists for any sibling client_id
+    # and isn't expired, use it verbatim. Picker logic below is skipped entirely.
+    override = conn.execute(
+        f"""SELECT client_id, debt_uzs, debt_usd, source, reason, set_by_name, set_at, notes
+            FROM client_balance_overrides
+            WHERE client_id IN ({placeholders})
+              AND (expires_at IS NULL OR expires_at > datetime('now'))
+            ORDER BY set_at DESC LIMIT 1""",
+        tuple(ids),
+    ).fetchone()
+    if override:
+        conn.close()
+        return {
+            "client_name_1c": None,
+            "debt_uzs": float(override["debt_uzs"] or 0),
+            "debt_usd": float(override["debt_usd"] or 0),
+            "debt_uzs_source": "manual_override",
+            "debt_usd_source": "manual_override",
+            "report_date": override["set_at"][:10] if override["set_at"] else None,
+            "last_transaction_date": None,
+            "aging": {"0_30": 0, "31_60": 0, "61_90": 0, "91_120": 0, "120_plus": 0},
+            "imported_at": override["set_at"],
+            "override_meta": {
+                "source": override["source"],
+                "reason": override["reason"],
+                "set_by_name": override["set_by_name"],
+                "notes": override["notes"],
+            },
+        }
+
+    # Fetch the client's debtors row (if any) and оборотка closings
     debts_row = conn.execute(
         f"""SELECT client_name_1c, debt_uzs, debt_usd, report_date,
                    last_transaction_date,
