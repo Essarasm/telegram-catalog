@@ -56,11 +56,12 @@ from backend.services.payment_intake import (
     create_intake_payment,
     lookup_client_debt,
     check_recent_duplicate,
+    find_matching_pending,
+    link_pending_to_cashier,
     confirm_payment,
     summarize_today_intake,
     reject_payment,
     get_payment,
-    list_pending_for_cashier,
     resolve_client_telegram_ids,
     admin_cancel_payment,
     edit_payment_amount,
@@ -93,12 +94,10 @@ class CashierFlow(StatesGroup):
     direct_usd_confirm = State()
     direct_confirm_dup = State()
     # Agentdan pul qabul qilish (cash_via_agent: cashier picks agent, then
-    # falls into the same direct_search → uzs → usd → finalize chain)
+    # falls into the same direct_search → uzs → usd → finalize chain).
+    # Agent's mini-app pending row gets auto-linked at finalize when amount
+    # matches; no separate queue-and-confirm step (cashier rejected that UX).
     agent_pick = State()
-    # Legacy: agent submits via mini app, cashier confirms/rejects (dormant
-    # in v1 — Agentdan menu now jumps to agent_pick instead of queue).
-    queue = State()
-    queue_reject_reason = State()
     # O'zgartirish — amount-only edit of an already-confirmed payment.
     # Soft-cancels old + inserts new linked via replaces_payment_id.
     edit_amount = State()
@@ -1647,32 +1646,18 @@ async def cb_menu_direct(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "cashier:menu_queue")
 async def cb_menu_queue(cb: CallbackQuery, state: FSMContext):
-    """Agentdan flow — original design: show pending_handover queue from
-    agent mini-app submissions, cashier confirms/rejects each. Fresh-entry
-    (agent_pick → amount) is only used as a fallback for handovers an agent
-    forgot to submit via the mini app — surfaced from _render_queue."""
+    """Agentdan flow — cashier picks the agent, then records the payment
+    exactly like the Klientdan path (search client → enter amounts → save).
+    At finalize, each leg is auto-linked to any matching pending_handover
+    row the agent submitted via the mini app (exact amount, same client,
+    within 24h). No queue-and-confirm step — Aunt rejected that UX."""
     if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
-        await cb.answer()
-        return
-    await state.set_state(CashierFlow.queue)
-    await state.update_data(channel="cash_via_agent", submitter=cb.from_user.id)
-    await _render_queue(cb.message, state)
-    await cb.answer()
-
-
-@router.callback_query(F.data == "cashier:queue_to_fresh")
-async def cb_queue_to_fresh(cb: CallbackQuery, state: FSMContext):
-    """Fallback escape hatch from the Agentdan queue — used when the agent
-    handed over cash but forgot to submit via the mini app. Routes to the
-    legacy agent_pick → amount fresh-entry flow."""
-    if not _is_cashier_chat(cb):
         await cb.answer()
         return
     await state.set_state(CashierFlow.agent_pick)
     await state.update_data(channel="cash_via_agent", submitter=cb.from_user.id)
     await cb.message.answer(
-        "👨‍💼 <b>Qaysi agent?</b>\n"
-        "<i>(agent mini app orqali yubormagan hollarda)</i>",
+        "👨‍💼 <b>Qaysi agent?</b>",
         parse_mode="HTML",
         reply_markup=_agent_keyboard(),
     )
@@ -1909,8 +1894,15 @@ async def direct_usd_confirm_edit(cb: CallbackQuery, state: FSMContext):
 
 
 async def _direct_finalize_or_dup(message: Message, state: FSMContext, bot: Bot):
-    """After both currencies collected: validate at least one >0, check
-    soft-dedupe, then either prompt for confirmation or finalize."""
+    """After both currencies collected: validate at least one >0, then for
+    each non-zero leg check (in order):
+
+        1. find_matching_pending — agent submitted this exact amount via
+           the mini app in the last 24h? Stash the pending_id and skip the
+           dedup warning; finalize will UPDATE that row in place.
+        2. check_recent_duplicate — confirmed/pending row with the same
+           amount already exists outside the auto-link window? Warn the
+           cashier before continuing."""
     data = await state.get_data()
     uzs = float(data.get("uzs_amount") or 0)
     usd = float(data.get("usd_amount") or 0)
@@ -1922,20 +1914,24 @@ async def _direct_finalize_or_dup(message: Message, state: FSMContext, bot: Bot)
         await _send_kassa_menu(message)
         return
 
-    # Dedupe check across each non-zero currency.
     conn = get_db()
     try:
+        auto_links = {}
         dups = []
-        if uzs > 0:
-            d = check_recent_duplicate(conn, data["client_id"], uzs, "UZS")
+        for cur, amt in (("UZS", uzs), ("USD", usd)):
+            if amt <= 0:
+                continue
+            match = find_matching_pending(conn, data["client_id"], amt, cur)
+            if match:
+                auto_links[cur] = match["id"]
+                continue
+            d = check_recent_duplicate(conn, data["client_id"], amt, cur)
             if d:
-                dups.append(("UZS", uzs, d))
-        if usd > 0:
-            d = check_recent_duplicate(conn, data["client_id"], usd, "USD")
-            if d:
-                dups.append(("USD", usd, d))
+                dups.append((cur, amt, d))
     finally:
         conn.close()
+
+    await state.update_data(auto_links=auto_links)
 
     if dups:
         await state.set_state(CashierFlow.direct_confirm_dup)
@@ -1977,8 +1973,13 @@ async def direct_dup_no(cb: CallbackQuery, state: FSMContext):
 
 
 async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
-    """Insert audit + intake_payments rows (one per currency leg), notify
-    the client, clear state."""
+    """Per currency leg: if state has an auto-link pending_id (set by
+    _direct_finalize_or_dup), UPDATE that agent-submitted row to confirmed
+    instead of inserting a new one — preserves single-row attribution for
+    one physical handover. Otherwise INSERT a fresh confirmed row.
+
+    The audit raw row is written unconditionally so the cashier's submission
+    is preserved even when the canonical row is the agent's pending."""
     data = await state.get_data()
     client_id = data["client_id"]
     client_name = data.get("client_name") or ""
@@ -1990,6 +1991,7 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
     role = "cashier"
     channel = data.get("channel") or "cash_direct"
     agent_name = data.get("agent_name")
+    auto_links = data.get("auto_links") or {}
 
     conn = get_db()
     payments_created = []
@@ -2005,26 +2007,50 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
             }
             if agent_name:
                 payload["agent_name"] = agent_name
+            pending_id = auto_links.get(cur_code)
+            if pending_id:
+                payload["links_pending"] = pending_id
             raw_id = insert_intake_raw(
                 conn,
                 submitter_telegram_id=submitter_id,
                 submitter_role=role,
                 payload=payload,
             )
-            pid = create_intake_payment(
-                conn,
-                raw_id=raw_id,
-                client_id=client_id,
-                amount=amt,
-                currency=cur_code,
-                channel=channel,
-                status="confirmed",
-                submitter_telegram_id=submitter_id,
-                submitter_role=role,
-                confirmed_by_telegram_id=submitter_id,
-                notes=(f"agent: {agent_name}" if agent_name else None),
-            )
-            payments_created.append((pid, cur_code, amt))
+            linked = False
+            if pending_id:
+                try:
+                    row = link_pending_to_cashier(
+                        conn,
+                        pending_payment_id=pending_id,
+                        cashier_telegram_id=submitter_id,
+                        audit_raw_id=raw_id,
+                    )
+                    payments_created.append((row["id"], cur_code, amt))
+                    linked = True
+                except ValueError as e:
+                    # Race: agent's row flipped between dedup-check and now
+                    # (admin cancel, double-confirm, etc.). Fall back to a
+                    # fresh INSERT — the audit raw row already preserves
+                    # the cashier's submission either way.
+                    logger.warning(
+                        f"auto-link to pending #{pending_id} failed ({e}); "
+                        f"falling back to fresh insert"
+                    )
+            if not linked:
+                pid = create_intake_payment(
+                    conn,
+                    raw_id=raw_id,
+                    client_id=client_id,
+                    amount=amt,
+                    currency=cur_code,
+                    channel=channel,
+                    status="confirmed",
+                    submitter_telegram_id=submitter_id,
+                    submitter_role=role,
+                    confirmed_by_telegram_id=submitter_id,
+                    notes=(f"agent: {agent_name}" if agent_name else None),
+                )
+                payments_created.append((pid, cur_code, amt))
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -2046,6 +2072,8 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
         ]
         if agent_name:
             confirm_lines.append(f"👨‍💼 {html_escape(agent_name)} orqali")
+        if auto_links.get(cur) == pid:
+            confirm_lines.append("🔗 Agent yuborgan to'lov bilan bog'landi")
         await message.answer(
             "\n".join(confirm_lines),
             parse_mode="HTML",
@@ -2054,219 +2082,6 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
 
     # Notify the client (best-effort, swallow errors)
     await _notify_client_confirmed(bot, client_id, client_name, payments_created, agent_name)
-    await state.clear()
-    await _send_kassa_menu(message)
-
-
-# ── Flow 2: Agentdan pul qabul qilish ───────────────────────────────
-
-async def _render_queue(message: Message, state: FSMContext):
-    conn = get_db()
-    try:
-        pending = list_pending_for_cashier(conn, limit=20)
-    finally:
-        conn.close()
-    if not pending:
-        await message.answer(
-            "✅ Hozir kutilayotgan to'lov yo'q.\n\n"
-            "Agent panel orqali yangi yuborilsa, shu yerda ko'rinadi.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="➕ Boshqa to'lov qo'shish (agent yubormagan)",
-                    callback_data="cashier:queue_to_fresh",
-                )],
-                [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cashier:cancel")],
-            ]),
-        )
-        return
-    lines = [f"📥 <b>Kutilayotgan to'lovlar ({len(pending)}):</b>\n"]
-    rows = []
-    for p in pending[:10]:
-        cname = (p.get("client_id_1c") or p.get("client_name") or f"ID {p['client_id']}")[:30]
-        amt = _fmt_amount(p["amount"], p["currency"])
-        ch_icon = "📦" if p["channel"] == "cash_via_agent" else "💳"
-        lines.append(
-            f"{ch_icon} <b>{html_escape(cname)}</b> — {amt} "
-            f"(agent: <code>{p.get('handover_agent_id') or p['submitter_telegram_id']}</code>)"
-        )
-        rows.append([InlineKeyboardButton(
-            text=f"#{p['id']} {cname[:20]} — {amt}",
-            callback_data=f"cashier:pay_{p['id']}",
-        )])
-    rows.append([InlineKeyboardButton(
-        text="➕ Boshqa to'lov qo'shish (agent yubormagan)",
-        callback_data="cashier:queue_to_fresh",
-    )])
-    rows.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cashier:cancel")])
-    await message.answer(
-        "\n".join(lines),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
-    )
-
-
-@router.callback_query(CashierFlow.queue, F.data.startswith("cashier:pay_"))
-async def queue_pick(cb: CallbackQuery, state: FSMContext):
-    if not _is_cashier_chat(cb):
-        await cb.answer()
-        return
-    try:
-        payment_id = int(cb.data.split("_", 1)[1])
-    except (ValueError, IndexError):
-        await cb.answer("Noto'g'ri tanlov", show_alert=True)
-        return
-    conn = get_db()
-    try:
-        try:
-            p = get_payment(conn, payment_id)
-        except ValueError:
-            await cb.answer("Topilmadi", show_alert=True)
-            return
-    finally:
-        conn.close()
-    if p["status"] not in ("pending_handover", "pending_review"):
-        await cb.answer(f"Allaqachon {p['status']}", show_alert=True)
-        return
-    await state.update_data(active_payment_id=payment_id)
-    cname = p.get("client_id_1c") or p.get("client_name") or f"ID {p['client_id']}"
-    detail = (
-        f"💰 <b>To'lov #{p['id']}</b>\n"
-        f"👤 {html_escape(cname)}\n"
-        f"💵 {_fmt_amount(p['amount'], p['currency'])}\n"
-        f"🛣 Kanal: <code>{p['channel']}</code>\n"
-        f"👨‍💼 Agent: <code>{p.get('handover_agent_id') or p['submitter_telegram_id']}</code>\n"
-        f"🕒 {p['submitted_at']}"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=f"cashier:confirm_{payment_id}"),
-            InlineKeyboardButton(text="❌ Rad etish", callback_data=f"cashier:reject_{payment_id}"),
-        ],
-        [InlineKeyboardButton(text="↩️ Orqaga", callback_data="cashier:queue_back")],
-    ])
-    if p.get("screenshot_file_id"):
-        try:
-            await cb.message.answer_photo(p["screenshot_file_id"], caption=detail, parse_mode="HTML", reply_markup=kb)
-        except Exception:
-            await cb.message.answer(detail + "\n\n⚠️ Screenshot ko'rsatib bo'lmadi.", parse_mode="HTML", reply_markup=kb)
-    else:
-        await cb.message.answer(detail, parse_mode="HTML", reply_markup=kb)
-    await cb.answer()
-
-
-@router.callback_query(CashierFlow.queue, F.data == "cashier:queue_back")
-async def queue_back(cb: CallbackQuery, state: FSMContext):
-    if not _is_cashier_chat(cb):
-        await cb.answer()
-        return
-    await _render_queue(cb.message, state)
-    await cb.answer()
-
-
-@router.callback_query(CashierFlow.queue, F.data.startswith("cashier:confirm_"))
-async def queue_confirm(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    if not _is_cashier_chat(cb):
-        await cb.answer()
-        return
-    try:
-        payment_id = int(cb.data.split("_", 1)[1])
-    except (ValueError, IndexError):
-        await cb.answer("Noto'g'ri tanlov", show_alert=True)
-        return
-    confirmer_id = cb.from_user.id
-    conn = get_db()
-    try:
-        try:
-            row = confirm_payment(conn, payment_id, confirmer_id)
-        except ValueError as e:
-            conn.rollback()
-            await cb.answer(str(e), show_alert=True)
-            return
-        conn.commit()
-    finally:
-        conn.close()
-    cname = row.get("client_id_1c") or row.get("client_name") or ""
-    await cb.message.answer(
-        f"✅ Tasdiqlandi: #{row['id']} — {_fmt_amount(row['amount'], row['currency'])} "
-        f"({html_escape(cname)})",
-        parse_mode="HTML",
-    )
-    await _notify_client_confirmed(
-        bot,
-        row["client_id"],
-        cname,
-        [(row["id"], row["currency"], row["amount"])],
-    )
-    await cb.answer("Tasdiqlandi")
-    await _send_kassa_menu(cb.message)
-
-
-@router.callback_query(CashierFlow.queue, F.data.startswith("cashier:reject_"))
-async def queue_reject_start(cb: CallbackQuery, state: FSMContext):
-    if not _is_cashier_chat(cb):
-        await cb.answer()
-        return
-    try:
-        payment_id = int(cb.data.split("_", 1)[1])
-    except (ValueError, IndexError):
-        await cb.answer("Noto'g'ri tanlov", show_alert=True)
-        return
-    await state.update_data(reject_payment_id=payment_id)
-    await state.set_state(CashierFlow.queue_reject_reason)
-    await cb.message.answer(
-        "✏️ Rad etish sababini yuboring (qisqa matn):",
-        reply_markup=_cancel_keyboard(),
-    )
-    await cb.answer()
-
-
-@router.message(CashierFlow.queue_reject_reason, F.text)
-async def queue_reject_reason(message: Message, state: FSMContext, bot: Bot):
-    if not _is_cashier_chat(message):
-        return
-    reason = (message.text or "").strip()
-    if len(reason) < 2:
-        await message.answer("Sababni biroz batafsilroq yuboring.", reply_markup=_cancel_keyboard())
-        return
-    data = await state.get_data()
-    payment_id = data.get("reject_payment_id")
-    if not payment_id:
-        await state.clear()
-        await message.answer("❌ Sessiya topilmadi. /qabul")
-        return
-    rejecter_id = message.from_user.id
-    conn = get_db()
-    try:
-        try:
-            row = reject_payment(conn, payment_id, rejecter_id, reason)
-        except ValueError as e:
-            conn.rollback()
-            await message.answer(f"❌ {html_escape(str(e))}")
-            await state.clear()
-            return
-        conn.commit()
-    finally:
-        conn.close()
-    cname = row.get("client_id_1c") or row.get("client_name") or ""
-    await message.answer(
-        f"❌ Rad etildi: #{row['id']} — {_fmt_amount(row['amount'], row['currency'])} "
-        f"({html_escape(cname)})\nSabab: {html_escape(reason)}",
-        parse_mode="HTML",
-    )
-    # Notify the original submitter
-    submitter = row.get("submitter_telegram_id") or row.get("handover_agent_id")
-    if submitter:
-        try:
-            await bot.send_message(
-                submitter,
-                f"❌ <b>To'lovingiz rad etildi</b>\n"
-                f"👤 {html_escape(cname)}\n"
-                f"💵 {_fmt_amount(row['amount'], row['currency'])}\n"
-                f"📝 Sabab: {html_escape(reason)}",
-                parse_mode="HTML",
-            )
-        except Exception as e:
-            logger.warning(f"reject notification to {submitter} failed: {e}")
     await state.clear()
     await _send_kassa_menu(message)
 

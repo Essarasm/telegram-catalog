@@ -296,6 +296,86 @@ def lookup_client_debt(conn, client_id: int) -> Dict[str, float]:
 
 # ── Soft dedupe ─────────────────────────────────────────────────────
 
+def find_matching_pending(
+    conn,
+    client_id: int,
+    amount: float,
+    currency: str,
+    window_hours: int = 24,
+) -> Optional[dict]:
+    """Look up an agent's pending_handover row that matches a cashier's
+    fresh-entry exactly, so the cashier finalize can UPDATE that row in
+    place instead of creating a duplicate. Match: (client_id [+ siblings],
+    amount, currency, status='pending_handover', channel='cash_via_agent',
+    submitted_at within window). Oldest match wins (FIFO) when multiple
+    agents submitted the same amount.
+
+    Distinct from check_recent_duplicate: this is the linker for the
+    cashier-confirm path; that one is the soft-dedupe warning for the
+    agent-submit path."""
+    ids = get_sibling_client_ids(conn, client_id) or [client_id]
+    placeholders = ",".join("?" * len(ids))
+    row = conn.execute(
+        f"""SELECT id, client_id, amount, currency, channel,
+                   submitted_at, submitter_telegram_id, handover_agent_id
+            FROM intake_payments
+            WHERE client_id IN ({placeholders})
+              AND amount = ?
+              AND currency = ?
+              AND status = 'pending_handover'
+              AND channel = 'cash_via_agent'
+              AND submitted_at >= datetime('now', ?)
+            ORDER BY submitted_at ASC
+            LIMIT 1""",
+        tuple(ids) + (float(amount), currency, f"-{int(window_hours)} hours"),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def link_pending_to_cashier(
+    conn,
+    pending_payment_id: int,
+    cashier_telegram_id: int,
+    audit_raw_id: int,
+) -> dict:
+    """Auto-link: cashier's fresh-entry matched an agent's pending row, so
+    instead of inserting a duplicate we flip that pending row to confirmed
+    (status, confirmed_at, confirmed_by_telegram_id). The cashier's audit
+    row (already inserted via insert_intake_raw) gets back-linked to the
+    same canonical payment_id so the audit trail preserves both events.
+
+    Raises ValueError if the row's status flipped between match-lookup and
+    here (race with another flow); caller should fall back to fresh INSERT.
+    Caller owns the transaction."""
+    row = conn.execute(
+        "SELECT status FROM intake_payments WHERE id = ?", (pending_payment_id,)
+    ).fetchone()
+    if not row:
+        raise ValueError(f"payment {pending_payment_id} not found")
+    if row["status"] != "pending_handover":
+        raise ValueError(
+            f"cannot link payment {pending_payment_id}: status={row['status']}"
+        )
+    breadcrumb = f"linked_by_cashier:{cashier_telegram_id}"
+    conn.execute(
+        """UPDATE intake_payments
+           SET status = 'confirmed',
+               confirmed_at = datetime('now'),
+               confirmed_by_telegram_id = ?,
+               notes = CASE
+                   WHEN notes IS NULL OR notes = '' THEN ?
+                   ELSE notes || ' | ' || ?
+               END
+           WHERE id = ?""",
+        (cashier_telegram_id, breadcrumb, breadcrumb, pending_payment_id),
+    )
+    conn.execute(
+        "UPDATE payment_intake_raw SET processed_payment_id = ? WHERE id = ?",
+        (pending_payment_id, audit_raw_id),
+    )
+    return get_payment(conn, pending_payment_id)
+
+
 def check_recent_duplicate(
     conn,
     client_id: int,
