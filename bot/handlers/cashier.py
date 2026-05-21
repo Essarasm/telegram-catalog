@@ -1647,13 +1647,32 @@ async def cb_menu_direct(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "cashier:menu_queue")
 async def cb_menu_queue(cb: CallbackQuery, state: FSMContext):
+    """Agentdan flow — original design: show pending_handover queue from
+    agent mini-app submissions, cashier confirms/rejects each. Fresh-entry
+    (agent_pick → amount) is only used as a fallback for handovers an agent
+    forgot to submit via the mini app — surfaced from _render_queue."""
     if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
+        await cb.answer()
+        return
+    await state.set_state(CashierFlow.queue)
+    await state.update_data(channel="cash_via_agent", submitter=cb.from_user.id)
+    await _render_queue(cb.message, state)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "cashier:queue_to_fresh")
+async def cb_queue_to_fresh(cb: CallbackQuery, state: FSMContext):
+    """Fallback escape hatch from the Agentdan queue — used when the agent
+    handed over cash but forgot to submit via the mini app. Routes to the
+    legacy agent_pick → amount fresh-entry flow."""
+    if not _is_cashier_chat(cb):
         await cb.answer()
         return
     await state.set_state(CashierFlow.agent_pick)
     await state.update_data(channel="cash_via_agent", submitter=cb.from_user.id)
     await cb.message.answer(
-        "👨‍💼 <b>Qaysi agent?</b>",
+        "👨‍💼 <b>Qaysi agent?</b>\n"
+        "<i>(agent mini app orqali yubormagan hollarda)</i>",
         parse_mode="HTML",
         reply_markup=_agent_keyboard(),
     )
@@ -2051,7 +2070,13 @@ async def _render_queue(message: Message, state: FSMContext):
         await message.answer(
             "✅ Hozir kutilayotgan to'lov yo'q.\n\n"
             "Agent panel orqali yangi yuborilsa, shu yerda ko'rinadi.",
-            reply_markup=_cancel_keyboard(),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="➕ Boshqa to'lov qo'shish (agent yubormagan)",
+                    callback_data="cashier:queue_to_fresh",
+                )],
+                [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cashier:cancel")],
+            ]),
         )
         return
     lines = [f"📥 <b>Kutilayotgan to'lovlar ({len(pending)}):</b>\n"]
@@ -2068,6 +2093,10 @@ async def _render_queue(message: Message, state: FSMContext):
             text=f"#{p['id']} {cname[:20]} — {amt}",
             callback_data=f"cashier:pay_{p['id']}",
         )])
+    rows.append([InlineKeyboardButton(
+        text="➕ Boshqa to'lov qo'shish (agent yubormagan)",
+        callback_data="cashier:queue_to_fresh",
+    )])
     rows.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cashier:cancel")])
     await message.answer(
         "\n".join(lines),

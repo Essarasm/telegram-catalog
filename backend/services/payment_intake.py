@@ -301,11 +301,15 @@ def check_recent_duplicate(
     client_id: int,
     amount: float,
     currency: str,
-    window_hours: int = 1,
+    window_hours: int = 48,
 ) -> Optional[dict]:
     """Return the most recent matching intake_payments row in the window
     (status pending_*/confirmed) or None. Caller decides whether to warn
-    the user before submitting again — we intentionally don't block."""
+    the user before submitting again — we intentionally don't block.
+
+    Window: 48h covers the agent-submits-day-N / cashier-confirms-day-N+1
+    handover gap that bit Мурод АКА Иштихан on 2026-05-20/21 (intake #501
+    + #515) when the default was 1h."""
     row = conn.execute(
         """SELECT id, status, submitter_telegram_id, submitted_at, channel
            FROM intake_payments
