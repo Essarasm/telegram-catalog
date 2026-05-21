@@ -516,11 +516,19 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
     const debtUsd = balance.debt_usd ?? null;
     const isDebtSource = debtUzs !== null;
 
-    // Debt source (дебиторка) — simple debt display
+    // Debt source (дебиторка / override) — handles debt (positive), credit (negative), settled (zero) per leg.
     if (isDebtSource) {
-      const hasUzs = debtUzs > 0;
-      const hasUsd = debtUsd > 0;
+      const uzsVal = debtUzs || 0;
+      const usdVal = debtUsd || 0;
+      const hasUzs = uzsVal !== 0;
+      const hasUsd = usdVal !== 0;
       const isSettled = !hasUzs && !hasUsd;
+      const anyDebt = uzsVal > 0 || usdVal > 0;
+      const anyCredit = uzsVal < 0 || usdVal < 0;
+      const mixed = anyDebt && anyCredit;
+      // Color: red for owed-by-client (positive), green for in-client-favor (negative)
+      const legColor = (v) => v > 0 ? 'text-red-500' : v < 0 ? 'text-green-500' : 'text-tg-hint';
+      const fmtLeg = (v, fn, suffix) => <>{v > 0 ? '' : '−'}{fn(Math.abs(v))} {suffix}</>;
 
       return (
         <div className="mb-4">
@@ -536,8 +544,8 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
               <div className="flex items-baseline justify-center gap-4 mb-2">
                 {hasUzs && (
                   <div className="text-center">
-                    <div className="text-xl font-bold text-red-500">
-                      {formatUzs(debtUzs)} {t.balance_currency || "so'm"}
+                    <div className={`text-xl font-bold ${legColor(uzsVal)}`}>
+                      {fmtLeg(uzsVal, formatUzs, t.balance_currency || "so'm")}
                     </div>
                   </div>
                 )}
@@ -546,17 +554,17 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
                 )}
                 {hasUsd && (
                   <div className="text-center">
-                    <div className="text-xl font-bold text-red-500">
-                      {formatUsd(debtUsd)}
+                    <div className={`text-xl font-bold ${legColor(usdVal)}`}>
+                      {fmtLeg(usdVal, formatUsd, '')}
                     </div>
                   </div>
                 )}
               </div>
             )}
 
-            {!isSettled && (
-              <div className="text-center text-xs text-red-400 mb-1">
-                {t.balance_debt}
+            {!isSettled && !mixed && (
+              <div className={`text-center text-xs mb-1 ${anyCredit ? 'text-green-400' : 'text-red-400'}`}>
+                {anyCredit ? t.balance_overpayment : t.balance_debt}
               </div>
             )}
 
