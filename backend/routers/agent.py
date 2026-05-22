@@ -14,7 +14,7 @@ from datetime import date
 from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import JSONResponse
 
-from backend.database import get_db
+from backend.database import gather_sibling_phones, get_db
 from backend.services.agent_register import register_new_shop
 from backend.services.client_search import (
     create_and_link_new_1c_client,
@@ -446,6 +446,7 @@ def agent_switch_client(payload: dict = Body(...)):
             relink_counts = relink_orphan_finance_rows(
                 conn, client_id, target["client_id_1c"]
             )
+        phones = gather_sibling_phones(conn, client_id)
         conn.commit()
         return {
             "ok": True,
@@ -454,6 +455,7 @@ def agent_switch_client(payload: dict = Body(...)):
                 "name": target["name"],
                 "client_id_1c": target["client_id_1c"],
                 "phone": target["phone_normalized"] or "",
+                "phones": phones,
             },
             "relinked": relink_counts,
         }
@@ -532,6 +534,7 @@ def agent_register_client(payload: dict = Body(...)):
             relink_counts = relink_orphan_finance_rows(
                 conn, client_id, target["client_id_1c"]
             )
+        phones = gather_sibling_phones(conn, client_id)
         conn.commit()
         return {
             "ok": True,
@@ -541,6 +544,7 @@ def agent_register_client(payload: dict = Body(...)):
                 "name": target["name"],
                 "client_id_1c": target["client_id_1c"],
                 "phone": target["phone_normalized"] or "",
+                "phones": phones,
             },
             "relinked": relink_counts,
         }

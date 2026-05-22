@@ -1,7 +1,7 @@
 """Personal cabinet — order history and reorder."""
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
-from backend.database import get_db, get_sibling_client_ids
+from backend.database import gather_sibling_phones, get_db, get_sibling_client_ids
 from backend.services.user_auth import assert_init_data
 from backend.services.import_real_orders import (
     list_real_orders_for_client,
@@ -48,22 +48,7 @@ def client_info(telegram_id: int = Query(...)):
             "client_id_1c": client["client_id_1c"],
         }
         if user["is_agent"]:
-            sibling_ids = get_sibling_client_ids(conn, client["id"])
-            placeholders = ",".join("?" * len(sibling_ids))
-            sibling_rows = conn.execute(
-                f"SELECT id, phone_normalized, raqam_02, raqam_03 "
-                f"FROM allowed_clients WHERE id IN ({placeholders})",
-                sibling_ids,
-            ).fetchall()
-            # Acting row's primary phone first, then everything else in row order.
-            ordered = sorted(sibling_rows, key=lambda r: 0 if r["id"] == client["id"] else 1)
-            phones = []
-            for r in ordered:
-                for raw in (r["phone_normalized"], r["raqam_02"], r["raqam_03"]):
-                    p = (raw or "").strip()
-                    if p and p not in phones:
-                        phones.append(p)
-            payload["phones"] = phones
+            payload["phones"] = gather_sibling_phones(conn, client["id"])
         return {"ok": True, "client": payload}
     finally:
         conn.close()

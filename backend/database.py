@@ -68,6 +68,37 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
+def gather_sibling_phones(conn, client_id):
+    """Return a deduped, ordered list of phones across all sibling rows.
+
+    Walks sibling allowed_clients rows (same client_id_1c) and collects
+    phone_normalized + raqam_02 + raqam_03 from each, preserving the
+    acting row's primary phone first and dropping empties / duplicates.
+
+    Used by /cabinet/client-info and /agent/switch-client so the agent
+    panel + cabinet phone block see the same multi-phone shape.
+    """
+    if not client_id:
+        return []
+    sibling_ids = get_sibling_client_ids(conn, client_id)
+    if not sibling_ids:
+        return []
+    placeholders = ",".join("?" * len(sibling_ids))
+    rows = conn.execute(
+        f"SELECT id, phone_normalized, raqam_02, raqam_03 "
+        f"FROM allowed_clients WHERE id IN ({placeholders})",
+        sibling_ids,
+    ).fetchall()
+    ordered = sorted(rows, key=lambda r: 0 if r["id"] == client_id else 1)
+    phones = []
+    for r in ordered:
+        for raw in (r["phone_normalized"], r["raqam_02"], r["raqam_03"]):
+            p = (raw or "").strip()
+            if p and p not in phones:
+                phones.append(p)
+    return phones
+
+
 SCHEMA_VERSION = 17  # 2026-05-22: v17 adds reminder_fire_log so daily-reminder catch-up (Error Log #32 mitigation) can tell "we were down at 08:00" from "we fired at 08:00 then restarted at 11:11". Without the log, every redeploy in the 04:00–13:00 Tashkent window re-fires every morning reminder — owner brief, sverka, stock alert all duplicated 2026-05-22. Each successful fire (scheduled or catch-up) stamps (reminder_name, fire_date) and the startup grace window only fires if today's slot is missing. Earlier: v16 = client_balance_overrides.
 
 
