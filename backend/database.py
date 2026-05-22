@@ -68,7 +68,7 @@ def get_sibling_client_ids(conn, client_id):
     return ids
 
 
-SCHEMA_VERSION = 16  # 2026-05-21: v16 adds client_balance_overrides for admin-managed authoritative balance values per client. Solves the "credit-balance clients invisible to /debtors export" problem (Error Log #59 / Бахтиёр Кафтархона case) — admin manually sets the override value after verifying in 1C акт сверки; cabinet's get_effective_debt() reads it before falling through to the daily-upload picker. Override is per-client_id, soft (no FK cascade), with set_by + source provenance for audit. Optional expires_at lets us auto-revert overrides when daily uploads can be trusted again.
+SCHEMA_VERSION = 17  # 2026-05-22: v17 adds reminder_fire_log so daily-reminder catch-up (Error Log #32 mitigation) can tell "we were down at 08:00" from "we fired at 08:00 then restarted at 11:11". Without the log, every redeploy in the 04:00–13:00 Tashkent window re-fires every morning reminder — owner brief, sverka, stock alert all duplicated 2026-05-22. Each successful fire (scheduled or catch-up) stamps (reminder_name, fire_date) and the startup grace window only fires if today's slot is missing. Earlier: v16 = client_balance_overrides.
 
 
 def init_db():
@@ -2137,11 +2137,27 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_balance_overrides_set_at ON client_balance_overrides(set_at)")
 
+    # reminder_fire_log — bot/reminders.py uses this to dedup catch-up fires
+    # on restart (Error Log #32 vs #NN). Each successful fire stamps a row;
+    # the startup catch-up grace window only fires if today's slot is absent.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reminder_fire_log (
+            reminder_name TEXT NOT NULL,
+            fire_date     TEXT NOT NULL,
+            fired_at_utc  TEXT NOT NULL,
+            PRIMARY KEY(reminder_name, fire_date)
+        )
+    """)
+    # Prune rows older than 30 days — keeps the table bounded (~15 rows/day).
+    conn.execute(
+        "DELETE FROM reminder_fire_log WHERE fire_date < date('now', '-30 days')"
+    )
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "v16 = client_balance_overrides table — admin-managed authoritative balance values per client; get_effective_debt() reads overrides first. Solves the credit-balance-clients-invisible-to-/debtors gap (Бахтиёр case, Error Log #59 closure). Earlier history: v14 = three missing indexes; v15 = real_orders + client_payments rebuilt with composite UNIQUE."),
+            (SCHEMA_VERSION, "v17 = reminder_fire_log table — dedup catch-up fires for daily reminders. After 2026-05-20's CRON_RESTART_PAST_FIRE_DROPS_DAY mitigation (catch-up within 4h grace), the new failure mode was the opposite: restart-after-fire re-fires every morning reminder. v17 records each successful fire so the catch-up branch can skip slots already fired today. Earlier history: v15 = real_orders + client_payments composite UNIQUE; v16 = client_balance_overrides."),
         )
 
     conn.commit()

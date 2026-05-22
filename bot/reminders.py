@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from backend.admin_auth import get_admin_key
@@ -25,6 +25,46 @@ from backend.admin_auth import get_admin_key
 logger = logging.getLogger(__name__)
 
 TASHKENT = ZoneInfo("Asia/Tashkent")
+
+
+def _already_fired_today(reminder_name: str, fire_date_iso: str) -> bool:
+    """Has this reminder slot already fired today (per reminder_fire_log)?
+    Fail-open on DB error — better to maybe-duplicate than to miss a fire.
+    """
+    try:
+        from backend.database import get_db
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM reminder_fire_log "
+                "WHERE reminder_name = ? AND fire_date = ? LIMIT 1",
+                (reminder_name, fire_date_iso),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"_already_fired_today({reminder_name}, {fire_date_iso}) failed: {e}")
+        return False
+
+
+def _record_fire(reminder_name: str, fire_date_iso: str) -> None:
+    """Stamp a successful fire so the next restart's catch-up skips this slot."""
+    try:
+        from backend.database import get_db
+        conn = get_db()
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO reminder_fire_log "
+                "(reminder_name, fire_date, fired_at_utc) VALUES (?, ?, ?)",
+                (reminder_name, fire_date_iso,
+                 datetime.now(timezone.utc).isoformat(timespec="seconds")),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.error(f"_record_fire({reminder_name}, {fire_date_iso}) failed: {e}")
 
 
 def _next_trigger(hour: int, minute: int = 0) -> datetime:
@@ -160,7 +200,11 @@ async def _send_eod_check(bot, chat_id: int) -> None:
 
 async def run_daily_reminder(bot, chat_id: int, hour: int, minute: int, sender,
                               catchup_grace_hours: float = 4.0) -> None:
-    """Forever loop that fires ``sender`` at the next trigger; on startup, fires immediately if today's slot was missed by < ``catchup_grace_hours`` (Error Log #32, pattern CRON_RESTART_PAST_FIRE_DROPS_DAY)."""
+    """Forever loop that fires ``sender`` at the next trigger; on startup,
+    fires immediately if today's slot was missed by < ``catchup_grace_hours``
+    AND today's slot is not already in reminder_fire_log (Error Log #32 +
+    #NN, patterns CRON_RESTART_PAST_FIRE_DROPS_DAY + CRON_RESTART_REFIRES_DAY).
+    """
     first_iter = True
     while True:
         try:
@@ -171,16 +215,26 @@ async def run_daily_reminder(bot, chat_id: int, hour: int, minute: int, sender,
                                            second=0, microsecond=0)
                 missed_s = (now - today_target).total_seconds()
                 if 0 < missed_s < catchup_grace_hours * 3600:
-                    logger.info(
-                        f"{sender.__name__}: catch-up fire — missed "
-                        f"{hour:02d}:{minute:02d} by {int(missed_s/60)}m "
-                        f"(< {catchup_grace_hours}h grace)"
-                    )
-                    await sender(bot, chat_id)
+                    today_iso = now.date().isoformat()
+                    if _already_fired_today(sender.__name__, today_iso):
+                        logger.info(
+                            f"{sender.__name__}: catch-up skipped — already "
+                            f"fired on {today_iso} (CRON_RESTART_REFIRES_DAY)"
+                        )
+                    else:
+                        logger.info(
+                            f"{sender.__name__}: catch-up fire — missed "
+                            f"{hour:02d}:{minute:02d} by {int(missed_s/60)}m "
+                            f"(< {catchup_grace_hours}h grace)"
+                        )
+                        await sender(bot, chat_id)
+                        _record_fire(sender.__name__, today_iso)
             target = _next_trigger(hour, minute)
             logger.info(f"Next {sender.__name__} at {target.isoformat()}")
             await _sleep_until(target)
+            fire_date_iso = datetime.now(TASHKENT).date().isoformat()
             await sender(bot, chat_id)
+            _record_fire(sender.__name__, fire_date_iso)
         except asyncio.CancelledError:
             raise
         except Exception as e:

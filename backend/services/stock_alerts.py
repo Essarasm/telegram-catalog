@@ -655,13 +655,17 @@ def format_daily_delta_message(alerts: dict, refilled_today: list,
             groups[(weekday, date_str)].append(item)
         sorted_keys = sorted(groups.keys(), key=lambda k: k[0])
 
-        header = f"📋 <b>Avvalgi kunlardan to'ldirish kutilmoqda</b> ({len(earlier_out)} ta):"
-        item_lines = []
+        # One Telegram message per past day (restored 2026-05-22 per Ulugbek
+        # — pre-2026-05-06 layout; the consolidated single-message version
+        # made the warehouse staff lose track of which day to chase).
         for weekday, date_str in sorted_keys:
             day_name = UZ_DAYS_FULL[weekday]
             day_items = groups[(weekday, date_str)]
-            item_lines.append("")
-            item_lines.append(f"<b>{day_name} — {date_str}</b> ({len(day_items)} ta):")
+            header = (
+                f"📋 <b>{day_name} — {date_str}</b> "
+                f"({len(day_items)} ta to'ldirish kutilmoqda):"
+            )
+            item_lines = []
             for item in day_items:
                 sold = (
                     f" (sotilgan: {item['last_sold']})"
@@ -669,7 +673,7 @@ def format_daily_delta_message(alerts: dict, refilled_today: list,
                     else ""
                 )
                 item_lines.append(f"  • {item['name']}{sold}")
-        messages.extend(_chunk_lines(header, item_lines))
+            messages.extend(_chunk_lines(header, item_lines))
 
     if top_sellers:
         top_lines = ["🔥 <b>BU HAFTA TOP-10 SOTILGAN:</b>"]
