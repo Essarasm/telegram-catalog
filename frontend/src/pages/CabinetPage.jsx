@@ -26,6 +26,10 @@ const STATUS_ICONS = {
 
 const MONTHS = t.balance_month_short || ['Yan', 'Fev', 'Mar', 'Apr', 'May', 'Iyun', 'Iyul', 'Avg', 'Sen', 'Okt', 'Noy', 'Dek'];
 
+function SkeletonBar({ className = '' }) {
+  return <div className={`bg-tg-hint/20 rounded animate-pulse ${className}`} />;
+}
+
 function formatUzs(amount) {
   if (!amount && amount !== 0) return '0';
   const num = Math.round(Math.abs(amount));
@@ -386,16 +390,15 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
       if (r.ok) setPendingLegalTx(r.items || []);
     });
 
-    // Rassvet Plus — fetch business intelligence data
-    Promise.all([
-      fetch(`${API}/spend-trend?telegram_id=${userId}&months=16`).then(r => r.json()),
-      fetch(`${API}/top-products?telegram_id=${userId}&limit=5`).then(r => r.json()),
-      fetch(`${API}/activity-summary?telegram_id=${userId}`).then(r => r.json()),
-    ])
-      .then(([trend, products, activity]) => {
-        if (trend.ok && trend.months?.length > 0) setSpendTrend(trend.months);
-        if (products.ok) setTopProducts({ uzs: products.top_uzs || [], usd: products.top_usd || [] });
-        if (activity.ok && activity.summary) setActivitySummary(activity.summary);
+    // Rassvet Plus — one combined fetch (trend + top products + activity summary)
+    fetch(`${API}/business-overview?telegram_id=${userId}&months=16&top_limit=5`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok) {
+          if (data.trend?.months?.length > 0) setSpendTrend(data.trend.months);
+          if (data.products) setTopProducts({ uzs: data.products.top_uzs || [], usd: data.products.top_usd || [] });
+          if (data.activity?.summary) setActivitySummary(data.activity.summary);
+        }
         setBizLoading(false);
       })
       .catch(() => setBizLoading(false));
@@ -510,7 +513,23 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
 
   // ── Balance Card — shows debt from дебиторка or fallback to оборотка ──
   const BalanceCard = () => {
-    if (balanceLoading || !balance) return null;
+    if (balanceLoading) {
+      return (
+        <div className="mb-4">
+          <div className="text-sm text-tg-hint mb-2">{t.balance_title}</div>
+          <div className="bg-tg-secondary rounded-xl p-4">
+            <SkeletonBar className="h-3 w-20 mx-auto mb-3" />
+            <div className="flex items-baseline justify-center gap-4 mb-3">
+              <SkeletonBar className="h-7 w-28" />
+              <div className="text-tg-hint/30 text-lg font-light">│</div>
+              <SkeletonBar className="h-7 w-20" />
+            </div>
+            <SkeletonBar className="h-3 w-32 mx-auto" />
+          </div>
+        </div>
+      );
+    }
+    if (!balance) return null;
 
     const debtUzs = balance.debt_uzs ?? null;
     const debtUsd = balance.debt_usd ?? null;
@@ -696,7 +715,22 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
 
   // ── Credit Score Card (Phase 5 — soft launch) ──
   const CreditScoreCard = () => {
-    if (scoreLoading || !creditScore) return null;
+    if (scoreLoading) {
+      return (
+        <div className="mb-4">
+          <div className="text-sm text-tg-hint mb-2">⭐ {t.credit_score_title}</div>
+          <div className="bg-tg-secondary rounded-xl p-3 flex items-center gap-3">
+            <div className="rounded-full bg-tg-hint/20 animate-pulse flex-shrink-0" style={{ width: 72, height: 72 }} />
+            <div className="flex-1 min-w-0 space-y-1.5">
+              <SkeletonBar className="h-2 w-3/4" />
+              <SkeletonBar className="h-2 w-2/3" />
+              <SkeletonBar className="h-2 w-1/2" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+    if (!creditScore) return null;
 
     const score = creditScore.value;
     const tier = creditScore.tier;
@@ -1127,7 +1161,23 @@ export default function CabinetPage({ cart, onNavigateToCart, onSupplementOrder,
   })();
 
   const MyBusinessSection = () => {
-    if (bizLoading || !hasBusinessData) return null;
+    if (bizLoading) {
+      return (
+        <div className="mb-4">
+          <div className="text-sm text-tg-hint mb-2">{t.my_business_title}</div>
+          <div className="bg-tg-secondary rounded-xl p-4 space-y-3">
+            <SkeletonBar className="h-32 w-full" />
+            <div className="grid grid-cols-2 gap-3">
+              <SkeletonBar className="h-3 w-3/4" />
+              <SkeletonBar className="h-3 w-3/4" />
+              <SkeletonBar className="h-3 w-2/3" />
+              <SkeletonBar className="h-3 w-2/3" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+    if (!hasBusinessData) return null;
 
     const hasUzsTrend = chartData?.some(m => m.total_uzs > 0);
     const hasUsdTrend = chartData?.some(m => m.total_usd > 0);
