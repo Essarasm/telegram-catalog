@@ -184,18 +184,43 @@ async def handle_order_confirmation_reply(message: Message):
         # one entry per client uploaded today — taking docs[0] would link
         # whichever client happens to be first in the file to *this* wish-
         # list, regardless of who it actually belongs to.
+        #
+        # Accept either name shape: the Telegram-style label stored on
+        # orders.client_name (e.g. "Нурбек (998...)") OR the 1C canonical
+        # name resolved via users.client_id → allowed_clients.client_id_1c
+        # (e.g. "НУРБЕК Пастдаргом /Узбекистон/"). The 1C export usually
+        # carries the canonical name, while the Sotuv message shows both —
+        # matching only on the Telegram label forced handlers to manually
+        # rename the клиент field before the reply would land.
         wish_client = (row["client_name"] or "").strip()
+        wish_client_1c = ""
+        if client_tg_id:
+            conn_resolve = _get_db()
+            try:
+                ac_row = conn_resolve.execute(
+                    """SELECT ac.client_id_1c
+                       FROM users u
+                       LEFT JOIN allowed_clients ac ON ac.id = u.client_id
+                       WHERE u.telegram_id = ?""",
+                    (client_tg_id,),
+                ).fetchone()
+                if ac_row and ac_row["client_id_1c"]:
+                    wish_client_1c = ac_row["client_id_1c"].strip()
+            finally:
+                conn_resolve.close()
 
         def _norm_name(s: str) -> str:
             return re.sub(r"\s+", " ", (s or "").strip()).casefold()
 
-        wish_norm = _norm_name(wish_client)
+        candidate_norms = {
+            n for n in (_norm_name(wish_client), _norm_name(wish_client_1c)) if n
+        }
         first = None
         seen = []
         for d in docs:
             doc_client = (d.get("client_name_1c") or "").strip()
             seen.append(doc_client)
-            if wish_norm and _norm_name(doc_client) == wish_norm:
+            if candidate_norms and _norm_name(doc_client) in candidate_norms:
                 first = d
                 break
             # Phone fallback for walk-in invoices (parens-with-phone shape).
@@ -219,9 +244,11 @@ async def handle_order_confirmation_reply(message: Message):
                     break
 
         if first is None:
+            searched_labels = [s for s in (wish_client, wish_client_1c) if s]
+            searched_str = " yoki ".join(html_escape(s) for s in searched_labels) or "—"
             found = ", ".join(sorted(set(s[:40] for s in seen if s))[:5]) or "—"
             await status_msg.edit_text(
-                f"❌ Faylda <b>{html_escape(wish_client)}</b> uchun hujjat topilmadi.\n"
+                f"❌ Faylda <b>{searched_str}</b> uchun hujjat topilmadi.\n"
                 f"Topilgan: {html_escape(found)}\n"
                 f"Notog'ri xabarga javob bermayapsizmi?",
                 parse_mode="HTML",
