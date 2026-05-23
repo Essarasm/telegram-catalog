@@ -837,3 +837,211 @@ def top_sellers_period(
         "count": len(items),
         "items": items,
     }
+
+
+# ── Daily Recap (USD-equivalent, -7d + revenue YoY) ─────────────
+#
+# Day-granularity mirror of /weekly-recap. Tracks three numbers per day
+# in USD-equivalent: revenue (real_orders), cash (client_payments), debt
+# (client_debts snapshot). Per-day FX = exact daily_fx_rates row, or the
+# most recent prior day, or FX_FALLBACK (12,000) if the table is empty.
+#
+# Today is included as `partial=True` with an as-of HH:MM (Tashkent).
+# Debt snapshots may lag the row date — Alisher's /debtors uploads at
+# ~18:30 Tashkent, so today before then returns the latest prior
+# snapshot tagged `debt_stale=True`. The row's own FX is used to USD-
+# convert the (possibly stale) debt — keeps the per-row math uniform.
+#
+# Comparisons per row:
+#   * vs_last_week (-7d): revenue + cash + debt deltas
+#   * yoy (-364d): revenue delta only
+
+
+def _day_fxrate(conn, date_iso: str) -> tuple[float, str]:
+    """Return (rate, source). 'actual' when any daily_fx_rates row on or
+    before `date_iso` exists (uses the most recent ≤ date_iso row);
+    'fallback' (FX_FALLBACK) when no prior rate exists at all."""
+    row = conn.execute(
+        """SELECT rate FROM daily_fx_rates
+           WHERE currency_pair = 'USD_UZS'
+             AND rate_date <= ?
+           ORDER BY rate_date DESC LIMIT 1""",
+        (date_iso,),
+    ).fetchone()
+    if row and row["rate"]:
+        return float(row["rate"]), "actual"
+    return FX_FALLBACK, "fallback"
+
+
+def _debt_for_day(
+    conn, date_iso: str, excl_clause_cd: str, excl_params: tuple,
+) -> "tuple[float, float, str | None]":
+    """Sum debt_uzs + debt_usd from client_debts for `date_iso`. Falls
+    back to the most recent report_date ≤ date_iso when the exact day's
+    snapshot hasn't landed yet. Returns (uzs, usd, report_date_used)
+    — caller compares report_date_used to date_iso to set `debt_stale`."""
+    report_date = conn.execute(
+        """SELECT MAX(report_date) FROM client_debts
+           WHERE report_date <= ?""",
+        (date_iso,),
+    ).fetchone()[0]
+    if not report_date:
+        return 0.0, 0.0, None
+    row = conn.execute(
+        f"""SELECT COALESCE(SUM(debt_uzs), 0) AS uzs,
+                   COALESCE(SUM(debt_usd), 0) AS usd
+              FROM client_debts cd
+             WHERE cd.report_date = ?
+               {excl_clause_cd}""",
+        (report_date, *excl_params),
+    ).fetchone()
+    return float(row["uzs"] or 0), float(row["usd"] or 0), report_date
+
+
+def _format_day_label(date_iso: str) -> str:
+    """'May 23 (Sat)'"""
+    from datetime import date
+    d = date.fromisoformat(date_iso)
+    months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    return f"{months[d.month - 1]} {d.day} ({weekdays[d.weekday()]})"
+
+
+def _pct_delta(curv: float, prev: float):
+    return ((curv - prev) / prev * 100) if prev > 0 else None
+
+
+@router.get("/daily-recap")
+def daily_recap(
+    admin_key: str = Query(...),
+    days: int = Query(14, ge=1, le=60),
+    include_suppliers: bool = Query(False),
+):
+    """Daily revenue + cash + debt in USD-equivalent for the last `days`
+    Tashkent days (today first or last? — returned oldest→newest, like
+    weekly-recap).
+
+    Today is included as `partial=True` with `today_partial_as_of_tashkent`
+    (HH:MM). Per-row deltas: -7d for all three, -364d for revenue only.
+    Debt snapshots that lag the row date are flagged `debt_stale=True`
+    and carry `debt_report_date` so the UI can footnote it.
+
+    Sources: real_orders + client_payments + client_debts. Pseudo-clients
+    excluded by default.
+    """
+    from datetime import date, datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause, sql_exclusion_params,
+    )
+
+    _check_admin(admin_key)
+    conn = get_db()
+
+    excl_clause_ro = "" if include_suppliers else f" AND {sql_exclusion_clause('ro.client_name_1c')}"
+    excl_clause_cp = "" if include_suppliers else f" AND {sql_exclusion_clause('cp.client_name_1c')}"
+    excl_clause_cd = "" if include_suppliers else f" AND {sql_exclusion_clause('cd.client_name_1c')}"
+    excl_params = () if include_suppliers else sql_exclusion_params()
+
+    tk = ZoneInfo("Asia/Tashkent")
+    now_tk = datetime.now(tk)
+    today_iso = now_tk.strftime("%Y-%m-%d")
+    today_partial_as_of = now_tk.strftime("%H:%M")
+
+    today_d = date.fromisoformat(today_iso)
+    days_list = [
+        (today_d - timedelta(days=db_back)).isoformat()
+        for db_back in range(days - 1, -1, -1)  # oldest → newest
+    ]
+
+    fx_fallback_count = 0
+    debt_stale_count = 0
+    out = []
+    for d in days_list:
+        cur = _aggregate_week(conn, d, d, excl_clause_ro, excl_clause_cp, excl_params)
+        fx_rate, fx_source = _day_fxrate(conn, d)
+        if fx_source == "fallback":
+            fx_fallback_count += 1
+
+        revenue_usd_eq = cur["revenue_uzs"] / fx_rate + cur["revenue_usd"]
+        cash_usd_eq = cur["collections_uzs"] / fx_rate + cur["collections_usd"]
+
+        debt_uzs, debt_usd, debt_report_date = _debt_for_day(
+            conn, d, excl_clause_cd, excl_params,
+        )
+        debt_usd_eq = debt_usd + (debt_uzs / fx_rate if fx_rate else 0)
+        is_debt_stale = bool(debt_report_date and debt_report_date != d)
+        if is_debt_stale:
+            debt_stale_count += 1
+
+        d7 = (date.fromisoformat(d) - timedelta(days=7)).isoformat()
+        prev7 = _aggregate_week(conn, d7, d7, excl_clause_ro, excl_clause_cp, excl_params)
+        fx7, _ = _day_fxrate(conn, d7)
+        rev_w7 = prev7["revenue_uzs"] / fx7 + prev7["revenue_usd"]
+        cash_w7 = prev7["collections_uzs"] / fx7 + prev7["collections_usd"]
+        debt7_uzs, debt7_usd, _ = _debt_for_day(
+            conn, d7, excl_clause_cd, excl_params,
+        )
+        debt_w7 = debt7_usd + (debt7_uzs / fx7 if fx7 else 0)
+
+        d364 = (date.fromisoformat(d) - timedelta(days=364)).isoformat()
+        prev364 = _aggregate_week(conn, d364, d364, excl_clause_ro, excl_clause_cp, excl_params)
+        fx364, _ = _day_fxrate(conn, d364)
+        rev_y = prev364["revenue_uzs"] / fx364 + prev364["revenue_usd"]
+        yoy_available = (prev364["revenue_uzs"] + prev364["revenue_usd"]) > 0
+
+        rev_w7_delta = _pct_delta(revenue_usd_eq, rev_w7)
+        cash_w7_delta = _pct_delta(cash_usd_eq, cash_w7)
+        debt_w7_delta = _pct_delta(debt_usd_eq, debt_w7)
+        rev_y_delta = _pct_delta(revenue_usd_eq, rev_y)
+
+        out.append({
+            "date": d,
+            "label": _format_day_label(d),
+            "partial": d == today_iso,
+            "revenue_uzs_native": round(cur["revenue_uzs"], 2),
+            "revenue_usd_native": round(cur["revenue_usd"], 2),
+            "revenue_usd_eq": round(revenue_usd_eq, 2),
+            "cash_uzs_native": round(cur["collections_uzs"], 2),
+            "cash_usd_native": round(cur["collections_usd"], 2),
+            "cash_usd_eq": round(cash_usd_eq, 2),
+            "debt_uzs_native": round(debt_uzs, 2),
+            "debt_usd_native": round(debt_usd, 2),
+            "debt_usd_eq": round(debt_usd_eq, 2),
+            "debt_report_date": debt_report_date,
+            "debt_stale": is_debt_stale,
+            "order_count": cur["order_count"],
+            "active_clients": cur["active_clients"],
+            "fx_rate": round(fx_rate, 2),
+            "fx_source": fx_source,
+            "vs_last_week": {
+                "date": d7,
+                "revenue_usd_eq": round(rev_w7, 2),
+                "cash_usd_eq": round(cash_w7, 2),
+                "debt_usd_eq": round(debt_w7, 2),
+                "revenue_delta_pct": round(rev_w7_delta, 1) if rev_w7_delta is not None else None,
+                "cash_delta_pct": round(cash_w7_delta, 1) if cash_w7_delta is not None else None,
+                "debt_delta_pct": round(debt_w7_delta, 1) if debt_w7_delta is not None else None,
+            },
+            "yoy": {
+                "date": d364,
+                "revenue_usd_eq": round(rev_y, 2),
+                "revenue_delta_pct": round(rev_y_delta, 1) if rev_y_delta is not None else None,
+                "available": yoy_available,
+            },
+        })
+
+    conn.close()
+
+    return {
+        "ok": True,
+        "days": days,
+        "today_iso": today_iso,
+        "today_partial_as_of_tashkent": today_partial_as_of,
+        "rows": out,
+        "fx_fallback_rate": FX_FALLBACK,
+        "fx_fallback_count": fx_fallback_count,
+        "debt_stale_count": debt_stale_count,
+        "currency_basis": "USD-equivalent (per-day FX, exact or most-recent prior)",
+    }

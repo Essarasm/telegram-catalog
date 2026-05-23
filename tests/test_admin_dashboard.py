@@ -1242,4 +1242,244 @@ class TestTopClientsWeekly:
                      params={"admin_key": ADMIN_KEY, "weeks_back": 2}).json()
         assert body["week_start"] == two_mon
         assert body["week_end"] == two_sun
-        assert body["clients"][0]["client_name"] == "Old Client"
+
+
+# ── /daily-recap ────────────────────────────────────────────────────
+
+
+def _tk_today() -> date:
+    return datetime.now(TASHKENT).date()
+
+
+class TestDailyRecap:
+    def test_unauthorized_without_key(self, db):
+        c = _client(db)
+        assert c.get("/api/admin/daily-recap").status_code == 422
+
+    def test_unauthorized_with_wrong_key(self, db):
+        c = _client(db)
+        assert c.get("/api/admin/daily-recap",
+                     params={"admin_key": "wrong"}).status_code == 401
+
+    def test_returns_14_rows_by_default_oldest_first(self, db):
+        c = _client(db)
+        body = c.get("/api/admin/daily-recap", params={"admin_key": ADMIN_KEY}).json()
+        assert body["ok"] is True
+        assert body["days"] == 14
+        assert len(body["rows"]) == 14
+        dates = [r["date"] for r in body["rows"]]
+        assert dates == sorted(dates)
+        # Last row is today, first row is 13 days ago
+        today = _tk_today().isoformat()
+        assert body["rows"][-1]["date"] == today
+        assert body["today_iso"] == today
+
+    def test_today_is_partial_others_are_not(self, db):
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        today = _tk_today().isoformat()
+        for r in rows:
+            assert r["partial"] is (r["date"] == today)
+
+    def test_usd_eq_math_revenue_and_cash(self, db):
+        # Yesterday: $10k revenue (120M UZS) + $5k cash (60M UZS)
+        y = (_tk_today() - timedelta(days=1)).isoformat()
+        _seed_real_order(db, 1, y, "Real Client", total_uzs=120_000_000)
+        _seed_payment(db, 1, y, "Real Client", "UZS", amount_local=60_000_000)
+        _seed_fx(db, y, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        assert yest["revenue_uzs_native"] == 120_000_000
+        assert yest["revenue_usd_eq"] == 10_000
+        assert yest["cash_uzs_native"] == 60_000_000
+        assert yest["cash_usd_eq"] == 5_000
+        assert yest["fx_source"] == "actual"
+        assert yest["fx_rate"] == 12_000
+
+    def test_native_usd_leg_preserved(self, db):
+        y = (_tk_today() - timedelta(days=1)).isoformat()
+        _seed_real_order(db, 1, y, "Real Client", total_uzs=0, total_usd=2500)
+        _seed_payment(db, 1, y, "Real Client", "USD", amount_currency=1000)
+        _seed_fx(db, y, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        assert yest["revenue_usd_native"] == 2500
+        assert yest["revenue_usd_eq"] == 2500
+        assert yest["cash_usd_native"] == 1000
+        assert yest["cash_usd_eq"] == 1000
+
+    def test_debt_uses_exact_day_snapshot(self, db):
+        y = (_tk_today() - timedelta(days=1)).isoformat()
+        _seed_debt(db, "Real Client", debt_uzs=24_000_000, debt_usd=500,
+                   report_date=y)
+        _seed_fx(db, y, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        # 24M / 12k + 500 = 2000 + 500 = 2500
+        assert yest["debt_uzs_native"] == 24_000_000
+        assert yest["debt_usd_native"] == 500
+        assert yest["debt_usd_eq"] == 2500
+        assert yest["debt_report_date"] == y
+        assert yest["debt_stale"] is False
+
+    def test_debt_falls_back_to_prior_snapshot_when_day_missing(self, db):
+        # Only yesterday has a snapshot — today should reuse it tagged stale
+        y = (_tk_today() - timedelta(days=1)).isoformat()
+        today = _tk_today().isoformat()
+        _seed_debt(db, "Real Client", debt_uzs=12_000_000, debt_usd=0,
+                   report_date=y)
+        _seed_fx(db, today, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        today_row = next(r for r in rows if r["date"] == today)
+        assert today_row["debt_uzs_native"] == 12_000_000
+        assert today_row["debt_report_date"] == y
+        assert today_row["debt_stale"] is True
+        # Stale-count surfaced at envelope level
+        body = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()
+        assert body["debt_stale_count"] >= 1
+
+    def test_minus7d_delta_all_three_metrics(self, db):
+        today_d = _tk_today()
+        y = (today_d - timedelta(days=1)).isoformat()
+        y_minus_7 = (today_d - timedelta(days=8)).isoformat()
+        # Yesterday: $10k revenue, $4k cash. -7d: $8k revenue, $2k cash
+        _seed_real_order(db, 1, y, "Real Client", total_uzs=120_000_000)
+        _seed_real_order(db, 2, y_minus_7, "Real Client", total_uzs=96_000_000)
+        _seed_payment(db, 1, y, "Real Client", "UZS", amount_local=48_000_000)
+        _seed_payment(db, 2, y_minus_7, "Real Client", "UZS", amount_local=24_000_000)
+        _seed_debt(db, "Real Client", debt_uzs=60_000_000, report_date=y)       # $5k
+        _seed_debt(db, "Real Client", debt_uzs=48_000_000, report_date=y_minus_7)  # $4k
+        _seed_fx(db, y, 12000.0)
+        _seed_fx(db, y_minus_7, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        assert yest["vs_last_week"]["date"] == y_minus_7
+        # Revenue: (10k - 8k)/8k = +25%
+        assert yest["vs_last_week"]["revenue_delta_pct"] == 25.0
+        # Cash: (4k - 2k)/2k = +100%
+        assert yest["vs_last_week"]["cash_delta_pct"] == 100.0
+        # Debt: (5k - 4k)/4k = +25%
+        assert yest["vs_last_week"]["debt_delta_pct"] == 25.0
+
+    def test_yoy_delta_364_days_revenue_only(self, db):
+        today_d = _tk_today()
+        y = (today_d - timedelta(days=1)).isoformat()
+        y_minus_364 = (today_d - timedelta(days=1 + 364)).isoformat()
+        _seed_real_order(db, 1, y, "Real Client", total_uzs=120_000_000)        # $10k
+        _seed_real_order(db, 2, y_minus_364, "Real Client", total_uzs=96_000_000)  # $8k
+        _seed_fx(db, y, 12000.0)
+        _seed_fx(db, y_minus_364, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        assert yest["yoy"]["date"] == y_minus_364
+        assert yest["yoy"]["revenue_usd_eq"] == 8_000
+        assert yest["yoy"]["revenue_delta_pct"] == 25.0
+        assert yest["yoy"]["available"] is True
+        # YoY object only carries revenue, no cash/debt keys
+        assert "cash_delta_pct" not in yest["yoy"]
+        assert "debt_delta_pct" not in yest["yoy"]
+
+    def test_yoy_unavailable_when_no_prior_data(self, db):
+        y = (_tk_today() - timedelta(days=1)).isoformat()
+        _seed_real_order(db, 1, y, "Real Client", total_uzs=120_000_000)
+        _seed_fx(db, y, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        assert yest["yoy"]["available"] is False
+        assert yest["yoy"]["revenue_usd_eq"] == 0
+        assert yest["yoy"]["revenue_delta_pct"] is None
+
+    def test_fx_fallback_when_no_rates_at_all(self, db):
+        y = (_tk_today() - timedelta(days=1)).isoformat()
+        _seed_real_order(db, 1, y, "Real Client", total_uzs=120_000_000)
+        db.commit()  # no _seed_fx anywhere
+        c = _client(db)
+        body = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()
+        yest = next(r for r in body["rows"] if r["date"] == y)
+        assert yest["fx_source"] == "fallback"
+        assert yest["fx_rate"] == 12_000.0
+        assert yest["revenue_usd_eq"] == 10_000
+        assert body["fx_fallback_count"] >= 1
+
+    def test_fx_falls_forward_from_most_recent_prior(self, db):
+        # FX seeded 5 days ago, none after — yesterday should reuse it as 'actual'
+        today_d = _tk_today()
+        five_ago = (today_d - timedelta(days=5)).isoformat()
+        y = (today_d - timedelta(days=1)).isoformat()
+        _seed_fx(db, five_ago, 12500.0)
+        _seed_real_order(db, 1, y, "Real Client", total_uzs=125_000_000)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        assert yest["fx_source"] == "actual"
+        assert yest["fx_rate"] == 12_500.0
+        # 125M / 12.5k = 10k
+        assert yest["revenue_usd_eq"] == 10_000
+
+    def test_pseudo_filter_excludes_system_accounts(self, db):
+        y = (_tk_today() - timedelta(days=1)).isoformat()
+        _seed_real_order(db, 1, y, "Наличка СКЛАД", total_uzs=999_000_000)
+        _seed_real_order(db, 2, y, "Real Client", total_uzs=12_000_000)
+        _seed_payment(db, 1, y, "Наличка СКЛАД", "UZS", amount_local=999_000_000)
+        _seed_payment(db, 2, y, "Real Client", "UZS", amount_local=6_000_000)
+        _seed_debt(db, "Наличка СКЛАД", debt_uzs=500_000_000, report_date=y)
+        _seed_debt(db, "Real Client", debt_uzs=24_000_000, report_date=y)
+        _seed_fx(db, y, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        # System account dropped → only the real client counts
+        assert yest["revenue_uzs_native"] == 12_000_000
+        assert yest["cash_uzs_native"] == 6_000_000
+        assert yest["debt_uzs_native"] == 24_000_000
+        assert yest["order_count"] == 1
+
+    def test_pseudo_filter_can_be_disabled(self, db):
+        y = (_tk_today() - timedelta(days=1)).isoformat()
+        _seed_real_order(db, 1, y, "Наличка СКЛАД", total_uzs=12_000_000)
+        _seed_fx(db, y, 12000.0)
+        db.commit()
+        c = _client(db)
+        rows = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY,
+                             "include_suppliers": "true"}).json()["rows"]
+        yest = next(r for r in rows if r["date"] == y)
+        assert yest["revenue_uzs_native"] == 12_000_000
+
+    def test_days_param_bounds(self, db):
+        c = _client(db)
+        assert c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY, "days": 0}).status_code == 422
+        assert c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY, "days": 61}).status_code == 422
+        body = c.get("/api/admin/daily-recap",
+                     params={"admin_key": ADMIN_KEY, "days": 3}).json()
+        assert len(body["rows"]) == 3

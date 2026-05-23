@@ -919,6 +919,33 @@
                         </div>
                     </div>
 
+                    <!-- Daily Recap — last 14 days, table-only. Today row is partial. -->
+                    <div class="chart-container" style="margin-top: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                            <div class="chart-title" style="margin-bottom: 0;">Daily Recap (USD-equivalent · last 14 days)</div>
+                            <span id="dailyRecapMeta" style="font-size: 11px; color: #8b8fa3;"></span>
+                        </div>
+                        <div id="dailyRecapTodayLine" style="font-size: 12px; color: #d1d5db; padding: 10px 12px; background: rgba(99,102,241,0.06); border: 1px solid rgba(99,102,241,0.2); border-radius: 6px; margin-bottom: 12px; line-height: 1.6;">—</div>
+                        <div style="overflow-x: auto;">
+                            <table class="data-table" style="font-size: 12px;">
+                                <thead>
+                                    <tr>
+                                        <th>Day</th>
+                                        <th style="text-align:right;">Revenue (USD-eq)</th>
+                                        <th style="text-align:right;">Δ vs −7d</th>
+                                        <th style="text-align:right;">YoY Δ</th>
+                                        <th style="text-align:right;">Cash (USD-eq)</th>
+                                        <th style="text-align:right;">Δ vs −7d</th>
+                                        <th style="text-align:right;">Debt (USD-eq)</th>
+                                        <th style="text-align:right;">Δ vs −7d</th>
+                                        <th style="text-align:right;">FX</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dailyRecapBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <div class="chart-row">
                         <div class="row-item">
                             <div class="chart-container">
@@ -2564,6 +2591,86 @@
             loadTopSellersWoW();
             loadTopSellersPeriod('last_week', 'topSellersLastWeekBody', 'topSellersLastWeekMeta');
             loadTopSellersPeriod('yesterday', 'topSellersYesterdayBody', 'topSellersYesterdayMeta');
+            loadDailyRecap();
+        }
+
+        // Daily Recap — coloured Δ% cell. Inverse=true flips green/red
+        // for metrics where "up = bad" (debt growing).
+        function dailyDeltaCell(v, inverse) {
+            if (v === null || v === undefined) return '<span style="color:#8b8fa3;">—</span>';
+            const color = inverse
+                ? (v <= 0 ? '#22c55e' : '#ef4444')
+                : (v >= 0 ? '#22c55e' : '#ef4444');
+            const sign = v >= 0 ? '+' : '';
+            return `<span style="color:${color};">${sign}${v.toFixed(1)}%</span>`;
+        }
+
+        async function loadDailyRecap() {
+            try {
+                const data = await apiCall('daily-recap?days=14');
+                renderDailyRecap(data);
+            } catch (e) {
+                console.warn('daily-recap load failed', e);
+            }
+        }
+
+        function renderDailyRecap(data) {
+            if (!data || !data.rows || !data.rows.length) return;
+
+            const today = data.rows[data.rows.length - 1];
+            const w7 = today.vs_last_week || {};
+            const yoy = today.yoy || {};
+
+            const meta = document.getElementById('dailyRecapMeta');
+            if (meta) {
+                meta.textContent = today.partial
+                    ? `Today partial · as of ${data.today_partial_as_of_tashkent} Tashkent`
+                    : '';
+            }
+
+            const todayLine = document.getElementById('dailyRecapTodayLine');
+            if (todayLine) {
+                const yoyStr = yoy.available
+                    ? ` &nbsp;·&nbsp; YoY ${dailyDeltaCell(yoy.revenue_delta_pct)}`
+                    : '';
+                const debtStaleStr = today.debt_stale
+                    ? ` <span style="color:#f59e0b;">(snapshot ${today.debt_report_date})</span>`
+                    : '';
+                todayLine.innerHTML =
+                    `<strong>Today</strong> (${today.label}): ` +
+                    `Revenue <strong>${fmtUSD(today.revenue_usd_eq)}</strong> ${dailyDeltaCell(w7.revenue_delta_pct)}${yoyStr}` +
+                    ` &nbsp;·&nbsp; Cash <strong>${fmtUSD(today.cash_usd_eq)}</strong> ${dailyDeltaCell(w7.cash_delta_pct)}` +
+                    ` &nbsp;·&nbsp; Debt <strong>${fmtUSD(today.debt_usd_eq)}</strong> ${dailyDeltaCell(w7.debt_delta_pct, true)}${debtStaleStr}`;
+            }
+
+            const tbody = document.getElementById('dailyRecapBody');
+            if (!tbody) return;
+            const reversed = [...data.rows].reverse();
+            tbody.innerHTML = reversed.map(r => {
+                const w7r = r.vs_last_week || {};
+                const yoyR = r.yoy || {};
+                const debtNote = r.debt_stale
+                    ? ` <span title="snapshot from ${r.debt_report_date}" style="color:#f59e0b;font-size:10px;">(${r.debt_report_date})</span>`
+                    : '';
+                const partialNote = r.partial
+                    ? ` <span style="color:#f59e0b;font-size:10px;">partial</span>`
+                    : '';
+                const rowStyle = r.partial ? ' style="background:rgba(99,102,241,0.04);"' : '';
+                const yoyCell = yoyR.available
+                    ? dailyDeltaCell(yoyR.revenue_delta_pct)
+                    : '<span style="color:#8b8fa3;">—</span>';
+                return `<tr${rowStyle}>
+                    <td>${r.label}${partialNote}</td>
+                    <td style="text-align:right;">${fmtUSD(r.revenue_usd_eq)}</td>
+                    <td style="text-align:right;">${dailyDeltaCell(w7r.revenue_delta_pct)}</td>
+                    <td style="text-align:right;">${yoyCell}</td>
+                    <td style="text-align:right;">${fmtUSD(r.cash_usd_eq)}</td>
+                    <td style="text-align:right;">${dailyDeltaCell(w7r.cash_delta_pct)}</td>
+                    <td style="text-align:right;">${fmtUSD(r.debt_usd_eq)}${debtNote}</td>
+                    <td style="text-align:right;">${dailyDeltaCell(w7r.debt_delta_pct, true)}</td>
+                    <td style="text-align:right;">${fmt(r.fx_rate)}</td>
+                </tr>`;
+            }).join('');
         }
 
         async function loadDebtorsList() {
