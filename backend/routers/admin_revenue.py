@@ -874,26 +874,31 @@ def _day_fxrate(conn, date_iso: str) -> tuple[float, str]:
 
 
 def _debt_for_day(
-    conn, date_iso: str, excl_clause_cd: str, excl_params: tuple,
+    conn, date_iso: str, include_suppliers: bool,
 ) -> "tuple[float, float, str | None]":
-    """Sum debt_uzs + debt_usd from client_debts for `date_iso`. Falls
-    back to the most recent report_date ≤ date_iso when the exact day's
-    snapshot hasn't landed yet. Returns (uzs, usd, report_date_used)
-    — caller compares report_date_used to date_iso to set `debt_stale`."""
+    """Return (debt_uzs, debt_usd, report_date_used) for the given day.
+
+    Reads from `client_debt_snapshots_daily` — `client_debts` itself is
+    overwritten on each /debtors upload (only the latest snapshot lives
+    there), but `client_debt_snapshots_daily` retains per-day aggregates
+    starting 2026-05-06. Falls back to the most recent report_date ≤
+    date_iso when the exact day's snapshot is missing (Alisher's upload
+    hasn't landed yet). Pre-2026-05-06 days return (0, 0, None).
+    """
     report_date = conn.execute(
-        """SELECT MAX(report_date) FROM client_debts
+        """SELECT MAX(report_date) FROM client_debt_snapshots_daily
            WHERE report_date <= ?""",
         (date_iso,),
     ).fetchone()[0]
     if not report_date:
         return 0.0, 0.0, None
+    uzs_col = "debt_uzs_total" if include_suppliers else "debt_uzs_real"
+    usd_col = "debt_usd_total" if include_suppliers else "debt_usd_real"
     row = conn.execute(
-        f"""SELECT COALESCE(SUM(debt_uzs), 0) AS uzs,
-                   COALESCE(SUM(debt_usd), 0) AS usd
-              FROM client_debts cd
-             WHERE cd.report_date = ?
-               {excl_clause_cd}""",
-        (report_date, *excl_params),
+        f"""SELECT {uzs_col} AS uzs, {usd_col} AS usd
+              FROM client_debt_snapshots_daily
+             WHERE report_date = ?""",
+        (report_date,),
     ).fetchone()
     return float(row["uzs"] or 0), float(row["usd"] or 0), report_date
 
@@ -941,7 +946,6 @@ def daily_recap(
 
     excl_clause_ro = "" if include_suppliers else f" AND {sql_exclusion_clause('ro.client_name_1c')}"
     excl_clause_cp = "" if include_suppliers else f" AND {sql_exclusion_clause('cp.client_name_1c')}"
-    excl_clause_cd = "" if include_suppliers else f" AND {sql_exclusion_clause('cd.client_name_1c')}"
     excl_params = () if include_suppliers else sql_exclusion_params()
 
     tk = ZoneInfo("Asia/Tashkent")
@@ -968,7 +972,7 @@ def daily_recap(
         cash_usd_eq = cur["collections_uzs"] / fx_rate + cur["collections_usd"]
 
         debt_uzs, debt_usd, debt_report_date = _debt_for_day(
-            conn, d, excl_clause_cd, excl_params,
+            conn, d, include_suppliers,
         )
         debt_usd_eq = debt_usd + (debt_uzs / fx_rate if fx_rate else 0)
         is_debt_stale = bool(debt_report_date and debt_report_date != d)
@@ -980,9 +984,7 @@ def daily_recap(
         fx7, _ = _day_fxrate(conn, d7)
         rev_w7 = prev7["revenue_uzs"] / fx7 + prev7["revenue_usd"]
         cash_w7 = prev7["collections_uzs"] / fx7 + prev7["collections_usd"]
-        debt7_uzs, debt7_usd, _ = _debt_for_day(
-            conn, d7, excl_clause_cd, excl_params,
-        )
+        debt7_uzs, debt7_usd, _ = _debt_for_day(conn, d7, include_suppliers)
         debt_w7 = debt7_usd + (debt7_uzs / fx7 if fx7 else 0)
 
         d364 = (date.fromisoformat(d) - timedelta(days=364)).isoformat()

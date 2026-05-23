@@ -1251,6 +1251,23 @@ def _tk_today() -> date:
     return datetime.now(TASHKENT).date()
 
 
+def _seed_debt_snapshot(db, report_date, *, uzs_real=0, usd_real=0,
+                        uzs_total=None, usd_total=None):
+    """Insert/replace one row in client_debt_snapshots_daily. By default
+    `_total` mirrors `_real` (no suppliers seeded)."""
+    if uzs_total is None:
+        uzs_total = uzs_real
+    if usd_total is None:
+        usd_total = usd_real
+    db.execute(
+        """INSERT OR REPLACE INTO client_debt_snapshots_daily
+           (report_date, debt_uzs_real, debt_usd_real,
+            debt_uzs_total, debt_usd_total)
+           VALUES (?, ?, ?, ?, ?)""",
+        (report_date, uzs_real, usd_real, uzs_total, usd_total),
+    )
+
+
 class TestDailyRecap:
     def test_unauthorized_without_key(self, db):
         c = _client(db)
@@ -1317,8 +1334,7 @@ class TestDailyRecap:
 
     def test_debt_uses_exact_day_snapshot(self, db):
         y = (_tk_today() - timedelta(days=1)).isoformat()
-        _seed_debt(db, "Real Client", debt_uzs=24_000_000, debt_usd=500,
-                   report_date=y)
+        _seed_debt_snapshot(db, y, uzs_real=24_000_000, usd_real=500)
         _seed_fx(db, y, 12000.0)
         db.commit()
         c = _client(db)
@@ -1336,8 +1352,7 @@ class TestDailyRecap:
         # Only yesterday has a snapshot — today should reuse it tagged stale
         y = (_tk_today() - timedelta(days=1)).isoformat()
         today = _tk_today().isoformat()
-        _seed_debt(db, "Real Client", debt_uzs=12_000_000, debt_usd=0,
-                   report_date=y)
+        _seed_debt_snapshot(db, y, uzs_real=12_000_000)
         _seed_fx(db, today, 12000.0)
         db.commit()
         c = _client(db)
@@ -1361,8 +1376,8 @@ class TestDailyRecap:
         _seed_real_order(db, 2, y_minus_7, "Real Client", total_uzs=96_000_000)
         _seed_payment(db, 1, y, "Real Client", "UZS", amount_local=48_000_000)
         _seed_payment(db, 2, y_minus_7, "Real Client", "UZS", amount_local=24_000_000)
-        _seed_debt(db, "Real Client", debt_uzs=60_000_000, report_date=y)       # $5k
-        _seed_debt(db, "Real Client", debt_uzs=48_000_000, report_date=y_minus_7)  # $4k
+        _seed_debt_snapshot(db, y, uzs_real=60_000_000)        # $5k
+        _seed_debt_snapshot(db, y_minus_7, uzs_real=48_000_000)  # $4k
         _seed_fx(db, y, 12000.0)
         _seed_fx(db, y_minus_7, 12000.0)
         db.commit()
@@ -1448,8 +1463,10 @@ class TestDailyRecap:
         _seed_real_order(db, 2, y, "Real Client", total_uzs=12_000_000)
         _seed_payment(db, 1, y, "Наличка СКЛАД", "UZS", amount_local=999_000_000)
         _seed_payment(db, 2, y, "Real Client", "UZS", amount_local=6_000_000)
-        _seed_debt(db, "Наличка СКЛАД", debt_uzs=500_000_000, report_date=y)
-        _seed_debt(db, "Real Client", debt_uzs=24_000_000, report_date=y)
+        # snapshot table pre-splits pseudo (real) vs total — endpoint
+        # picks the correct column based on include_suppliers.
+        _seed_debt_snapshot(db, y, uzs_real=24_000_000,
+                            uzs_total=24_000_000 + 500_000_000)
         _seed_fx(db, y, 12000.0)
         db.commit()
         c = _client(db)
@@ -1465,6 +1482,8 @@ class TestDailyRecap:
     def test_pseudo_filter_can_be_disabled(self, db):
         y = (_tk_today() - timedelta(days=1)).isoformat()
         _seed_real_order(db, 1, y, "Наличка СКЛАД", total_uzs=12_000_000)
+        _seed_debt_snapshot(db, y, uzs_real=24_000_000,
+                            uzs_total=524_000_000)
         _seed_fx(db, y, 12000.0)
         db.commit()
         c = _client(db)
@@ -1473,6 +1492,8 @@ class TestDailyRecap:
                              "include_suppliers": "true"}).json()["rows"]
         yest = next(r for r in rows if r["date"] == y)
         assert yest["revenue_uzs_native"] == 12_000_000
+        # include_suppliers picks debt_uzs_total, not debt_uzs_real
+        assert yest["debt_uzs_native"] == 524_000_000
 
     def test_days_param_bounds(self, db):
         c = _client(db)
