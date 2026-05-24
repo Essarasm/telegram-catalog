@@ -848,8 +848,46 @@
             <div class="content-area">
                 <!-- Business Overview Tab -->
                 <div id="overview-tab" class="tab-content">
+                    <!-- Daily Recap chart — revenue + cash bars, dashed YoY revenue line -->
+                    <div class="chart-container">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                            <div class="chart-title" style="margin-bottom: 0;">Daily Recap (USD-equivalent · last 14 days)</div>
+                            <span id="dailyChartMeta" style="font-size: 11px; color: #8b8fa3;"></span>
+                        </div>
+                        <div class="chart-wrapper" style="height: 350px;">
+                            <canvas id="dailyRecapChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Daily Breakdown — 14-row table, today partial, debt stale-tag when /debtors hasn't landed -->
+                    <div class="chart-container" style="margin-top: 16px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                            <div class="chart-title" style="margin-bottom: 0;">Daily Breakdown</div>
+                            <span id="dailyRecapMeta" style="font-size: 11px; color: #8b8fa3;"></span>
+                        </div>
+                        <div id="dailyRecapTodayLine" style="font-size: 12px; color: #d1d5db; padding: 10px 12px; background: rgba(99,102,241,0.06); border: 1px solid rgba(99,102,241,0.2); border-radius: 6px; margin-bottom: 12px; line-height: 1.6;">—</div>
+                        <div style="overflow-x: auto;">
+                            <table class="data-table" style="font-size: 12px;">
+                                <thead>
+                                    <tr>
+                                        <th>Day</th>
+                                        <th style="text-align:right;">Revenue (USD-eq)</th>
+                                        <th style="text-align:right;">Δ vs −7d</th>
+                                        <th style="text-align:right;">YoY Δ</th>
+                                        <th style="text-align:right;">Cash (USD-eq)</th>
+                                        <th style="text-align:right;">Δ vs −7d</th>
+                                        <th style="text-align:right;">Debt (USD-eq)</th>
+                                        <th style="text-align:right;">Δ vs −7d</th>
+                                        <th style="text-align:right;">FX</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="dailyRecapBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     <!-- KPI Cards — Last Closed Week (USD-equivalent) -->
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; margin-top: 24px;">
                         <span style="font-size: 12px; color: #8b8fa3; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Key Metrics · USD-equivalent</span>
                         <div class="currency-toggle" id="kpiRangeToggle">
                             <button class="currency-btn active" data-range="last_week" onclick="setKpiRange('last_week')">Last Closed Week</button>
@@ -915,33 +953,6 @@
                                     </tr>
                                 </thead>
                                 <tbody id="weeklyBreakdownBody"></tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <!-- Daily Recap — last 14 days, table-only. Today row is partial. -->
-                    <div class="chart-container" style="margin-top: 16px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                            <div class="chart-title" style="margin-bottom: 0;">Daily Recap (USD-equivalent · last 14 days)</div>
-                            <span id="dailyRecapMeta" style="font-size: 11px; color: #8b8fa3;"></span>
-                        </div>
-                        <div id="dailyRecapTodayLine" style="font-size: 12px; color: #d1d5db; padding: 10px 12px; background: rgba(99,102,241,0.06); border: 1px solid rgba(99,102,241,0.2); border-radius: 6px; margin-bottom: 12px; line-height: 1.6;">—</div>
-                        <div style="overflow-x: auto;">
-                            <table class="data-table" style="font-size: 12px;">
-                                <thead>
-                                    <tr>
-                                        <th>Day</th>
-                                        <th style="text-align:right;">Revenue (USD-eq)</th>
-                                        <th style="text-align:right;">Δ vs −7d</th>
-                                        <th style="text-align:right;">YoY Δ</th>
-                                        <th style="text-align:right;">Cash (USD-eq)</th>
-                                        <th style="text-align:right;">Δ vs −7d</th>
-                                        <th style="text-align:right;">Debt (USD-eq)</th>
-                                        <th style="text-align:right;">Δ vs −7d</th>
-                                        <th style="text-align:right;">FX</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="dailyRecapBody"></tbody>
                             </table>
                         </div>
                     </div>
@@ -2553,6 +2564,7 @@
         // ==================== BUSINESS OVERVIEW ====================
         let cachedReceivables = null;
         let cachedWeekly = null;
+        let cachedDaily = null;
         let kpiRange = 'last_week';
 
         function setKpiRange(range) {
@@ -2608,10 +2620,91 @@
         async function loadDailyRecap() {
             try {
                 const data = await apiCall('daily-recap?days=14');
+                cachedDaily = data;
                 renderDailyRecap(data);
+                drawDailyRecapChart();
             } catch (e) {
                 console.warn('daily-recap load failed', e);
             }
+        }
+
+        function drawDailyRecapChart() {
+            const rows = (cachedDaily && cachedDaily.rows) || [];
+            const el = document.getElementById('dailyRecapChart');
+            if (!el) return;
+            const ctx = el.getContext('2d');
+            if (charts.dailyRecap) charts.dailyRecap.destroy();
+            if (!rows.length) return;
+
+            const labels = rows.map(r => r.label);
+            const revenue = rows.map(r => r.revenue_usd_eq || 0);
+            const cash = rows.map(r => r.cash_usd_eq || 0);
+            const yoyRevenue = rows.map(r => (r.yoy && r.yoy.available && r.yoy.revenue_usd_eq) || null);
+            // Subdue today's bar (partial day) by tinting with translucency.
+            const revColors = rows.map(r => r.partial ? 'rgba(99,102,241,0.45)' : '#6366f1');
+            const cashColors = rows.map(r => r.partial ? 'rgba(34,197,94,0.45)' : '#22c55e');
+
+            const meta = document.getElementById('dailyChartMeta');
+            if (meta && rows.length) {
+                const first = rows[0].date;
+                const last = rows[rows.length - 1].date;
+                const partialNote = rows[rows.length - 1].partial
+                    ? ` · today partial as of ${cachedDaily.today_partial_as_of_tashkent} Tashkent`
+                    : '';
+                meta.textContent = `${first} → ${last}${partialNote}`;
+            }
+
+            charts.dailyRecap = new Chart(ctx, {
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { type: 'bar', label: 'Revenue (USD-eq)', data: revenue, backgroundColor: revColors, borderRadius: 4, order: 2 },
+                        { type: 'bar', label: 'Cash (USD-eq)', data: cash, backgroundColor: cashColors, borderRadius: 4, order: 2 },
+                        {
+                            type: 'line', label: 'Prior-year Revenue', data: yoyRevenue,
+                            borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.0)',
+                            borderWidth: 2, borderDash: [6, 4], tension: 0.3,
+                            pointBackgroundColor: '#a855f7', pointBorderColor: '#1a1d27',
+                            pointRadius: 3, pointHoverRadius: 5, fill: false, order: 1,
+                            spanGaps: true,
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#8b8fa3' } },
+                        tooltip: {
+                            callbacks: {
+                                afterBody: (items) => {
+                                    if (!items.length) return '';
+                                    const r = rows[items[0].dataIndex];
+                                    if (!r) return '';
+                                    const lines = [];
+                                    const w7 = r.vs_last_week || {};
+                                    if (w7.revenue_delta_pct !== null && w7.revenue_delta_pct !== undefined) {
+                                        const s = w7.revenue_delta_pct >= 0 ? '+' : '';
+                                        lines.push(`Δ vs −7d (rev): ${s}${w7.revenue_delta_pct.toFixed(1)}%`);
+                                    }
+                                    if (r.yoy && r.yoy.available && r.yoy.revenue_delta_pct !== null && r.yoy.revenue_delta_pct !== undefined) {
+                                        const s = r.yoy.revenue_delta_pct >= 0 ? '+' : '';
+                                        lines.push(`YoY Δ (rev): ${s}${r.yoy.revenue_delta_pct.toFixed(1)}% vs ${r.yoy.date}`);
+                                    }
+                                    lines.push(`Debt: $${fmt(Math.round(r.debt_usd_eq || 0))}${r.debt_stale ? ' (snapshot ' + r.debt_report_date + ')' : ''}`);
+                                    lines.push(`FX: ${fmt(r.fx_rate)} UZS/USD (${r.fx_source})`);
+                                    lines.push(`Orders: ${r.order_count} · Active clients: ${r.active_clients}`);
+                                    if (r.partial) lines.push('(today — partial)');
+                                    return lines;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => '$' + fmt(v) } },
+                        x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
+                    }
+                }
+            });
         }
 
         function renderDailyRecap(data) {
