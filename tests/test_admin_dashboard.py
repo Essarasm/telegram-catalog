@@ -103,8 +103,11 @@ class TestInventoryWeekOut:
 
     def test_returns_items_stamped_this_week(self, seed_products):
         db = seed_products
-        # Stamp pid=1 stockout at 2 hours ago — within this week
-        recent = db.execute("SELECT datetime('now', '-2 hours')").fetchone()[0]
+        # Stamp pid=1 with a tiny offset — stays inside the current
+        # Tashkent week regardless of weekday/hour. '-2 hours' previously
+        # broke on Monday 00:00–05:00 Tashkent (UTC = Sunday evening,
+        # which is before Monday-Tashkent-midnight in the filter).
+        recent = db.execute("SELECT datetime('now', '-30 seconds')").fetchone()[0]
         db.execute(
             "UPDATE products SET stock_quantity=0, stock_status='out_of_stock', "
             "stockout_at=? WHERE id = 1",

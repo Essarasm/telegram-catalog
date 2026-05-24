@@ -17,6 +17,7 @@ from bot.shared import (
     log_admin_action,
 )
 from backend.admin_auth import get_admin_key
+from backend.services.upload_warnings import stale_upload_warnings
 
 router = Router()
 
@@ -619,6 +620,21 @@ def _format_import_result(result: dict, file_label: str = "") -> str:
     if file_label:
         lines.append(f"📄 <b>{html_escape(file_label)}</b>")
 
+    # Stale-date + no-new-rows warnings. Balance files declare their
+    # period in `period_start`/`period_end`; we compare period_end to
+    # today_tk so an upload on 2026-05-25 with period_end 2026-05-13
+    # gets flagged.
+    warnings = stale_upload_warnings(
+        date_min=result.get("period_start"),
+        date_max=result.get("period_end"),
+        inserted=int(result.get("inserted") or 0),
+        updated=int(result.get("updated") or 0),
+    )
+    for w in warnings:
+        lines.append(w)
+    if warnings:
+        lines.append("")
+
     lines.append(f"📅 Davr: {result.get('period', '?')}")
 
     if len(sections) > 1:
@@ -1003,14 +1019,29 @@ async def cmd_debtors(message: types.Message):
         real_uzs = result.get('real_uzs', result['total_uzs'])
         real_usd = result.get('real_usd', result['total_usd'])
 
-        lines = [
+        # /debtors replaces the whole snapshot each upload — no inserted/
+        # updated split to base a no-new-rows signal on. Stale-date check
+        # only: warn if the snapshot's report_date is more than 1 day old.
+        warnings = stale_upload_warnings(
+            date_min=result.get("report_date"),
+            date_max=result.get("report_date"),
+            inserted=0,
+            updated=0,
+        )
+
+        lines = []
+        for w in warnings:
+            lines.append(w)
+        if warnings:
+            lines.append("")
+        lines.extend([
             f"✅ <b>Дебиторка yuklandi!</b>\n",
             f"📅 Sana: {result.get('report_date', '?')}",
             f"👥 Qarzdorlar: {n_real}",
             f"🔗 Ilovaga bog'langan: {result['matched_to_app']}",
             f"\n💴 Jami UZS: {round(real_uzs):,}".replace(',', ' '),
             f"💵 Jami USD: ${real_usd:,.2f}",
-        ]
+        ])
 
         # Top 5 clients whose debt grew today (delta vs previous snapshot).
         # Importer ranks by UZS delta with USD tiebreaker; we display both.
@@ -1377,14 +1408,26 @@ async def cmd_realorders(message: types.Message):
         date_max = st.get("date_max") or "?"
         date_range = date_min if date_min == date_max else f"{date_min} — {date_max}"
 
-        lines = [
+        warnings = stale_upload_warnings(
+            date_min=st.get("date_min"),
+            date_max=st.get("date_max"),
+            inserted=int(result.get("inserted_docs") or 0),
+            updated=int(result.get("updated_docs") or 0),
+        )
+
+        lines = []
+        for w in warnings:
+            lines.append(w)
+        if warnings:
+            lines.append("")  # blank line before success body
+        lines.extend([
             f"✅ <b>Реализация yuklandi!</b>\n",
             f"📅 Davr: {date_range} ({st.get('date_count', 0)} kun)",
             f"📄 Hujjatlar: {st.get('doc_count', 0)} (yangi: {result.get('inserted_docs', 0)}, yangilangan: {result.get('updated_docs', 0)})",
             f"📦 Qatorlar: {result.get('inserted_items', 0)}",
             f"👥 Mijozlar: {st.get('client_count', 0)} (bog'langan: {result.get('matched_clients', 0)})",
             f"🛒 Mahsulotlar: {st.get('product_count', 0)} (mos: {result.get('matched_products', 0)})",
-        ]
+        ])
 
         total_local = st.get("total_local") or 0
         total_currency = st.get("total_currency") or 0
@@ -1572,13 +1615,25 @@ async def cmd_cash(message: types.Message):
         date_max = st.get("date_max") or "?"
         date_range = date_min if date_min == date_max else f"{date_min} — {date_max}"
 
-        lines = [
+        warnings = stale_upload_warnings(
+            date_min=st.get("date_min"),
+            date_max=st.get("date_max"),
+            inserted=int(inserted or 0),
+            updated=int(updated or 0),
+        )
+
+        lines = []
+        for w in warnings:
+            lines.append(w)
+        if warnings:
+            lines.append("")
+        lines.extend([
             "✅ <b>Касса yuklandi!</b>\n",
             f"📅 Davr: {date_range}",
             f"📄 Jami qatorlar: {st.get('row_count', 0)}",
             f"🆕 Yangi: {inserted} · 🔄 Yangilangan (dublikat): {updated}",
             f"👥 Mijozlar: {st.get('client_count', 0)} (bog'langan: {result.get('matched_clients', 0)})",
-        ]
+        ])
         if st.get("total_uzs"):
             lines.append(f"\n💴 UZS jami: {round(st['total_uzs']):,}".replace(",", " "))
         if st.get("total_usd"):
