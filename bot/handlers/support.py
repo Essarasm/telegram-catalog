@@ -93,7 +93,7 @@ async def forward_client_support_dm(message: types.Message) -> None:
     try:
         conn = get_db()
         row = conn.execute(
-            """SELECT u.phone, ac.name as client_name
+            """SELECT u.phone, ac.name as ac_name, ac.client_id_1c
                FROM users u
                LEFT JOIN allowed_clients ac ON ac.matched_telegram_id = u.telegram_id
                WHERE u.telegram_id = ?""",
@@ -103,8 +103,13 @@ async def forward_client_support_dm(message: types.Message) -> None:
         if row:
             if row["phone"]:
                 phone_hint += f"\n📱 Telefon: <code>{row['phone']}</code>"
-            if row["client_name"]:
-                phone_hint += f"\n🏷 1C: <b>{html_escape(row['client_name'])}</b>"
+            # `ac.name` is the informal shorthand from import_clients; the
+            # canonical 1C entity name lives on `ac.client_id_1c`. Labelling
+            # the former as "1C:" misled admins (Error Log #63 bundle).
+            if row["client_id_1c"]:
+                phone_hint += f"\n🏷 1C: <b>{html_escape(row['client_id_1c'])}</b>"
+            elif row["ac_name"]:
+                phone_hint += f"\n🏷 Mijoz: <b>{html_escape(row['ac_name'])}</b>"
     except Exception as e:
         logger.warning(f"support DM context lookup failed: {e}")
 
