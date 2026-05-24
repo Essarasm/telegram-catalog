@@ -14,7 +14,7 @@ from aiogram.types import Message
 
 from bot.shared import (
     get_db, html_escape, is_admin, sender_display_name, log_admin_action,
-    BOT_TOKEN, ORDER_GROUP_CHAT_ID, ADMIN_IDS, _db_role_check,
+    BOT_TOKEN, ORDER_GROUP_CHAT_ID, ADMIN_IDS, _db_role_check, WEBAPP_URL,
 )
 
 logger = logging.getLogger("bot")
@@ -144,7 +144,8 @@ async def handle_order_confirmation_reply(message: Message):
     conn = get_db()
     try:
         row = conn.execute(
-            """SELECT id, telegram_id, client_name, client_name AS cname
+            """SELECT id, telegram_id, client_name, sales_group_message_id,
+                      client_name AS cname
                FROM orders
                WHERE sales_group_message_id = ? OR sales_group_doc_message_id = ?
                LIMIT 1""",
@@ -300,6 +301,40 @@ async def handle_order_confirmation_reply(message: Message):
         finally:
             conn2.close()
 
+        # Compute structured diff between Mini App order and the 1C parse.
+        # has_diff=True → send line-by-line breakdown to the client and a
+        # short echo back in Sotuv so handlers see what the client saw.
+        # has_diff=False → keep the existing generic "open Kabinet" message
+        # (user-chosen 2026-05-23: less notification noise on perfect match).
+        # Diff failures must NOT block the confirmation — fall back to the
+        # generic message and log.
+        diff = None
+        try:
+            from backend.services.order_diff import (
+                compute_order_diff, format_diff_for_client, format_diff_for_sotuv,
+            )
+            diff = compute_order_diff(wishlist_order_id, items_payload)
+        except Exception as diff_e:
+            logger.error(f"order diff computation failed: {diff_e}")
+
+        client_text = None
+        sotuv_echo_text = None
+        if diff and diff["has_diff"]:
+            try:
+                client_text = format_diff_for_client(diff, cabinet_url=WEBAPP_URL or "")
+                sotuv_echo_text = format_diff_for_sotuv(diff)
+            except Exception as fmt_e:
+                logger.error(f"order diff formatting failed: {fmt_e}")
+                client_text = None
+                sotuv_echo_text = None
+
+        if not client_text:
+            client_text = (
+                "✅ <b>Buyurtmangiz tayyor!</b>\n\n"
+                "Boshqaruvchilar buyurtmangizni 1C ga kiritdilar. "
+                "Qanaqa farqlar borligini ilovadagi 'Kabinet' bo'limida ko'ring."
+            )
+
         try:
             if client_tg_id:
                 import httpx as _httpx
@@ -307,15 +342,24 @@ async def handle_order_confirmation_reply(message: Message):
                     f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                     json={
                         "chat_id": client_tg_id,
-                        "text": (
-                            "✅ <b>Buyurtmangiz tayyor!</b>\n\n"
-                            "Boshqaruvchilar buyurtmangizni 1C ga kiritdilar. "
-                            "Qanaqa farqlar borligini ilovadagi 'Kabinet' bo'limida ko'ring."
-                        ),
+                        "text": client_text,
                         "parse_mode": "HTML",
+                        "disable_web_page_preview": True,
                     },
                     timeout=10,
                 )
+                if sotuv_echo_text and row["sales_group_message_id"]:
+                    _httpx.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                        json={
+                            "chat_id": ORDER_GROUP_CHAT_ID,
+                            "reply_to_message_id": row["sales_group_message_id"],
+                            "text": sotuv_echo_text,
+                            "parse_mode": "HTML",
+                            "disable_notification": True,
+                        },
+                        timeout=10,
+                    )
         except Exception as e:
             logger.error(f"Failed to notify client about confirmed order: {e}")
 
