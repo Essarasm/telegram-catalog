@@ -6,6 +6,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.shared import get_db, html_escape, is_admin, logger, log_admin_action, _BASE_URL
 from backend.admin_auth import get_admin_key
+from backend.services.location_display import get_display_location
 
 router = Router()
 
@@ -1015,7 +1016,9 @@ async def cmd_reviewclients(message: types.Message):
         ).fetchone()[0]
         rows = conn.execute(
             """SELECT id, name, client_id_1c, phone_normalized,
-                      viloyat, tuman, moljal, needs_review, needs_verification
+                      viloyat, tuman, moljal,
+                      gps_region, gps_district, gps_address, location,
+                      needs_review, needs_verification
                FROM allowed_clients
                WHERE needs_review = 1 OR needs_verification = 1
                ORDER BY id
@@ -1043,8 +1046,7 @@ async def cmd_reviewclients(message: types.Message):
             flags.append("⚠️ joyni tasdiqlash")
         flag_str = " · ".join(flags)
         display_name = (r["client_id_1c"] or r["name"] or f"#{r['id']}")[:40]
-        geo_parts = [p for p in (r["viloyat"], r["tuman"], r["moljal"]) if p]
-        geo = " → ".join(geo_parts) if geo_parts else "(joy yo'q)"
+        geo = get_display_location(r)
         phone = r["phone_normalized"] or "—"
         lines.append(f"<b>#{r['id']}</b> {html_escape(display_name)}")
         lines.append(f"   📞 {phone}  |  📍 {html_escape(geo)}")
@@ -1110,7 +1112,9 @@ async def cb_reviewclients(cb: types.CallbackQuery):
                 "SELECT COUNT(*) FROM allowed_clients WHERE needs_review = 1 OR needs_verification = 1"
             ).fetchone()[0]
             rows = conn.execute(
-                """SELECT id, name, client_id_1c, phone_normalized, viloyat, tuman, moljal,
+                """SELECT id, name, client_id_1c, phone_normalized,
+                          viloyat, tuman, moljal,
+                          gps_region, gps_district, gps_address, location,
                           needs_review, needs_verification
                    FROM allowed_clients
                    WHERE needs_review = 1 OR needs_verification = 1
@@ -1129,7 +1133,7 @@ async def cb_reviewclients(cb: types.CallbackQuery):
             if r["needs_verification"]:
                 flags.append("⚠️ joyni tasdiqlash")
             name = (r["client_id_1c"] or r["name"] or f"#{r['id']}")[:40]
-            geo = " → ".join([p for p in (r["viloyat"], r["tuman"], r["moljal"]) if p]) or "(joy yo'q)"
+            geo = get_display_location(r)
             lines.append(f"<b>#{r['id']}</b> {html_escape(name)}")
             lines.append(f"   📞 {r['phone_normalized'] or '—'}  |  📍 {html_escape(geo)}")
             lines.append(f"   {' · '.join(flags)}")

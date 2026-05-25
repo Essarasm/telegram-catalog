@@ -15,6 +15,7 @@ from aiogram.types import (
 )
 
 from bot.shared import get_db, html_escape, BOT_TOKEN, WEBAPP_URL, DRIVER_GROUP_CHAT_ID
+from backend.services.location_display import backfill_text_from_gps
 
 logger = logging.getLogger("bot")
 router = Router(name="location")
@@ -271,6 +272,7 @@ async def handle_location(message: Message):
              geo["district"], telegram_id, setter_name, setter_role,
              user["client_id"]),
         )
+        backfill_text_from_gps(conn, user["client_id"], geo)
 
     # The user's own users row tracks where THEY are (their personal GPS) —
     # never the coords of a client they happen to be tagging. Only update it

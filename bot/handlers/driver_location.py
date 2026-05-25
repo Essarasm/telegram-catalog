@@ -42,6 +42,7 @@ from aiogram.types import (
 from bot.shared import get_db, html_escape, DRIVER_GROUP_CHAT_ID
 from bot.handlers.location import _audit_insert, _audit_finalize, _reverse_geocode
 from backend.services.client_search import search_clients
+from backend.services.location_display import backfill_text_from_gps
 
 logger = logging.getLogger(__name__)
 router = Router(name="driver_location")
@@ -346,8 +347,10 @@ async def handle_driver_location(message: Message, state: FSMContext):
              geo["district"], message.from_user.id, setter_name, setter_role,
              client_id, message.from_user.id),
         )
-        conn.commit()
         saved = cur.rowcount > 0
+        if saved:
+            backfill_text_from_gps(conn, client_id, geo)
+        conn.commit()
 
         if not saved:
             # Cross-agent block — prior pin set by someone else.
