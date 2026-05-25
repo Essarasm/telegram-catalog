@@ -31,9 +31,22 @@ _CYRILLIC_RE = re.compile(r'[Ѐ-ӿԀ-ԯ]')
 
 # ── Loyalty merge map (Layer 4 — populate from finances_client_merge_map.md) ──
 #
-# Empty for now. Populating later requires no importer changes — every caller
-# already routes through canonicalize_alias() via the pipeline.
-ALIAS_MAP: Dict[str, str] = {}
+# Maps non-canonical shorthand labels that appear in Alisher's XLS exports
+# (Касса Субконто 1 / Реализация Контрагент / etc.) to the canonical 1C name
+# present in `allowed_clients.client_id_1c`. canonicalize_alias() applies this
+# before resolve_client_id() does its match — so future imports auto-route
+# shorthand rows to the right canonical client.
+#
+# Populating an entry here is the upstream fix for Error Log #65-class issues
+# (shorthand-to-wrong-canonical mis-attribution). The corresponding heal pass
+# (heal_finance_orphans Phase 2) will redirect any straggler rows whose
+# client_id still points at the wrong canonical when the next import runs.
+ALIAS_MAP: Dict[str, str] = {
+    # Pre-2025-09 Alisher shorthand for Азим Раджабов /Ургут/ (1C id=997).
+    # Verified vs акт сверки 2026-05-25. Past 10 rows reattached manually;
+    # this entry catches any future stragglers if the old shorthand reappears.
+    "АЗИМ УРГУТ": "Азим Раджабов /Ургут/",
+}
 
 
 # ── Match result type ─────────────────────────────────────────────────────────
