@@ -155,6 +155,53 @@ async def _send_kassa_menu(target):
     )
 
 
+# ── Group-clutter cleanup ───────────────────────────────────────────
+#
+# Every /qabul recording used to leave ~8 bot prompts + ~2 cashier inputs
+# in the group; over weeks the history became unreadable. The audit trail
+# lives in `intake_payments` (+ /bugunpul re-renders today's list), so the
+# in-group history has no preservation duty. We track every FSM-flow
+# message id, then bulk-delete on finalize/cancel, keeping only the final
+# ✅ confirmation row.
+
+async def _track_msg(state: FSMContext, msg) -> None:
+    """Append msg.message_id to FSM flow_msg_ids. Pass any Message-like
+    object (returned by .answer(), or an incoming Message). Idempotent."""
+    if msg is None:
+        return
+    mid = getattr(msg, "message_id", None)
+    if mid is None:
+        return
+    data = await state.get_data()
+    ids = list(data.get("flow_msg_ids") or [])
+    if mid not in ids:
+        ids.append(mid)
+        await state.update_data(flow_msg_ids=ids)
+
+
+async def _cleanup_flow_msgs(
+    bot: Bot,
+    chat_id: int,
+    state: FSMContext,
+    keep_ids=None,
+) -> None:
+    """Delete every tracked flow message except keep_ids (the final ✅
+    rows). Per-message failures are swallowed — Telegram refuses deletes
+    >48h old, and an already-deleted msg raises too. Clears the tracking
+    list after."""
+    data = await state.get_data()
+    ids = data.get("flow_msg_ids") or []
+    keep = set(keep_ids or [])
+    for mid in ids:
+        if mid in keep:
+            continue
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception as e:
+            logger.debug(f"cashier cleanup: delete msg {mid} failed ({e})")
+    await state.update_data(flow_msg_ids=[])
+
+
 def _agent_keyboard() -> InlineKeyboardMarkup:
     """6 hardcoded agent names + cancel. One per row for big touch targets."""
     rows = [
@@ -229,12 +276,18 @@ async def cmd_qabul(message: Message, state: FSMContext):
         return
     if not is_cashier_or_admin(message):
         return
+    # If a previous /qabul flow was abandoned mid-step, wipe its trash
+    # before starting fresh — otherwise the old prompts orphan forever.
+    if await state.get_state() is not None:
+        await _cleanup_flow_msgs(message.bot, message.chat.id, state)
     await state.clear()
-    await message.answer(
+    await _track_msg(state, message)
+    sent = await message.answer(
         "💼 <b>Kassa</b>",
         parse_mode="HTML",
         reply_markup=_menu_keyboard(),
     )
+    await _track_msg(state, sent)
 
 
 @router.message(Command("bugun"))
@@ -955,13 +1008,16 @@ async def cb_user_edit(cb: CallbackQuery, state: FSMContext):
     )
     cur_amt = _fmt_amount(row["amount"], row["currency"])
     hint = "(masalan: 500000)" if row["currency"] == "UZS" else "(masalan: 200)"
-    await cb.message.answer(
+    sent = await cb.message.answer(
         f"✏️ <b>#{payment_id} — {html_escape(cname)}</b>\n"
         f"Joriy summa: <b>{cur_amt}</b>\n\n"
         f"Yangi summani kiriting {hint}.",
         parse_mode="HTML",
         reply_markup=_cancel_keyboard(),
     )
+    # Don't track cb.message — that's the previous recording's confirmed
+    # ✅ row, which must survive. Only the new prompts get tracked.
+    await _track_msg(state, sent)
     await cb.answer()
 
 
@@ -969,32 +1025,36 @@ async def cb_user_edit(cb: CallbackQuery, state: FSMContext):
 async def edit_amount_input(message: Message, state: FSMContext):
     if not _is_cashier_chat(message):
         return
+    await _track_msg(state, message)
     new_amt = _parse_amount(message.text or "")
     if new_amt is None:
-        await message.answer(
+        sent = await message.answer(
             "Raqam kiriting yoki ❌ Bekor.",
             reply_markup=_cancel_keyboard(),
         )
+        await _track_msg(state, sent)
         return
     data = await state.get_data()
     old_amt = float(data.get("edit_old_amount") or 0)
     currency = data.get("edit_currency") or "UZS"
     if abs(new_amt - old_amt) < 0.005:
-        await message.answer(
+        sent = await message.answer(
             f"Summa o'zgarmagan ({_fmt_amount(old_amt, currency)}). Boshqa raqam kiriting yoki ❌ Bekor.",
             reply_markup=_cancel_keyboard(),
         )
+        await _track_msg(state, sent)
         return
     await state.update_data(edit_new_amount=new_amt)
     await state.set_state(CashierFlow.edit_amount_confirm)
     pid = data.get("edit_payment_id")
     cname = data.get("edit_client_name") or ""
-    await message.answer(
+    sent = await message.answer(
         f"Tasdiqlash: #{pid} — <b>{html_escape(cname)}</b>\n"
         f"<b>{_fmt_amount(old_amt, currency)}</b> → <b>{_fmt_amount(new_amt, currency)}</b>",
         parse_mode="HTML",
         reply_markup=_edit_amount_confirm_keyboard(),
     )
+    await _track_msg(state, sent)
 
 
 @router.callback_query(CashierFlow.edit_amount_confirm, F.data == "cashier:edit_cancel")
@@ -1002,8 +1062,8 @@ async def cb_edit_cancel(cb: CallbackQuery, state: FSMContext):
     if not _is_cashier_chat(cb):
         await cb.answer()
         return
+    await _cleanup_flow_msgs(cb.bot, cb.message.chat.id, state)
     await state.clear()
-    await cb.message.answer("❌ O'zgartirish bekor qilindi.")
     await _send_kassa_menu(cb.message)
     await cb.answer()
 
@@ -1017,6 +1077,7 @@ async def cb_edit_save(cb: CallbackQuery, state: FSMContext, bot: Bot):
     payment_id = data.get("edit_payment_id")
     new_amt = data.get("edit_new_amount")
     if payment_id is None or new_amt is None:
+        await _cleanup_flow_msgs(cb.bot, cb.message.chat.id, state)
         await state.clear()
         await cb.answer("Holat yo'qolgan, qaytadan urinib ko'ring", show_alert=True)
         return
@@ -1031,32 +1092,40 @@ async def cb_edit_save(cb: CallbackQuery, state: FSMContext, bot: Bot):
             )
         except ValueError as e:
             conn.rollback()
+            await _cleanup_flow_msgs(cb.bot, cb.message.chat.id, state)
             await state.clear()
             await cb.answer(str(e)[:200], show_alert=True)
             return
         conn.commit()
     finally:
         conn.close()
-    await state.clear()
+    # NOTE: state.clear() deferred until AFTER cleanup runs below — clearing
+    # state wipes flow_msg_ids.
     old_row = result["old"]
     new_row = result["new"]
     currency = new_row["currency"]
     old_amt = float(old_row["amount"])
     new_amt_f = float(new_row["amount"])
     cname = new_row.get("client_id_1c") or new_row.get("client_name") or ""
-    # Strip the now-stale [✅ Saqlash] [❌ Bekor] buttons from the preview
-    try:
-        await cb.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-    # In-group transparency note (cashiers rotate — Aunt + Uncle)
-    await cb.message.answer(
+    # In-group transparency note (cashiers rotate — Aunt + Uncle).
+    # Send the new ✏️ row first so we can capture its id, then bulk-delete
+    # the edit flow's prompts/inputs (keeping the new row).
+    sent = await cb.message.answer(
         f"✏️ Tuzatildi: #{old_row['id']} → #{new_row['id']} · 🕒 {_now_tashkent_hhmm()}\n"
         f"<b>{_fmt_amount(old_amt, currency)}</b> → <b>{_fmt_amount(new_amt_f, currency)}</b>\n"
         f"👤 {html_escape(cname)}",
         parse_mode="HTML",
         reply_markup=_confirm_row_keyboard(new_row["id"]),
     )
+    keep_ids = [sent.message_id] if sent is not None else []
+    # The old ✅ row (cb.message) is NOT in flow_msg_ids, so cleanup leaves
+    # it alone — we just strip its now-stale [✏️] [✖] buttons.
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await _cleanup_flow_msgs(cb.bot, cb.message.chat.id, state, keep_ids=keep_ids)
+    await state.clear()
     await cb.answer(f"✏️ Saqlandi: #{new_row['id']}"[:200])
     await _notify_client_edited(
         bot, new_row["client_id"], cname, currency, old_amt, new_amt_f
@@ -1607,8 +1676,10 @@ async def cmd_bekor(message: Message, state: FSMContext):
     cur = await state.get_state()
     if cur is None:
         return
+    # Wipe the flow's accumulated prompts + the /bekor command itself.
+    await _track_msg(state, message)
+    await _cleanup_flow_msgs(message.bot, message.chat.id, state)
     await state.clear()
-    await message.answer("❌ Bekor qilindi.")
     await _send_kassa_menu(message)
 
 
@@ -1619,11 +1690,10 @@ async def cb_cancel(cb: CallbackQuery, state: FSMContext):
     if not _is_cashier_chat(cb):
         await cb.answer()
         return
+    # Cancel via inline button — the cb.message is one of the FSM prompts
+    # and is already tracked; cleanup deletes the whole flow including it.
+    await _cleanup_flow_msgs(cb.bot, cb.message.chat.id, state)
     await state.clear()
-    try:
-        await cb.message.edit_text("❌ Bekor qilindi.")
-    except Exception:
-        pass
     await cb.answer()
     await _send_kassa_menu(cb.message)
 
@@ -1637,10 +1707,14 @@ async def cb_menu_direct(cb: CallbackQuery, state: FSMContext):
         return
     await state.set_state(CashierFlow.direct_search)
     await state.update_data(channel="cash_direct", submitter=cb.from_user.id)
-    await cb.message.answer(
+    # Track the menu we're leaving — it gets deleted on finalize so steady
+    # state is one fresh menu at the bottom of the group.
+    await _track_msg(state, cb.message)
+    sent = await cb.message.answer(
         "🔎 Mijoz nomi:",
         reply_markup=_cancel_keyboard(),
     )
+    await _track_msg(state, sent)
     await cb.answer()
 
 
@@ -1656,11 +1730,13 @@ async def cb_menu_queue(cb: CallbackQuery, state: FSMContext):
         return
     await state.set_state(CashierFlow.agent_pick)
     await state.update_data(channel="cash_via_agent", submitter=cb.from_user.id)
-    await cb.message.answer(
+    await _track_msg(state, cb.message)
+    sent = await cb.message.answer(
         "👨‍💼 <b>Qaysi agent?</b>",
         parse_mode="HTML",
         reply_markup=_agent_keyboard(),
     )
+    await _track_msg(state, sent)
     await cb.answer()
 
 
@@ -1677,11 +1753,12 @@ async def cb_pick_agent(cb: CallbackQuery, state: FSMContext):
         return
     await state.update_data(agent_name=agent_name)
     await state.set_state(CashierFlow.direct_search)
-    await cb.message.answer(
+    sent = await cb.message.answer(
         f"👨‍💼 {html_escape(agent_name)}\n\n🔎 <b>Mijoz nomini kiriting</b>",
         parse_mode="HTML",
         reply_markup=_cancel_keyboard(),
     )
+    await _track_msg(state, sent)
     await cb.answer()
 
 
@@ -1690,10 +1767,12 @@ async def agent_pick_text_fallback(message: Message, state: FSMContext):
     """Nudge the cashier to use the buttons if she types instead of tapping."""
     if not _is_cashier_chat(message):
         return
-    await message.answer(
+    await _track_msg(state, message)
+    sent = await message.answer(
         "👨‍💼 Iltimos, agent nomini tugmadan tanlang:",
         reply_markup=_agent_keyboard(),
     )
+    await _track_msg(state, sent)
 
 
 # ── Flow 1: Klientdan pul qabul qilish ──────────────────────────────
@@ -1702,18 +1781,21 @@ async def agent_pick_text_fallback(message: Message, state: FSMContext):
 async def direct_search_name(message: Message, state: FSMContext):
     if not _is_cashier_chat(message):
         return
+    await _track_msg(state, message)
     q = (message.text or "").strip()
     if not q:
-        await message.answer("Mijoz nomini yuboring.", reply_markup=_cancel_keyboard())
+        sent = await message.answer("Mijoz nomini yuboring.", reply_markup=_cancel_keyboard())
+        await _track_msg(state, sent)
         return
     results = search_clients(q, limit=8)
     whitelisted = results.get("whitelisted") or []
     if not whitelisted:
-        await message.answer(
+        sent = await message.answer(
             f"🔍 «{html_escape(q)}» — topilmadi. Qaytadan yozing.",
             parse_mode="HTML",
             reply_markup=_cancel_keyboard(),
         )
+        await _track_msg(state, sent)
         return
     rows = []
     for c in whitelisted[:8]:
@@ -1723,11 +1805,12 @@ async def direct_search_name(message: Message, state: FSMContext):
             callback_data=f"cashier:pick_{c['id']}",
         )])
     rows.append([InlineKeyboardButton(text="❌ Bekor", callback_data="cashier:cancel")])
-    await message.answer(
+    sent = await message.answer(
         f"<b>«{html_escape(q)}»</b>:",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
+    await _track_msg(state, sent)
 
 
 @router.callback_query(CashierFlow.direct_search, F.data.startswith("cashier:pick_"))
@@ -1762,13 +1845,14 @@ async def direct_pick_client(cb: CallbackQuery, state: FSMContext):
         if (debt["uzs"] or debt["usd"])
         else "✅ Qarz yo'q"
     )
-    await cb.message.answer(
+    sent = await cb.message.answer(
         f"👤 {html_escape(row['client_id_1c'] or row['name'] or '')}\n"
         f"{debt_line}\n\n"
         f"💵 <b>So'm miqdorini kiriting</b>",
         parse_mode="HTML",
         reply_markup=_amount_keyboard("UZS"),
     )
+    await _track_msg(state, sent)
     await cb.answer()
 
 
@@ -1776,31 +1860,35 @@ async def _ask_usd(target, state: FSMContext):
     """Helper: prompt the user for the USD amount. `target` is whatever has
     a working `.answer(...)` (a Message or cb.message)."""
     await state.set_state(CashierFlow.direct_usd)
-    await target.answer(
+    sent = await target.answer(
         "💵 <b>USD miqdorini kiriting</b>",
         parse_mode="HTML",
         reply_markup=_amount_keyboard("USD"),
     )
+    await _track_msg(state, sent)
 
 
 @router.message(CashierFlow.direct_uzs, F.text)
 async def direct_uzs_amount(message: Message, state: FSMContext):
     if not _is_cashier_chat(message):
         return
+    await _track_msg(state, message)
     amount = _parse_amount(message.text or "")
     if amount is None:
-        await message.answer(
+        sent = await message.answer(
             "Raqam kiriting (masalan: 500000) yoki «Yo'q».",
             reply_markup=_amount_keyboard("UZS"),
         )
+        await _track_msg(state, sent)
         return
     await state.update_data(uzs_amount=amount)
     await state.set_state(CashierFlow.direct_uzs_confirm)
-    await message.answer(
+    sent = await message.answer(
         f"💵 So'm: <b>{_fmt_uzs(amount)}</b>\n\nTo'g'rimi?",
         parse_mode="HTML",
         reply_markup=_confirm_amount_keyboard("UZS"),
     )
+    await _track_msg(state, sent)
 
 
 @router.callback_query(CashierFlow.direct_uzs, F.data == "cashier:skip_uzs")
@@ -1830,11 +1918,12 @@ async def direct_uzs_confirm_edit(cb: CallbackQuery, state: FSMContext):
         return
     await state.update_data(uzs_amount=None)
     await state.set_state(CashierFlow.direct_uzs)
-    await cb.message.answer(
+    sent = await cb.message.answer(
         "💵 <b>So'm miqdorini qayta kiriting</b>",
         parse_mode="HTML",
         reply_markup=_amount_keyboard("UZS"),
     )
+    await _track_msg(state, sent)
     await cb.answer()
 
 
@@ -1842,20 +1931,23 @@ async def direct_uzs_confirm_edit(cb: CallbackQuery, state: FSMContext):
 async def direct_usd_amount(message: Message, state: FSMContext):
     if not _is_cashier_chat(message):
         return
+    await _track_msg(state, message)
     amount = _parse_amount(message.text or "")
     if amount is None:
-        await message.answer(
+        sent = await message.answer(
             "Raqam kiriting (masalan: 200) yoki «Yo'q».",
             reply_markup=_amount_keyboard("USD"),
         )
+        await _track_msg(state, sent)
         return
     await state.update_data(usd_amount=amount)
     await state.set_state(CashierFlow.direct_usd_confirm)
-    await message.answer(
+    sent = await message.answer(
         f"💵 USD: <b>{_fmt_usd(amount)}</b>\n\nTo'g'rimi?",
         parse_mode="HTML",
         reply_markup=_confirm_amount_keyboard("USD"),
     )
+    await _track_msg(state, sent)
 
 
 @router.callback_query(CashierFlow.direct_usd, F.data == "cashier:skip_usd")
@@ -1885,11 +1977,12 @@ async def direct_usd_confirm_edit(cb: CallbackQuery, state: FSMContext):
         return
     await state.update_data(usd_amount=None)
     await state.set_state(CashierFlow.direct_usd)
-    await cb.message.answer(
+    sent = await cb.message.answer(
         "💵 <b>USD miqdorini qayta kiriting</b>",
         parse_mode="HTML",
         reply_markup=_amount_keyboard("USD"),
     )
+    await _track_msg(state, sent)
     await cb.answer()
 
 
@@ -1907,6 +2000,8 @@ async def _direct_finalize_or_dup(message: Message, state: FSMContext, bot: Bot)
     uzs = float(data.get("uzs_amount") or 0)
     usd = float(data.get("usd_amount") or 0)
     if uzs <= 0 and usd <= 0:
+        # Empty input — full cleanup, no ✅ to keep.
+        await _cleanup_flow_msgs(bot, message.chat.id, state)
         await state.clear()
         await message.answer(
             "❌ Iltimos, kamida bittasini kiriting (so'm yoki USD).",
@@ -1942,11 +2037,12 @@ async def _direct_finalize_or_dup(message: Message, state: FSMContext, bot: Bot)
                 f"({d['submitted_at']})"
             )
         lines.append("\nDavom etamizmi?")
-        await message.answer(
+        sent = await message.answer(
             "\n".join(lines),
             parse_mode="HTML",
             reply_markup=_dup_keyboard(),
         )
+        await _track_msg(state, sent)
         return
 
     await _direct_finalize(message, state, bot)
@@ -1966,8 +2062,8 @@ async def direct_dup_no(cb: CallbackQuery, state: FSMContext):
     if not _is_cashier_chat(cb):
         await cb.answer()
         return
+    await _cleanup_flow_msgs(cb.bot, cb.message.chat.id, state)
     await state.clear()
-    await cb.message.answer("❌ Bekor qilindi.")
     await _send_kassa_menu(cb.message)
     await cb.answer()
 
@@ -2055,6 +2151,8 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
     except Exception as e:
         conn.rollback()
         logger.exception("direct finalize failed")
+        # DB error — wipe the flow's trash, leave only the error toast.
+        await _cleanup_flow_msgs(bot, message.chat.id, state)
         await message.answer(f"❌ Saqlashda xatolik: {html_escape(str(e))}")
         await state.clear()
         return
@@ -2064,6 +2162,7 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
     # Confirmation to the cashier in the group — one message per leg so
     # each gets its own [✏️ #id] [✖ #id] keyboard scoped to that payment.
     now_hhmm = _now_tashkent_hhmm()
+    keep_ids = []
     for pid, cur, amt in payments_created:
         confirm_lines = [
             f"✅ Qabul qilindi #{pid}: <b>{_fmt_amount(amt, cur)}</b>",
@@ -2074,11 +2173,18 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
             confirm_lines.append(f"👨‍💼 {html_escape(agent_name)} orqali")
         if auto_links.get(cur) == pid:
             confirm_lines.append("🔗 Agent yuborgan to'lov bilan bog'landi")
-        await message.answer(
+        sent = await message.answer(
             "\n".join(confirm_lines),
             parse_mode="HTML",
             reply_markup=_confirm_row_keyboard(pid),
         )
+        if sent is not None:
+            keep_ids.append(sent.message_id)
+
+    # Delete every FSM-flow message (menu tap, prompts, typed inputs, dup
+    # warning, etc.) except the final ✅ rows we just sent. Result in the
+    # group: 1 confirmation row per leg + the fresh menu below.
+    await _cleanup_flow_msgs(bot, message.chat.id, state, keep_ids=keep_ids)
 
     # Notify the client (best-effort, swallow errors)
     await _notify_client_confirmed(bot, client_id, client_name, payments_created, agent_name)
