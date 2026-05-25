@@ -850,16 +850,22 @@
                 <div id="overview-tab" class="tab-content">
                     <!-- Daily Recap chart — revenue + cash bars, dashed YoY revenue line -->
                     <div class="chart-container">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                            <div class="chart-title" style="margin-bottom: 0;">Daily Recap (USD-equivalent · last 14 days)</div>
-                            <span id="dailyChartMeta" style="font-size: 11px; color: #8b8fa3;"></span>
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; gap: 12px; flex-wrap: wrap;">
+                            <div class="chart-title" style="margin-bottom: 0;">Daily Recap (USD-equivalent · zero days hidden)</div>
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <span id="dailyChartMeta" style="font-size: 11px; color: #8b8fa3;"></span>
+                                <div class="currency-toggle" id="dailyRangeToggle">
+                                    <button class="currency-btn active" data-days="14" onclick="setDailyRange(14)">14 days</button>
+                                    <button class="currency-btn" data-days="30" onclick="setDailyRange(30)">30 days</button>
+                                </div>
+                            </div>
                         </div>
                         <div class="chart-wrapper" style="height: 350px;">
                             <canvas id="dailyRecapChart"></canvas>
                         </div>
                     </div>
 
-                    <!-- Daily Breakdown — 14-row table, today partial, debt stale-tag when /debtors hasn't landed -->
+                    <!-- Daily Breakdown — mirrors chart range (14 or 30), zero-activity days hidden, today partial, debt stale-tag when /debtors hasn't landed -->
                     <div class="chart-container" style="margin-top: 16px;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                             <div class="chart-title" style="margin-bottom: 0;">Daily Breakdown</div>
@@ -2617,9 +2623,29 @@
             return `<span style="color:${color};">${sign}${v.toFixed(1)}%</span>`;
         }
 
+        let dailyDaysRange = 14;
+
+        function setDailyRange(days) {
+            if (days !== 14 && days !== 30) return;
+            if (dailyDaysRange === days) return;
+            dailyDaysRange = days;
+            document.querySelectorAll('#dailyRangeToggle .currency-btn').forEach(btn => {
+                btn.classList.toggle('active', Number(btn.dataset.days) === days);
+            });
+            loadDailyRecap();
+        }
+
         async function loadDailyRecap() {
             try {
-                const data = await apiCall('daily-recap?days=14');
+                const data = await apiCall('daily-recap?days=' + dailyDaysRange);
+                // Hide zero-activity days (Sundays, holidays without 1C uploads).
+                // Always keep today even if 0 — it's partial and the "Today" line + chart tail depend on it.
+                data.rows = (data.rows || []).filter(r =>
+                    r.partial ||
+                    (r.order_count || 0) > 0 ||
+                    (r.revenue_usd_eq || 0) > 0 ||
+                    (r.cash_usd_eq || 0) > 0
+                );
                 cachedDaily = data;
                 renderDailyRecap(data);
                 drawDailyRecapChart();
