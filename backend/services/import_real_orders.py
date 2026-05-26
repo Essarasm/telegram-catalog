@@ -815,6 +815,19 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
     unmatched_clients: List[str] = []
     unmatched_products: List[str] = []
 
+    # Stage every (doc_number, doc_date) from the input into a temp table so the
+    # post-loop sweep can identify rows that vanished from the source export
+    # (ORPHAN_ON_IMPORT: pure upsert leaves stale rows for docs deleted in 1C).
+    conn.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS _import_real_orders_docs "
+        "(doc_number_1c TEXT PRIMARY KEY, doc_date TEXT)"
+    )
+    conn.execute("DELETE FROM _import_real_orders_docs")
+    conn.executemany(
+        "INSERT OR IGNORE INTO _import_real_orders_docs VALUES (?, ?)",
+        [(d["doc_number_1c"], d["doc_date"]) for d in documents if d["doc_number_1c"]],
+    )
+
     for d in documents:
         if not d["doc_number_1c"]:
             # Skip documents with no number (cannot dedupe)
@@ -928,6 +941,27 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
     # Post-import orphan heal — re-homed to client_identity (refactor phase 5a).
     orphans_healed = client_identity.heal_finance_orphans(conn, "real_orders")
 
+    # ORPHAN_ON_IMPORT sweep: any real_orders row whose doc_date is touched by
+    # this import but whose doc_number_1c is absent from the input was deleted
+    # in 1C between exports. Drop it (CASCADE handles real_order_items). Without
+    # this, partial 1C re-exports leave stale rows inflating revenue forever.
+    stale_rows = conn.execute(
+        """SELECT id, doc_number_1c, doc_date, client_name_1c, total_sum, total_sum_currency
+             FROM real_orders
+            WHERE doc_date IN (SELECT DISTINCT doc_date FROM _import_real_orders_docs)
+              AND doc_number_1c NOT IN (SELECT doc_number_1c FROM _import_real_orders_docs)"""
+    ).fetchall()
+    stale_deleted = 0
+    for sr in stale_rows:
+        conn.execute("DELETE FROM real_orders WHERE id = ?", (sr["id"],))
+        stale_deleted += 1
+    if stale_deleted:
+        logger.info(
+            f"ORPHAN_ON_IMPORT swept {stale_deleted} stale real_orders rows: "
+            f"{[(r['doc_number_1c'], r['doc_date'], r['client_name_1c']) for r in stale_rows[:5]]}"
+            + (f" ... +{stale_deleted - 5} more" if stale_deleted > 5 else "")
+        )
+
     conn.commit()
 
     db_total_docs = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
@@ -1007,6 +1041,7 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
         "unmatched_clients_all": unique_unmatched_clients,
         "unmatched_products_all": unique_unmatched_products,
         "orphans_healed": orphans_healed,
+        "stale_deleted": stale_deleted,
         "db_total_docs": db_total_docs,
         "db_total_items": db_total_items,
         # Top 5 buyers ranked by UZS primary, USD tiebreaker
