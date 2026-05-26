@@ -10,9 +10,10 @@ import os
 
 from aiogram import Router, F, types
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.shared import (
-    get_db, html_escape, is_admin, logger, BOT_TOKEN, _BASE_URL,
+    get_db, html_escape, is_admin, is_admin_cb, logger, BOT_TOKEN, _BASE_URL,
     track_daily_upload, extract_snapshot_date, sender_display_name,
     log_admin_action,
 )
@@ -2861,6 +2862,226 @@ async def handle_clientmaster_document(message: types.Message):
     if not is_admin(message):
         return
     await cmd_clientmaster(message)
+
+
+# ── Phantom realorder audit + deletion ───────────────────────────────────
+#
+# /realorders is upsert-by-doc_number_1c — it has no path for "this doc was
+# deleted in 1C." If sales places an order, the realorders import picks it up,
+# then sales deletes the doc in 1C (because the truck didn't load), our row
+# persists indefinitely. Sales annotates such docs at creation time with
+# 'ortilmagan' / 'НЕ ОТГРУЖЕНО' in the comment column; that's the detection
+# signal. /auditphantoms lists candidates; /deleterealorder removes one by
+# doc_number_1c (two-tap confirm).
+
+
+@router.message(Command("auditphantoms"))
+async def cmd_audit_phantoms(message: types.Message):
+    """List real_orders rows whose comment marks a non-shipment ('ortilmagan',
+    'НЕ ОТГРУЖЕНО'). Default window 30 days; pass an integer to widen.
+    Usage: /auditphantoms [days]"""
+    if not is_admin(message):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    days = 30
+    if len(parts) > 1 and parts[1].strip().isdigit():
+        days = max(1, min(int(parts[1].strip()), 365))
+    log_admin_action(message, "auditphantoms", f"days={days}")
+
+    from backend.services.import_real_orders import list_phantom_realorders
+    rows = list_phantom_realorders(days=days)
+
+    if not rows:
+        await message.reply(
+            f"✅ Hech qanday phantom topilmadi (oxirgi {days} kun).",
+        )
+        return
+
+    header = (
+        f"🔎 <b>Phantom realorders</b> — oxirgi {days} kun\n"
+        f"Topildi: {len(rows)} hujjat\n\n"
+    )
+    body_lines = []
+    for r in rows[:50]:
+        if (r.get("currency") or "") == "UZS":
+            amt = f"{int(r.get('total_sum') or 0):,}".replace(",", " ") + " so'm"
+        else:
+            amt = f"${float(r.get('total_sum_currency') or 0):,.2f}"
+        body_lines.append(
+            f"• <code>{html_escape(str(r.get('doc_number_1c') or ''))}</code> "
+            f"{r.get('doc_date') or ''} "
+            f"{html_escape((r.get('client_name_1c') or '')[:32])} — "
+            f"{amt}\n"
+            f"   💬 {html_escape((r.get('comment') or '')[:80])}"
+        )
+    tail = (
+        f"\n\n💡 O'chirish: <code>/deleterealorder &lt;doc_number&gt;</code>"
+    )
+    if len(rows) > 50:
+        tail = f"\n\n… va yana {len(rows) - 50} hujjat (50tasi ko'rsatildi)" + tail
+    msg = header + "\n".join(body_lines) + tail
+    if len(msg) > 3900:
+        msg = msg[:3900] + "\n…(qisqartirildi)"
+    await message.reply(msg, parse_mode="HTML", disable_web_page_preview=True)
+
+
+@router.message(Command("deleterealorder"))
+async def cmd_delete_realorder(message: types.Message):
+    """Hard-delete one real_orders document by doc_number_1c. Asks for
+    confirmation; the YES handler re-checks the row exists before deleting.
+    Usage: /deleterealorder <doc_number_1c>"""
+    if not is_admin(message):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    if not arg:
+        await message.reply(
+            "Foydalanish: <code>/deleterealorder &lt;doc_number_1c&gt;</code>\n"
+            "Masalan: <code>/deleterealorder 3785.0</code>",
+            parse_mode="HTML",
+        )
+        return
+    log_admin_action(message, "deleterealorder:prompt", f"doc={arg}")
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT id, doc_number_1c, doc_date, doc_time, client_name_1c,
+                      currency, total_sum, total_sum_currency, item_count, comment
+                 FROM real_orders WHERE doc_number_1c = ?""",
+            (arg,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        await message.reply(
+            f"❌ Hujjat <code>{html_escape(arg)}</code> topilmadi.",
+            parse_mode="HTML",
+        )
+        return
+
+    if (row["currency"] or "") == "UZS":
+        amt = f"{int(row['total_sum'] or 0):,}".replace(",", " ") + " so'm"
+    else:
+        amt = f"${float(row['total_sum_currency'] or 0):,.2f}"
+
+    details = (
+        f"⚠️ <b>O'chirilsinmi?</b>\n\n"
+        f"📄 <code>{html_escape(str(row['doc_number_1c']))}</code> "
+        f"({row['doc_date']} {row['doc_time'] or ''})\n"
+        f"👤 {html_escape(row['client_name_1c'] or '?')}\n"
+        f"💵 {amt} · {row['item_count'] or 0} qator\n"
+        f"💬 {html_escape((row['comment'] or '')[:120])}\n\n"
+        f"<i>O'chirish — real_orders + real_order_items (CASCADE). "
+        f"Qaytarib bo'lmaydi.</i>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="✅ Ha, o'chir",
+            callback_data=f"delro:yes:{row['id']}",
+        ),
+        InlineKeyboardButton(
+            text="↩ Yo'q",
+            callback_data=f"delro:no:{row['id']}",
+        ),
+    ]])
+    await message.reply(details, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("delro:yes:"))
+async def on_delete_realorder_yes(cb: types.CallbackQuery):
+    if not cb.from_user or not is_admin_cb(cb):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+    parts = (cb.data or "").split(":")
+    if len(parts) != 3 or not parts[2].isdigit():
+        await cb.answer("Noto'g'ri tugma", show_alert=False)
+        return
+    real_order_id = int(parts[2])
+
+    conn = get_db()
+    try:
+        # Re-check at execution time — feedback_two_tap_destructive_recheck.
+        row = conn.execute(
+            """SELECT id, doc_number_1c, doc_date, client_name_1c,
+                      currency, total_sum, total_sum_currency, comment
+                 FROM real_orders WHERE id = ?""",
+            (real_order_id,),
+        ).fetchone()
+        if not row:
+            await cb.answer(
+                "Hujjat allaqachon o'chirilgan.", show_alert=True,
+            )
+            try:
+                await cb.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+        items_n = conn.execute(
+            "SELECT COUNT(*) FROM real_order_items WHERE real_order_id = ?",
+            (real_order_id,),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM real_orders WHERE id = ?", (real_order_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Audit log — direct insert (CallbackQuery doesn't fit log_admin_action's
+    # Message-shape contract; same pattern as ord:yes cancellation).
+    try:
+        conn2 = get_db()
+        conn2.execute(
+            "INSERT INTO admin_action_log "
+            "(telegram_id, user_name, chat_id, command, args) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                cb.from_user.id,
+                (cb.from_user.full_name or "")[:200],
+                cb.message.chat.id if cb.message and cb.message.chat else None,
+                "deleterealorder:execute",
+                (
+                    f"id={real_order_id} doc={row['doc_number_1c']} "
+                    f"client={row['client_name_1c']} items={items_n}"
+                )[:500],
+            ),
+        )
+        conn2.commit()
+        conn2.close()
+    except Exception as e:
+        logger.warning(f"admin_action_log deleterealorder failed: {e}")
+
+    banner = (
+        f"🗑 <b>O'chirildi</b> — "
+        f"<code>{html_escape(str(row['doc_number_1c']))}</code> "
+        f"({items_n} qator)"
+    )
+    try:
+        await cb.message.edit_text(
+            banner + "\n\n" + (cb.message.html_text or ""),
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        logger.warning(f"delro:yes edit_text failed: {e}")
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+    await cb.answer(f"#{real_order_id} o'chirildi")
+
+
+@router.callback_query(F.data.startswith("delro:no:"))
+async def on_delete_realorder_no(cb: types.CallbackQuery):
+    if not cb.from_user or not is_admin_cb(cb):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception as e:
+        logger.warning(f"delro:no edit_reply_markup failed: {e}")
+    await cb.answer("Bekor qilindi")
 
 
 

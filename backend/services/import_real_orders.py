@@ -1139,6 +1139,97 @@ def find_nearby_real_orders(telegram_id: int, wishlist_created_at: str, days: in
     return [dict(r) for r in rows]
 
 
+# ── Phantom-realorder helpers (placed-but-never-shipped) ──────────────────
+#
+# Sales-team annotates 1C documents for orders that were created but didn't
+# ship that day (delivery cancelled, truck didn't load, customer no-show)
+# with markers like 'ortilmagan' (Uzbek: "wasn't loaded") or 'НЕ ОТГРУЖЕНО'
+# (Russian: "not shipped") in the comment field. When the order is later
+# deleted from 1C, the *next* /realorders upload doesn't remove our row
+# (upsert-by-doc_number_1c is blind to deletions). The row persists as a
+# phantom in Mini App + analytics.
+#
+# These helpers surface candidates (read-only) and remove specific docs by
+# `doc_number_1c` (with cascade to real_order_items).
+
+# Markers used by the sales team to flag non-shipments at 1C document
+# creation. Lower-cased substring match. Pseudo-clients (Наличка / СТРОЙКА /
+# Возврат поставщику / Исправление) are excluded via is_pseudo_client below
+# — their 'возврат' / 'не отгружено' annotations are corrections, not phantoms.
+PHANTOM_COMMENT_MARKERS = (
+    "ortilmagan",       # Uzbek: "wasn't loaded"
+    "ortilmadi",
+    "не отгруж",        # Russian: "not shipped" (covers "отгружено" + "отгрузил")
+    "ne otgruz",        # Latin transliteration
+)
+
+
+def list_phantom_realorders(days: int = 30) -> List[dict]:
+    """Surface real_orders rows whose comment matches a sales-team
+    non-shipment marker. Read-only. Pseudo-clients excluded.
+
+    `days` bounds the window via doc_date. Default 30; use larger windows
+    when auditing historical accumulation.
+    """
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT id, doc_number_1c, doc_date, doc_time, client_name_1c, client_id,
+                  currency, total_sum, total_sum_currency, item_count,
+                  sale_agent, comment, imported_at
+             FROM real_orders
+            WHERE comment IS NOT NULL
+              AND TRIM(comment) != ''
+              AND doc_date >= date('now', ?)
+            ORDER BY doc_date DESC, doc_time DESC, id DESC""",
+        (f'-{int(days)} days',),
+    ).fetchall()
+    conn.close()
+
+    out: List[dict] = []
+    for r in rows:
+        cm = (r["comment"] or "").lower()
+        if not any(m in cm for m in PHANTOM_COMMENT_MARKERS):
+            continue
+        if is_pseudo_client(r["client_name_1c"] or ""):
+            continue
+        out.append(dict(r))
+    return out
+
+
+def delete_realorder_by_doc_number(doc_number_1c: str) -> dict:
+    """Hard-delete one real_orders row + its line items by doc_number_1c.
+
+    real_order_items has ON DELETE CASCADE so the DELETE on real_orders
+    handles the cleanup. Returns the deleted row's metadata for audit
+    logging, or {"ok": False, "error": ...} when the doc doesn't exist.
+    """
+    if not doc_number_1c:
+        return {"ok": False, "error": "empty doc_number"}
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """SELECT id, doc_number_1c, doc_date, client_name_1c, client_id,
+                      currency, total_sum, total_sum_currency, item_count, comment
+                 FROM real_orders WHERE doc_number_1c = ?""",
+            (doc_number_1c,),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "error": f"doc {doc_number_1c!r} not found"}
+        items_deleted = conn.execute(
+            "SELECT COUNT(*) FROM real_order_items WHERE real_order_id = ?",
+            (row["id"],),
+        ).fetchone()[0]
+        conn.execute("DELETE FROM real_orders WHERE id = ?", (row["id"],))
+        conn.commit()
+        return {
+            "ok": True,
+            "deleted": dict(row),
+            "items_deleted": int(items_deleted or 0),
+        }
+    finally:
+        conn.close()
+
+
 # ── Admin helpers for unmatched real-order clients ────────────────────────
 #
 # Added 2026-04-07 after verifying Jan/Feb/Mar 2026 ingestion showed ~27% of

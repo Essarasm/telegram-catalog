@@ -115,6 +115,8 @@ SPECS = {
             Cmd("/unmatchedproducts", "Bog'lanmagan mahsulotlar"),
             Cmd("/relinkrealorders", "Qayta bog'lash — allowed_clients yangilagandan keyin"),
             Cmd("/ingestskus", "Bog'lanmagan mahsulotlarni katalogga qo'shish"),
+            Cmd("/auditphantoms [kunlar]", "ortilmagan/НЕ ОТГРУЖЕНО belgili buyurtmalar ro'yxati (default 30)"),
+            Cmd("/deleterealorder <doc_number>", "1C-da o'chirilgan buyurtmani o'chirish (tasdiq bilan)"),
         ]),
         ("🔔 To'lov bildirishnomalari", [
             Cmd("/missed", "Mijozga yetkazilmagan to'lov bildirishnomalari (Session N)"),
