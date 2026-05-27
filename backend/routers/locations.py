@@ -426,12 +426,14 @@ def get_customer_coverage(
     # 2) Compute USD-eq monthly volume per 1C name (rolling _BUCKET_WINDOW_MONTHS)
     from datetime import datetime, timedelta
     bucket_since = (datetime.fromisoformat(since[:10]) - timedelta(days=30 * _BUCKET_WINDOW_MONTHS)).date().isoformat()
+    # USD-eq = USD leg directly + UZS leg converted via FX. Both legs are
+    # honest columns at the doc level; no `currency` filter (always 'USD' on
+    # real_orders due to 1C export quirk — see realorders_revenue.py).
     bucket_rows = conn.execute(
         """
         SELECT client_name_1c AS c1c,
-               SUM(CASE WHEN UPPER(COALESCE(currency,'UZS'))='USD' THEN COALESCE(total_sum_currency, 0)
-                        ELSE COALESCE(total_sum_currency, 0) / ?
-                   END) AS total_usd
+               SUM(COALESCE(total_sum_currency, 0)
+                   + COALESCE(total_sum, 0) / ?) AS total_usd
         FROM real_orders
         WHERE doc_date >= ? AND client_name_1c IS NOT NULL
         GROUP BY client_name_1c

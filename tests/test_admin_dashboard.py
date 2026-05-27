@@ -54,9 +54,13 @@ def _this_monday_tk() -> datetime:
 
 
 def _seed_orders(db, orders):
-    """Insert real_orders + real_order_items.
+    """Insert real_orders + real_order_items with dual-currency line items.
 
-    orders: list of dicts {id, doc_date, currency, exchange_rate, items: [(pid, qty, total_local)]}
+    Line items are 3-tuples (pid, qty, total) for UZS-only docs or 4-tuples
+    (pid, qty, total_local, total_currency) for dual-currency. The doc's
+    `currency` field is a 1C-export tag (per Error Log #69: always 'USD' on
+    real Реализация exports); the dual-currency truth is at line-item level
+    in total_local (UZS leg) + total_currency (USD leg).
     """
     for o in orders:
         db.execute(
@@ -72,12 +76,19 @@ def _seed_orders(db, orders):
                 o.get("exchange_rate", 12000.0),
             ),
         )
-        for line_no, (pid, qty, total_local) in enumerate(o["items"], start=1):
+        for line_no, item in enumerate(o["items"], start=1):
+            if len(item) == 4:
+                pid, qty, total_local, total_currency = item
+            else:
+                pid, qty, total_local = item
+                total_currency = 0
             db.execute(
                 """INSERT INTO real_order_items
-                   (real_order_id, line_no, product_name_1c, product_id, quantity, total_local)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (o["id"], line_no, f"product-{pid}", pid, qty, total_local),
+                   (real_order_id, line_no, product_name_1c, product_id, quantity,
+                    total_local, total_currency)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (o["id"], line_no, f"product-{pid}", pid, qty,
+                 total_local, total_currency),
             )
     db.commit()
 
@@ -183,7 +194,10 @@ class TestTopSellersWoW:
              "items": [(1, 10, 1_000_000), (2, 5, 500_000)]},
             {"id": 101, "doc_date": (mon_tk + timedelta(days=1)).isoformat(),
              "currency": "USD", "exchange_rate": 12050,
-             "items": [(1, 5, 100), (3, 8, 50)]},
+             # USD-denominated items put their value in total_currency (USD leg),
+             # not total_local (UZS leg). Pre-#69 the test put it in total_local
+             # and the broken aggregator summed it — two wrongs cancelled.
+             "items": [(1, 5, 0, 100), (3, 8, 0, 50)]},
         ])
         # Last week — pid 2 led
         _seed_orders(db, [
@@ -288,7 +302,8 @@ class TestTopSellersPeriod:
              "items": [(1, 7, 700_000), (2, 4, 400_000)]},
             {"id": 301, "doc_date": last_wed.isoformat(), "currency": "USD",
              "exchange_rate": 12000,
-             "items": [(1, 2, 50)]},
+             # USD-denominated item — value in total_currency (USD leg), not total_local.
+             "items": [(1, 2, 0, 50)]},
         ])
         # Also seed THIS week — must NOT appear in last_week
         _seed_orders(db, [
@@ -351,7 +366,8 @@ class TestTopSellersPeriod:
              "items": [(1, 4, 400_000)]},
             {"id": 601, "doc_date": yesterday.isoformat(), "currency": "USD",
              "exchange_rate": 12000,
-             "items": [(1, 2, 30)]},
+             # USD line value goes in total_currency (USD leg), not total_local.
+             "items": [(1, 2, 0, 30)]},
         ])
         _seed_fxrate(db, rate=12000.0, rate_date=yesterday.isoformat())
 

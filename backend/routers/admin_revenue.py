@@ -641,8 +641,14 @@ def _latest_fxrate(conn, fallback: float = 12000.0) -> float:
 def _aggregate_sales_by_product(conn, start_tk_date: str, end_tk_date: str, fxrate: float):
     """Return {product_id: {units, revenue_uzs_native, revenue_usd_native, revenue_usd_eq}}.
 
-    revenue_uzs_native: sum of `total_local` from orders where currency='UZS'
-    revenue_usd_native: sum of `total_local` from orders where currency='USD'
+    Line items carry dual-currency truth directly:
+      - real_order_items.total_local    = UZS leg
+      - real_order_items.total_currency = USD leg
+    A given line item has one or both populated (single-currency vs dual).
+    We sum each leg unconditionally; no `ro.currency` filter — that column
+    is a 1C export quirk (always 'USD' on real_orders, see
+    backend/services/realorders_revenue.py).
+
     revenue_usd_eq: USD-equivalent ranking value =
         revenue_usd_native + (revenue_uzs_native / fxrate)
     """
@@ -652,8 +658,8 @@ def _aggregate_sales_by_product(conn, start_tk_date: str, end_tk_date: str, fxra
                   p.name_display,
                   p.unit,
                   SUM(roi.quantity) as units,
-                  SUM(CASE WHEN ro.currency = 'UZS' THEN roi.total_local ELSE 0 END) as uzs_rev,
-                  SUM(CASE WHEN ro.currency = 'USD' THEN roi.total_local ELSE 0 END) as usd_rev
+                  COALESCE(SUM(roi.total_local), 0)    as uzs_rev,
+                  COALESCE(SUM(roi.total_currency), 0) as usd_rev
            FROM real_order_items roi
            JOIN real_orders ro ON ro.id = roi.real_order_id
            LEFT JOIN products p ON p.id = roi.product_id

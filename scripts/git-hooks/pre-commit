@@ -28,6 +28,7 @@
 #   SKIP_CHATTYPE_CHECK=1      — bypass the chat-type-without-id guard
 #   SKIP_INLINE_FETCH_CHECK=1       — bypass the frontend inline-fetch guard
 #   SKIP_STATUS_VOCABULARY_CHECK=1  — bypass the structured-suffix status guard
+#   SKIP_REALORDERS_CURRENCY_FILTER_CHECK=1  — bypass the real_orders currency-filter ban
 #   SKIP_RUFF=1                     — skip ruff lint
 #   SKIP_FRONTEND_BUILD=1           — skip the frontend rebuild
 #   SKIP_BUNDLE_CHECK=1             — skip the bundle-size budget check
@@ -292,6 +293,71 @@ if [ "$SKIP_STATUS_VOCABULARY_CHECK" != "1" ] && [ -n "$STAGED_PY" ]; then
         echo "   skipped when 'merged_into:N' was introduced. Don't repeat it."
         echo ""
         echo "   Override after review: SKIP_STATUS_VOCABULARY_CHECK=1 git commit ..."
+        exit 1
+    fi
+fi
+
+# ── Foundation guard 7: real_orders currency-filter ban ───────────────────
+# Closes the dual-currency-leg-drop family at the query-filter boundary
+# (2026-05-27 incident: 11.55B UZS revenue invisible across owner_brief,
+# admin_revenue, top_buyers because of `WHERE currency='UZS'` filters
+# against real_orders — where the column is structurally always 'USD'
+# from the 1C export). Sister to #20/#49/#57/#23/#56 in the
+# dual-currency-leg-drop family.
+#
+# The `real_orders.currency` column is a 1C export quirk and is NOT a
+# meaningful denomination filter. Use total_sum (UZS leg) and
+# total_sum_currency (USD leg) directly, or the
+# `realorders_revenue()` helper.
+#
+# This guard rejects new code introducing the broken pattern:
+#   `currency = 'UZS'` or `currency = 'USD'`  (with optional spaces/quotes)
+# when the staged diff also touches a query against real_orders.
+#
+# Override SKIP_REALORDERS_CURRENCY_FILTER_CHECK=1 ONLY if you've verified
+# the query is against a sibling table (client_payments, client_debts)
+# where the currency column IS meaningful per-row.
+if [ "$SKIP_REALORDERS_CURRENCY_FILTER_CHECK" != "1" ] && [ -n "$STAGED_PY" ]; then
+    BAD_HITS=""
+    for f in $STAGED_PY; do
+        if [ ! -f "$f" ]; then continue; fi
+        # Skip the helper file itself — that's where the canonical pattern
+        # lives, including in comments/docstrings explaining the rule.
+        case "$f" in
+            *realorders_revenue.py) continue ;;
+            *test_realorders_revenue*) continue ;;
+        esac
+        # ADDED lines that mention `real_orders` AND a currency='UZS|USD'
+        # filter in the same staged diff hunk get flagged. We grep the
+        # full file (not just the diff) for the currency literal so a
+        # changed line near an existing broken line is caught too.
+        ADDED_RO=$(git diff --cached -- "$f" | grep -cE "^\+[^+].*(FROM real_orders|JOIN real_orders|real_orders\\s)")
+        if [ "$ADDED_RO" -eq 0 ]; then continue; fi
+        # File touches real_orders; now look for the broken pattern in
+        # added lines.
+        BAD=$(git diff --cached -- "$f" | grep -E "^\+[^+]" | \
+              grep -nE "currency\\s*=\\s*['\"]U[SZ][SD]['\"]" || true)
+        if [ -n "$BAD" ]; then
+            BAD_HITS="$BAD_HITS\n  $f:\n$BAD\n"
+        fi
+    done
+    if [ -n "$BAD_HITS" ]; then
+        echo "⚠️  Banned pattern: WHERE/CASE currency = 'UZS'/'USD' against real_orders"
+        printf "$BAD_HITS"
+        echo ""
+        echo "   real_orders.currency is structurally always 'USD' (1C export"
+        echo "   quirk on Реализация). Filtering by it silently drops the UZS"
+        echo "   leg. Use total_sum (UZS) + total_sum_currency (USD) directly,"
+        echo "   or the realorders_revenue() helper in"
+        echo "   backend/services/realorders_revenue.py."
+        echo ""
+        echo "   This closes the 4th instance in the dual-currency-leg-drop"
+        echo "   family (#20 #49 #57 #23 #56). See"
+        echo "   .claude/skills/recurring-family-investigation.md."
+        echo ""
+        echo "   Override (only if your query is against client_payments /"
+        echo "   client_debts where currency IS a valid per-row tag):"
+        echo "   SKIP_REALORDERS_CURRENCY_FILTER_CHECK=1 git commit ..."
         exit 1
     fi
 fi

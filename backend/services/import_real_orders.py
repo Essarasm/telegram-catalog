@@ -1013,40 +1013,25 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
     unique_unmatched_clients = sorted(set(unmatched_clients))
     unique_unmatched_products = sorted(set(unmatched_products))
 
-    # Top 5 buyers for the period covered by this import. UZS column reads
-    # total_sum for UZS docs; USD reads total_sum_currency for USD docs —
-    # matching the dual-currency rule (no conversion). Pseudo-clients
-    # (Наличка/СТРОЙКА/Возврат/etc.) filtered out.
+    # Top 5 buyers for the period — uses realorders_revenue_by_client helper
+    # (the canonical dual-currency query). Pseudo-clients filtered in-helper.
     top_buyers: List[dict] = []
     date_min = stats.get("date_min") if isinstance(stats, dict) else None
     date_max = stats.get("date_max") if isinstance(stats, dict) else None
     if date_min and date_max:
-        conn_q = get_db()
-        rows = conn_q.execute(
-            """SELECT client_name_1c,
-                      COALESCE(SUM(CASE WHEN currency='UZS' THEN total_sum          END), 0) AS uzs,
-                      COALESCE(SUM(CASE WHEN currency='USD' THEN total_sum_currency END), 0) AS usd
-               FROM real_orders
-               WHERE doc_date BETWEEN ? AND ?
-                 AND client_name_1c IS NOT NULL
-                 AND client_name_1c != ''
-               GROUP BY client_name_1c
-               ORDER BY uzs DESC, usd DESC
-               LIMIT 30""",
-            (date_min, date_max),
-        ).fetchall()
-        conn_q.close()
+        from backend.services.realorders_revenue import realorders_revenue_by_client
+        rows = realorders_revenue_by_client(
+            date_min=date_min,
+            date_max=date_max,
+            exclude_pseudo=True,
+            limit=5,
+        )
         for r in rows:
-            name = r["client_name_1c"]
-            if is_pseudo_client(name):
-                continue
             top_buyers.append({
-                "name": name,
-                "uzs": float(r["uzs"] or 0),
-                "usd": float(r["usd"] or 0),
+                "name": r["client_name_1c"],
+                "uzs": r["uzs"],
+                "usd": r["usd"],
             })
-            if len(top_buyers) >= 5:
-                break
 
     return {
         "ok": True,
