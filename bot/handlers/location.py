@@ -8,6 +8,7 @@ import logging
 from aiogram import Router, F
 from aiogram.types import (
     Message,
+    CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardRemove,
@@ -150,6 +151,78 @@ def _audit_finalize(conn, row_id: int, *, ok: bool, error: str | None = None,
         logger.error(f"location audit finalize failed: {e}")
 
 
+def _frozen_fix_prior(conn, telegram_id: int, before_audit_id: int,
+                      client_id: int, lat: float, lng: float):
+    """Detect a stale/frozen GPS fix being re-sent across consecutive shops.
+
+    Returns the agent's immediately-prior `location_attempts` row when the
+    incoming pin is bit-identical to it BUT was linked to a DIFFERENT client
+    — the signature of a phone returning a cached fix while the agent tags
+    several shops in a row (2026-05-01 Juma incident: one stuck fix landed on
+    ШУХРАТ, Санжар and ХУРШИД). Returns None when there's no such match, so
+    legitimate first pins and same-client self-corrections pass through.
+
+    Scoped to the last 2h so it only fires within one field session; an exact
+    six-decimal coincidence across days is astronomically unlikely anyway.
+    """
+    if not before_audit_id:
+        return None
+    row = conn.execute(
+        "SELECT latitude, longitude, linked_client_id, linked_client_1c "
+        "FROM location_attempts "
+        "WHERE telegram_id = ? AND id < ? AND latitude IS NOT NULL "
+        "AND linked_client_id IS NOT NULL "
+        "AND received_at >= datetime('now', '-2 hours') "
+        "ORDER BY id DESC LIMIT 1",
+        (telegram_id, before_audit_id),
+    ).fetchone()
+    if not row or row["linked_client_id"] == client_id:
+        return None
+    if (abs((row["latitude"] or 0.0) - lat) < 1e-6
+            and abs((row["longitude"] or 0.0) - lng) < 1e-6):
+        return row
+    return None
+
+
+def _notify_manzillar(*, client_label: str, setter_name: str, setter_role: str,
+                      setter_tg: int, lat: float, lng: float,
+                      prev_lat=None, prev_lng=None, prev_setter_name=None,
+                      prev_setter_role=None, is_renewal: bool = False) -> None:
+    """Post an agent/driver client-location set to the MANZILLAR (driver) group,
+    so mini-app/DM sets are as visible as in-group `/lokatsiya` pins (user
+    request 2026-05-27). Best-effort — a failed send never breaks the save."""
+    try:
+        import httpx as _httpx
+        from bot.shared import DRIVER_GROUP_CHAT_ID
+        if not DRIVER_GROUP_CHAT_ID:
+            return
+        new_maps = f"https://maps.google.com/?q={lat},{lng}"
+        header = ("♻️ <b>Mijoz lokatsiyasi yangilandi</b>" if is_renewal
+                  else "✅ <b>Mijoz lokatsiyasi o'rnatildi</b>")
+        lines = [
+            header, "",
+            f"🧾 Mijoz: <b>{html_escape(client_label)}</b>",
+            f"👤 O'rnatdi: {html_escape(setter_name)} ({setter_role})",
+            f"🆔 TG ID: <code>{setter_tg}</code> · 📲 Mini App",
+        ]
+        if is_renewal and prev_lat:
+            prev_maps = f"https://maps.google.com/?q={prev_lat},{prev_lng}"
+            lines.append(
+                f"📍 Avvalgi: {html_escape(prev_setter_name or '—')} "
+                f"({html_escape(prev_setter_role or '—')}) — "
+                f"<a href=\"{prev_maps}\">eski joylashuv</a>"
+            )
+        lines.append(f"📍 <a href=\"{new_maps}\">Yangi joylashuv</a>")
+        _httpx.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": DRIVER_GROUP_CHAT_ID, "text": "\n".join(lines),
+                  "parse_mode": "HTML", "disable_web_page_preview": True},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify MANZILLAR location set: {e}")
+
+
 @router.message(F.location)
 async def handle_location(message: Message):
     """Handle shared location from user — save coordinates + reverse geocode.
@@ -225,6 +298,44 @@ async def handle_location(message: Message):
     prev_lat = prev_client_gps["gps_latitude"] if prev_client_gps else None
     prev_lng = prev_client_gps["gps_longitude"] if prev_client_gps else None
 
+    # ── Frozen-GPS guard (agent-tagging-client path only) ───────────────
+    # If this exact coordinate was the agent's previous submission for a
+    # DIFFERENT client, the phone is likely returning a stale/cached fix.
+    # Hold the write and ask for confirmation instead of silently planting a
+    # stale pin on another client (2026-05-01 Juma incident, Error Log #68).
+    # The agent can override for the rare two-shops-one-spot case.
+    if is_agent_linked and user["client_id"]:
+        frozen_prior = _frozen_fix_prior(
+            conn, telegram_id, audit_id, user["client_id"],
+            loc.latitude, loc.longitude,
+        )
+        if frozen_prior is not None:
+            held_1c = (prev_client_gps["client_id_1c"] if prev_client_gps else "") or ""
+            _audit_finalize(
+                conn, audit_id, ok=False, error="stale_fix_held_for_confirm",
+                geocode_dict=geo, is_agent=1,
+                linked_client_id=user["client_id"], linked_client_1c=held_1c,
+            )
+            conn.close()
+            prev_label = frozen_prior["linked_client_1c"] or "oldingi mijoz"
+            kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="✅ Ha, shu yerda — saqla",
+                                     callback_data=f"locok:{audit_id}"),
+                InlineKeyboardButton(text="❌ Yo'q",
+                                     callback_data=f"locno:{audit_id}"),
+            ]])
+            await message.answer(
+                "⚠️ <b>Diqqat — GPS qotib qolgan bo'lishi mumkin</b>\n\n"
+                f"Bu nuqta avvalgi mijoz (<b>{html_escape(prev_label)}</b>) bilan "
+                "<b>aynan bir xil</b>. Telefon eski joylashuvni qaytarayotgan "
+                "bo'lishi mumkin.\n\n"
+                "📵 10–20 soniya kuting va lokatsiyani <b>qaytadan</b> yuboring.\n"
+                "Agar ikkala do'kon <b>haqiqatan ham bir joyda</b> bo'lsa — "
+                "«Ha, shu yerda» tugmasini bosing.",
+                parse_mode="HTML", reply_markup=kb,
+            )
+            return
+
     if user["client_id"]:
         client_1c_name = prev_client_gps["client_id_1c"] if prev_client_gps else ""
         # Auto-snapshot the prior pin BEFORE overwrite so any accidental
@@ -291,11 +402,24 @@ async def handle_location(message: Message):
     conn.commit()
     conn.close()
 
-    if had_location:
+    if is_agent_linked and client_1c_name:
+        # Agent/driver set a client's location via the mini-app/DM flow — surface
+        # it in MANZILLAR (driver group) alongside in-group /lokatsiya pins, on
+        # BOTH first-time set and renewal (user request 2026-05-27). Previously
+        # this only fired on overwrite and went to PLATFORM_OPS (commit 6ef9224).
+        _notify_manzillar(
+            client_label=client_1c_name, setter_name=setter_name,
+            setter_role=setter_role, setter_tg=telegram_id,
+            lat=loc.latitude, lng=loc.longitude,
+            prev_lat=prev_lat, prev_lng=prev_lng,
+            prev_setter_name=prev_setter_name, prev_setter_role=prev_setter_role,
+            is_renewal=had_location,
+        )
+    elif had_location:
+        # Non-agent overwrite (a client re-pinning their own shop) — keep the
+        # existing audit alert to PLATFORM_OPS (2026-05-16 admin/ops split).
         try:
             import httpx as _httpx
-            # Overwrite alerts are automated/system output — route to
-            # PLATFORM_OPS per the 2026-05-16 admin/ops group split.
             from bot.shared import PLATFORM_OPS_GROUP_CHAT_ID
             target_chat = PLATFORM_OPS_GROUP_CHAT_ID
             client_label = client_1c_name or setter_name
@@ -374,5 +498,127 @@ async def handle_location(message: Message):
         fin_conn.close()
     except Exception as e:
         logger.error(f"audit finalize (success path) failed: {e}")
+
+
+# ── Frozen-GPS guard: confirm / reject a held pin ────────────────────────
+
+@router.callback_query(F.data.startswith("locok:"))
+async def cb_confirm_stale_location(cb: CallbackQuery):
+    """Agent confirms a held (frozen-fix-suspected) pin is genuinely correct
+    — write it through. The held `location_attempts` row carries the raw
+    lat/lng + client linkage + reverse geocode, so we recover everything from
+    it (no state to stash between the warning and this tap)."""
+    try:
+        audit_id = int(cb.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await cb.answer()
+        return
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT telegram_id, first_name, latitude, longitude, linked_client_id, "
+            "linked_client_1c, reverse_geocode_json FROM location_attempts WHERE id = ?",
+            (audit_id,),
+        ).fetchone()
+        if not row or row["linked_client_id"] is None or row["latitude"] is None:
+            await cb.answer("Eskirgan tugma", show_alert=True)
+            return
+        if cb.from_user.id != row["telegram_id"]:
+            await cb.answer("Faqat yuboruvchi tasdiqlay oladi", show_alert=True)
+            return
+
+        import json as _json
+        try:
+            g = _json.loads(row["reverse_geocode_json"]) if row["reverse_geocode_json"] else {}
+        except Exception:
+            g = {}
+        geo = {"address": g.get("address", ""), "region": g.get("region", ""),
+               "district": g.get("district", "")}
+        client_id = row["linked_client_id"]
+        setter_name = row["first_name"] or str(row["telegram_id"])
+        lat, lng = row["latitude"], row["longitude"]
+
+        # Snapshot any prior pin BEFORE overwrite so the confirmed write stays
+        # reversible via /api/locations/restore-pin (same shape as the main path).
+        prior = conn.execute(
+            "SELECT name, client_id_1c, gps_latitude, gps_longitude, gps_address, "
+            "gps_region, gps_district, gps_set_at, gps_set_by_tg_id, gps_set_by_name, "
+            "gps_set_by_role FROM allowed_clients WHERE id = ?",
+            (client_id,),
+        ).fetchone()
+        if prior and prior["gps_latitude"] is not None:
+            snap_args = _json.dumps({
+                "client_id": client_id, "client_name": prior["name"],
+                "client_id_1c": prior["client_id_1c"],
+                "prior_gps_latitude": prior["gps_latitude"],
+                "prior_gps_longitude": prior["gps_longitude"],
+                "prior_gps_address": prior["gps_address"],
+                "prior_gps_region": prior["gps_region"],
+                "prior_gps_district": prior["gps_district"],
+                "prior_gps_set_at": prior["gps_set_at"],
+                "prior_gps_set_by_tg_id": prior["gps_set_by_tg_id"],
+                "prior_gps_set_by_name": prior["gps_set_by_name"],
+                "prior_gps_set_by_role": prior["gps_set_by_role"],
+                "overwritten_by_tg_id": row["telegram_id"],
+                "overwritten_by_name": setter_name, "overwritten_by_role": "agent",
+                "overwritten_with_lat": lat, "overwritten_with_lng": lng,
+                "snapshot_source": "frozen_fix_confirm",
+            }, ensure_ascii=False)
+            try:
+                conn.execute(
+                    "INSERT INTO admin_action_log (telegram_id, user_name, command, args) "
+                    "VALUES (?, ?, ?, ?)",
+                    (row["telegram_id"], setter_name, "auto_overwrite_snapshot", snap_args),
+                )
+            except Exception as e:
+                logger.error(f"frozen_fix_confirm snapshot failed (non-fatal): {e}")
+
+        conn.execute(
+            "UPDATE allowed_clients SET gps_latitude = ?, gps_longitude = ?, "
+            "gps_address = ?, gps_region = ?, gps_district = ?, "
+            "gps_set_at = datetime('now'), gps_set_by_tg_id = ?, gps_set_by_name = ?, "
+            "gps_set_by_role = 'agent' WHERE id = ?",
+            (lat, lng, geo["address"], geo["region"], geo["district"],
+             row["telegram_id"], setter_name, client_id),
+        )
+        backfill_text_from_gps(conn, client_id, geo)
+        _audit_finalize(conn, audit_id, ok=True, geocode_dict=geo, is_agent=1,
+                        linked_client_id=client_id, linked_client_1c=row["linked_client_1c"])
+        conn.commit()
+        label = row["linked_client_1c"] or ""
+        notify = dict(
+            client_label=label or setter_name, setter_name=setter_name,
+            setter_role="agent", setter_tg=row["telegram_id"], lat=lat, lng=lng,
+            prev_lat=(prior["gps_latitude"] if prior else None),
+            prev_lng=(prior["gps_longitude"] if prior else None),
+            prev_setter_name=(prior["gps_set_by_name"] if prior else None),
+            prev_setter_role=(prior["gps_set_by_role"] if prior else None),
+            is_renewal=bool(prior and prior["gps_latitude"] is not None),
+        )
+    finally:
+        conn.close()
+    await cb.answer("Saqlandi")
+    try:
+        await cb.message.edit_text(
+            f"✅ <b>{html_escape(label)}</b> uchun lokatsiya tasdiqlandi va saqlandi.",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+    # Confirmed agent set — surface it in MANZILLAR like any other set.
+    _notify_manzillar(**notify)
+
+
+@router.callback_query(F.data.startswith("locno:"))
+async def cb_reject_stale_location(cb: CallbackQuery):
+    """Agent rejects the held pin — they'll wait and resend a fresh one."""
+    await cb.answer()
+    try:
+        await cb.message.edit_text(
+            "❌ Bekor qilindi. Iltimos, 10–20 soniya kuting va lokatsiyani "
+            "qaytadan yuboring.",
+        )
+    except Exception:
+        pass
 
 
