@@ -99,7 +99,7 @@ def gather_sibling_phones(conn, client_id):
     return phones
 
 
-SCHEMA_VERSION = 17  # 2026-05-22: v17 adds reminder_fire_log so daily-reminder catch-up (Error Log #32 mitigation) can tell "we were down at 08:00" from "we fired at 08:00 then restarted at 11:11". Without the log, every redeploy in the 04:00–13:00 Tashkent window re-fires every morning reminder — owner brief, sverka, stock alert all duplicated 2026-05-22. Each successful fire (scheduled or catch-up) stamps (reminder_name, fire_date) and the startup grace window only fires if today's slot is missing. Earlier: v16 = client_balance_overrides.
+SCHEMA_VERSION = 18  # 2026-05-27: v18 captures the 1C real-orders col-0 approval marker (V = approved/shipped, X = pending) into real_orders.is_approved + first_pending_at. Until v18 the importer ignored col 0 and treated all rows as if shipped, inflating customer-app deliveries / top buyers / revenue with pending orders that hadn't yet been approved by Alisher. New columns are additive and nullable; legacy rows stay NULL (treat as "approved-or-unknown" in downstream filters). Earlier: v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
 
 
 def init_db():
@@ -2167,6 +2167,17 @@ def init_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_balance_overrides_set_at ON client_balance_overrides(set_at)")
+
+    # v18 (2026-05-27): real_orders.is_approved + first_pending_at — capture
+    # the 1C col-0 marker (V/X) at import time so customer app + top buyers
+    # + revenue queries can filter to approved-only. Additive ALTER, NULL
+    # default; new uploads populate, legacy rows stay NULL.
+    ro_cols = {row[1] for row in conn.execute("PRAGMA table_info(real_orders)").fetchall()}
+    if "is_approved" not in ro_cols:
+        conn.execute("ALTER TABLE real_orders ADD COLUMN is_approved INTEGER")
+    if "first_pending_at" not in ro_cols:
+        conn.execute("ALTER TABLE real_orders ADD COLUMN first_pending_at TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_real_orders_is_approved ON real_orders(is_approved)")
 
     # reminder_fire_log — bot/reminders.py uses this to dedup catch-up fires
     # on restart (Error Log #32 vs #NN). Each successful fire stamps a row;

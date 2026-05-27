@@ -522,6 +522,11 @@ def _parse_invoice_layout(sh: _Sheet) -> dict:
         "comment": None,
         "currency": currency,
         "exchange_rate": 1.0,
+        # Printable Счет-фактура invoices are single approved docs by definition
+        # (sales clicked Print on a shipped order). No col-0 marker exists in
+        # this layout. Default to is_approved=1 so they flow through the
+        # approved-only filters identically to V-marked tab-layout rows.
+        "is_approved": 1,
         "items": items,
     }
 
@@ -634,6 +639,10 @@ def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
             doc_date_raw = sh.cell(r, header_cols["doc_date"]) if "doc_date" in header_cols else None
             doc_time_raw = sh.cell(r, header_cols["doc_time"]) if "doc_time" in header_cols else None
 
+            # Col-0 approval marker: 'V' = approved/shipped, 'X' = pending. v18.
+            marker = str(sh.cell(r, 0) or "").strip().upper()
+            is_approved = 1 if marker == "V" else (0 if marker == "X" else None)
+
             current = {
                 "doc_number_1c": doc_number,
                 "doc_date": _parse_doc_date(doc_date_raw),
@@ -647,6 +656,7 @@ def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
                 "comment": str(sh.cell(r, header_cols.get("comment", -1)) or "").strip() or None,
                 "currency": (str(sh.cell(r, header_cols.get("currency", -1)) or "").strip().upper() or "UZS"),
                 "exchange_rate": _parse_number(sh.cell(r, header_cols.get("exchange_rate", -1))),
+                "is_approved": is_approved,
                 "items": [],
             }
             if not current["exchange_rate"]:
@@ -855,6 +865,15 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
             (d["doc_number_1c"],),
         ).fetchone()
 
+        # v18: capture col-0 approval marker. is_approved = 1 (V) / 0 (X) / NULL
+        # (unknown — legacy or unmarked). first_pending_at uses COALESCE so the
+        # first observation as pending is preserved across X→V→X cycles; rows
+        # that arrive as V get NULL and stay NULL.
+        new_is_approved = d.get("is_approved")
+        first_pending_value = None
+        if new_is_approved == 0:
+            first_pending_value = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         if existing:
             real_order_id = existing[0]
             conn.execute(
@@ -864,6 +883,8 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
                     sale_agent=?, responsible_person=?, comment=?,
                     currency=?, exchange_rate=?,
                     total_sum=?, total_sum_currency=?, total_weight=?, item_count=?,
+                    is_approved=?,
+                    first_pending_at=COALESCE(first_pending_at, ?),
                     imported_at=datetime('now')
                    WHERE id=?""",
                 (
@@ -872,6 +893,8 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
                     d.get("sale_agent"), d.get("responsible_person"), d.get("comment"),
                     d.get("currency"), d.get("exchange_rate") or 1,
                     total_local, total_currency, total_weight, item_count,
+                    new_is_approved,
+                    first_pending_value,
                     real_order_id,
                 ),
             )
@@ -885,14 +908,16 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
                     contract, storage_location, payment_account,
                     sale_agent, responsible_person, comment,
                     currency, exchange_rate,
-                    total_sum, total_sum_currency, total_weight, item_count)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    total_sum, total_sum_currency, total_weight, item_count,
+                    is_approved, first_pending_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     d["doc_number_1c"], d["doc_date"], d["doc_time"], client_name, client_id,
                     d.get("contract"), d.get("storage_location"), d.get("payment_account"),
                     d.get("sale_agent"), d.get("responsible_person"), d.get("comment"),
                     d.get("currency"), d.get("exchange_rate") or 1,
                     total_local, total_currency, total_weight, item_count,
+                    new_is_approved, first_pending_value,
                 ),
             )
             real_order_id = cur.lastrowid
