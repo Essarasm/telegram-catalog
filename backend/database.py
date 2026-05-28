@@ -99,7 +99,7 @@ def gather_sibling_phones(conn, client_id):
     return phones
 
 
-SCHEMA_VERSION = 18  # 2026-05-27: v18 captures the 1C real-orders col-0 approval marker (V = approved/shipped, X = pending) into real_orders.is_approved + first_pending_at. Until v18 the importer ignored col 0 and treated all rows as if shipped, inflating customer-app deliveries / top buyers / revenue with pending orders that hadn't yet been approved by Alisher. New columns are additive and nullable; legacy rows stay NULL (treat as "approved-or-unknown" in downstream filters). Earlier: v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
+SCHEMA_VERSION = 19  # 2026-05-28: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
 
 
 def init_db():
@@ -2253,11 +2253,45 @@ def init_db():
         "DELETE FROM reminder_fire_log WHERE fire_date < date('now', '-30 days')"
     )
 
+    # v19 (2026-05-28): photo_batch_items — drives the /foto workflow in the
+    # catalog group. Bot posts 10 product messages per batch; employees reply
+    # to a message with a File (HEIC/JPEG/PNG/WebP) and the bot uploads the
+    # raw bytes to Google Drive. message_id is the binding between Telegram
+    # reply and DB row. drive_file_id/name populated only on successful upload;
+    # telegram_file_id always kept as fallback in case Drive is misconfigured.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS photo_batch_items (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id              INTEGER NOT NULL,
+            position              INTEGER NOT NULL,
+            product_id            INTEGER NOT NULL,
+            message_id            INTEGER,
+            status                TEXT NOT NULL DEFAULT 'pending'
+                                  CHECK (status IN ('pending','photographed','skipped')),
+            photographed_by_tg_id INTEGER,
+            photographed_at       TEXT,
+            telegram_file_id      TEXT,
+            original_filename     TEXT,
+            mime_type             TEXT,
+            file_size_bytes       INTEGER,
+            drive_file_id         TEXT,
+            drive_file_name       TEXT,
+            skipped_by_tg_id      INTEGER,
+            skipped_at            TEXT,
+            created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pbi_batch ON photo_batch_items(batch_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pbi_message ON photo_batch_items(message_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pbi_product ON photo_batch_items(product_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pbi_status ON photo_batch_items(status)")
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "v17 = reminder_fire_log table — dedup catch-up fires for daily reminders. After 2026-05-20's CRON_RESTART_PAST_FIRE_DROPS_DAY mitigation (catch-up within 4h grace), the new failure mode was the opposite: restart-after-fire re-fires every morning reminder. v17 records each successful fire so the catch-up branch can skip slots already fired today. Earlier history: v15 = real_orders + client_payments composite UNIQUE; v16 = client_balance_overrides."),
+            (SCHEMA_VERSION, "v19 = photo_batch_items — catalog-group /foto workflow tracking. Each row binds a Telegram message_id in the catalog group to a product_id awaiting a photo. Status transitions pending → photographed (Drive upload succeeded) or pending → skipped (employee tapped ⏭). drive_file_id captures the Google Drive destination for offline trimming. Earlier history: v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
         )
 
     conn.commit()

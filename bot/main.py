@@ -570,12 +570,18 @@ async def main():
     from bot.handlers.order_dispatch import router as order_dispatch_router
     from bot.handlers.zakazlar import router as zakazlar_router
     from bot.handlers.role import router as role_router
+    from bot.handlers.photo_batch import router as photo_batch_router
 
     # cashier_router first — its FSM-state filters short-circuit messages
     # in the cashier group before any catch-all router can swallow them.
     # bank_transfer_router follows the same pattern for its own group.
+    # photo_batch_router same shape — its filters are all chat-id-gated to
+    # CATALOG_GROUP_CHAT_ID so it can sit anywhere, but registering early
+    # keeps document/photo replies in the catalog group from racing other
+    # groups' document-caption handlers (Error Log #33 discipline).
     dp.include_router(cashier_router)
     dp.include_router(bank_transfer_router)
+    dp.include_router(photo_batch_router)
     # driver_location_router before location_router so FSM-state filters
     # in DRIVER_GROUP_CHAT_ID fire before the general F.location handler.
     # location.py also has a scope guard skipping that chat as defence in depth.
@@ -598,7 +604,7 @@ async def main():
     dp.include_router(order_dispatch_router)
     dp.include_router(agent_approval_router)
     dp.include_router(role_router)
-    logger.info("Loaded handler modules: cashier, bank_transfer, driver_location, testclient, admin, uploads, score, orders, location, location_decisions, registration_link, registration, support, zakazlar, order_dispatch, agent_approval, role")
+    logger.info("Loaded handler modules: cashier, bank_transfer, photo_batch, driver_location, testclient, admin, uploads, score, orders, location, location_decisions, registration_link, registration, support, zakazlar, order_dispatch, agent_approval, role")
 
     # Error alerter: any uncaught exception inside a bot handler now posts
     # to Admin group with full traceback (same infrastructure as the

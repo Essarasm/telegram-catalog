@@ -110,6 +110,13 @@ BANK_TRANSFER_GROUP_CHAT_ID: int = _env_int("BANK_TRANSFER_GROUP_CHAT_ID", 0)
 # backend/routers/payments.py and bot/handlers/cashier.py.
 LEGAL_TRANSFER_GROUP_CHAT_ID: int = _env_int("LEGAL_TRANSFER_GROUP_CHAT_ID", 0)
 
+# Catalog photo-fill group — employees pick up /foto batches here, reply
+# with phone photos (as File, not as Photo, to preserve quality) under
+# each item message; bot uploads raw files to Google Drive
+# `product_photos_original/Employees uploads/` for offline trimming.
+# 0 = unconfigured; the /foto flow stays inert.
+CATALOG_GROUP_CHAT_ID: int = _env_int("CATALOG_GROUP_CHAT_ID", 0)
+
 # Direct-message manager (single user) — used by registration notifications.
 # 0 = unconfigured.
 MANAGER_CHAT_ID: int = _env_int("MANAGER_CHAT_ID", 0)

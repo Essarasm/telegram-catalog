@@ -42,6 +42,7 @@ from backend.services.group_config import (
     ERRORS_GROUP_CHAT_ID,
     REPORT_GROUP_CHAT_ID,
     LEGAL_TRANSFER_GROUP_CHAT_ID,
+    CATALOG_GROUP_CHAT_ID,
     MANAGER_CHAT_ID,
     OWNER_DAILY_BRIEF_TARGETS,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "ERRORS_GROUP_CHAT_ID",
     "REPORT_GROUP_CHAT_ID",
     "LEGAL_TRANSFER_GROUP_CHAT_ID",
+    "CATALOG_GROUP_CHAT_ID",
     "MANAGER_CHAT_ID",
     "OWNER_DAILY_BRIEF_TARGETS",
 ]
@@ -90,6 +92,8 @@ def chat_context(message) -> str:
         return 'bank_transfer'
     if DRIVER_GROUP_CHAT_ID and cid == DRIVER_GROUP_CHAT_ID:
         return 'driver'
+    if CATALOG_GROUP_CHAT_ID and cid == CATALOG_GROUP_CHAT_ID:
+        return 'catalog'
     if getattr(message, 'chat', None) and message.chat.type == 'private':
         uid = message.from_user.id if getattr(message, 'from_user', None) else None
         if uid and ADMIN_IDS and uid in ADMIN_IDS:

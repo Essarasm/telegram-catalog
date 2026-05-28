@@ -56,6 +56,12 @@ OBJECTIVES = {
         "Maqsad: yangi agent arizalarini tasdiqlash va admin-larga "
         "rol almashtirib test qilish imkonini berish."
     ),
+    'catalog': (
+        "📷 <b>Katalog — Mahsulot rasmlari</b>\n\n"
+        "Maqsad: katalogdagi mahsulotlar uchun foto to'plash. /foto — "
+        "10 ta mahsulot xabari, har biriga Fayl shaklida foto bilan javob "
+        "bering. Tugaganidan keyin keyingi 10 ta avtomatik chiqadi."
+    ),
 }
 
 # ── Command lists per chat role ─────────────────────────────────────
@@ -218,6 +224,13 @@ SPECS = {
         ("📍 Haydovchi buyruqlari", [
             Cmd("/lokatsiya", "Mijoz GPS pin qo'yish — haydovchi/agent flow"),
             Cmd("/chatid", "Chat va user ID"),
+        ]),
+    ],
+    'catalog': [
+        ("📷 Foto to'plash", [
+            Cmd("/foto", "10 ta mahsulot xabari — har biriga Fayl shaklida foto yuboring"),
+            Cmd("—", "Skip — agar mahsulotni topib bo'lmasa, ⏭ tugmasini bosing"),
+            Cmd("—", "10/10 to'lganda keyingi batch avtomatik chiqadi"),
         ]),
     ],
     'dm_user': [

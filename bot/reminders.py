@@ -3,9 +3,9 @@
 Runs two background tasks (pure asyncio, no APScheduler) that each sleep
 until the next trigger time in Asia/Tashkent:
 
-* **10:00 AM — morning nudge**: sends the full /today checklist to
-  ADMIN_GROUP_CHAT_ID with a bilingual header.
-* **17:00 PM — EOD escalation**: if anything is still missing, sends a
+* **09:00 — morning nudge**: sends the full /today checklist to
+  DAILY_GROUP_CHAT_ID with a bilingual header.
+* **17:00 — EOD escalation**: if anything is still missing, sends a
   list of pending items. If everything is done, sends positive reinforcement.
 
 Both tasks skip Sundays and registered holidays. All timezone math goes
@@ -1061,7 +1061,7 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
     tasks = [
         # Daily-upload reminders → Daily group (were Admin group).
         asyncio.create_task(
-            run_daily_reminder(bot, DAILY_GROUP_CHAT_ID, 17, 0, _send_morning_nudge),
+            run_daily_reminder(bot, DAILY_GROUP_CHAT_ID, 9, 0, _send_morning_nudge),
             name="daily-upload-reminder",
         ),
         asyncio.create_task(

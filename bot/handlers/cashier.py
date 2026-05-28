@@ -80,7 +80,7 @@ from bot.shared import is_admin, is_admin_cb
 logger = logging.getLogger(__name__)
 router = Router(name="cashier")
 
-AGENTS = ["Bobur", "Nurinboy", "Musobek", "Sherzod", "Umidjon", "Dilshod"]
+AGENTS = ["Bobur", "Bektemir", "Musobek", "Sherzod", "Umidjon", "Dilshod"]
 
 
 # ── States ──────────────────────────────────────────────────────────
