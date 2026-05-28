@@ -2,27 +2,23 @@
 
 Open to anyone in the group (no allowlist). Mirrors the cashier FSM:
 /lokatsiya → menu → fuzzy client search → pick client → location pin →
-save canonical to allowed_clients.gps_*.
+classify against existing pin → write / silent-ignore / dispatch.
 
-Locking semantics (revised 2026-05-15 — see Error Log #37):
-- **Same-agent self-overwrite is allowed.** If the picked client's
-  current pin was set by the same Telegram user, the new pin replaces
-  it. Prior state is snapshotted to admin_action_log as
-  `auto_overwrite_snapshot` (source='driver_lokatsiya') before the
-  UPDATE so the round-trip is reversible via /api/locations/restore-pin.
-- **Cross-agent overwrite is still blocked.** If the picked client's
-  current pin was set by a *different* Telegram user, the new pin is
-  REJECTED — audit row gets processed_ok=0, error_reason=
-  'client_already_has_gps' (with full lat/lng + reverse geocode
-  preserved). Admin reviews via location_attempts and uses
-  /api/locations/clear-pin if the canonical pin needs replacement.
+Conflict semantics (Session M 2026-05-28 redesign):
+- **No prior pin** → write canonical to allowed_clients.gps_*.
+- **Within 100 m of existing pin** → silent ignore; raw lat/lng preserved
+  in location_attempts with error_reason='within_threshold_silent_ignore'.
+  Existing pin stays unchanged.
+- **>100 m from existing pin** → no write; insert a pending_location_decisions
+  row + dispatch comparison message to AGENT_APPROVAL_GROUP_CHAT_ID with
+  [Eski qoldirilsin / Yangisi olinsin] buttons. Admin's tap commits the
+  outcome via `bot/handlers/location_decisions.py`.
 
-Rationale for the 2026-05-15 change: the prior pure-first-write-wins
-prevented agents from correcting their *own* wrong pins (e.g. when an
-earlier share landed at the wrong location and the agent re-shares
-from the correct spot). Today (Рамиз ХАЗОРА) is exactly that case.
-Same-agent self-overwrite enables self-correction without blocking the
-BAKHROM-Умиджон cross-agent threat the original lock was designed for.
+Same-agent self-correction also runs through admin pick (user choice
+2026-05-28 — consistency over fast self-correction; admins want every
+divergent overwrite to be reviewable). Bektimur's two blocked attempts
+on 2026-05-28 (one byte-identical, one 5m off) demonstrated that the
+prior block-or-overwrite axis was wrong for both cases.
 """
 from __future__ import annotations
 
@@ -41,7 +37,9 @@ from aiogram.types import (
 
 from bot.shared import get_db, html_escape, DRIVER_GROUP_CHAT_ID
 from bot.handlers.location import _audit_insert, _audit_finalize, _reverse_geocode
+from bot.handlers.location_decisions import dispatch_location_decision
 from backend.services.client_search import search_clients
+from backend.services.location_compare import evaluate_location_conflict
 from backend.services.location_display import backfill_text_from_gps
 
 logger = logging.getLogger(__name__)
@@ -237,8 +235,8 @@ async def cb_pick_client(cb: CallbackQuery, state: FSMContext):
             f"⚠️ <b>{html_escape(cname)}</b> uchun lokatsiya allaqachon mavjud:\n"
             f"📍 {html_escape(prev_addr)}\n"
             f"👤 {html_escape(prev_setter)} · {html_escape(prev_when)}\n\n"
-            f"Yangi lokatsiya yuborsangiz — <b>saqlanmaydi</b> (bloklangan), "
-            f"lekin admin uchun taqqoslash uchun yoziladi.\n\n"
+            f"Yangi lokatsiyangiz mavjudga yaqin bo'lsa — e'tibor qaratilmaydi.\n"
+            f"Uzoq bo'lsa — admin taqqoslab tanlaydi.\n\n"
             f"📍 <b>Lokatsiyani yuboring</b> (yoki Bekor)"
         )
     else:
@@ -285,8 +283,6 @@ async def handle_driver_location(message: Message, state: FSMContext):
 
     conn = get_db()
     try:
-        # Read prior pin state to decide: NULL (first write) / same-agent
-        # (self-overwrite — snapshot+update) / different-agent (block).
         prior = conn.execute(
             "SELECT name, client_id_1c, gps_latitude, gps_longitude, gps_address, "
             "gps_region, gps_district, gps_set_at, gps_set_by_tg_id, "
@@ -294,101 +290,74 @@ async def handle_driver_location(message: Message, state: FSMContext):
             (client_id,),
         ).fetchone()
 
-        is_self_overwrite = (
-            prior is not None
-            and prior["gps_latitude"] is not None
-            and prior["gps_set_by_tg_id"] == message.from_user.id
+        verdict, distance_m = evaluate_location_conflict(
+            prior["gps_latitude"] if prior else None,
+            prior["gps_longitude"] if prior else None,
+            loc.latitude, loc.longitude,
         )
 
-        # Same-agent self-overwrite: snapshot prior state BEFORE the UPDATE
-        # so /api/locations/restore-pin can recover it. Best-effort; broken
-        # audit never blocks the legitimate UPDATE.
-        if is_self_overwrite:
-            import json as _json
-            snap_args = _json.dumps({
-                "client_id": client_id,
-                "client_name": prior["name"],
-                "client_id_1c": prior["client_id_1c"],
-                "prior_gps_latitude": prior["gps_latitude"],
-                "prior_gps_longitude": prior["gps_longitude"],
-                "prior_gps_address": prior["gps_address"],
-                "prior_gps_region": prior["gps_region"],
-                "prior_gps_district": prior["gps_district"],
-                "prior_gps_set_at": prior["gps_set_at"],
-                "prior_gps_set_by_tg_id": prior["gps_set_by_tg_id"],
-                "prior_gps_set_by_name": prior["gps_set_by_name"],
-                "prior_gps_set_by_role": prior["gps_set_by_role"],
-                "overwritten_by_tg_id": message.from_user.id,
-                "overwritten_by_name": setter_name,
-                "overwritten_by_role": setter_role,
-                "overwritten_with_lat": loc.latitude,
-                "overwritten_with_lng": loc.longitude,
-                "snapshot_source": "driver_lokatsiya",
-            }, ensure_ascii=False)
-            try:
-                conn.execute(
-                    "INSERT INTO admin_action_log (telegram_id, user_name, command, args) "
-                    "VALUES (?, ?, ?, ?)",
-                    (message.from_user.id, setter_name,
-                     "auto_overwrite_snapshot", snap_args),
-                )
-            except Exception as e:
-                logger.error(f"driver_lokatsiya auto_overwrite_snapshot failed (non-fatal): {e}")
-
-        # Atomic conditional UPDATE — NULL or same-agent only. Cross-agent
-        # attempts hit the WHERE clause and rowcount comes back 0.
-        cur = conn.execute(
-            "UPDATE allowed_clients SET "
-            "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "
-            "gps_region = ?, gps_district = ?, gps_set_at = datetime('now'), "
-            "gps_set_by_tg_id = ?, gps_set_by_name = ?, gps_set_by_role = ? "
-            "WHERE id = ? AND (gps_latitude IS NULL OR gps_set_by_tg_id = ?)",
-            (loc.latitude, loc.longitude, geo["address"], geo["region"],
-             geo["district"], message.from_user.id, setter_name, setter_role,
-             client_id, message.from_user.id),
-        )
-        saved = cur.rowcount > 0
-        if saved:
+        if verdict == "first_write":
+            conn.execute(
+                "UPDATE allowed_clients SET "
+                "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "
+                "gps_region = ?, gps_district = ?, gps_set_at = datetime('now'), "
+                "gps_set_by_tg_id = ?, gps_set_by_name = ?, gps_set_by_role = ? "
+                "WHERE id = ?",
+                (loc.latitude, loc.longitude, geo["address"], geo["region"],
+                 geo["district"], message.from_user.id, setter_name, setter_role,
+                 client_id),
+            )
             backfill_text_from_gps(conn, client_id, geo)
-        conn.commit()
-
-        if not saved:
-            # Cross-agent block — prior pin set by someone else.
-            prior_setter = prior["gps_set_by_name"] if prior else None
+            conn.commit()
             _audit_finalize(
-                conn, audit_id, ok=False,
-                error="client_already_has_gps",
-                geocode_dict=geo,
-                is_agent=0,
-                linked_client_id=client_id,
-                linked_client_1c=client_name,
-            )
-            prior_hint = (f"\n\n(oldingi pin: <b>{html_escape(prior_setter)}</b> tomonidan)"
-                          if prior_setter else "")
-            await message.answer(
-                f"⚠️ <b>{html_escape(client_name)}</b> uchun lokatsiya bloklangan.\n\n"
-                f"Yuborgan lokatsiyangiz adminga taqqoslash uchun yoziladi."
-                f"{prior_hint}",
-                parse_mode="HTML",
-            )
-        else:
-            _audit_finalize(
-                conn, audit_id, ok=True,
-                geocode_dict=geo,
-                is_agent=0,
-                linked_client_id=client_id,
-                linked_client_1c=client_name,
+                conn, audit_id, ok=True, geocode_dict=geo, is_agent=0,
+                linked_client_id=client_id, linked_client_1c=client_name,
             )
             maps_url = f"https://maps.google.com/?q={loc.latitude},{loc.longitude}"
             display_parts = [p for p in (geo["region"], geo["address"]) if p]
             address_display = ", ".join(display_parts) if display_parts else "manzil aniqlandi"
-            update_marker = "♻️ yangilandi" if is_self_overwrite else "✅"
             await message.answer(
-                f"{update_marker} <b>{html_escape(client_name)}</b> uchun lokatsiya saqlandi.\n\n"
+                f"✅ <b>{html_escape(client_name)}</b> uchun lokatsiya saqlandi.\n\n"
                 f"📍 {html_escape(address_display)}\n"
                 f"🗺 <a href=\"{maps_url}\">Xaritada ko'rish</a>",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
+            )
+        elif verdict == "within_threshold":
+            _audit_finalize(
+                conn, audit_id, ok=False,
+                error="within_threshold_silent_ignore",
+                geocode_dict=geo, is_agent=0,
+                linked_client_id=client_id, linked_client_1c=client_name,
+            )
+            await message.answer(
+                f"📍 <b>{html_escape(client_name)}</b> — lokatsiya allaqachon "
+                f"yaqin atrofda saqlangan (~{distance_m:.0f} m). "
+                f"E'tibor qaratilmadi.",
+                parse_mode="HTML",
+            )
+        else:  # dispatch_for_review
+            pld_id = dispatch_location_decision(
+                conn,
+                client_id=client_id, client_name=client_name,
+                client_id_1c=prior["client_id_1c"] if prior else None,
+                prior_row=prior, incoming_lat=loc.latitude,
+                incoming_lng=loc.longitude, incoming_geo=geo,
+                incoming_by_tg_id=message.from_user.id,
+                incoming_by_name=setter_name, incoming_by_role=setter_role,
+                incoming_attempt_id=audit_id, distance_m=distance_m,
+                source_path="driver_lokatsiya",
+            )
+            _audit_finalize(
+                conn, audit_id, ok=False,
+                error=f"pending_admin_decision:pld_{pld_id}" if pld_id else "pending_admin_decision",
+                geocode_dict=geo, is_agent=0,
+                linked_client_id=client_id, linked_client_1c=client_name,
+            )
+            await message.answer(
+                f"📨 <b>{html_escape(client_name)}</b> — lokatsiya adminga "
+                f"taqqoslash uchun yuborildi (~{distance_m:.0f} m oldingisidan farq qiladi).",
+                parse_mode="HTML",
             )
     except Exception as e:
         conn.rollback()

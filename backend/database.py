@@ -731,6 +731,54 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_location_attempts_processed_ok ON location_attempts(processed_ok);
 
         -- ─────────────────────────────────────────────────────────────
+        -- Per-client location-decision queue (2026-05-28, Session M).
+        -- When an agent/driver sends a pin >100m from the existing pin,
+        -- we DON'T overwrite — we insert a row here, dispatch a comparison
+        -- message to AGENT_APPROVAL_GROUP_CHAT_ID with [keep old / use new]
+        -- buttons, and let admin decide. Within-threshold incoming pins
+        -- are silently ignored (no row here, audit-only in location_attempts).
+        -- ─────────────────────────────────────────────────────────────
+        CREATE TABLE IF NOT EXISTS pending_location_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT DEFAULT (datetime('now')),
+            client_id INTEGER NOT NULL,
+            client_name TEXT,
+            client_id_1c TEXT,
+            -- Prior pin snapshot (the one currently on allowed_clients.gps_*)
+            prior_lat REAL,
+            prior_lng REAL,
+            prior_address TEXT,
+            prior_region TEXT,
+            prior_district TEXT,
+            prior_set_at TEXT,
+            prior_set_by_tg_id INTEGER,
+            prior_set_by_name TEXT,
+            prior_set_by_role TEXT,
+            -- Incoming pin snapshot (what the agent just sent)
+            incoming_lat REAL,
+            incoming_lng REAL,
+            incoming_address TEXT,
+            incoming_region TEXT,
+            incoming_district TEXT,
+            incoming_by_tg_id INTEGER,
+            incoming_by_name TEXT,
+            incoming_by_role TEXT,
+            incoming_attempt_id INTEGER,    -- FK to location_attempts.id
+            -- Distance + source path for forensics
+            distance_m REAL,
+            source_path TEXT,                -- 'driver_lokatsiya' | 'mini_app_dm'
+            -- Dispatch + decision state
+            dispatched_chat_id INTEGER,
+            dispatched_message_id INTEGER,
+            status TEXT DEFAULT 'pending',   -- 'pending' | 'keep_old' | 'use_new' | 'superseded'
+            decided_at TEXT,
+            decided_by_tg_id INTEGER,
+            decided_by_name TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_loc_dec_status ON pending_location_decisions(status);
+        CREATE INDEX IF NOT EXISTS idx_pending_loc_dec_client ON pending_location_decisions(client_id);
+
+        -- ─────────────────────────────────────────────────────────────
         -- Session G: Credit scoring engine
         -- ─────────────────────────────────────────────────────────────
 

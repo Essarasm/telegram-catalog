@@ -17,6 +17,7 @@ from aiogram.types import (
 
 from bot.shared import get_db, html_escape, BOT_TOKEN, WEBAPP_URL, DRIVER_GROUP_CHAT_ID
 from backend.services.location_display import backfill_text_from_gps
+from backend.services.location_compare import evaluate_location_conflict
 
 logger = logging.getLogger("bot")
 router = Router(name="location")
@@ -292,9 +293,6 @@ async def handle_location(message: Message):
             (user["client_id"],),
         ).fetchone()
 
-    had_location = bool(prev_client_gps and prev_client_gps["gps_latitude"] is not None)
-    prev_setter_name = prev_client_gps["gps_set_by_name"] if prev_client_gps else None
-    prev_setter_role = prev_client_gps["gps_set_by_role"] if prev_client_gps else None
     prev_lat = prev_client_gps["gps_latitude"] if prev_client_gps else None
     prev_lng = prev_client_gps["gps_longitude"] if prev_client_gps else None
 
@@ -336,43 +334,63 @@ async def handle_location(message: Message):
             )
             return
 
+    # Verdict-based branch (Session M 2026-05-28): no prior pin → write;
+    # within 100 m → silent ignore; >100 m → dispatch to admin-approval group.
+    verdict: str | None = None
+    distance_m: float | None = None
     if user["client_id"]:
         client_1c_name = prev_client_gps["client_id_1c"] if prev_client_gps else ""
-        # Auto-snapshot the prior pin BEFORE overwrite so any accidental
-        # overwrite (stale users.client_id, wrong agent, fat-fingered share)
-        # is reversible via /api/locations/restore-pin. The location_attempts
-        # audit row preserves the raw incoming lat/lng on the OTHER side;
-        # this snapshot preserves what we're about to clobber on this side.
-        if had_location:
-            import json as _json
-            snap_args = _json.dumps({
-                "client_id": user["client_id"],
-                "client_name": prev_client_gps["name"],
-                "client_id_1c": prev_client_gps["client_id_1c"],
-                "prior_gps_latitude": prev_client_gps["gps_latitude"],
-                "prior_gps_longitude": prev_client_gps["gps_longitude"],
-                "prior_gps_address": prev_client_gps["gps_address"],
-                "prior_gps_region": prev_client_gps["gps_region"],
-                "prior_gps_district": prev_client_gps["gps_district"],
-                "prior_gps_set_at": prev_client_gps["gps_set_at"],
-                "prior_gps_set_by_tg_id": prev_client_gps["gps_set_by_tg_id"],
-                "prior_gps_set_by_name": prev_client_gps["gps_set_by_name"],
-                "prior_gps_set_by_role": prev_client_gps["gps_set_by_role"],
-                "overwritten_by_tg_id": telegram_id,
-                "overwritten_by_name": setter_name,
-                "overwritten_by_role": setter_role,
-                "overwritten_with_lat": loc.latitude,
-                "overwritten_with_lng": loc.longitude,
-            }, ensure_ascii=False)
-            try:
-                conn.execute(
-                    "INSERT INTO admin_action_log (telegram_id, user_name, command, args) "
-                    "VALUES (?, ?, ?, ?)",
-                    (telegram_id, setter_name, "auto_overwrite_snapshot", snap_args),
-                )
-            except Exception as e:
-                logger.error(f"auto_overwrite_snapshot failed (non-fatal): {e}")
+        verdict, distance_m = evaluate_location_conflict(
+            prev_lat, prev_lng, loc.latitude, loc.longitude,
+        )
 
+        if verdict == "within_threshold":
+            _audit_finalize(
+                conn, audit_id, ok=False,
+                error="within_threshold_silent_ignore",
+                geocode_dict=geo, is_agent=int(bool(user["is_agent"])),
+                linked_client_id=user["client_id"], linked_client_1c=client_1c_name,
+            )
+            conn.close()
+            await message.answer(
+                f"📍 <b>{html_escape(client_1c_name or 'Mijoz')}</b> — lokatsiya "
+                f"allaqachon yaqin atrofda saqlangan (~{distance_m:.0f} m). "
+                f"E'tibor qaratilmadi.",
+                parse_mode="HTML",
+            )
+            return
+
+        if verdict == "dispatch_for_review":
+            from bot.handlers.location_decisions import dispatch_location_decision
+            pld_id = dispatch_location_decision(
+                conn,
+                client_id=user["client_id"],
+                client_name=prev_client_gps["name"] if prev_client_gps else "",
+                client_id_1c=client_1c_name,
+                prior_row=prev_client_gps,
+                incoming_lat=loc.latitude, incoming_lng=loc.longitude,
+                incoming_geo=geo,
+                incoming_by_tg_id=telegram_id,
+                incoming_by_name=setter_name, incoming_by_role=setter_role,
+                incoming_attempt_id=audit_id, distance_m=distance_m,
+                source_path="mini_app_dm",
+            )
+            _audit_finalize(
+                conn, audit_id, ok=False,
+                error=f"pending_admin_decision:pld_{pld_id}" if pld_id else "pending_admin_decision",
+                geocode_dict=geo, is_agent=int(bool(user["is_agent"])),
+                linked_client_id=user["client_id"], linked_client_1c=client_1c_name,
+            )
+            conn.close()
+            await message.answer(
+                f"📨 <b>{html_escape(client_1c_name or 'Mijoz')}</b> — lokatsiya "
+                f"adminga taqqoslash uchun yuborildi "
+                f"(~{distance_m:.0f} m oldingisidan farq qiladi).",
+                parse_mode="HTML",
+            )
+            return
+
+        # verdict == "first_write" — no prior pin; write directly.
         conn.execute(
             "UPDATE allowed_clients SET "
             "gps_latitude = ?, gps_longitude = ?, gps_address = ?, "
@@ -402,48 +420,17 @@ async def handle_location(message: Message):
     conn.commit()
     conn.close()
 
-    if is_agent_linked and client_1c_name:
-        # Agent/driver set a client's location via the mini-app/DM flow — surface
-        # it in MANZILLAR (driver group) alongside in-group /lokatsiya pins, on
-        # BOTH first-time set and renewal (user request 2026-05-27). Previously
-        # this only fired on overwrite and went to PLATFORM_OPS (commit 6ef9224).
+    if is_agent_linked and client_1c_name and verdict == "first_write":
+        # Agent set a client's FIRST pin via Mini-App/DM — surface it in
+        # MANZILLAR alongside in-group /lokatsiya pins. Overwrite cases
+        # (within_threshold / dispatch_for_review) returned early above, so
+        # this only fires on genuine first writes.
         _notify_manzillar(
             client_label=client_1c_name, setter_name=setter_name,
             setter_role=setter_role, setter_tg=telegram_id,
             lat=loc.latitude, lng=loc.longitude,
-            prev_lat=prev_lat, prev_lng=prev_lng,
-            prev_setter_name=prev_setter_name, prev_setter_role=prev_setter_role,
-            is_renewal=had_location,
+            is_renewal=False,
         )
-    elif had_location:
-        # Non-agent overwrite (a client re-pinning their own shop) — keep the
-        # existing audit alert to PLATFORM_OPS (2026-05-16 admin/ops split).
-        try:
-            import httpx as _httpx
-            from bot.shared import PLATFORM_OPS_GROUP_CHAT_ID
-            target_chat = PLATFORM_OPS_GROUP_CHAT_ID
-            client_label = client_1c_name or setter_name
-            prev_maps = f"https://maps.google.com/?q={prev_lat},{prev_lng}" if prev_lat else "—"
-            new_maps = f"https://maps.google.com/?q={loc.latitude},{loc.longitude}"
-            lines = [
-                "📍 <b>Joylashuv o'zgartirildi (overwrite)</b>",
-                "",
-                f"🧾 Mijoz: <b>{html_escape(client_label)}</b>",
-                f"👤 O'zgartiruvchi: {html_escape(setter_name)} ({setter_role})",
-                f"🆔 TG ID: <code>{telegram_id}</code>",
-                "",
-                f"📍 Avvalgi: {html_escape(prev_setter_name or '—')} ({prev_setter_role or '—'})",
-                f"   <a href=\"{prev_maps}\">Eski joylashuv</a>",
-                f"📍 Yangi: <a href=\"{new_maps}\">Yangi joylashuv</a>",
-            ]
-            _httpx.post(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": target_chat, "text": "\n".join(lines),
-                      "parse_mode": "HTML", "disable_web_page_preview": True},
-                timeout=10,
-            )
-        except Exception as e:
-            logger.error(f"Failed to notify location overwrite: {e}")
 
     maps_url = f"https://maps.google.com/?q={loc.latitude},{loc.longitude}"
     display_parts = []
@@ -504,16 +491,20 @@ async def handle_location(message: Message):
 
 @router.callback_query(F.data.startswith("locok:"))
 async def cb_confirm_stale_location(cb: CallbackQuery):
-    """Agent confirms a held (frozen-fix-suspected) pin is genuinely correct
-    — write it through. The held `location_attempts` row carries the raw
-    lat/lng + client linkage + reverse geocode, so we recover everything from
-    it (no state to stash between the warning and this tap)."""
+    """Agent confirms a held (frozen-fix-suspected) pin is genuinely correct.
+    Routes through the verdict-based branch: first_write → write directly,
+    within_threshold → silent ignore, dispatch_for_review → dispatch to admin.
+    The held `location_attempts` row carries the raw lat/lng + client linkage
+    + reverse geocode, so we recover everything from it."""
     try:
         audit_id = int(cb.data.split(":", 1)[1])
     except (ValueError, IndexError):
         await cb.answer()
         return
     conn = get_db()
+    reply_text = ""
+    label = ""
+    notify_payload = None
     try:
         row = conn.execute(
             "SELECT telegram_id, first_name, latitude, longitude, linked_client_id, "
@@ -537,76 +528,81 @@ async def cb_confirm_stale_location(cb: CallbackQuery):
         client_id = row["linked_client_id"]
         setter_name = row["first_name"] or str(row["telegram_id"])
         lat, lng = row["latitude"], row["longitude"]
+        label = row["linked_client_1c"] or ""
 
-        # Snapshot any prior pin BEFORE overwrite so the confirmed write stays
-        # reversible via /api/locations/restore-pin (same shape as the main path).
         prior = conn.execute(
             "SELECT name, client_id_1c, gps_latitude, gps_longitude, gps_address, "
             "gps_region, gps_district, gps_set_at, gps_set_by_tg_id, gps_set_by_name, "
             "gps_set_by_role FROM allowed_clients WHERE id = ?",
             (client_id,),
         ).fetchone()
-        if prior and prior["gps_latitude"] is not None:
-            snap_args = _json.dumps({
-                "client_id": client_id, "client_name": prior["name"],
-                "client_id_1c": prior["client_id_1c"],
-                "prior_gps_latitude": prior["gps_latitude"],
-                "prior_gps_longitude": prior["gps_longitude"],
-                "prior_gps_address": prior["gps_address"],
-                "prior_gps_region": prior["gps_region"],
-                "prior_gps_district": prior["gps_district"],
-                "prior_gps_set_at": prior["gps_set_at"],
-                "prior_gps_set_by_tg_id": prior["gps_set_by_tg_id"],
-                "prior_gps_set_by_name": prior["gps_set_by_name"],
-                "prior_gps_set_by_role": prior["gps_set_by_role"],
-                "overwritten_by_tg_id": row["telegram_id"],
-                "overwritten_by_name": setter_name, "overwritten_by_role": "agent",
-                "overwritten_with_lat": lat, "overwritten_with_lng": lng,
-                "snapshot_source": "frozen_fix_confirm",
-            }, ensure_ascii=False)
-            try:
-                conn.execute(
-                    "INSERT INTO admin_action_log (telegram_id, user_name, command, args) "
-                    "VALUES (?, ?, ?, ?)",
-                    (row["telegram_id"], setter_name, "auto_overwrite_snapshot", snap_args),
-                )
-            except Exception as e:
-                logger.error(f"frozen_fix_confirm snapshot failed (non-fatal): {e}")
 
-        conn.execute(
-            "UPDATE allowed_clients SET gps_latitude = ?, gps_longitude = ?, "
-            "gps_address = ?, gps_region = ?, gps_district = ?, "
-            "gps_set_at = datetime('now'), gps_set_by_tg_id = ?, gps_set_by_name = ?, "
-            "gps_set_by_role = 'agent' WHERE id = ?",
-            (lat, lng, geo["address"], geo["region"], geo["district"],
-             row["telegram_id"], setter_name, client_id),
+        verdict, distance_m = evaluate_location_conflict(
+            prior["gps_latitude"] if prior else None,
+            prior["gps_longitude"] if prior else None,
+            lat, lng,
         )
-        backfill_text_from_gps(conn, client_id, geo)
-        _audit_finalize(conn, audit_id, ok=True, geocode_dict=geo, is_agent=1,
-                        linked_client_id=client_id, linked_client_1c=row["linked_client_1c"])
+
+        if verdict == "within_threshold":
+            _audit_finalize(conn, audit_id, ok=False,
+                            error="within_threshold_silent_ignore",
+                            geocode_dict=geo, is_agent=1,
+                            linked_client_id=client_id, linked_client_1c=label)
+            reply_text = (
+                f"📍 <b>{html_escape(label)}</b> — lokatsiya allaqachon "
+                f"yaqin atrofda saqlangan (~{distance_m:.0f} m). "
+                f"E'tibor qaratilmadi."
+            )
+        elif verdict == "dispatch_for_review":
+            from bot.handlers.location_decisions import dispatch_location_decision
+            pld_id = dispatch_location_decision(
+                conn, client_id=client_id,
+                client_name=prior["name"] if prior else "",
+                client_id_1c=label, prior_row=prior,
+                incoming_lat=lat, incoming_lng=lng, incoming_geo=geo,
+                incoming_by_tg_id=row["telegram_id"], incoming_by_name=setter_name,
+                incoming_by_role="agent", incoming_attempt_id=audit_id,
+                distance_m=distance_m, source_path="mini_app_dm",
+            )
+            _audit_finalize(
+                conn, audit_id, ok=False,
+                error=f"pending_admin_decision:pld_{pld_id}" if pld_id else "pending_admin_decision",
+                geocode_dict=geo, is_agent=1,
+                linked_client_id=client_id, linked_client_1c=label,
+            )
+            reply_text = (
+                f"📨 <b>{html_escape(label)}</b> — lokatsiya adminga "
+                f"taqqoslash uchun yuborildi (~{distance_m:.0f} m farq)."
+            )
+        else:  # first_write
+            conn.execute(
+                "UPDATE allowed_clients SET gps_latitude = ?, gps_longitude = ?, "
+                "gps_address = ?, gps_region = ?, gps_district = ?, "
+                "gps_set_at = datetime('now'), gps_set_by_tg_id = ?, gps_set_by_name = ?, "
+                "gps_set_by_role = 'agent' WHERE id = ?",
+                (lat, lng, geo["address"], geo["region"], geo["district"],
+                 row["telegram_id"], setter_name, client_id),
+            )
+            backfill_text_from_gps(conn, client_id, geo)
+            _audit_finalize(conn, audit_id, ok=True, geocode_dict=geo, is_agent=1,
+                            linked_client_id=client_id, linked_client_1c=label)
+            reply_text = f"✅ <b>{html_escape(label)}</b> uchun lokatsiya tasdiqlandi va saqlandi."
+            notify_payload = dict(
+                client_label=label or setter_name, setter_name=setter_name,
+                setter_role="agent", setter_tg=row["telegram_id"], lat=lat, lng=lng,
+                is_renewal=False,
+            )
         conn.commit()
-        label = row["linked_client_1c"] or ""
-        notify = dict(
-            client_label=label or setter_name, setter_name=setter_name,
-            setter_role="agent", setter_tg=row["telegram_id"], lat=lat, lng=lng,
-            prev_lat=(prior["gps_latitude"] if prior else None),
-            prev_lng=(prior["gps_longitude"] if prior else None),
-            prev_setter_name=(prior["gps_set_by_name"] if prior else None),
-            prev_setter_role=(prior["gps_set_by_role"] if prior else None),
-            is_renewal=bool(prior and prior["gps_latitude"] is not None),
-        )
     finally:
         conn.close()
-    await cb.answer("Saqlandi")
+    await cb.answer("Qabul qilindi")
     try:
-        await cb.message.edit_text(
-            f"✅ <b>{html_escape(label)}</b> uchun lokatsiya tasdiqlandi va saqlandi.",
-            parse_mode="HTML",
-        )
+        await cb.message.edit_text(reply_text, parse_mode="HTML",
+                                   disable_web_page_preview=True)
     except Exception:
         pass
-    # Confirmed agent set — surface it in MANZILLAR like any other set.
-    _notify_manzillar(**notify)
+    if notify_payload:
+        _notify_manzillar(**notify_payload)
 
 
 @router.callback_query(F.data.startswith("locno:"))
