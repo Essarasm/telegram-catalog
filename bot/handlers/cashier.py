@@ -102,6 +102,12 @@ class CashierFlow(StatesGroup):
     # Soft-cancels old + inserts new linked via replaces_payment_id.
     edit_amount = State()
     edit_amount_confirm = State()
+    # Avvalgi sanaga — pick a past date (last 7 days) before the normal
+    # K/A flow. Used when drivers come back after the cashier left and one
+    # of the family received the cash; she records it next morning back-
+    # dated to the actual cash-flow date. kassa_date is stashed in FSM
+    # state and read at finalize.
+    backdate_pick = State()
 
 
 class CardsAdminFlow(StatesGroup):
@@ -136,13 +142,66 @@ def _is_cashier_chat(message_or_cb) -> bool:
 
 
 def _menu_keyboard() -> InlineKeyboardMarkup:
-    """One button per row — wide, easy hit target. Direct first (more frequent)."""
+    """One button per row — wide, easy hit target. Direct first (more frequent).
+    The 3rd row opens a date picker for back-dated entries (last 7 days), used
+    when drivers come back after the cashier's shift and family takes the cash."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="💰 Klientdan", callback_data="cashier:menu_direct")],
             [InlineKeyboardButton(text="📥 Agentdan",  callback_data="cashier:menu_queue")],
+            [InlineKeyboardButton(text="📅 Avvalgi sanaga", callback_data="cashier:menu_backdate")],
         ]
     )
+
+
+# Uzbek weekday abbreviations (Mon..Sun) — first two letters of:
+# Dushanba, Seshanba, Chorshanba, Payshanba, Juma, Shanba, Yakshanba.
+_UZ_WEEKDAY_ABBR = ["Du", "Se", "Cho", "Pa", "Ju", "Sha", "Yak"]
+
+
+def _backdate_options(days: int = 7) -> list[tuple[str, str]]:
+    """Return (iso_date, label) for the last `days` days, today EXCLUDED,
+    newest first. iso_date is YYYY-MM-DD (Tashkent), label is e.g.
+    'Du 26.05'. Today is excluded because today's payments use the regular
+    /qabul flow without back-dating."""
+    today_tk = datetime.now(TASHKENT_TZ).date()
+    out: list[tuple[str, str]] = []
+    for i in range(1, days + 1):
+        d = today_tk - timedelta(days=i)
+        label = f"{_UZ_WEEKDAY_ABBR[d.weekday()]} {d.strftime('%d.%m')}"
+        out.append((d.isoformat(), label))
+    return out
+
+
+def _backdate_keyboard() -> InlineKeyboardMarkup:
+    """Last 7 days as buttons, 3 per row + cancel. Today excluded."""
+    opts = _backdate_options(7)
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(0, len(opts), 3):
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"cashier:bd_pick_{iso}")
+            for iso, label in opts[i:i + 3]
+        ])
+    rows.append([InlineKeyboardButton(text="❌ Bekor", callback_data="cashier:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _format_backdate_banner(kassa_date_iso: str) -> Optional[str]:
+    """Human banner for the confirmation message: '📅 Sana: 25.05 (kecha)'
+    or '📅 Sana: 22.05 (4 kun oldin)'. Returns None when the date is today
+    or unparseable — caller skips the banner in that case."""
+    if not kassa_date_iso:
+        return None
+    try:
+        d = datetime.strptime(kassa_date_iso, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    today_tk = datetime.now(TASHKENT_TZ).date()
+    delta = (today_tk - d).days
+    if delta <= 0:
+        return None
+    suffix = "kecha" if delta == 1 else f"{delta} kun oldin"
+    return f"📅 Sana: {d.strftime('%d.%m')} ({suffix})"
 
 
 async def _send_kassa_menu(target):
@@ -325,11 +384,14 @@ def _today_intake_rows(conn):
     """All non-rejected intake_payments submitted on today's Tashkent date,
     newest first. Used by /bugunpul. submitted_hhmm_tk is HH:MM in
     Tashkent (UTC+5) — display-ready, no Python-side timezone math needed.
-    notes carries 'agent: <name>' for cash_via_agent rows."""
+    notes carries 'agent: <name>' for cash_via_agent rows. kassa_date is
+    set only on back-dated entries (Aunt records yesterday's cash today);
+    NULL for normal same-day rows."""
     today_tk = conn.execute("SELECT date('now', '+5 hours') AS d").fetchone()["d"]
     rows = conn.execute(
         """SELECT ip.id, ip.client_id, ip.amount, ip.currency, ip.channel,
                   ip.status, ip.submitted_at, ip.confirmed_at, ip.notes,
+                  ip.kassa_date,
                   strftime('%H:%M', ip.submitted_at, '+5 hours') AS submitted_hhmm_tk,
                   ac.name AS client_name, ac.client_id_1c
            FROM intake_payments ip
@@ -366,8 +428,18 @@ def _render_today_list(date: str, rows: list) -> str:
         icon = _STATUS_ICON.get(r["status"], "•")
         agent = _agent_from_notes(r.get("notes"))
         agent_seg = f" · 👨‍💼 {html_escape(agent)}" if agent else ""
+        # Back-dated rows get a 📅 dd.mm seg so the cashier can tell at a
+        # glance which entries in today's list belong to older cash-flow
+        # dates (drivers came back after shift; cash counted next morning).
+        kd = r.get("kassa_date")
+        kd_seg = ""
+        if kd:
+            try:
+                kd_seg = f" · 📅 {datetime.strptime(kd, '%Y-%m-%d').strftime('%d.%m')}"
+            except (ValueError, TypeError):
+                pass
         lines.append(
-            f"{icon} {ts} · #{r['id']} · <b>{html_escape(cname)}</b>{agent_seg} · {ch} · {amt}"
+            f"{icon} {ts} · #{r['id']} · <b>{html_escape(cname)}</b>{agent_seg}{kd_seg} · {ch} · {amt}"
         )
     lines.append("\n<i>Pastdagi tugmalar: ✏️ — summani o'zgartirish · ✖ — yozuvni bekor qilish.</i>")
     return "\n".join(lines)
@@ -1705,8 +1777,15 @@ async def cb_menu_direct(cb: CallbackQuery, state: FSMContext):
     if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
         await cb.answer()
         return
+    # Preserve kassa_date if user came via the back-date picker.
+    existing = await state.get_data()
+    kassa_date = existing.get("kassa_date")
     await state.set_state(CashierFlow.direct_search)
-    await state.update_data(channel="cash_direct", submitter=cb.from_user.id)
+    await state.update_data(
+        channel="cash_direct",
+        submitter=cb.from_user.id,
+        kassa_date=kassa_date,
+    )
     # Track the menu we're leaving — it gets deleted on finalize so steady
     # state is one fresh menu at the bottom of the group.
     await _track_msg(state, cb.message)
@@ -1728,8 +1807,16 @@ async def cb_menu_queue(cb: CallbackQuery, state: FSMContext):
     if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
         await cb.answer()
         return
+    # Preserve kassa_date if user came via the back-date picker (cleared on
+    # cancel / finalize, not on this transition).
+    existing = await state.get_data()
+    kassa_date = existing.get("kassa_date")
     await state.set_state(CashierFlow.agent_pick)
-    await state.update_data(channel="cash_via_agent", submitter=cb.from_user.id)
+    await state.update_data(
+        channel="cash_via_agent",
+        submitter=cb.from_user.id,
+        kassa_date=kassa_date,
+    )
     await _track_msg(state, cb.message)
     sent = await cb.message.answer(
         "👨‍💼 <b>Qaysi agent?</b>",
@@ -1738,6 +1825,77 @@ async def cb_menu_queue(cb: CallbackQuery, state: FSMContext):
     )
     await _track_msg(state, sent)
     await cb.answer()
+
+
+@router.callback_query(F.data == "cashier:menu_backdate")
+async def cb_menu_backdate(cb: CallbackQuery, state: FSMContext):
+    """Open the date picker for back-dated intake. After the cashier picks
+    a date, we re-show the K/A menu with kassa_date stashed in FSM state.
+    From there the flow is identical to a normal /qabul, except the row
+    written at finalize carries the chosen kassa_date and the confirmation
+    message includes the 📅 Sana banner."""
+    if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
+        await cb.answer()
+        return
+    await state.set_state(CashierFlow.backdate_pick)
+    await state.update_data(submitter=cb.from_user.id)
+    await _track_msg(state, cb.message)
+    sent = await cb.message.answer(
+        "📅 <b>Qaysi sana uchun?</b>\n\n"
+        "<i>Avvalgi 7 kun. Bugungi to'lov uchun — pastdagi menyudan "
+        "💰 Klientdan / 📥 Agentdan.</i>",
+        parse_mode="HTML",
+        reply_markup=_backdate_keyboard(),
+    )
+    await _track_msg(state, sent)
+    await cb.answer()
+
+
+@router.callback_query(CashierFlow.backdate_pick, F.data.startswith("cashier:bd_pick_"))
+async def cb_backdate_pick(cb: CallbackQuery, state: FSMContext):
+    """Cashier picked a past date. Validate it's within the allowed window
+    (last 7 days, today excluded), stash kassa_date in FSM state, then re-
+    show the K/A menu — the rest of the flow is identical to /qabul."""
+    if not _is_cashier_chat(cb):
+        await cb.answer()
+        return
+    iso = cb.data[len("cashier:bd_pick_"):]
+    try:
+        picked = datetime.strptime(iso, "%Y-%m-%d").date()
+    except ValueError:
+        await cb.answer("Noto'g'ri sana", show_alert=True)
+        return
+    today_tk = datetime.now(TASHKENT_TZ).date()
+    delta = (today_tk - picked).days
+    if delta < 1 or delta > 7:
+        await cb.answer("Faqat oxirgi 7 kun (bugundan tashqari)", show_alert=True)
+        return
+    await state.update_data(kassa_date=iso)
+    label = f"{_UZ_WEEKDAY_ABBR[picked.weekday()]} {picked.strftime('%d.%m')}"
+    sent = await cb.message.answer(
+        f"📅 <b>Sana:</b> {label} ({delta} kun oldin)\n\n"
+        "<i>Endi pastdagi tugmadan tanlang:</i>",
+        parse_mode="HTML",
+        reply_markup=_menu_keyboard(),
+    )
+    await _track_msg(state, sent)
+    # Leave the FSM in backdate_pick until the cashier taps K/A — those
+    # handlers reset the state into direct_search / agent_pick and
+    # preserve kassa_date from the stash above.
+    await cb.answer()
+
+
+@router.message(CashierFlow.backdate_pick, F.text)
+async def backdate_pick_text_fallback(message: Message, state: FSMContext):
+    """Nudge the cashier to use the buttons if she types instead of tapping."""
+    if not _is_cashier_chat(message):
+        return
+    await _track_msg(state, message)
+    sent = await message.answer(
+        "📅 Iltimos, sanani tugmadan tanlang:",
+        reply_markup=_backdate_keyboard(),
+    )
+    await _track_msg(state, sent)
 
 
 @router.callback_query(CashierFlow.agent_pick, F.data.startswith("cashier:agent_pick_"))
@@ -2009,6 +2167,14 @@ async def _direct_finalize_or_dup(message: Message, state: FSMContext, bot: Bot)
         await _send_kassa_menu(message)
         return
 
+    # Skip the agent-pending auto-link when back-dating. An agent's
+    # pending_handover row is "I'm bringing this cash in"; the 24h match
+    # window catches yesterday's submission, but a back-dated row means
+    # the family already received that cash — linking would silently flip
+    # the agent's pending to confirmed without the cashier seeing it.
+    # Better to insert a fresh row and let any leftover pending be
+    # reconciled or rejected on its own. Dup-warning still fires.
+    is_backdated = bool(data.get("kassa_date"))
     conn = get_db()
     try:
         auto_links = {}
@@ -2016,10 +2182,11 @@ async def _direct_finalize_or_dup(message: Message, state: FSMContext, bot: Bot)
         for cur, amt in (("UZS", uzs), ("USD", usd)):
             if amt <= 0:
                 continue
-            match = find_matching_pending(conn, data["client_id"], amt, cur)
-            if match:
-                auto_links[cur] = match["id"]
-                continue
+            if not is_backdated:
+                match = find_matching_pending(conn, data["client_id"], amt, cur)
+                if match:
+                    auto_links[cur] = match["id"]
+                    continue
             d = check_recent_duplicate(conn, data["client_id"], amt, cur)
             if d:
                 dups.append((cur, amt, d))
@@ -2088,6 +2255,12 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
     channel = data.get("channel") or "cash_direct"
     agent_name = data.get("agent_name")
     auto_links = data.get("auto_links") or {}
+    # Back-date stash from the date picker — NULL means today's row,
+    # YYYY-MM-DD means cash actually flowed on that date but Aunt is
+    # recording it now. Auto-link was already suppressed upstream in
+    # _direct_finalize_or_dup when this is set.
+    kassa_date = data.get("kassa_date")
+    backdate_banner = _format_backdate_banner(kassa_date) if kassa_date else None
 
     conn = get_db()
     payments_created = []
@@ -2103,6 +2276,8 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
             }
             if agent_name:
                 payload["agent_name"] = agent_name
+            if kassa_date:
+                payload["kassa_date"] = kassa_date
             pending_id = auto_links.get(cur_code)
             if pending_id:
                 payload["links_pending"] = pending_id
@@ -2145,8 +2320,31 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
                     submitter_role=role,
                     confirmed_by_telegram_id=submitter_id,
                     notes=(f"agent: {agent_name}" if agent_name else None),
+                    kassa_date=kassa_date,
                 )
                 payments_created.append((pid, cur_code, amt))
+                # Audit trail for back-dated entries — one row per leg, so
+                # `grep command=backdated_intake` answers "what was back-
+                # dated when, by whom, for whom" in one query without
+                # touching intake_payments.
+                if kassa_date:
+                    try:
+                        conn.execute(
+                            "INSERT INTO admin_action_log "
+                            "(telegram_id, chat_id, command, args) "
+                            "VALUES (?, ?, ?, ?)",
+                            (
+                                submitter_id,
+                                CASHIER_GROUP_CHAT_ID,
+                                "backdated_intake",
+                                f"pid={pid} client_id={client_id} "
+                                f"amount={amt} cur={cur_code} "
+                                f"kassa_date={kassa_date}"
+                                + (f" agent={agent_name}" if agent_name else ""),
+                            ),
+                        )
+                    except Exception as e:
+                        logger.warning(f"admin_action_log write for backdated pid={pid} failed: {e}")
         conn.commit()
     except Exception as e:
         conn.rollback()
@@ -2161,6 +2359,8 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
 
     # Confirmation to the cashier in the group — one message per leg so
     # each gets its own [✏️ #id] [✖ #id] keyboard scoped to that payment.
+    # Back-dated rows lead with the 📅 banner so they're visually distinct
+    # from today's rows in the group's scroll-back history.
     now_hhmm = _now_tashkent_hhmm()
     keep_ids = []
     for pid, cur, amt in payments_created:
@@ -2169,6 +2369,8 @@ async def _direct_finalize(message: Message, state: FSMContext, bot: Bot):
             f"👤 {html_escape(client_name)}",
             f"🕒 {now_hhmm}",
         ]
+        if backdate_banner:
+            confirm_lines.insert(0, backdate_banner)
         if agent_name:
             confirm_lines.append(f"👨‍💼 {html_escape(agent_name)} orqali")
         if auto_links.get(cur) == pid:

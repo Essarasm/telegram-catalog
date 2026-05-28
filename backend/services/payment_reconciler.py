@@ -58,11 +58,12 @@ def _within_tolerance(a: float, b: float) -> bool:
 
 def _fetch_intake(conn, client_id: int, lookback_days: int) -> list[dict]:
     rows = conn.execute(
-        """SELECT ip.id, ip.amount, ip.currency, date(ip.submitted_at) AS d,
+        """SELECT ip.id, ip.amount, ip.currency,
+                  COALESCE(ip.kassa_date, date(ip.submitted_at)) AS d,
                   fx.rate AS fx_rate
            FROM intake_payments ip
            LEFT JOIN daily_fx_rates fx
-                  ON fx.rate_date = date(ip.submitted_at)
+                  ON fx.rate_date = COALESCE(ip.kassa_date, date(ip.submitted_at))
                  AND fx.currency_pair = 'USD_UZS'
            WHERE ip.client_id = ?
              AND ip.status = 'confirmed'
@@ -366,7 +367,7 @@ def get_yesterday_client_totals(
            FROM intake_payments ip
            LEFT JOIN allowed_clients ac ON ac.id = ip.client_id
            WHERE ip.status = 'confirmed'
-             AND date(ip.submitted_at) = ?
+             AND COALESCE(ip.kassa_date, date(ip.submitted_at)) = ?
              AND ip.client_id IS NOT NULL
            ORDER BY ip.submitted_at""",
         (yesterday,),

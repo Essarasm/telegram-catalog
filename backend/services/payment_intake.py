@@ -68,13 +68,20 @@ def create_intake_payment(
     gross_uzs: Optional[float] = None,
     accepted_pct: Optional[float] = None,
     fx_rate_uzs_per_usd: Optional[float] = None,
+    kassa_date: Optional[str] = None,
 ) -> int:
     """Create the canonical intake_payments row and back-link the audit row.
     Caller is responsible for the transaction (commit on success).
 
     For channel='bank_transfer', pass gross_uzs/accepted_pct/fx_rate_uzs_per_usd
     alongside `amount` (the net UZS = gross × pct/100). Other channels leave
-    these three as None."""
+    these three as None.
+
+    `kassa_date` (YYYY-MM-DD) is the cash-flow date for back-dated cashier
+    intake — set when the cashier records yesterday's late-delivery cash
+    today. Leave NULL for today's payments; reconciliation queries use
+    COALESCE(kassa_date, date(submitted_at)).
+    """
     if amount <= 0:
         raise ValueError(f"amount must be > 0, got {amount}")
     if currency not in ("UZS", "USD"):
@@ -90,10 +97,11 @@ def create_intake_payment(
            (client_id, amount, currency, channel, card_id, handover_agent_id,
             submitter_telegram_id, submitter_role, confirmed_by_telegram_id,
             confirmed_at, status, screenshot_file_id, notes,
-            source_intake_raw_id, gross_uzs, accepted_pct, fx_rate_uzs_per_usd)
+            source_intake_raw_id, gross_uzs, accepted_pct, fx_rate_uzs_per_usd,
+            kassa_date)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, """
         + ("datetime('now')" if confirmed_at else "NULL")
-        + """, ?, ?, ?, ?, ?, ?, ?)""",
+        + """, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             client_id,
             float(amount),
@@ -111,6 +119,7 @@ def create_intake_payment(
             float(gross_uzs) if gross_uzs is not None else None,
             float(accepted_pct) if accepted_pct is not None else None,
             float(fx_rate_uzs_per_usd) if fx_rate_uzs_per_usd is not None else None,
+            kassa_date,
         ),
     )
     payment_id = cur.lastrowid
@@ -723,7 +732,7 @@ def client_reconciliation_check(conn, client_id: int, days: int = 14) -> dict:
             ), 0) AS total
             FROM intake_payments ip
             LEFT JOIN daily_fx_rates fx
-                   ON fx.rate_date = date(ip.submitted_at)
+                   ON fx.rate_date = COALESCE(ip.kassa_date, date(ip.submitted_at))
                   AND fx.currency_pair = 'USD_UZS'
             WHERE ip.client_id IN ({placeholders})
               AND ip.status = 'confirmed'

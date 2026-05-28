@@ -1627,6 +1627,7 @@ def init_db():
             gross_uzs REAL,
             accepted_pct REAL,
             fx_rate_uzs_per_usd REAL,
+            kassa_date TEXT,
             FOREIGN KEY (client_id) REFERENCES allowed_clients(id),
             FOREIGN KEY (card_id) REFERENCES dedicated_cards(id),
             FOREIGN KEY (source_intake_raw_id) REFERENCES payment_intake_raw(id)
@@ -1682,6 +1683,7 @@ def init_db():
                 gross_uzs REAL,
                 accepted_pct REAL,
                 fx_rate_uzs_per_usd REAL,
+                kassa_date TEXT,
                 FOREIGN KEY (client_id) REFERENCES allowed_clients(id),
                 FOREIGN KEY (card_id) REFERENCES dedicated_cards(id),
                 FOREIGN KEY (source_intake_raw_id) REFERENCES payment_intake_raw(id)
@@ -1729,8 +1731,16 @@ def init_db():
             conn.execute("ALTER TABLE intake_payments ADD COLUMN accepted_pct REAL")
         if "fx_rate_uzs_per_usd" not in ip_cols:
             conn.execute("ALTER TABLE intake_payments ADD COLUMN fx_rate_uzs_per_usd REAL")
+        # 2026-05-28 — kassa_date for back-dated cashier intake (Z, back-date
+        # picker). NULL = same as date(submitted_at) (today); set = cash-flow
+        # date overrides submitted_at for reconciliation. /bugunpul keeps
+        # filtering by submitted_at so back-dated rows show up in the day
+        # they were recorded.
+        if "kassa_date" not in ip_cols:
+            conn.execute("ALTER TABLE intake_payments ADD COLUMN kassa_date TEXT")
 
     conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_replaces ON intake_payments(replaces_payment_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_intake_payments_kassa_date ON intake_payments(kassa_date)")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS payment_reconciliation (
