@@ -1,0 +1,9 @@
+[settings]
+# Disable GitHub attestations verification on precompiled Python binaries.
+# The check (cosign/sigstore over GitHub-hosted artefacts) started failing
+# 2026-05-29 inside Railway's railpack build container with mise 2026.5.16,
+# blocking every Python build. Mise itself prints this exact setting as the
+# remediation in the error output. Safe to disable in a build sandbox: the
+# binaries come from python-build-standalone's official GitHub releases over
+# HTTPS, and Railway's builder is single-tenant per build.
+python.github_attestations = false
