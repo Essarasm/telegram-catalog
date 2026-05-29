@@ -497,6 +497,13 @@
             font-weight: 600;
         }
 
+        /* Debtors-list column-group divider — thin vertical line marking
+           the deal / payment / debt clusters. Lighter than the row border
+           (#2a2d3a) so it reads as a group separator. */
+        .dbt-grp {
+            border-left: 1px solid #3a3f52;
+        }
+
         .table-producer {
             color: #8b8fa3;
             font-size: 12px;
@@ -1135,15 +1142,15 @@
                                             <th class="table-number">#</th>
                                             <th>Client</th>
                                             <th title="Responsible agent. Manually assigned only — pick from dropdown to set, '—' to clear. Caption below shows who assigned it.">Agent</th>
-                                            <th>Last deal</th>
+                                            <th class="dbt-grp">Last deal</th>
                                             <th>Days since</th>
-                                            <th>Last payment</th>
+                                            <th class="dbt-grp">Last payment</th>
                                             <th style="text-align: right;">Paid UZS</th>
                                             <th style="text-align: right;">Paid USD</th>
                                             <th>Days since</th>
-                                            <th style="text-align: right;">UZS</th>
+                                            <th class="dbt-grp" style="text-align: right;">UZS</th>
                                             <th style="text-align: right;">USD</th>
-                                            <th style="min-width: 130px;">Telefon</th>
+                                            <th class="dbt-grp" style="min-width: 130px;">Telefon</th>
                                             <th style="min-width: 170px;">Qayta qo'ng'iroq</th>
                                         </tr>
                                     </thead>
@@ -2869,14 +2876,28 @@
             const setAt = it.callback_set_at ? shortSetAtCaption(it.callback_set_at) : '';
             const weekday = uzWeekdayFor(cbDate);
             const safeName = (it.client_name || '').replace(/"/g, '&quot;');
+            const note = it.callback_note ? escapeHtml(it.callback_note) : '';
+            const reschedules = it.callback_reschedules || 0;
             const dayLabel = weekday
                 ? `<span class="cb-weekday" style="font-size:10px; color:#8b8fa3; margin-left:6px;">${weekday}</span>`
                 : '';
+            // Prolong badge — how many times the callback date was pushed.
+            // Neutral hidden at 0, amber at 1, red at 2+ ("already twice").
+            // Click to expand the full reschedule history.
+            let badge = '';
+            if (reschedules >= 1) {
+                const color = reschedules >= 2 ? '#ef4444' : '#f59e0b';
+                badge = `<span
+                    onclick="toggleCallbackHistory(this)"
+                    title="${reschedules} marta suriltirilgan — tarixni ko'rish"
+                    style="cursor:pointer; font-size:10px; font-weight:700; color:${color}; margin-left:6px; border:1px solid ${color}; border-radius:3px; padding:0 4px; line-height:1.4;"
+                >×${reschedules}</span>`;
+            }
             const author = (setBy || setAt)
                 ? `<div style="font-size:10px; color:#8b8fa3; margin-top:2px;">👤 ${setBy}${setBy && setAt ? ' · ' : ''}${setAt}</div>`
                 : '';
             return `
-                <div style="display:flex; flex-direction:column; gap:2px;">
+                <div class="cb-cell" style="display:flex; flex-direction:column; gap:3px;">
                     <div style="display:flex; align-items:center;">
                         <input
                             type="date"
@@ -2886,27 +2907,90 @@
                             style="background:#1a1d28; color:#e4e6ee; border:1px solid #2a2d3a; border-radius:4px; padding:3px 6px; font-size:11px;"
                         />
                         ${dayLabel}
+                        ${badge}
                     </div>
+                    <textarea
+                        class="cb-note"
+                        data-client="${safeName}"
+                        maxlength="150"
+                        rows="1"
+                        placeholder="Izoh (max 150)"
+                        onchange="saveCallback(this)"
+                        style="background:#1a1d28; color:#e4e6ee; border:1px solid #2a2d3a; border-radius:4px; padding:3px 6px; font-size:11px; resize:vertical; width:160px; font-family:inherit;"
+                    >${note}</textarea>
                     ${author}
+                    <div class="cb-history" data-loaded="0" style="display:none;"></div>
                 </div>
             `;
         }
 
-        async function saveCallback(inputEl) {
-            const clientName = inputEl.dataset.client;
-            const newDate = inputEl.value || '';
-            inputEl.disabled = true;
+        // Save both the callback date and its note together as one snapshot
+        // (per-callback note model). Either field's onchange triggers this;
+        // we read both current values from the shared cell so the appended
+        // client_callbacks row always captures the (date, note) pair.
+        async function saveCallback(el) {
+            const cell = el.closest('.cb-cell');
+            if (!cell) return;
+            const dateInput = cell.querySelector('input[type=date]');
+            const noteInput = cell.querySelector('.cb-note');
+            const clientName = el.dataset.client;
+            const newDate = dateInput ? (dateInput.value || '') : '';
+            const newNote = noteInput ? (noteInput.value || '') : '';
+            if (dateInput) dateInput.disabled = true;
+            if (noteInput) noteInput.disabled = true;
             try {
                 await apiPost('debtors-callback', {
                     client_name_1c: clientName,
                     callback_date: newDate,
+                    note: newNote,
                 });
-                // Reload to pick up the fresh set_by/set_at caption + amber tint.
+                // Reload to pick up fresh caption, amber tint, prolong count.
                 await loadDebtorsList();
             } catch (e) {
                 console.warn('callback save failed', e);
                 alert("Saqlanmadi — qayta urinib ko'ring");
-                inputEl.disabled = false;
+                if (dateInput) dateInput.disabled = false;
+                if (noteInput) noteInput.disabled = false;
+            }
+        }
+
+        // Expand/collapse the per-client callback reschedule history inline,
+        // backed by GET /debtors-callback-history. Newest first.
+        async function toggleCallbackHistory(badgeEl) {
+            const cell = badgeEl.closest('.cb-cell');
+            const box = cell && cell.querySelector('.cb-history');
+            if (!box) return;
+            // Read the client name from data-client (HTML attr is apostrophe-safe)
+            // rather than passing it through a JS string arg.
+            const anchor = cell.querySelector('[data-client]');
+            const clientName = anchor ? anchor.dataset.client : '';
+            if (box.style.display !== 'none') {
+                box.style.display = 'none';
+                return;
+            }
+            box.style.display = 'block';
+            if (box.dataset.loaded === '1') return;
+            box.innerHTML = '<span style="font-size:10px; color:#8b8fa3;">…</span>';
+            try {
+                const data = await apiCall('debtors-callback-history?client_name_1c='
+                    + encodeURIComponent(clientName) + '&limit=20');
+                const items = (data && data.items) || [];
+                if (!items.length) {
+                    box.innerHTML = '<span style="font-size:10px; color:#8b8fa3;">Tarix yo\'q</span>';
+                } else {
+                    box.innerHTML = items.map(h => {
+                        const d = h.callback_date || '(tozalandi)';
+                        const wd = h.callback_date ? uzWeekdayFor(h.callback_date) : '';
+                        const who = h.set_by_name ? escapeHtml(h.set_by_name) : '';
+                        const when = h.set_at ? shortSetAtCaption(h.set_at) : '';
+                        const nt = h.note ? ' · “' + escapeHtml(h.note) + '”' : '';
+                        return `<div style="font-size:10px; color:#a8acc0; padding:1px 0; border-top:1px solid #23263a;">${d}${wd ? ' (' + wd + ')' : ''}${who ? ' · ' + who : ''}${when ? ' · ' + when : ''}${nt}</div>`;
+                    }).join('');
+                }
+                box.dataset.loaded = '1';
+            } catch (e) {
+                console.warn('callback history load failed', e);
+                box.innerHTML = '<span style="font-size:10px; color:#ef4444;">Xato</span>';
             }
         }
 
@@ -3030,15 +3114,15 @@
                     <td class="table-number">${it.rank}</td>
                     <td>${escapeHtml(it.client_name)}</td>
                     <td>${agentCell}</td>
-                    <td style="font-size:11px;">${escapeHtml(it.last_transaction_date || '—')}</td>
+                    <td class="dbt-grp" style="font-size:11px;">${escapeHtml(it.last_transaction_date || '—')}</td>
                     <td>${daysCell}</td>
-                    <td style="font-size:11px;">${payCell}</td>
+                    <td class="dbt-grp" style="font-size:11px;">${payCell}</td>
                     <td style="text-align:right;">${paidUzs}</td>
                     <td style="text-align:right;">${paidUsd}</td>
                     <td>${payDaysCell}</td>
-                    <td style="text-align:right;">${uzs}</td>
+                    <td class="dbt-grp" style="text-align:right;">${uzs}</td>
                     <td style="text-align:right;">${usd}</td>
-                    <td>${buildPhonesCell(it.phones)}</td>
+                    <td class="dbt-grp">${buildPhonesCell(it.phones)}</td>
                     <td>${buildCallbackCell(it)}</td>
                 </tr>`;
             }).join('');
@@ -3046,9 +3130,9 @@
                 foot.innerHTML = `<tr style="background: rgba(255,255,255,0.03);">
                     <td></td>
                     <td colspan="8">JAMI · ${data.count} ta</td>
-                    <td style="text-align:right;">${fmtFull(data.total_uzs)}</td>
+                    <td class="dbt-grp" style="text-align:right;">${fmtFull(data.total_uzs)}</td>
                     <td style="text-align:right;">$${fmtFull(data.total_usd)}</td>
-                    <td></td>
+                    <td class="dbt-grp"></td>
                     <td></td>
                 </tr>`;
             }

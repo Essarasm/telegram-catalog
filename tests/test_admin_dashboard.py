@@ -733,6 +733,57 @@ class TestDebtorsCallbacks:
         assert hist["items"][0]["callback_date"] == "2026-05-16"
         assert hist["items"][1]["callback_date"] == "2026-05-14"
 
+    def test_callback_reschedules_counts_distinct_dates(self, db):
+        _seed_debt(db, "Реал A", debt_uzs=10_000, last_tx="2026-05-01")
+        db.commit()
+        c = _client(db)
+
+        def _resched(item):
+            body = c.get("/api/admin/debtors-list",
+                         params={"admin_key": ADMIN_KEY}).json()
+            it = next(x for x in body["items"] if x["client_name"] == "Реал A")
+            return it["callback_reschedules"]
+
+        # No callbacks yet → 0
+        assert _resched(None) == 0
+        # First date set → still 0 reschedules (initial schedule, not a prolong)
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "2026-05-14",
+        })
+        assert _resched(None) == 0
+        # Pushed to a new date → 1 prolong
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "2026-05-16",
+        })
+        assert _resched(None) == 1
+        # Note-only edit (same date) must NOT inflate the count
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "2026-05-16", "note": "to'lab bera olmadi",
+        })
+        assert _resched(None) == 1
+        # Pushed again → 2 prolongs ("already twice")
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "2026-05-20",
+        })
+        assert _resched(None) == 2
+
+    def test_callback_note_persists_in_list(self, db):
+        _seed_debt(db, "Реал A", debt_uzs=10_000, last_tx="2026-05-01")
+        db.commit()
+        c = _client(db)
+        c.post("/api/admin/debtors-callback", data={
+            "admin_key": ADMIN_KEY, "client_name_1c": "Реал A",
+            "callback_date": "2026-05-16", "note": "ertaga qo'ng'iroq",
+        })
+        body = c.get("/api/admin/debtors-list",
+                     params={"admin_key": ADMIN_KEY}).json()
+        item = next(it for it in body["items"] if it["client_name"] == "Реал A")
+        assert item["callback_note"] == "ertaga qo'ng'iroq"
+
     def test_clear_records_null_date_in_history(self, db):
         _seed_debt(db, "Реал A", debt_uzs=10_000, last_tx="2026-05-01")
         db.commit()

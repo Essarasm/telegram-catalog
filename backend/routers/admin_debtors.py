@@ -256,6 +256,17 @@ def debtors_list(admin_key: str = Query(...)):
                   FROM client_callbacks cc
                   JOIN max_cb mc ON mc.client_name_1c = cc.client_name_1c
                                 AND mc.max_id = cc.id
+            ),
+            cb_stats AS (
+                -- Reschedule signal: count of DISTINCT non-null callback
+                -- dates the client was ever given. Note-only edits reuse the
+                -- same date, so they don't inflate this. Reschedules =
+                -- distinct_dates - 1 (computed in Python below).
+                SELECT client_name_1c,
+                       COUNT(DISTINCT callback_date) AS cb_date_count
+                  FROM client_callbacks
+                 WHERE callback_date IS NOT NULL
+                 GROUP BY client_name_1c
             )
             -- Agent column is purely manual — sourced from
             -- allowed_clients.assigned_agent_tg_id only. No auto-derive
@@ -269,6 +280,7 @@ def debtors_list(admin_key: str = Query(...)):
                    lp.last_pay_usd AS last_payment_usd,
                    lcb.callback_date, lcb.set_by_name AS callback_set_by,
                    lcb.set_at AS callback_set_at, lcb.note AS callback_note,
+                   cbs.cb_date_count AS cb_date_count,
                    ac.phone_normalized AS anchor_phone,
                    sib.phones AS sibling_phones,
                    ac.assigned_agent_tg_id,
@@ -279,6 +291,7 @@ def debtors_list(admin_key: str = Query(...)):
               FROM client_debts cd
               LEFT JOIN last_pay lp ON lp.client_name_1c = cd.client_name_1c
               LEFT JOIN last_cb lcb ON lcb.client_name_1c = cd.client_name_1c
+              LEFT JOIN cb_stats cbs ON cbs.client_name_1c = cd.client_name_1c
               LEFT JOIN allowed_clients ac ON ac.id = cd.client_id
               LEFT JOIN users ma ON ma.telegram_id = ac.assigned_agent_tg_id
               LEFT JOIN (
@@ -362,6 +375,7 @@ def debtors_list(admin_key: str = Query(...)):
             "callback_set_by": r["callback_set_by"],
             "callback_set_at": r["callback_set_at"],
             "callback_note": r["callback_note"],
+            "callback_reschedules": max(0, (r["cb_date_count"] or 0) - 1),
             "agent_name": agent_name,
             "agent_telegram_id": r["assigned_agent_tg_id"],
             "assigned_agent_set_at": r["assigned_agent_set_at"],
