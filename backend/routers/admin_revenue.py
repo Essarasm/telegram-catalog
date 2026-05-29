@@ -415,6 +415,7 @@ def top_clients_weekly(
                    COALESCE(SUM(ro.total_sum_currency), 0) AS usd
               FROM real_orders ro
              WHERE ro.doc_date BETWEEN ? AND ?
+               AND COALESCE(ro.is_approved, 1) = 1
                {excl_clause_ro}
              GROUP BY ro.client_name_1c""",
         (ws, we, *excl_params),
@@ -666,6 +667,7 @@ def _aggregate_sales_by_product(conn, start_tk_date: str, end_tk_date: str, fxra
            LEFT JOIN products p ON p.id = roi.product_id
            WHERE ro.doc_date >= ?
              AND ro.doc_date <= ?
+             AND COALESCE(ro.is_approved, 1) = 1
              AND roi.product_id IS NOT NULL
              AND roi.quantity > 0
            GROUP BY roi.product_id""",
