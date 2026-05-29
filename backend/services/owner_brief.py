@@ -118,7 +118,9 @@ def gather_brief(
     # filtering by it silently zeros the UZS leg. See
     # backend/services/realorders_revenue.py for the full mechanism.
     from backend.services.realorders_revenue import realorders_revenue
-    _ship = realorders_revenue(date_min=for_str, date_max=for_str, conn=conn)
+    _ship = realorders_revenue(
+        date_min=for_str, date_max=for_str, only_approved=True, conn=conn,
+    )
     ship_uzs_row = {
         "total": _ship["uzs"],
         "n": _ship["uzs_only_docs"] + _ship["dual_docs"],

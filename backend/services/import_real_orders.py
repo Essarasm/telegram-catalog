@@ -1023,6 +1023,7 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
         rows = realorders_revenue_by_client(
             date_min=date_min,
             date_max=date_max,
+            only_approved=True,
             exclude_pseudo=True,
             limit=5,
         )
