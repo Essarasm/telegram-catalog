@@ -240,6 +240,7 @@ def _aggregate_week(conn, start_iso: str, end_iso: str, excl_clause_ro: str,
                    COUNT(DISTINCT COALESCE(client_id, client_name_1c)) as clients
               FROM real_orders ro
              WHERE doc_date BETWEEN ? AND ?
+               AND COALESCE(ro.is_approved, 1) = 1
                {excl_clause_ro}""",
         (start_iso, end_iso, *excl_params),
     ).fetchone()
