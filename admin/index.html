@@ -451,6 +451,12 @@
             overflow-y: auto;
         }
 
+        /* Debt Management tab has a single full-page section — let the table
+           grow with viewport height instead of the default 500px cap. */
+        #debt-tab .table-wrapper {
+            max-height: calc(100vh - 260px);
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -830,6 +836,7 @@
             <div class="nav-tabs">
                 <div class="nav-tab active" data-tab="overview" onclick="switchTab('overview')">Business Overview</div>
                 <div class="nav-tab" data-tab="clients" onclick="switchTab('clients')">Client Portfolio</div>
+                <div class="nav-tab" data-tab="debt" onclick="switchTab('debt')">Debt Management</div>
                 <div class="nav-tab" data-tab="inventory" onclick="switchTab('inventory')">Inventory</div>
                 <div class="nav-tab" data-tab="supply" onclick="switchTab('supply')">Supply</div>
                 <div class="nav-tab" data-tab="health" onclick="switchTab('health')">Platform Health</div>
@@ -1125,14 +1132,18 @@
                         </div>
                     </div>
 
+                </div>
+
+                <!-- Debt Management Tab -->
+                <div id="debt-tab" class="tab-content hidden">
                     <!-- 🧾 Debtors List — manager's printed report (per-client current debt + callback scheduler) -->
-                    <div class="section-title collapsible" onclick="toggleSection('debtorsListSection')" style="margin-top: 24px;">
+                    <div class="section-title collapsible" onclick="toggleSection('debtorsListSection')">
                         🧾 Qarzdorlar Ro'yxati <span id="debtorsListMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
                         <span class="toggle-arrow" id="debtorsListSection-arrow">▾</span>
                     </div>
                     <div id="debtorsListSection" class="collapsible-content">
                         <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
-                            Per-client current debt from latest 1C 'Дебиторская задолженность' upload. Real clients only (pseudo-accounts excluded). Sorted by combined USD-equivalent debt. <strong>Agent</strong> — manually assign the responsible agent from the dropdown; defaults to "—" until you (or another admin) pick one. Select "—" to clear. <strong>Days since</strong> = today − <code>last_transaction_date</code>; large values indicate stuck debt. <strong>Qayta qo'ng'iroq</strong> — pick a date when the client asked to be called back; the row tints amber when that date arrives. History is preserved (every reschedule appends).
+                            Per-client current debt from latest 1C 'Дебиторская задолженность' upload. Real clients only (pseudo-accounts excluded). Sorted by combined USD-equivalent debt. <strong>Agent</strong> — manually assign the responsible agent from the dropdown; defaults to "—" until you (or another admin) pick one. Select "—" to clear. <strong>Days since</strong> = today − <code>last_transaction_date</code>; large values indicate stuck debt. <strong>Qayta qo'ng'iroq</strong> — pick a date when the client asked to be called back; the row tints amber when that date arrives. The tint fades automatically once a new order or payment lands dated after the callback was set (the client kept their promise). History is preserved (every reschedule appends).
                         </div>
                         <div class="table-container">
                             <div class="table-wrapper">
@@ -2497,6 +2508,7 @@
             const titles = {
                 overview: 'Business Overview',
                 clients: 'Client Portfolio',
+                debt: 'Debt Management',
                 inventory: 'Inventory',
                 supply: 'Supply',
                 health: 'Platform Health',
@@ -2556,6 +2568,7 @@
             const loaders = [
                 ['overview', loadOverviewData],
                 ['clients', loadClientsData],
+                ['debt', loadDebtorsList],
                 ['inventory', loadInventoryData],
                 ['supply', loadSupplyData],
                 ['health', loadHealthData],
@@ -3106,8 +3119,16 @@
                 const paidUsd = it.last_payment_usd > 0 ? `$${fmtFull(it.last_payment_usd)}` : '—';
                 const uzs = it.debt_uzs > 0 ? fmtFull(it.debt_uzs) : '—';
                 const usd = it.debt_usd > 0 ? `$${fmtFull(it.debt_usd)}` : '—';
-                // Row tint: amber when there's an active callback whose date has arrived.
-                const dueToday = it.callback_date && it.callback_date <= todayIso;
+                // Row tint: amber when the callback date has arrived AND the
+                // client hasn't acted since you set it. A new order or payment
+                // dated after the callback's set_at fades the tint — the client
+                // kept their promise, stop nagging them.
+                const cbSetDate = it.callback_set_at ? String(it.callback_set_at).slice(0, 10) : null;
+                const actedSinceSet = cbSetDate && (
+                    (it.last_transaction_date && it.last_transaction_date > cbSetDate) ||
+                    (it.last_payment_date && it.last_payment_date > cbSetDate)
+                );
+                const dueToday = it.callback_date && it.callback_date <= todayIso && !actedSinceSet;
                 const rowStyle = dueToday ? ' style="background: rgba(245, 158, 11, 0.08);"' : '';
                 const agentCell = buildAgentCell(it, availableAgents);
                 return `<tr${rowStyle}>
@@ -3630,10 +3651,6 @@
                     </tr>
                 `;
             }).join('');
-
-            // Debtors List (manager's printed report + callback scheduler) lives
-            // on this tab too; loaded alongside Top Clients.
-            loadDebtorsList();
         }
 
         async function showClientHistory(clientName) {
