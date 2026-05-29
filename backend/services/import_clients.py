@@ -12,14 +12,234 @@ DATABASE_PATH = os.getenv("DATABASE_PATH", "/data/catalog.db")
 CLIENTS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "clients_data.csv")
 
 
+# 1C's "Телефоны контрагента" cell frequently packs 2-3 phones into one string,
+# sometimes with Cyrillic relationship markers (эри / ўғли / дадаси / укаси) or
+# contact names between them. Examples from clients 28.05.26.xls:
+#   "93 356 12 12, эри 97 918 33 33"                       (comma + relationship)
+#   "+998 90 605 79 36, 90 194 34 74 - Гульноза"           (comma + contact name)
+#   "90 199 51 51 - дадаси, 97 892 87 77 - укаси"          (annotation per phone)
+#   "+998 97 396 26 00, 77031 1116+  88 392 01 01"         (3 phones, mixed sep)
+#   "93 333 8070- 97 931 04 04"                            (dash+space, no comma)
+#   "97 927 17 77 (99 548 47 67)"                          (second phone in parens)
+#   "+998 99 455 00 57 994550057 Шарофиддин"               (same number glued twice)
+#   "99 165 73 80 952657380"                               (two phones, 1-space sep)
+#   "+99897-776-22-26 . 91 532 33 23"                      (period as separator)
+# The pre-2026-05-29 normalize_phone() concatenated all digits and took the last 9,
+# silently dropping the primary and keeping the LAST phone listed (e.g., Гулноза's
+# husband, not Гулноза). See Error Log MULTI_PHONE_CELL_TRUNCATION.
+#
+# Parse strategy (two stages):
+#  1. Split the cell on multi-phone separators (comma/semicolon/pipe, 2+ spaces,
+#     dash-followed-by-digits). The split's third alternative — ``-\s+(?=\d)`` —
+#     is what distinguishes "93 333 8070- 97 931 04 04" (separator) from
+#     "90-194-34-74" (intra-phone) and "90 194 34 74 - Гульноза" (dash before
+#     annotation, not another phone).
+#  2. Within each piece, find phone-shaped digit runs and walk their digits
+#     9-at-a-time (or 12 if the run starts with the 998 country code). Walking
+#     handles the parens/glued/period cases uniformly without needing more
+#     separators — every Uzbek mobile is exactly 9 local digits.
+_PHONE_CELL_SPLIT_RE = re.compile(r"[,;|]|\s{2,}|-\s+(?=\d)")
+_PHONE_RUN_RE = re.compile(r"\+?\(?\d[\d\s\-\.\(\)]{7,}\d")
+
+
+def _walk_digits_into_phones(digits):
+    """Slice a digit string into 9-digit phones; drop 998 country-code prefix."""
+    out = []
+    pos = 0
+    n = len(digits)
+    while pos + 9 <= n:
+        if n - pos >= 12 and digits[pos:pos + 3] == "998":
+            out.append(digits[pos + 3:pos + 12])
+            pos += 12
+        else:
+            out.append(digits[pos:pos + 9])
+            pos += 9
+    return out
+
+
+def parse_phone_cell(raw):
+    """Extract ordered phones with optional annotations from a 1C phone cell.
+
+    Returns: list of dicts ``[{"digits": "9-digit-str", "annotation": "text"}, ...]``.
+    Primary phone first. Empty list if no phone-shaped run (>=9 digits) found.
+    The annotation is the non-digit text accompanying the phone within its piece
+    (relationship markers like "эри" or names like "Гульноза"); empty when the
+    piece contained nothing but the phone itself.
+    """
+    if not raw or not isinstance(raw, str):
+        return []
+    out = []
+    seen = set()
+    for piece in _PHONE_CELL_SPLIT_RE.split(raw):
+        if not piece:
+            continue
+        for m in _PHONE_RUN_RE.finditer(piece):
+            digits = re.sub(r"\D", "", m.group(0))
+            if len(digits) < 9:
+                continue
+            anno = re.sub(r"[\d\+\-\(\)\.,;:]", " ", piece)
+            anno = re.sub(r"\s+", " ", anno).strip()
+            for d9 in _walk_digits_into_phones(digits):
+                if d9 in seen:
+                    continue
+                seen.add(d9)
+                out.append({"digits": d9, "annotation": anno})
+    return out
+
+
 def normalize_phone(raw: str) -> str:
-    """Strip to last 9 digits (Uzbek local number without country code)."""
+    """Backward-compat: return just the PRIMARY phone's 9-digit form.
+
+    Callers that need all phones from a multi-phone 1C cell should use
+    ``parse_phone_cell()`` instead.
+    """
     if not raw or not isinstance(raw, str):
         return ""
+    cells = parse_phone_cell(raw)
+    if cells:
+        return cells[0]["digits"]
+    # Last-resort fallback for non-cell single-phone strings the regex missed.
     digits = re.sub(r"\D", "", raw)
-    if len(digits) >= 9:
-        return digits[-9:]
-    return digits
+    return digits[-9:] if len(digits) >= 9 else digits
+
+
+def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
+                            cid_1c, company, changed_by_tag):
+    """Shared upsert used by both the bot path (apply_clients_upload) and the
+    CSV CLI path (import_clients). Returns ``("inserted"|"updated"|"skipped", existing_id_or_new)``.
+
+    Handles 1C multi-phone cells: primary goes to ``phone_normalized``, extras
+    fill ``raqam_02/03`` (fill-only — never overwrites a non-null existing slot).
+    Relationship markers (e.g. "эри") land in ``ism_02/03`` (also fill-only).
+
+    Lookup precedence:
+      1. ``phone_normalized = primary``
+      2. ``client_id_1c = cid_1c`` — catches cases where the importer's primary
+         interpretation changed across runs (e.g. parser bugfix moved the
+         primary), preventing a duplicate row.
+      3. ``raqam_02 = primary OR raqam_03 = primary`` — catches cases where a
+         number we previously stored as secondary is now the 1C primary.
+    """
+    phones = parse_phone_cell(raw_phone_str)
+    if not phones:
+        return ("skipped", None)
+    primary = phones[0]["digits"]
+    extras = phones[1:]
+
+    # client_id_1c sanity: never accept a purely-numeric value (1C "Код" leakage).
+    if cid_1c and cid_1c.isdigit():
+        cid_1c = ""
+    if not cid_1c and client_name and not client_name.isdigit():
+        cid_1c = client_name
+
+    select_cols = ("id, phone_normalized, raqam_02, raqam_03, ism_02, ism_03, "
+                   "client_id_1c")
+    not_merged = "COALESCE(status, 'active') NOT LIKE 'merged%'"
+
+    existing = conn.execute(
+        f"SELECT {select_cols} FROM allowed_clients "
+        f"WHERE phone_normalized = ? AND {not_merged} "
+        f"ORDER BY id LIMIT 1",
+        (primary,),
+    ).fetchone()
+
+    if existing is None and cid_1c:
+        existing = conn.execute(
+            f"SELECT {select_cols} FROM allowed_clients "
+            f"WHERE client_id_1c = ? AND {not_merged} "
+            f"ORDER BY id LIMIT 1",
+            (cid_1c,),
+        ).fetchone()
+
+    if existing is None:
+        existing = conn.execute(
+            f"SELECT {select_cols} FROM allowed_clients "
+            f"WHERE (raqam_02 = ? OR raqam_03 = ?) AND {not_merged} "
+            f"ORDER BY id LIMIT 1",
+            (primary, primary),
+        ).fetchone()
+
+    if existing is not None:
+        (existing_id, existing_phone, existing_r02, existing_r03,
+         existing_i02, existing_i03, existing_cid) = existing
+        updates, params = [], []
+        flag_needs_review = False
+
+        # Detect cross-client phone collision: phone-match brought up a row
+        # whose client_id_1c is a different non-empty label than the incoming.
+        # When this happens, the two clients legitimately share a phone digit
+        # pattern (or the historical data got tangled). Without protection,
+        # the second row's name/location/company would clobber the first's
+        # identity even though it's a different real client. The cid_1c
+        # tiebreaker decides the label; everything else freezes.
+        cid_collision = bool(
+            existing_cid and cid_1c and existing_cid != cid_1c
+        )
+
+        if existing_phone != primary and not cid_collision:
+            # Primary phone changed — log to phone_history before overwriting.
+            conn.execute(
+                "INSERT INTO phone_history (client_id, old_phone, new_phone, reason, changed_by) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (existing_id, existing_phone, primary,
+                 "clients_upload multi-phone-cell parse", changed_by_tag),
+            )
+            updates.append("phone_normalized = ?"); params.append(primary)
+
+        # Identity fields (name, location, company) — only overwrite when this
+        # is unambiguously the same client. Cross-client collision freezes them.
+        if not cid_collision:
+            if client_name:
+                updates.append("name = ?"); params.append(client_name)
+            if location:
+                updates.append("location = ?"); params.append(location)
+            if company:
+                updates.append("company_name = ?"); params.append(company)
+        else:
+            flag_needs_review = True
+
+        if source:
+            updates.append("source_sheet = ?"); params.append(source)
+        if cid_1c:
+            resolved_cid, tb_flag = _resolve_cid_1c_tiebreaker(conn, existing_id, cid_1c)
+            if tb_flag:
+                flag_needs_review = True
+            updates.append("client_id_1c = ?"); params.append(resolved_cid)
+
+        # Fill-only writes for raqam_02/03 + ism_02/03 from the extra phones.
+        slots = [(existing_r02, existing_i02, "raqam_02", "ism_02"),
+                 (existing_r03, existing_i03, "raqam_03", "ism_03")]
+        for (cur_phone, cur_name, slot_phone, slot_name), extra in zip(slots, extras[:2]):
+            if not cur_phone:
+                updates.append(f"{slot_phone} = ?"); params.append(extra["digits"])
+            if extra["annotation"] and not cur_name:
+                updates.append(f"{slot_name} = ?"); params.append(extra["annotation"])
+
+        if flag_needs_review:
+            updates.append("needs_review = 1")
+        if updates:
+            params.append(existing_id)
+            conn.execute(
+                f"UPDATE allowed_clients SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+            return ("updated", existing_id)
+        return ("skipped", existing_id)
+
+    # INSERT path — fresh client.
+    r02 = extras[0]["digits"] if len(extras) >= 1 else None
+    i02 = (extras[0]["annotation"] or None) if len(extras) >= 1 else None
+    r03 = extras[1]["digits"] if len(extras) >= 2 else None
+    i03 = (extras[1]["annotation"] or None) if len(extras) >= 2 else None
+    cur = conn.execute(
+        "INSERT INTO allowed_clients "
+        "(phone_normalized, name, location, source_sheet, status, "
+        " client_id_1c, company_name, raqam_02, ism_02, raqam_03, ism_03) "
+        "VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+        (primary, client_name, location, source or "clients_upload",
+         cid_1c, company, r02, i02, r03, i03),
+    )
+    return ("inserted", cur.lastrowid)
 
 
 def _resolve_cid_1c_tiebreaker(conn, existing_id: int, new_cid_1c: str):
@@ -90,73 +310,26 @@ def import_clients():
     with open(CLIENTS_FILE, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            phone = normalize_phone(row.get("phone", ""))
-            if not phone or phone in seen_phones:
+            raw_phone = row.get("phone", "")
+            primary = normalize_phone(raw_phone)
+            if not primary or primary in seen_phones:
                 continue
-            seen_phones.add(phone)
+            seen_phones.add(primary)
 
-            name = row.get("name", "").strip()
-            location = row.get("location", "").strip()
-            source = row.get("source", "").strip()
-            client_id_1c = row.get("client_id_1c", "").strip()
-            company_name = row.get("company_name", "").strip()
-
-            # Check if this phone already exists. Filter out merged rows at
-            # the SELECT level — without ORDER BY + status filter, LIMIT 1
-            # could return any of the post-dedup tombstones for this phone,
-            # causing the importer to either skip the client (false "merged"
-            # branch below) or update the wrong row.
-            existing = conn.execute(
-                "SELECT id, COALESCE(status, 'active') as status FROM allowed_clients "
-                "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
-                "ORDER BY id LIMIT 1",
-                (phone,),
-            ).fetchone()
-
-            if existing:
-                # Update existing record with new data (preserving non-empty fields)
-                updates = []
-                params = []
-                flag_needs_review = False
-                if name:
-                    updates.append("name = ?")
-                    params.append(name)
-                if location:
-                    updates.append("location = ?")
-                    params.append(location)
-                if source:
-                    updates.append("source_sheet = ?")
-                    params.append(source)
-                if client_id_1c:
-                    # Activity-aware tiebreaker — prevents stale CSV shorthand
-                    # (e.g. "Хушвахт ТИТОВА") from overwriting canonical 1C
-                    # names ("Бахтиер /Хушвахт ТИТОВА/") that the bot path
-                    # already restored. Same logic as apply_clients_upload.
-                    client_id_1c, flag_needs_review = _resolve_cid_1c_tiebreaker(
-                        conn, existing[0], client_id_1c
-                    )
-                    updates.append("client_id_1c = ?")
-                    params.append(client_id_1c)
-                if company_name:
-                    updates.append("company_name = ?")
-                    params.append(company_name)
-                if flag_needs_review:
-                    updates.append("needs_review = 1")
-                if updates:
-                    params.append(existing[0])
-                    conn.execute(
-                        f"UPDATE allowed_clients SET {', '.join(updates)} WHERE id = ?",
-                        params,
-                    )
-                    rows_updated += 1
-            else:
-                conn.execute(
-                    """INSERT INTO allowed_clients
-                       (phone_normalized, name, location, source_sheet, client_id_1c, company_name)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (phone, name, location, source, client_id_1c, company_name),
-                )
+            outcome, _ = _upsert_client_from_row(
+                conn,
+                raw_phone_str=raw_phone,
+                client_name=row.get("name", "").strip(),
+                location=row.get("location", "").strip(),
+                source=row.get("source", "").strip(),
+                cid_1c=row.get("client_id_1c", "").strip(),
+                company=row.get("company_name", "").strip(),
+                changed_by_tag="import_clients_csv",
+            )
+            if outcome == "inserted":
                 rows_inserted += 1
+            elif outcome == "updated":
+                rows_updated += 1
 
     conn.commit()
     total = conn.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0]
@@ -360,75 +533,29 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
     inserted = updated = skipped = 0
     seen = set()
     for raw in rows:
-        phone = normalize_phone(str(raw.get("phone") or ""))
-        if not phone or phone in seen:
+        raw_phone_str = str(raw.get("phone") or "")
+        primary = normalize_phone(raw_phone_str)
+        if not primary or primary in seen:
             skipped += 1
             continue
-        seen.add(phone)
+        seen.add(primary)
 
-        client_name = str(raw.get("name") or "").strip()
-        location = str(raw.get("location") or "").strip()
-        source = str(raw.get("source") or "clients_upload").strip()
-        cid_1c = str(raw.get("client_id_1c") or "").strip()
-        company = str(raw.get("company_name") or "").strip()
-
-        # client_id_1c must be a human-readable 1C NAME, never a numeric code.
-        # If the uploaded value is purely numeric (e.g. "1701" from a "Код"
-        # column that slipped through), discard it. Fall back to `name` when
-        # that's a proper string.
-        if cid_1c and cid_1c.isdigit():
-            cid_1c = ""
-        if not cid_1c and client_name and not client_name.isdigit():
-            cid_1c = client_name
-
-        # Same merged-aware filter as the CSV path above. Without it, after
-        # the May 2026 dedup migration, LIMIT 1 could pick up a tombstoned
-        # duplicate and the importer would skip the upsert entirely.
-        existing = conn.execute(
-            "SELECT id, COALESCE(status, 'active') FROM allowed_clients "
-            "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
-            "ORDER BY id LIMIT 1",
-            (phone,),
-        ).fetchone()
-
-        if existing:
-            updates, params = [], []
-            flag_needs_review = False
-            if client_name:
-                updates.append("name = ?"); params.append(client_name)
-            if location:
-                updates.append("location = ?"); params.append(location)
-            if source:
-                updates.append("source_sheet = ?"); params.append(source)
-            if cid_1c:
-                # Activity-aware tiebreaker (shared with CSV CLI path).
-                cid_1c, tb_flag = _resolve_cid_1c_tiebreaker(
-                    conn, existing[0], cid_1c
-                )
-                if tb_flag:
-                    flag_needs_review = True
-                updates.append("client_id_1c = ?"); params.append(cid_1c)
-            if company:
-                updates.append("company_name = ?"); params.append(company)
-            if flag_needs_review:
-                updates.append("needs_review = 1")
-            if updates:
-                params.append(existing[0])
-                conn.execute(
-                    f"UPDATE allowed_clients SET {', '.join(updates)} WHERE id = ?",
-                    params,
-                )
-                updated += 1
-            else:
-                skipped += 1
-        else:
-            conn.execute(
-                "INSERT INTO allowed_clients (phone_normalized, name, location, "
-                "source_sheet, status, client_id_1c, company_name) "
-                "VALUES (?, ?, ?, ?, 'active', ?, ?)",
-                (phone, client_name, location, source, cid_1c, company),
-            )
+        outcome, _ = _upsert_client_from_row(
+            conn,
+            raw_phone_str=raw_phone_str,
+            client_name=str(raw.get("name") or "").strip(),
+            location=str(raw.get("location") or "").strip(),
+            source=str(raw.get("source") or "clients_upload").strip(),
+            cid_1c=str(raw.get("client_id_1c") or "").strip(),
+            company=str(raw.get("company_name") or "").strip(),
+            changed_by_tag="apply_clients_upload",
+        )
+        if outcome == "inserted":
             inserted += 1
+        elif outcome == "updated":
+            updated += 1
+        else:
+            skipped += 1
 
     # Step 8 — mutator chokepoint. /clients runs after /debtors and /cash in the
     # daily upload order, so any allowed_clients row added/updated above may
