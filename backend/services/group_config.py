@@ -101,6 +101,14 @@ REPORT_GROUP_CHAT_ID: int = _env_int("REPORT_GROUP_CHAT_ID", -5085083917)
 # the cashier FSM stays inert until set.
 CASHIER_GROUP_CHAT_ID: int = _env_int("CASHIER_GROUP_CHAT_ID", 0)
 
+# P2P card-to-card review group. Hosts only the P2P payment notifications
+# (confirm/reject buttons). Falls back to CASHIER_GROUP_CHAT_ID at the
+# consumer site (see p2p_target) so deployments that never set it keep the
+# historical behavior of posting P2P into the cashier group. Split out from
+# the cashier group on 2026-05-29 so the naqd-handover queue + 19:00 cashbook
+# list stay where they were. 0 = use the cashier group.
+P2P_GROUP_CHAT_ID: int = _env_int("P2P_GROUP_CHAT_ID", 0)
+
 # Bank-transfer group (Uchqun + Shuhrat). Sister to cashier; routes through
 # bot/handlers/bank_transfer.py. 0 = unconfigured.
 BANK_TRANSFER_GROUP_CHAT_ID: int = _env_int("BANK_TRANSFER_GROUP_CHAT_ID", 0)
@@ -151,3 +159,11 @@ def legal_transfer_target() -> int:
     bot/handlers/cashier.py and backend/routers/payments.py.
     """
     return LEGAL_TRANSFER_GROUP_CHAT_ID or CASHIER_GROUP_CHAT_ID
+
+
+def p2p_target() -> int:
+    """Resolve the chat ID for P2P card-to-card notifications, falling back
+    to the cashier group if P2P_GROUP_CHAT_ID is unset. Same OR-fallback
+    shape as legal_transfer_target so older deployments don't break.
+    """
+    return P2P_GROUP_CHAT_ID or CASHIER_GROUP_CHAT_ID

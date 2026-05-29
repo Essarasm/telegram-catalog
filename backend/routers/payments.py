@@ -41,8 +41,8 @@ from backend.services.payment_reconciler import get_intake_match_status
 logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 from backend.services.group_config import (
-    CASHIER_GROUP_CHAT_ID,
     legal_transfer_target,
+    p2p_target,
 )
 # Dedicated group for legal-entity bank transfer flow. Falls back to the
 # cashier group if LEGAL_TRANSFER_GROUP_CHAT_ID is unset so older deployments
@@ -790,9 +790,10 @@ def _notify_cashier_group_p2p(
     confirm/reject buttons. Returns (ok, screenshot_file_id) — caller
     stores the file_id on the intake_payments row.
     """
-    if not BOT_TOKEN or not CASHIER_GROUP_CHAT_ID:
+    target_chat_id = p2p_target()
+    if not BOT_TOKEN or not target_chat_id:
         logger.warning(
-            "BOT_TOKEN or CASHIER_GROUP_CHAT_ID missing; skipping P2P notify"
+            "BOT_TOKEN or P2P target group missing; skipping P2P notify"
         )
         return False, None
 
@@ -820,7 +821,7 @@ def _notify_cashier_group_p2p(
     try:
         files = {"photo": (photo_filename, photo_bytes, photo_mime)}
         data = {
-            "chat_id": CASHIER_GROUP_CHAT_ID,
+            "chat_id": target_chat_id,
             "caption": caption,
             "parse_mode": "HTML",
             "reply_markup": __import__("json").dumps(keyboard),

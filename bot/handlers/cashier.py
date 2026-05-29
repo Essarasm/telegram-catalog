@@ -45,6 +45,7 @@ from bot.shared import (
     CASHIER_GROUP_CHAT_ID,
     is_cashier_or_admin,
     is_cashier_or_admin_cb,
+    is_cashier_role_cb,
     get_db,
     html_escape,
 )
@@ -1563,8 +1564,8 @@ async def cb_legaltx_transfer_proof_upload(message: Message, bot: Bot):
 
 @router.callback_query(F.data.startswith("p2p:confirm:"))
 async def cb_p2p_confirm(cb: CallbackQuery, bot: Bot):
-    if not is_cashier_or_admin_cb(cb):
-        await cb.answer("Faqat kassir/admin", show_alert=True)
+    if not is_cashier_role_cb(cb):
+        await cb.answer("Faqat kassir tasdiqlay oladi", show_alert=True)
         return
     try:
         pid = int(cb.data.split(":")[2])
@@ -1610,8 +1611,8 @@ async def cb_p2p_confirm(cb: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data.startswith("p2p:reject:"))
 async def cb_p2p_reject(cb: CallbackQuery, bot: Bot):
-    if not is_cashier_or_admin_cb(cb):
-        await cb.answer("Faqat kassir/admin", show_alert=True)
+    if not is_cashier_role_cb(cb):
+        await cb.answer("Faqat kassir rad eta oladi", show_alert=True)
         return
     try:
         pid = int(cb.data.split(":")[2])

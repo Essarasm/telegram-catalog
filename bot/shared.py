@@ -36,6 +36,7 @@ from backend.services.group_config import (
     DAILY_GROUP_CHAT_ID,
     INVENTORY_GROUP_CHAT_ID,
     CASHIER_GROUP_CHAT_ID,
+    P2P_GROUP_CHAT_ID,
     BANK_TRANSFER_GROUP_CHAT_ID,
     DRIVER_GROUP_CHAT_ID,
     AGENT_APPROVAL_GROUP_CHAT_ID,
@@ -57,6 +58,7 @@ __all__ = [
     "DAILY_GROUP_CHAT_ID",
     "INVENTORY_GROUP_CHAT_ID",
     "CASHIER_GROUP_CHAT_ID",
+    "P2P_GROUP_CHAT_ID",
     "BANK_TRANSFER_GROUP_CHAT_ID",
     "DRIVER_GROUP_CHAT_ID",
     "AGENT_APPROVAL_GROUP_CHAT_ID",
@@ -229,6 +231,25 @@ def _db_role_check(uid, allowed: set) -> bool:
             conn.close()
     except Exception:
         return False
+
+
+def is_cashier_role_cb(cb) -> bool:
+    """Strict cashier-role gate for the P2P confirm/reject buttons.
+
+    Authorizes ONLY users whose RESOLVED role is exactly 'cashier'
+    (users.agent_role, an admin's `/role cashier` impersonation override,
+    or the CASHIER_IDS env fallback — all via roles.get_role). Unlike
+    is_cashier_or_admin_cb this grants NOTHING by group membership and does
+    NOT include plain admins. Chosen 2026-05-29 so approving a P2P payment
+    requires the assigned cashier role, not merely sitting in the group.
+
+    Note: a user who is in ADMIN_IDS resolves to role 'admin' (admin trumps
+    cashier in get_role) and is therefore denied unless they `/role cashier`.
+    """
+    uid = cb.from_user.id if cb.from_user else None
+    if not uid:
+        return False
+    return _db_role_check(uid, {"cashier"})
 
 
 def is_admin_cb(cb) -> bool:
