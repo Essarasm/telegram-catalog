@@ -797,7 +797,7 @@
                 grid-template-columns: repeat(2, 1fr);
             }
 
-            #coverageMap, #collectionsMap {
+            #coverageMap, #collectionsMap, #debtMap {
                 height: 60vh !important;
                 max-height: 420px;
                 min-height: 300px;
@@ -1169,6 +1169,28 @@
                                     <tfoot id="debtorsListFooter" style="border-top: 2px solid #2a2d3a; font-weight: 600;"></tfoot>
                                 </table>
                             </div>
+                        </div>
+                    </div>
+
+                    <!-- 🗺 Qarzdorlar Xaritasi — debtors with a GPS pin, colored by oldest aging bucket -->
+                    <div class="section-title collapsible" onclick="toggleSection('debtMapSection')" style="margin-top: 24px;">
+                        🗺 Qarzdorlar Xaritasi <span id="debtMapMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        <span class="toggle-arrow" id="debtMapSection-arrow">▾</span>
+                    </div>
+                    <div id="debtMapSection" class="collapsible-content">
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Debtors with a GPS pin, colored by oldest aging bucket (same scheme as the list above). Only clients that have a pin appear — debtors without a pin are in the list but not on the map. Tap a pin for debt amount + aging.
+                        </div>
+                        <div id="debtMapLegend" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:14px; padding:10px 14px; background:#0f1117; border:1px solid #2a2d3a; border-radius:8px; font-size:11px; color:#8b8fa3;">
+                            <span style="color:#e4e4e7; font-weight:600;">Debt aging:</span>
+                            <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#ef4444; margin-right:4px; vertical-align:middle;"></span>120+ days</span>
+                            <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#ef7f1e; margin-right:4px; vertical-align:middle;"></span>91-120</span>
+                            <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#f59e0b; margin-right:4px; vertical-align:middle;"></span>61-90</span>
+                            <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#84cc16; margin-right:4px; vertical-align:middle;"></span>31-60</span>
+                            <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#22c55e; margin-right:4px; vertical-align:middle;"></span>0-30</span>
+                        </div>
+                        <div class="chart-container" style="padding: 0; overflow: hidden;">
+                            <div id="debtMap" style="height: 600px; width: 100%; background:#0f1117;"></div>
                         </div>
                     </div>
                 </div>
@@ -1861,11 +1883,11 @@
 
                     <div id="coverageDebtLegend" style="display:none; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:14px; padding:10px 14px; background:#0f1117; border:1px solid #2a2d3a; border-radius:8px; font-size:11px; color:#8b8fa3;">
                         <span style="color:#e4e4e7; font-weight:600;">Debt aging:</span>
-                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#dc2626; margin-right:4px; vertical-align:middle;"></span>120+ days</span>
-                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#ea580c; margin-right:4px; vertical-align:middle;"></span>91-120</span>
-                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#facc15; margin-right:4px; vertical-align:middle;"></span>61-90</span>
-                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#a855f7; margin-right:4px; vertical-align:middle;"></span>31-60</span>
-                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#10b981; margin-right:4px; vertical-align:middle;"></span>0-30</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#ef4444; margin-right:4px; vertical-align:middle;"></span>120+ days</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#ef7f1e; margin-right:4px; vertical-align:middle;"></span>91-120</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#f59e0b; margin-right:4px; vertical-align:middle;"></span>61-90</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#84cc16; margin-right:4px; vertical-align:middle;"></span>31-60</span>
+                        <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#22c55e; margin-right:4px; vertical-align:middle;"></span>0-30</span>
                         <span style="margin-left:8px;"><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:#2A81CB; margin-right:4px; vertical-align:middle;"></span>no debt (default)</span>
                         <span style="margin-left:auto; color:#22d3ee; font-size:10px;" id="coverageDebtSnapshotLabel"></span>
                     </div>
@@ -2484,6 +2506,7 @@
             }
             setTimeout(() => {
                 if (typeof coverageMap !== 'undefined' && coverageMap) coverageMap.invalidateSize();
+                if (typeof debtMap !== 'undefined' && debtMap) debtMap.invalidateSize();
                 if (typeof collectionsMap !== 'undefined' && collectionsMap) collectionsMap.invalidateSize();
                 Object.values(charts).forEach(c => { if (c && c.resize) c.resize(); });
             }, 200);
@@ -2547,6 +2570,12 @@
                 if (tabName === 'coverage' && coverageMap) {
                     coverageMap.invalidateSize();
                 }
+                if (tabName === 'debt' && debtMap) {
+                    debtMap.invalidateSize();
+                    // Re-run fitBounds now the container has real dimensions
+                    // (the initial render likely ran while the tab was 0×0/hidden).
+                    if (debtMapPoints.length) renderDebtMap();
+                }
                 if (tabName === 'customers' && customersMap) {
                     customersMap.invalidateSize();
                     // Re-run fitBounds now that the container has real dimensions
@@ -2569,6 +2598,7 @@
                 ['overview', loadOverviewData],
                 ['clients', loadClientsData],
                 ['debt', loadDebtorsList],
+                ['debt', loadDebtMap],
                 ['inventory', loadInventoryData],
                 ['supply', loadSupplyData],
                 ['health', loadHealthData],
@@ -3573,11 +3603,12 @@
             const buckets = isUsd
                 ? [{ key: 'all', label: 'Top USD debtors (no aging from 1C)', color: '#94a3b8' }]
                 : [
-                    { key: '0_30', label: '0-30 days', color: '#22c55e' },
-                    { key: '31_60', label: '31-60 days', color: '#84cc16' },
-                    { key: '61_90', label: '61-90 days', color: '#f59e0b' },
-                    { key: '91_120', label: '91-120 days', color: '#ef7f1e' },
-                    { key: '120_plus', label: '120+ days', color: '#ef4444' },
+                    // Colors pulled from AGING_COLORS (single source of truth — rule 12).
+                    { key: '0_30', label: '0-30 days', color: AGING_COLORS['0-30'] },
+                    { key: '31_60', label: '31-60 days', color: AGING_COLORS['31-60'] },
+                    { key: '61_90', label: '61-90 days', color: AGING_COLORS['61-90'] },
+                    { key: '91_120', label: '91-120 days', color: AGING_COLORS['91-120'] },
+                    { key: '120_plus', label: '120+ days', color: AGING_COLORS['120+'] },
                 ];
             let html = '';
             buckets.forEach(b => {
@@ -4796,6 +4827,11 @@
                     coveragePoints = coveragePoints.filter(p => Number(p.client_id) !== cid);
                     coverageMap && coverageMap.closePopup();
                     renderCoverage();
+                    // Keep the Debt-tab map in sync if it's been loaded.
+                    if (typeof debtMapPoints !== 'undefined' && debtMapPoints.length) {
+                        debtMapPoints = debtMapPoints.filter(p => Number(p.client_id) !== cid);
+                        if (debtMap) { debtMap.closePopup(); renderDebtMap(); }
+                    }
                 }
             } catch (err) {
                 console.error('clearClientPin error:', err);
@@ -4981,6 +5017,113 @@
             }
         }
 
+        // ==================== DEBT MAP (Debt tab — debtors-only pin map) ====================
+        // Mirrors the Agent Coverage "Pins" mode but scoped to clients WITH outstanding
+        // debt, colored by oldest aging bucket via AGING_COLORS (single source of truth —
+        // same scheme as the 🧾 Qarzdorlar Ro'yxati table above). Only debtors that have a
+        // GPS pin appear; debtors without a pin are in the list but not on the map.
+        let debtMap = null;
+        let debtClusterLayer = null;
+        let debtMapPoints = [];      // pinned clients (role=all) from /api/locations/heatmap
+        let debtMapByClient = {};    // { client_id: {debt_uzs, debt_usd, oldest_aging} }
+        let debtMapSnapshot = null;
+
+        function ensureDebtMap() {
+            if (debtMap) return debtMap;
+            debtMap = L.map('debtMap', { zoomControl: true }).setView([39.6542, 66.9597], 11); // Samarkand default
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap', maxZoom: 19
+            }).addTo(debtMap);
+            return debtMap;
+        }
+
+        async function loadDebtMap() {
+            try {
+                const [res, debtRes] = await Promise.all([
+                    fetch(`/api/locations/heatmap?admin_key=${encodeURIComponent(ADMIN_KEY)}&role=all`),
+                    fetch(`/api/collections/debt-by-client?admin_key=${encodeURIComponent(ADMIN_KEY)}`),
+                ]);
+                if (!res.ok) throw new Error(`heatmap ${res.status}`);
+                const data = await res.json();
+                debtMapPoints = data.points || [];
+                if (debtRes.ok) {
+                    const dd = await debtRes.json();
+                    debtMapByClient = dd.by_client || {};
+                    debtMapSnapshot = dd.snapshot_date || null;
+                } else {
+                    debtMapByClient = {};
+                    debtMapSnapshot = null;
+                }
+                renderDebtMap();
+            } catch (err) {
+                console.warn('debt map load failed', err);
+            }
+        }
+
+        function renderDebtMap() {
+            ensureDebtMap();
+            // Debtors-only: keep pins whose client has an outstanding-debt row.
+            const pts = debtMapPoints.filter(p => debtMapByClient[p.client_id]);
+
+            const totalDebtors = Object.keys(debtMapByClient).length;
+            const meta = document.getElementById('debtMapMeta');
+            if (meta) {
+                meta.textContent = `${pts.length} of ${totalDebtors} debtors pinned` +
+                    (debtMapSnapshot ? ` · snapshot ${debtMapSnapshot}` : '');
+            }
+
+            // Clear old cluster layer. eachLayer sweep (not just reference null-check)
+            // catches any orphan layer left by a render while the tab was 0×0/hidden.
+            debtMap.eachLayer(l => {
+                if (l instanceof L.MarkerClusterGroup) debtMap.removeLayer(l);
+            });
+            debtClusterLayer = null;
+            if (!pts.length) return;
+
+            debtClusterLayer = L.markerClusterGroup({ chunkedLoading: true });
+            pts.forEach(p => {
+                const debt = debtMapByClient[p.client_id];
+                const aging = debt ? debt.oldest_aging : null;
+                const color = (aging && AGING_COLORS[aging]) || '#9ca3af';
+                const svg =
+                    `<svg width="28" height="44" viewBox="0 0 28 44" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(0 2px 3px rgba(0,0,0,0.45));">` +
+                    `<path d="M14 0C6.3 0 0 6.3 0 14c0 9.3 14 30 14 30s14-20.7 14-30C28 6.3 21.7 0 14 0z" fill="${color}" stroke="white" stroke-width="2.5"/>` +
+                    `<circle cx="14" cy="14" r="5" fill="white"/></svg>`;
+                const marker = L.marker([p.lat, p.lng], {
+                    icon: L.divIcon({ html: svg, className: '', iconSize: [28, 44], iconAnchor: [14, 44], popupAnchor: [0, -38] })
+                });
+                const when = p.set_at ? p.set_at.slice(0, 16).replace('T', ' ') : '—';
+                const debtBlock =
+                    `<div style="margin-top:6px; padding:6px 8px; background:${color}22; border-left:3px solid ${color}; border-radius:4px; color:#222;">` +
+                    `<div style="font-weight:600;">Debt: ${fmtSomCompact(debt.debt_uzs)} UZS / $${(debt.debt_usd || 0).toFixed(0)}</div>` +
+                    `<div style="margin-top:2px;"><span style="background:${color}; color:white; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600;">${aging} days</span></div>` +
+                    `</div>`;
+                const clearBtn =
+                    `<button type="button" ` +
+                    `onclick="clearClientPin(${Number(p.client_id)}, ${JSON.stringify(p.client_label || '')}, ${p.lat}, ${p.lng}, ${JSON.stringify(p.agent_name || '')}, ${JSON.stringify(p.set_at || '')})" ` +
+                    `style="margin-top:8px; padding:6px 10px; background:#dc2626; color:#fff; border:none; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; width:100%;">` +
+                    `🗑 Clear this pin</button>`;
+                const popup =
+                    `<div style="font-size:13px; line-height:1.5;">` +
+                    `<div style="font-weight:600; margin-bottom:4px;">${escHtml(p.client_label)}</div>` +
+                    debtBlock +
+                    `<div style="color:#555; margin-top:6px;">Pin set by: ${escHtml(p.agent_name || '—')} <span style="color:#999;">(${escHtml(p.role || '—')})</span></div>` +
+                    `<div style="color:#555;">When: ${escHtml(when)}</div>` +
+                    (p.address ? `<div style="color:#555; margin-top:4px;">${escHtml(p.address)}</div>` : '') +
+                    `<div style="margin-top:6px;"><a href="https://maps.google.com/?q=${p.lat},${p.lng}" target="_blank" rel="noopener">Open in Google Maps</a></div>` +
+                    clearBtn +
+                    `</div>`;
+                marker.bindPopup(popup);
+                marker.addTo(debtClusterLayer);
+            });
+            debtMap.addLayer(debtClusterLayer);
+
+            try {
+                const b = L.latLngBounds(pts.map(p => [p.lat, p.lng]));
+                if (b.isValid()) debtMap.fitBounds(b.pad(0.15), { maxZoom: 13, animate: false });
+            } catch (e) { /* keep current view */ }
+        }
+
         // ==================== CUSTOMER COVERAGE (route planning view) ====================
         let customersMap = null;
         let customersMarkerLayer = null;
@@ -5122,7 +5265,11 @@
         // ==================== COLLECTIONS / ROUTE PLANNER ====================
         const WAREHOUSE = { lat: 39.6455, lng: 66.9392 }; // 39°38'43.7"N 66°56'21.0"E (Samarkand main)
         const ROUTE_COLORS = ['#3b82f6', '#f59e0b', '#22c55e', '#ec4899', '#a855f7'];
-        const AGING_COLORS = { '120+': '#dc2626', '91-120': '#ea580c', '61-90': '#facc15', '31-60': '#a855f7', '0-30': '#10b981' };
+        // Canonical debt-aging color scheme — SINGLE SOURCE OF TRUTH (see .claude/rules/12-dual-source-columns.md).
+        // Keyed by the dash-format bucket names returned by /api/collections (oldest_aging).
+        // Matches the 🧾 Qarzdorlar Ro'yxati list (renderAgingTopClients) + both pin maps (coverage + debt).
+        // Change colors HERE only; downstream readers reference this map.
+        const AGING_COLORS = { '120+': '#ef4444', '91-120': '#ef7f1e', '61-90': '#f59e0b', '31-60': '#84cc16', '0-30': '#22c55e' };
 
         let collectionsMap = null;
         let collTumans = [];           // [{tuman_id, name, viloyat_name, lat, lng, pin_count}]
