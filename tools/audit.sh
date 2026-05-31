@@ -173,8 +173,10 @@ if grep -q "SKIP_SCHEMA_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
    && grep -q "SKIP_AUTHCALL_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
    && grep -q "SKIP_CHATTYPE_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
    && grep -q "SKIP_INLINE_FETCH_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
+   && grep -q "SKIP_STATUS_VOCABULARY_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
+   && grep -q "SKIP_REALORDERS_CURRENCY_FILTER_CHECK" scripts/git-hooks/pre-commit 2>/dev/null \
    && grep -q "SKIP_BUNDLE_CHECK" scripts/git-hooks/pre-commit 2>/dev/null; then
-    check OK "All five foundation guards present in tracked hook"
+    check OK "All seven foundation guards present in tracked hook"
 else
     check FAIL "Foundation guards missing from scripts/git-hooks/pre-commit"
 fi
