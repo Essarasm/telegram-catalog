@@ -977,34 +977,7 @@
                         </div>
                     </div>
 
-                    <div class="chart-row">
-                        <div class="row-item">
-                            <div class="chart-container">
-                                <div class="chart-title">Collection Rate Trend</div>
-                                <div class="chart-wrapper">
-                                    <canvas id="collectionChart"></canvas>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="row-item">
-                            <div class="chart-container">
-                                <div class="chart-title" style="display: flex; justify-content: space-between; align-items: center;">
-                                    <span>Receivable Aging <span id="agingInfoIcon" title="" style="cursor: help; color: #8b8fa3; font-size: 13px;">ⓘ</span></span>
-                                    <button id="agingDetailToggle" onclick="toggleAgingDetail()" style="background: none; border: 1px solid #2a2d3a; color: #8b8fa3; font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer;">Details ▾</button>
-                                </div>
-                                <div class="chart-wrapper-250">
-                                    <canvas id="agingChart"></canvas>
-                                </div>
-                                <div id="agingMeta" style="font-size: 11px; color: #8b8fa3; padding: 4px 0; text-align: center;">—</div>
-                                <div id="agingDetailPanel" style="display: none; margin-top: 8px;">
-                                    <div style="font-size: 11px; color: #8b8fa3; padding: 6px 8px; background: rgba(168, 85, 247, 0.06); border-radius: 4px; margin-bottom: 8px;">
-                                        <strong>Methodology:</strong> Buckets are based on consecutive months without any payment (period_credit = 0) in 1C 'оборотно-сальдовая' data. <strong>Current</strong> = paid within last month. <strong>30-60</strong> = 1-2 months silent. <strong>60-90</strong> = 2-3 months. <strong>90+</strong> = 3+ months. Not based on individual invoice dates.
-                                    </div>
-                                    <div id="agingTopClients"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+                    <!-- Collection Rate Trend + Receivable Aging moved to the Debt Management tab. -->
 
                     <!-- 📅 Top 20 Sotilgan — Kecha (yesterday) -->
                     <div class="section-title collapsible" onclick="toggleSection('topSellersYesterdaySection')" style="margin-top: 24px;">
@@ -1091,11 +1064,7 @@
                 <!-- Client Portfolio Tab -->
                 <div id="clients-tab" class="tab-content hidden">
                     <div class="kpi-grid">
-                        <div class="kpi-card">
-                            <div class="kpi-label">Total Receivable</div>
-                            <div class="kpi-value" id="kpi-total-receivable">-</div>
-                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">USD-equivalent · current</div>
-                        </div>
+                        <!-- Total Receivable moved to the Debt Management tab. -->
                         <div class="kpi-card">
                             <div class="kpi-label">Top Client Shipped</div>
                             <div class="kpi-value" id="kpi-top-clients-shipped">-</div>
@@ -1105,6 +1074,38 @@
                             <div class="kpi-label">Net Balance</div>
                             <div class="kpi-value" id="kpi-net-balance">-</div>
                             <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">Σ shipped − Σ paid (top-50, week)</div>
+                        </div>
+                    </div>
+
+                    <!-- 🪣 Client buckets — Proposal B size split (population 40/30/20/8/2).
+                         Per-bucket client count, share, monthly-volume range, and avg credit
+                         score. Sourced from /api/finance/bucket-aggregate over the latest
+                         client_scores recalc — the CURRENTLY-SCORED SUBSET, not the canonical
+                         691-client benchmark (memory: bucketing_schemes). Pseudo-accounts excluded. -->
+                    <div class="table-container" style="margin-bottom: 16px;">
+                        <div class="table-title" style="display: flex; align-items: center; gap: 8px;">
+                            Mijozlar — o'lcham bo'yicha
+                            <span id="bucketsMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        </div>
+                        <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
+                            Proposal B o'lcham taqsimoti · oylik hajm (USD) bo'yicha · joriy baholangan mijozlar to'plami (pseudo-hisoblar chiqarib tashlangan).
+                        </div>
+                        <div class="table-wrapper">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>O'lcham</th>
+                                        <th style="text-align:right;">Mijozlar</th>
+                                        <th style="text-align:right;">Ulush</th>
+                                        <th style="text-align:right;">Hajm oralig'i ($/oy)</th>
+                                        <th style="text-align:right;">O'rtacha ($/oy)</th>
+                                        <th style="text-align:right;">Jami hajm ($/oy)</th>
+                                        <th style="text-align:right;">O'rtacha ball</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="bucketsTableBody">
+                                </tbody>
+                            </table>
                         </div>
                     </div>
 
@@ -1136,6 +1137,54 @@
 
                 <!-- Debt Management Tab -->
                 <div id="debt-tab" class="tab-content hidden">
+                    <!-- 💰 Receivables summary band — Total Receivable KPI + Collection Rate Trend +
+                         Receivable Aging + per-bucket amount breakdown (moved here from Business
+                         Overview / Client Portfolio). Elements keep their original ids so the
+                         existing loaders (loadOverviewData / loadClientsData) populate them by id. -->
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-label">Total Receivable</div>
+                            <div class="kpi-value" id="kpi-total-receivable">-</div>
+                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">USD-equivalent · current</div>
+                        </div>
+                    </div>
+
+                    <div class="chart-row" style="margin-top: 16px;">
+                        <div class="row-item">
+                            <div class="chart-container">
+                                <div class="chart-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span>Collection Rate Trend</span>
+                                    <span id="collectionFreshness" style="font-size: 11px; color: #8b8fa3; font-weight: 400;"></span>
+                                </div>
+                                <div class="chart-wrapper">
+                                    <canvas id="collectionChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row-item">
+                            <div class="chart-container">
+                                <div class="chart-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span>Receivable Aging <span id="agingInfoIcon" title="" style="cursor: help; color: #8b8fa3; font-size: 13px;">ⓘ</span></span>
+                                    <button id="agingDetailToggle" onclick="toggleAgingDetail()" style="background: none; border: 1px solid #2a2d3a; color: #8b8fa3; font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer;">Details ▾</button>
+                                </div>
+                                <div class="chart-wrapper-250">
+                                    <canvas id="agingChart"></canvas>
+                                </div>
+                                <div id="agingMeta" style="font-size: 11px; color: #8b8fa3; padding: 4px 0; text-align: center;">—</div>
+                                <div id="agingDetailPanel" style="display: none; margin-top: 8px;">
+                                    <div style="font-size: 11px; color: #8b8fa3; padding: 6px 8px; background: rgba(168, 85, 247, 0.06); border-radius: 4px; margin-bottom: 8px;">
+                                        <strong>Methodology:</strong> Buckets are based on consecutive months without any payment (period_credit = 0) in 1C 'оборотно-сальдовая' data. <strong>Current</strong> = paid within last month. <strong>30-60</strong> = 1-2 months silent. <strong>60-90</strong> = 2-3 months. <strong>90+</strong> = 3+ months. Not based on individual invoice dates.
+                                    </div>
+                                    <div id="agingTopClients"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- (The standalone "Debt by Aging Bucket" panel was folded into the
+                         size×aging crosstab inside Qarzdorlar Ro'yxati below — its Σ-aging
+                         row carries the same per-bucket totals.) -->
+
                     <!-- 🧾 Debtors List — manager's printed report (per-client current debt + callback scheduler) -->
                     <div class="section-title collapsible" onclick="toggleSection('debtorsListSection')">
                         🧾 Qarzdorlar Ro'yxati <span id="debtorsListMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
@@ -1145,6 +1194,22 @@
                         <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
                             Per-client current debt from latest 1C 'Дебиторская задолженность' upload. Real clients only (pseudo-accounts excluded). Sorted by combined USD-equivalent debt. <strong>Agent</strong> — manually assign the responsible agent from the dropdown; defaults to "—" until you (or another admin) pick one. Select "—" to clear. <strong>Days since</strong> = today − <code>last_transaction_date</code>; large values indicate stuck debt. <strong>Qayta qo'ng'iroq</strong> — pick a date when the client asked to be called back; the row tints amber when that date arrives. The tint fades automatically once a new order or payment lands dated after the callback was set (the client kept their promise). History is preserved (every reschedule appends).
                         </div>
+
+                        <!-- Size×Aging crosstab — Proposal B client size (rows) × 1C aging bucket
+                             (cols). Cells = UZS owed (K/M) + (client count). Click a cell / row
+                             header / col header to filter the list below; Σ or the chip clears.
+                             Built client-side from the debtors-list items by renderDebtCrosstab(). -->
+                        <div id="debtCrosstabWrap" style="margin-bottom: 14px;">
+                            <div class="chart-title" style="margin-bottom: 8px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                                <span>Qarz · o'lcham × yoshi</span>
+                                <span style="font-size: 11px; color: #8b8fa3; font-weight: 400;">UZS owed (client soni) per Proposal B o'lcham × 1C aging · USD ustuni — yoshsiz jami (1C USD'ni yoshlashtirmaydi)</span>
+                                <span id="debtCrosstabFilterChip"></span>
+                            </div>
+                            <div style="overflow-x:auto;">
+                                <div id="debtCrosstab"></div>
+                            </div>
+                        </div>
+
                         <div class="table-container">
                             <div class="table-wrapper">
                                 <table>
@@ -1152,6 +1217,8 @@
                                         <tr>
                                             <th class="table-number">#</th>
                                             <th>Client</th>
+                                            <th class="dbt-grp" title="Proposal B client size by monthly USD volume (Micro/Small/Medium/Large/Heavy). 'Unscored' = not in client_scores.">O'lcham</th>
+                                            <th title="Oldest non-zero 1C aging bucket for this client's debt.">Yoshi</th>
                                             <th title="Responsible agent. Manually assigned only — pick from dropdown to set, '—' to clear. Caption below shows who assigned it.">Agent</th>
                                             <th class="dbt-grp">Last deal</th>
                                             <th>Days since</th>
@@ -2608,8 +2675,10 @@
             const loaders = [
                 ['overview', loadOverviewData],
                 ['clients', loadClientsData],
+                ['clients', loadClientBuckets],
                 ['debt', loadDebtorsList],
                 ['debt', loadDebtMap],
+                ['debt', loadDebtSummary],
                 ['inventory', loadInventoryData],
                 ['supply', loadSupplyData],
                 ['health', loadHealthData],
@@ -2853,12 +2922,169 @@
             }).join('');
         }
 
+        // Cached debtors-list payload + active crosstab filter. The crosstab is
+        // always built from the FULL item set; only the list below filters.
+        let debtorsData = null;
+        let debtFilter = { size: null, aging: null };
+
+        // Proposal B size buckets (rows) + 1C aging buckets (cols). 'Unscored' =
+        // debtor not present in client_scores (size unknown), shown honestly.
+        const SIZE_BUCKETS = ['Micro', 'Small', 'Medium', 'Large', 'Heavy', 'Unscored'];
+        const AGING_KEYS = ['0_30', '31_60', '61_90', '91_120', '120_plus'];
+        // 'usd' is a pseudo-bucket: USD debt has no 1C aging, so it's its own
+        // un-aged column / filter key (matches debt_usd > 0).
+        const AGING_KEY_LABEL = { '0_30': '0-30', '31_60': '31-60', '61_90': '61-90', '91_120': '91-120', '120_plus': '120+', 'usd': 'USD' };
+        // Bridge the underscore keys to the AGING_COLORS single-source palette.
+        const AGING_KEY_COLORKEY = { '0_30': '0-30', '31_60': '31-60', '61_90': '61-90', '91_120': '91-120', '120_plus': '120+' };
+
+        function _sizeOf(it) { return it.size_bucket || 'Unscored'; }
+
+        // Oldest non-zero aging bucket for a client (worst-case), matching how
+        // the Qarzdorlar Xaritasi pin map colors a debtor. null if no UZS aging.
+        function _oldestAgingKey(it) {
+            const ag = it.aging_uzs || {};
+            for (let i = AGING_KEYS.length - 1; i >= 0; i--) {
+                if ((ag[AGING_KEYS[i]] || 0) > 0) return AGING_KEYS[i];
+            }
+            return null;
+        }
+
         async function loadDebtorsList() {
             try {
                 const data = await apiCall('debtors-list');
+                debtorsData = data;
+                renderDebtCrosstab(data);
                 renderDebtorsList(data);
             } catch (e) {
                 console.warn('debtors-list load failed', e);
+            }
+        }
+
+        // Click a cell / row header / col header to filter; clicking the same
+        // target again (or Σ) clears. Re-renders crosstab (to re-highlight) + list.
+        function setDebtFilter(size, aging) {
+            const same = debtFilter.size === (size || null) && debtFilter.aging === (aging || null);
+            debtFilter = same ? { size: null, aging: null } : { size: size || null, aging: aging || null };
+            if (debtorsData) {
+                renderDebtCrosstab(debtorsData);
+                renderDebtorsList(debtorsData);
+            }
+        }
+        function clearDebtFilter() {
+            debtFilter = { size: null, aging: null };
+            if (debtorsData) {
+                renderDebtCrosstab(debtorsData);
+                renderDebtorsList(debtorsData);
+            }
+        }
+
+        // Small colored size / aging badges used in the list rows.
+        function sizeBadgeHtml(size) {
+            const known = SIZE_BUCKETS.indexOf(size) >= 0 && size !== 'Unscored';
+            const color = known ? '#7c9eff' : '#8b8fa3';
+            const bg = known ? 'rgba(124,158,255,0.12)' : 'rgba(139,143,163,0.10)';
+            return `<span style="display:inline-block; font-size:10px; font-weight:600; color:${color}; background:${bg}; padding:1px 6px; border-radius:8px; white-space:nowrap;">${size}</span>`;
+        }
+        function agingBadgeHtml(it) {
+            const k = _oldestAgingKey(it);
+            if (!k) return '<span style="color:#8b8fa3;">—</span>';
+            const color = AGING_COLORS[AGING_KEY_COLORKEY[k]] || '#8b8fa3';
+            return `<span style="display:inline-block; font-size:10px; font-weight:600; color:#0f1117; background:${color}; padding:1px 6px; border-radius:8px; white-space:nowrap;">${AGING_KEY_LABEL[k]}</span>`;
+        }
+
+        // Build the size×aging crosstab from the FULL item set. Cells carry UZS
+        // owed in that slot (every UZS lands in exactly one size×aging cell, so
+        // the Σ-aging row reconciles exactly with the Receivable Aging totals).
+        function renderDebtCrosstab(data) {
+            const el = document.getElementById('debtCrosstab');
+            const chip = document.getElementById('debtCrosstabFilterChip');
+            if (!el) return;
+            const items = (data && data.items) || [];
+
+            // matrix[size][agingKey] = {uzs, n}; plus per-size/per-aging Σ.
+            // USD is tracked separately (no 1C aging) — usdTot/usdClients per size.
+            const cell = {}; const rowTot = {}; const colTot = {}; const rowClients = {};
+            const usdTot = {}; const usdClients = {};
+            SIZE_BUCKETS.forEach(s => { cell[s] = {}; rowTot[s] = 0; rowClients[s] = 0; usdTot[s] = 0; usdClients[s] = 0; AGING_KEYS.forEach(k => cell[s][k] = { uzs: 0, n: 0 }); });
+            AGING_KEYS.forEach(k => colTot[k] = 0);
+            let grand = 0; let grandUsd = 0;
+            items.forEach(it => {
+                const s = _sizeOf(it);
+                const ag = it.aging_uzs || {};
+                let hasAny = false;
+                AGING_KEYS.forEach(k => {
+                    const v = ag[k] || 0;
+                    if (v > 0) {
+                        cell[s][k].uzs += v; cell[s][k].n += 1;
+                        rowTot[s] += v; colTot[k] += v; grand += v; hasAny = true;
+                    }
+                });
+                if (hasAny) rowClients[s] += 1;
+                const ud = it.debt_usd || 0;
+                if (ud > 0) { usdTot[s] += ud; usdClients[s] += 1; grandUsd += ud; }
+            });
+
+            const sel = (s, k) => (debtFilter.size === s && debtFilter.aging === k);
+            const selRow = (s) => (debtFilter.size === s && !debtFilter.aging);
+            const selCol = (k) => (debtFilter.aging === k && !debtFilter.size);
+            const hi = 'outline:2px solid #7c9eff; outline-offset:-2px;';
+            const th = (txt, extra, onclick, title) =>
+                `<th style="padding:5px 8px; font-size:11px; font-weight:600; color:#cbd5e0; ${extra || ''}"${onclick ? ` onclick="${onclick}"` : ''}${title ? ` title="${title}"` : ''}>${txt}</th>`;
+
+            // Header row — aging columns colored from AGING_COLORS.
+            let head = `<tr><th style="padding:5px 8px;"></th>`;
+            AGING_KEYS.forEach(k => {
+                const c = AGING_COLORS[AGING_KEY_COLORKEY[k]];
+                head += `<th onclick="setDebtFilter(null,'${k}')" title="Filter to debt aged ${AGING_KEY_LABEL[k]} days" style="cursor:pointer; padding:5px 8px; font-size:11px; font-weight:600; text-align:right; color:${c}; ${selCol(k) ? hi : ''}">${AGING_KEY_LABEL[k]}</th>`;
+            });
+            head += `<th title="Σ across aging buckets — UZS only" style="padding:5px 8px; font-size:11px; font-weight:700; text-align:right; color:#e4e4e7;">Σ UZS</th>`;
+            head += `<th onclick="setDebtFilter(null,'usd')" title="USD owed — 1C does not age USD, so this is the un-aged total per size. Click to filter to USD debtors." style="cursor:pointer; padding:5px 8px 5px 12px; font-size:11px; font-weight:700; text-align:right; color:#94a3b8; border-left:1px solid #2a2d3a; ${selCol('usd') ? hi : ''}">USD</th></tr>`;
+
+            // Body rows — one per size bucket (skip empty rows to keep it compact).
+            let bodyRows = '';
+            SIZE_BUCKETS.forEach(s => {
+                if (rowTot[s] <= 0 && usdTot[s] <= 0) return;
+                let row = `<tr>`;
+                row += `<td onclick="setDebtFilter('${s}',null)" title="Filter to ${s} clients" style="cursor:pointer; padding:5px 8px; font-size:11px; font-weight:600; color:${s === 'Unscored' ? '#8b8fa3' : '#cbd5e0'}; ${selRow(s) ? hi : ''}">${s}</td>`;
+                AGING_KEYS.forEach(k => {
+                    const cv = cell[s][k];
+                    if (cv.uzs > 0) {
+                        row += `<td onclick="setDebtFilter('${s}','${k}')" style="cursor:pointer; padding:5px 8px; font-size:11px; text-align:right; color:#e4e4e7; ${sel(s, k) ? hi : ''}">${fmt(cv.uzs)}<span style="color:#8b8fa3;"> (${cv.n})</span></td>`;
+                    } else {
+                        row += `<td style="padding:5px 8px; text-align:right; color:#3a3d4a;">—</td>`;
+                    }
+                });
+                row += `<td style="padding:5px 8px; font-size:11px; font-weight:700; text-align:right; color:#e4e4e7;">${rowTot[s] > 0 ? fmt(rowTot[s]) + `<span style="color:#8b8fa3; font-weight:400;"> (${rowClients[s]})</span>` : '<span style="color:#3a3d4a;">—</span>'}</td>`;
+                if (usdTot[s] > 0) {
+                    row += `<td onclick="setDebtFilter('${s}','usd')" title="${s} · USD owed (no 1C aging)" style="cursor:pointer; padding:5px 8px 5px 12px; font-size:11px; font-weight:600; text-align:right; color:#94a3b8; border-left:1px solid #2a2d3a; ${sel(s, 'usd') ? hi : ''}">$${fmt(usdTot[s])}<span style="color:#6b7280;"> (${usdClients[s]})</span></td>`;
+                } else {
+                    row += `<td style="padding:5px 8px 5px 12px; text-align:right; color:#3a3d4a; border-left:1px solid #2a2d3a;">—</td>`;
+                }
+                row += `</tr>`;
+                bodyRows += row;
+            });
+
+            // Σ-aging footer row (= Receivable Aging totals).
+            let footRow = `<tr style="border-top:1px solid #2a2d3a;"><td style="padding:6px 8px; font-size:11px; font-weight:700; color:#8b8fa3;">Σ</td>`;
+            AGING_KEYS.forEach(k => {
+                footRow += `<td style="padding:6px 8px; font-size:11px; font-weight:700; text-align:right; color:#e4e4e7;">${colTot[k] > 0 ? fmt(colTot[k]) : '—'}</td>`;
+            });
+            footRow += `<td onclick="clearDebtFilter()" title="Clear filter" style="cursor:pointer; padding:6px 8px; font-size:11px; font-weight:800; text-align:right; color:#e4e4e7;">${fmt(grand)}</td>`;
+            footRow += `<td style="padding:6px 8px 6px 12px; font-size:11px; font-weight:800; text-align:right; color:#94a3b8; border-left:1px solid #2a2d3a;">${grandUsd > 0 ? '$' + fmt(grandUsd) : '—'}</td></tr>`;
+
+            el.innerHTML = `<table style="border-collapse:collapse; width:100%; min-width:480px; background:#0f1117; border:1px solid #2a2d3a; border-radius:8px;">
+                <thead>${head}</thead><tbody>${bodyRows}${footRow}</tbody></table>`;
+
+            // Active-filter chip
+            if (chip) {
+                if (debtFilter.size || debtFilter.aging) {
+                    const parts = [];
+                    if (debtFilter.size) parts.push(`o'lcham: ${debtFilter.size}`);
+                    if (debtFilter.aging) parts.push(`yoshi: ${AGING_KEY_LABEL[debtFilter.aging]}`);
+                    chip.innerHTML = `<span style="font-size:11px; font-weight:400; color:#7c9eff; background:rgba(124,158,255,0.12); padding:2px 8px; border-radius:10px;">${parts.join(' · ')} <span onclick="clearDebtFilter()" style="cursor:pointer; color:#cbd5e0; font-weight:700;">✕</span></span>`;
+                } else {
+                    chip.innerHTML = '';
+                }
             }
         }
 
@@ -3107,15 +3333,27 @@
             const foot = document.getElementById('debtorsListFooter');
             const meta = document.getElementById('debtorsListMeta');
             if (!body) return;
-            const items = (data && data.items) || [];
+            const allItems = (data && data.items) || [];
             const asOf = (data && data.as_of) || '—';
+            // Apply the active crosstab filter (size and/or aging bucket).
+            const items = allItems.filter(it => {
+                if (debtFilter.size && _sizeOf(it) !== debtFilter.size) return false;
+                if (debtFilter.aging === 'usd') {
+                    if (!((it.debt_usd || 0) > 0)) return false;       // USD pseudo-bucket
+                } else if (debtFilter.aging && !((it.aging_uzs || {})[debtFilter.aging] > 0)) {
+                    return false;
+                }
+                return true;
+            });
+            const filtered = !!(debtFilter.size || debtFilter.aging);
             if (meta) {
-                meta.textContent = items.length
-                    ? `${items.length} ta · as of ${asOf}`
-                    : `as of ${asOf} · qarzdorlar yo'q`;
+                const base = `as of ${asOf}`;
+                if (!allItems.length) meta.textContent = `${base} · qarzdorlar yo'q`;
+                else if (filtered) meta.textContent = `${items.length} / ${allItems.length} ta (filtered) · ${base}`;
+                else meta.textContent = `${allItems.length} ta · ${base}`;
             }
             if (!items.length) {
-                body.innerHTML = `<tr><td colspan="13" style="text-align:center; color:#8b8fa3; padding:16px;">Qarzdorlar yo'q</td></tr>`;
+                body.innerHTML = `<tr><td colspan="15" style="text-align:center; color:#8b8fa3; padding:16px;">${filtered ? "Filtrga mos qarzdor yo'q" : "Qarzdorlar yo'q"}</td></tr>`;
                 if (foot) foot.innerHTML = '';
                 return;
             }
@@ -3175,6 +3413,8 @@
                 return `<tr${rowStyle}>
                     <td class="table-number">${it.rank}</td>
                     <td>${escapeHtml(it.client_name)}</td>
+                    <td class="dbt-grp">${sizeBadgeHtml(_sizeOf(it))}</td>
+                    <td>${agingBadgeHtml(it)}</td>
                     <td>${agentCell}</td>
                     <td class="dbt-grp" style="font-size:11px;">${escapeHtml(it.last_transaction_date || '—')}</td>
                     <td>${daysCell}</td>
@@ -3189,11 +3429,15 @@
                 </tr>`;
             }).join('');
             if (foot) {
+                // Totals reflect the displayed (filtered) rows so JAMI matches what's on screen.
+                const sumUzs = items.reduce((s, it) => s + (it.debt_uzs || 0), 0);
+                const sumUsd = items.reduce((s, it) => s + (it.debt_usd || 0), 0);
+                const jamiLabel = filtered ? `JAMI (filtered) · ${items.length} ta` : `JAMI · ${items.length} ta`;
                 foot.innerHTML = `<tr style="background: rgba(255,255,255,0.03);">
                     <td></td>
-                    <td colspan="8">JAMI · ${data.count} ta</td>
-                    <td class="dbt-grp" style="text-align:right;">${fmtFull(data.total_uzs)}</td>
-                    <td style="text-align:right;">$${fmtFull(data.total_usd)}</td>
+                    <td colspan="10">${jamiLabel}</td>
+                    <td class="dbt-grp" style="text-align:right;">${fmtFull(sumUzs)}</td>
+                    <td style="text-align:right;">$${fmtFull(sumUsd)}</td>
                     <td class="dbt-grp"></td>
                     <td></td>
                 </tr>`;
@@ -3481,6 +3725,13 @@
             const weeks = weeklyList();
             const ctx = document.getElementById('collectionChart').getContext('2d');
             if (charts.collection) charts.collection.destroy();
+            // Freshness label — latest closed week in the series (weekly-recap is
+            // inherently current: last 13 closed weeks).
+            const freshEl = document.getElementById('collectionFreshness');
+            if (freshEl) {
+                const last = weeks.length ? weeks[weeks.length - 1] : null;
+                freshEl.textContent = last ? `latest: ${last.label}` : '';
+            }
             if (!weeks.length) return;
 
             charts.collection = new Chart(ctx, {
@@ -3596,7 +3847,7 @@
                     if ((receivables.usd_total || 0) > 0) {
                         usdNote = ` &nbsp;·&nbsp; <span style="color:#94a3b8;">+$${fmt(receivables.usd_total)} USD owed (no aging from 1C)</span>`;
                     }
-                    meta.innerHTML = `${numClients} clients with outstanding debt &nbsp;·&nbsp; as of ${asOf}${usdNote}`;
+                    meta.innerHTML = `${numClients} clients with outstanding debt &nbsp;·&nbsp; as of ${agingFreshnessTag(asOf)}${usdNote}`;
                 }
                 const infoIcon = document.getElementById('agingInfoIcon');
                 if (infoIcon && receivables.methodology) {
@@ -3604,6 +3855,28 @@
                 }
                 renderAgingTopClients(receivables);
             }
+        }
+
+        // Days between a YYYY-MM-DD date and today (Tashkent calendar day).
+        // Negative/NaN-safe; returns a large number on unparseable input.
+        function _daysSinceDate(dateStr) {
+            if (!dateStr) return 9999;
+            const d = new Date(dateStr + 'T00:00:00');
+            if (isNaN(d.getTime())) return 9999;
+            const today = new Date();
+            return Math.floor((today - d) / 86400000);
+        }
+
+        // Render the "as of <date>" with an amber tint + ⚠ when the latest
+        // /debtors snapshot is more than 2 days old (weekend gaps are tolerated:
+        // Sat upload → Mon view is exactly 2 days, still considered fresh).
+        function agingFreshnessTag(asOf) {
+            if (!asOf || asOf === '—') return '—';
+            const days = _daysSinceDate(asOf);
+            if (days > 2) {
+                return `<span style="color:#f59e0b;" title="Latest /debtors snapshot is ${days} days old — upload may be overdue">${asOf} ⚠ (${days}d old)</span>`;
+            }
+            return `<span style="color:#22c55e;">${asOf}</span>`;
         }
 
         function renderAgingTopClients(receivables) {
@@ -3693,6 +3966,121 @@
                     </tr>
                 `;
             }).join('');
+        }
+
+        // Per-bucket Proposal B palette (Micro→Heavy). Distinct from the single
+        // blue sizeBadgeHtml() badge so the size split reads as a gradient.
+        const BUCKET_COLORS = {
+            Micro:  '#8b8fa3',
+            Small:  '#7c9eff',
+            Medium: '#22c55e',
+            Large:  '#f59e0b',
+            Heavy:  '#ef4444',
+        };
+
+        // Client Portfolio — clients divided into Proposal B size buckets.
+        // GET /api/finance/bucket-aggregate (no admin_key — open GET) with the
+        // canonical thresholds 125/621/1721/4120. Renders count + share + volume
+        // range + avg score per bucket, with a Σ footer. This is the
+        // currently-scored subset, NOT the 691-client benchmark.
+        async function loadClientBuckets() {
+            const tbody = document.getElementById('bucketsTableBody');
+            const meta = document.getElementById('bucketsMeta');
+            if (!tbody) return;
+            try {
+                const res = await fetch('/api/finance/bucket-aggregate?thresholds_usd=125,621,1721,4120');
+                if (!res.ok) throw new Error(`API error: ${res.status}`);
+                const data = await res.json();
+                if (!data.ok) throw new Error(data.error || 'no data');
+
+                const buckets = data.buckets || [];
+                const totalClients = buckets.reduce((s, b) => s + (b.clients || 0), 0);
+                const totalVol = buckets.reduce((s, b) => s + (b.total_vol_usd || 0), 0);
+
+                if (meta) {
+                    meta.textContent = `· ${totalClients} mijoz · baholangan ${data.recalc_date || ''}`
+                        + (data.excluded_pseudo_count ? ` · ${data.excluded_pseudo_count} pseudo chiqarildi` : '');
+                }
+
+                if (!totalClients) {
+                    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#8b8fa3; padding:16px;">Baholash ma'lumoti yo'q.</td></tr>`;
+                    return;
+                }
+
+                const ORDER = ['Micro', 'Small', 'Medium', 'Large', 'Heavy'];
+                const byName = {};
+                buckets.forEach(b => { byName[b.bucket] = b; });
+
+                let rows = ORDER.map(name => {
+                    const b = byName[name] || { clients: 0 };
+                    const n = b.clients || 0;
+                    const share = totalClients ? (n / totalClients * 100) : 0;
+                    const color = BUCKET_COLORS[name] || '#8b8fa3';
+                    const badge = `<span style="display:inline-block; font-size:11px; font-weight:600; color:${color}; background:${color}1f; padding:2px 8px; border-radius:8px; white-space:nowrap;">${name}</span>`;
+                    if (!n) {
+                        return `<tr>
+                            <td>${badge}</td>
+                            <td style="text-align:right; color:#8b8fa3;">0</td>
+                            <td style="text-align:right; color:#8b8fa3;">—</td>
+                            <td style="text-align:right; color:#3a3d4a;">—</td>
+                            <td style="text-align:right; color:#3a3d4a;">—</td>
+                            <td style="text-align:right; color:#3a3d4a;">—</td>
+                            <td style="text-align:right; color:#3a3d4a;">—</td>
+                        </tr>`;
+                    }
+                    const range = `$${fmt(Math.round(b.vol_min || 0))} – $${fmt(Math.round(b.vol_max || 0))}`;
+                    const avgScore = (b.avg_score === null || b.avg_score === undefined) ? '—' : b.avg_score.toFixed(0);
+                    return `<tr>
+                        <td>${badge}</td>
+                        <td style="text-align:right; font-weight:600;">${n}</td>
+                        <td style="text-align:right; color:#8b8fa3;">${share.toFixed(0)}%</td>
+                        <td style="text-align:right;">${range}</td>
+                        <td style="text-align:right;">$${fmt(Math.round(b.avg_vol_usd || 0))}</td>
+                        <td style="text-align:right;">$${fmt(Math.round(b.total_vol_usd || 0))}</td>
+                        <td style="text-align:right;">${avgScore}</td>
+                    </tr>`;
+                }).join('');
+
+                rows += `<tr style="border-top:1px solid #2a2d3a;">
+                    <td style="font-weight:700; color:#8b8fa3;">Σ</td>
+                    <td style="text-align:right; font-weight:700;">${totalClients}</td>
+                    <td style="text-align:right; color:#8b8fa3;">100%</td>
+                    <td style="text-align:right; color:#3a3d4a;">—</td>
+                    <td style="text-align:right; color:#3a3d4a;">—</td>
+                    <td style="text-align:right; font-weight:700;">$${fmt(Math.round(totalVol))}</td>
+                    <td style="text-align:right; color:#3a3d4a;">—</td>
+                </tr>`;
+
+                tbody.innerHTML = rows;
+            } catch (e) {
+                console.warn('client buckets load failed', e);
+                tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#8b8fa3; padding:16px;">Yuklab bo'lmadi.</td></tr>`;
+            }
+        }
+
+        // ==================== DEBT MANAGEMENT — receivables summary band ====================
+        // The Total Receivable KPI, Collection Rate Trend, Receivable Aging, and
+        // per-bucket breakdown live in the Debt tab but are normally populated by
+        // loadOverviewData (charts) + loadClientsData (KPI), which run for any
+        // viewer whose role includes those tabs. The full admin loads everything,
+        // so this is a no-op for them. It only does work when a role-scoped viewer
+        // has the 'debt' tab WITHOUT 'overview'/'clients' — keeping the band
+        // self-sufficient and avoiding a double-fetch for everyone else.
+        async function loadDebtSummary() {
+            const overviewLoads = (!ALLOWED_TABS) || ALLOWED_TABS.includes('overview');
+            const clientsLoads = (!ALLOWED_TABS) || ALLOWED_TABS.includes('clients');
+            if (!overviewLoads) {
+                if (!cachedWeekly) cachedWeekly = await apiCall('weekly-recap?weeks=13');
+                if (!cachedReceivables) cachedReceivables = await apiCall('receivables');
+                drawCollectionChart();
+                drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
+            }
+            if (!clientsLoads) {
+                const data = await apiCall('top-clients-weekly?weeks_back=1&limit=50');
+                const kpis = data.kpis || {};
+                const el = document.getElementById('kpi-total-receivable');
+                if (el) el.textContent = '$' + fmt(Math.round(kpis.total_receivable_usd_eq || 0));
+            }
         }
 
         async function showClientHistory(clientName) {
