@@ -34,6 +34,35 @@ def _latest_fxrate(conn, fallback: float = 12000.0) -> float:
 
 _AGING_BUCKETS_UZS = ("0_30", "31_60", "61_90", "91_120", "120_plus")
 
+# Proposal B client-size buckets (monthly USD volume) — the SOLE client-facing
+# bucketing scheme (see memory `bucketing_schemes`). Deliberately NOT the
+# Session-G thresholds stored in `client_scores.volume_bucket` (300/1500/5000/
+# 12000) — those are an internal credit_scoring.py detail. We re-classify each
+# debtor's `monthly_volume_usd` against these edges instead.
+_PROPOSAL_B_EDGES = (125.0, 621.0, 1721.0, 4120.0)
+_PROPOSAL_B_LABELS = ("Micro", "Small", "Medium", "Large", "Heavy")
+
+
+def _proposal_b_bucket(monthly_volume_usd):
+    """Map a monthly-volume USD figure to a Proposal B size bucket.
+
+    Returns None when the client has no score row at all (debtor not in
+    `client_scores`) — surfaced as 'Unscored' so it's never silently dropped.
+    A scored client with 0 volume is a real Micro client, not Unscored.
+    """
+    if monthly_volume_usd is None:
+        return None
+    v = float(monthly_volume_usd)
+    if v < _PROPOSAL_B_EDGES[0]:
+        return "Micro"
+    if v < _PROPOSAL_B_EDGES[1]:
+        return "Small"
+    if v < _PROPOSAL_B_EDGES[2]:
+        return "Medium"
+    if v < _PROPOSAL_B_EDGES[3]:
+        return "Large"
+    return "Heavy"
+
 
 @router.get("/receivables")
 def receivables(
@@ -267,6 +296,16 @@ def debtors_list(admin_key: str = Query(...)):
                   FROM client_callbacks
                  WHERE callback_date IS NOT NULL
                  GROUP BY client_name_1c
+            ),
+            latest_score AS (
+                -- Latest score row per client → monthly_volume_usd for the
+                -- Proposal B size bucket. We take only the volume; the stored
+                -- volume_bucket uses Session-G thresholds and is NOT used.
+                SELECT cs.client_id, cs.monthly_volume_usd
+                  FROM client_scores cs
+                  JOIN (SELECT client_id, MAX(recalc_date) AS md
+                          FROM client_scores GROUP BY client_id) m
+                    ON m.client_id = cs.client_id AND m.md = cs.recalc_date
             )
             -- Agent column is purely manual — sourced from
             -- allowed_clients.assigned_agent_tg_id only. No auto-derive
@@ -287,11 +326,13 @@ def debtors_list(admin_key: str = Query(...)):
                    ac.assigned_agent_set_at,
                    ac.assigned_agent_set_by_name,
                    ma.first_name AS assigned_agent_first_name,
-                   ma.last_name  AS assigned_agent_last_name
+                   ma.last_name  AS assigned_agent_last_name,
+                   ls.monthly_volume_usd AS monthly_volume_usd
               FROM client_debts cd
               LEFT JOIN last_pay lp ON lp.client_name_1c = cd.client_name_1c
               LEFT JOIN last_cb lcb ON lcb.client_name_1c = cd.client_name_1c
               LEFT JOIN cb_stats cbs ON cbs.client_name_1c = cd.client_name_1c
+              LEFT JOIN latest_score ls ON ls.client_id = cd.client_id
               LEFT JOIN allowed_clients ac ON ac.id = cd.client_id
               LEFT JOIN users ma ON ma.telegram_id = ac.assigned_agent_tg_id
               LEFT JOIN (
@@ -358,6 +399,8 @@ def debtors_list(admin_key: str = Query(...)):
         manual_first = (r["assigned_agent_first_name"] or "").strip()
         manual_last = (r["assigned_agent_last_name"] or "").strip()
         agent_name = " ".join(p for p in (manual_first, manual_last) if p) or None
+        monthly_volume_usd = r["monthly_volume_usd"]
+        size_bucket = _proposal_b_bucket(monthly_volume_usd)
         items.append({
             "client_name": r["client_name_1c"],
             "client_id": r["client_id"],
@@ -388,6 +431,10 @@ def debtors_list(admin_key: str = Query(...)):
                 "91_120": round(r["aging_91_120"] or 0, 2),
                 "120_plus": round(r["aging_120_plus"] or 0, 2),
             },
+            # Proposal B client-size bucket (re-classified from monthly_volume_usd;
+            # NOT the Session-G client_scores.volume_bucket). None → "Unscored".
+            "size_bucket": size_bucket,
+            "monthly_volume_usd": round(float(monthly_volume_usd), 2) if monthly_volume_usd is not None else None,
         })
 
     # Sort by combined USD-eq debt DESC

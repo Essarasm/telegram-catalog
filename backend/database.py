@@ -345,6 +345,35 @@ def init_db():
             snapshot_at TEXT DEFAULT (datetime('now'))
         );
 
+        -- Per-client debt history — append-only, one row per client per
+        -- /debtors snapshot date. client_debts itself is truncate-replace
+        -- (current state only); this table accumulates the per-client UZS+USD
+        -- balance + UZS aging over time so we can later (a) reconstruct USD
+        -- aging via balance-decay / FIFO and (b) back out the USD flow-vs-debt
+        -- divergence. Captured fresh from client_debts after each import (so
+        -- client_id reflects post-heal links). Idempotent per snapshot_date
+        -- (re-uploads replace that date only — never rewrites prior history).
+        -- USD has no 1C aging, so we store the USD total per client; aging_*
+        -- columns are UZS-only, mirroring the source.
+        CREATE TABLE IF NOT EXISTS client_debt_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT NOT NULL,
+            client_id INTEGER,
+            client_name_1c TEXT NOT NULL,
+            debt_uzs REAL DEFAULT 0,
+            debt_usd REAL DEFAULT 0,
+            aging_0_30 REAL DEFAULT 0,
+            aging_31_60 REAL DEFAULT 0,
+            aging_61_90 REAL DEFAULT 0,
+            aging_91_120 REAL DEFAULT 0,
+            aging_120_plus REAL DEFAULT 0,
+            last_transaction_date TEXT,
+            captured_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_cdh_date ON client_debt_history(snapshot_date);
+        CREATE INDEX IF NOT EXISTS idx_cdh_client ON client_debt_history(client_id);
+        CREATE INDEX IF NOT EXISTS idx_cdh_name ON client_debt_history(client_name_1c);
+
         -- Collection-attempt log: every dispatcher phone call to a debtor
         -- before/while a truck heads out. Snapshots debt + aging at call time
         -- so history survives later debt-table reimports.

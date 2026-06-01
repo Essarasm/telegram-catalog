@@ -321,6 +321,28 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
          age_0_30, age_31_60, age_61_90, age_91_120, age_120p),
     )
 
+    # Per-client debt history (append-only across the truncate-replace of
+    # client_debts). Copied straight from the just-loaded client_debts so
+    # client_id reflects post-heal links. Idempotent per snapshot_date — a
+    # re-upload for the same date replaces only that date's rows, never the
+    # accumulated history. This is the data the future USD-aging / divergence
+    # work reads (see Session X TODO: "USD flow-vs-debt divergence").
+    conn.execute(
+        "DELETE FROM client_debt_history WHERE snapshot_date = ?", (report_date,)
+    )
+    conn.execute(
+        """INSERT INTO client_debt_history
+           (snapshot_date, client_id, client_name_1c, debt_uzs, debt_usd,
+            aging_0_30, aging_31_60, aging_61_90, aging_91_120, aging_120_plus,
+            last_transaction_date)
+           SELECT report_date, client_id, client_name_1c, debt_uzs, debt_usd,
+                  aging_0_30, aging_31_60, aging_61_90, aging_91_120, aging_120_plus,
+                  last_transaction_date
+             FROM client_debts
+            WHERE report_date = ?""",
+        (report_date,),
+    )
+
     conn.commit()
     conn.close()
 
