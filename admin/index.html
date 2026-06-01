@@ -4994,9 +4994,15 @@
                           `<div style="margin-top:2px;"><span style="background:${color}; color:white; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600;">${aging} days</span></div>` +
                           `</div>`
                         : `<div style="margin-top:6px; color:#16a34a; font-size:11px;">✓ no outstanding debt</div>`;
+                    // JSON.stringify produces `"..."` with double quotes; the outer
+                    // onclick="..." attribute is also double-quoted, so HTML parser
+                    // terminates the attribute at the first inner quote. Encode `"` as
+                    // `&quot;` so the browser decodes back to a valid JS string literal
+                    // before clicking.
+                    const jArg = s => JSON.stringify(s || '').replace(/"/g, '&quot;');
                     const clearBtn =
                         `<button type="button" ` +
-                        `onclick="clearClientPin(${Number(p.client_id)}, ${JSON.stringify(p.client_label || '')}, ${p.lat}, ${p.lng}, ${JSON.stringify(p.agent_name || '')}, ${JSON.stringify(p.set_at || '')})" ` +
+                        `onclick="clearClientPin(${Number(p.client_id)}, ${jArg(p.client_label)}, ${p.lat}, ${p.lng}, ${jArg(p.agent_name)}, ${jArg(p.set_at)})" ` +
                         `style="margin-top:8px; padding:6px 10px; background:#dc2626; color:#fff; border:none; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; width:100%;">` +
                         `🗑 Clear this pin` +
                         `</button>`;
@@ -5109,9 +5115,13 @@
                     `<div style="font-weight:600;">Debt: ${fmtSomCompact(debt.debt_uzs)} UZS / $${(debt.debt_usd || 0).toFixed(0)}</div>` +
                     `<div style="margin-top:2px;"><span style="background:${color}; color:white; padding:2px 8px; border-radius:8px; font-size:10px; font-weight:600;">${aging} days</span></div>` +
                     `</div>`;
+                // See jArg note in renderCoverage — JSON.stringify double quotes
+                // conflict with the onclick="..." attribute quotes; encode `"` as
+                // `&quot;` so the eventual button onclick is a valid JS expression.
+                const jArg2 = s => JSON.stringify(s || '').replace(/"/g, '&quot;');
                 const clearBtn =
                     `<button type="button" ` +
-                    `onclick="clearClientPin(${Number(p.client_id)}, ${JSON.stringify(p.client_label || '')}, ${p.lat}, ${p.lng}, ${JSON.stringify(p.agent_name || '')}, ${JSON.stringify(p.set_at || '')})" ` +
+                    `onclick="clearClientPin(${Number(p.client_id)}, ${jArg2(p.client_label)}, ${p.lat}, ${p.lng}, ${jArg2(p.agent_name)}, ${jArg2(p.set_at)})" ` +
                     `style="margin-top:8px; padding:6px 10px; background:#dc2626; color:#fff; border:none; border-radius:4px; font-size:12px; font-weight:600; cursor:pointer; width:100%;">` +
                     `🗑 Clear this pin</button>`;
                 const popup =
