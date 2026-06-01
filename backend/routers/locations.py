@@ -9,17 +9,11 @@ Endpoints:
   GET /api/client-location       — get a client's saved location
   POST /api/client-location      — save/update a client's location
 """
-import os
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
 from backend.admin_auth import check_admin_key, resolve_auth
-
-
-def _admin_tg_ids() -> set[int]:
-    raw = os.getenv("ADMIN_IDS", "")
-    return {int(x.strip()) for x in raw.split(",") if x.strip().isdigit()}
 
 router = APIRouter(prefix="/api/locations", tags=["locations"])
 
@@ -125,7 +119,6 @@ def get_agent_heatmap(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     agent_tg_id: Optional[int] = Query(None),
-    include_admin_pins: bool = Query(False),
 ):
     """Admin: GPS points submitted by agents (or any role).
 
@@ -172,17 +165,6 @@ def get_agent_heatmap(
     if agent_tg_id is not None:
         where.append("ac.gps_set_by_tg_id = ?")
         params.append(agent_tg_id)
-
-    # Exclude admin/owner self-test pins from agent-coverage views by default
-    # (per session investigation 2026-05-31: owner pins inflate the coverage
-    # count without representing field activity). Pass include_admin_pins=true
-    # to inspect them.
-    if not include_admin_pins and role in ("agent", "all"):
-        admin_ids = _admin_tg_ids()
-        if admin_ids:
-            placeholders = ",".join("?" * len(admin_ids))
-            where.append(f"(ac.gps_set_by_tg_id IS NULL OR ac.gps_set_by_tg_id NOT IN ({placeholders}))")
-            params.extend(admin_ids)
 
     rows = conn.execute(
         f"""
@@ -489,20 +471,12 @@ def get_customer_coverage(
     # whose client_id_1c is NOT in the trade-active universe. Operationally
     # useful for ops: surfaces real dormancy + latent 1C-card-rename leaks
     # (where the field visit is real but the 1C invoices land under a new
-    # name). Excludes admin/owner self-test pins.
+    # name).
     dormant_rows: list = []
     if include_dormant:
-        admin_ids = _admin_tg_ids()
         not_in_active = "ac.client_id_1c IS NULL OR ac.client_id_1c NOT IN ({})".format(
             ",".join("?" * len(active_last))
         )
-        dormant_params: list = list(active_last.keys())
-        admin_filter_sql = ""
-        if admin_ids:
-            admin_filter_sql = " AND (ac.gps_set_by_tg_id IS NULL OR ac.gps_set_by_tg_id NOT IN ({}))".format(
-                ",".join("?" * len(admin_ids))
-            )
-            dormant_params.extend(admin_ids)
         dormant_rows = conn.execute(
             f"""
             SELECT ac.id, ac.client_id_1c, ac.name, ac.company_name, ac.phone_normalized,
@@ -515,9 +489,8 @@ def get_customer_coverage(
               AND COALESCE(ac.status, 'active') = 'active'
               AND ac.gps_set_by_role IN ('agent', 'driver')
               AND ({not_in_active})
-              {admin_filter_sql}
             """,
-            dormant_params,
+            list(active_last.keys()),
         ).fetchall()
 
     conn.close()
