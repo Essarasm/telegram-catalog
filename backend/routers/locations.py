@@ -9,11 +9,17 @@ Endpoints:
   GET /api/client-location       — get a client's saved location
   POST /api/client-location      — save/update a client's location
 """
+import os
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
 from backend.admin_auth import check_admin_key, resolve_auth
+
+
+def _admin_tg_ids() -> set[int]:
+    raw = os.getenv("ADMIN_IDS", "")
+    return {int(x.strip()) for x in raw.split(",") if x.strip().isdigit()}
 
 router = APIRouter(prefix="/api/locations", tags=["locations"])
 
@@ -119,6 +125,7 @@ def get_agent_heatmap(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     agent_tg_id: Optional[int] = Query(None),
+    include_admin_pins: bool = Query(False),
 ):
     """Admin: GPS points submitted by agents (or any role).
 
@@ -165,6 +172,17 @@ def get_agent_heatmap(
     if agent_tg_id is not None:
         where.append("ac.gps_set_by_tg_id = ?")
         params.append(agent_tg_id)
+
+    # Exclude admin/owner self-test pins from agent-coverage views by default
+    # (per session investigation 2026-05-31: owner pins inflate the coverage
+    # count without representing field activity). Pass include_admin_pins=true
+    # to inspect them.
+    if not include_admin_pins and role in ("agent", "all"):
+        admin_ids = _admin_tg_ids()
+        if admin_ids:
+            placeholders = ",".join("?" * len(admin_ids))
+            where.append(f"(ac.gps_set_by_tg_id IS NULL OR ac.gps_set_by_tg_id NOT IN ({placeholders}))")
+            params.extend(admin_ids)
 
     rows = conn.execute(
         f"""
@@ -373,7 +391,8 @@ def get_customer_coverage(
     since: Optional[str] = Query("2026-01-01", description="ISO date — trade-active cutoff"),
     bucket: Optional[str] = Query(None, description="Heavy/Large/Medium/Small/Micro — filter to one bucket"),
     day: Optional[str] = Query(None, description="Dushanba..Shanba or CITY/OUTSIDE — filter to one day"),
-    source: Optional[str] = Query(None, description="pinned/master — filter to one source"),
+    source: Optional[str] = Query(None, description="pinned/master/dormant — filter to one source"),
+    include_dormant: bool = Query(False, description="Include pinned-but-not-trading clients as location_source='dormant'"),
 ):
     """Return every trade-active client with: precise GPS pin OR master-inferred approximate location.
 
@@ -466,11 +485,46 @@ def get_customer_coverage(
         c1c = r["client_id_1c"]
         by_1c.setdefault(c1c, []).append(r)
 
+    # 3b) Optionally pull "lost" pinned clients — agent/driver pins on rows
+    # whose client_id_1c is NOT in the trade-active universe. Operationally
+    # useful for ops: surfaces real dormancy + latent 1C-card-rename leaks
+    # (where the field visit is real but the 1C invoices land under a new
+    # name). Excludes admin/owner self-test pins.
+    dormant_rows: list = []
+    if include_dormant:
+        admin_ids = _admin_tg_ids()
+        not_in_active = "ac.client_id_1c IS NULL OR ac.client_id_1c NOT IN ({})".format(
+            ",".join("?" * len(active_last))
+        )
+        dormant_params: list = list(active_last.keys())
+        admin_filter_sql = ""
+        if admin_ids:
+            admin_filter_sql = " AND (ac.gps_set_by_tg_id IS NULL OR ac.gps_set_by_tg_id NOT IN ({}))".format(
+                ",".join("?" * len(admin_ids))
+            )
+            dormant_params.extend(admin_ids)
+        dormant_rows = conn.execute(
+            f"""
+            SELECT ac.id, ac.client_id_1c, ac.name, ac.company_name, ac.phone_normalized,
+                   ac.gps_latitude, ac.gps_longitude, ac.gps_address, ac.gps_region, ac.gps_district,
+                   ac.gps_set_by_role, ac.gps_set_at, ac.gps_set_by_name, ac.gps_set_by_tg_id,
+                   ac.viloyat, ac.tuman, ac.moljal
+            FROM allowed_clients ac
+            WHERE ac.gps_latitude IS NOT NULL
+              AND ac.gps_longitude IS NOT NULL
+              AND COALESCE(ac.status, 'active') = 'active'
+              AND ac.gps_set_by_role IN ('agent', 'driver')
+              AND ({not_in_active})
+              {admin_filter_sql}
+            """,
+            dormant_params,
+        ).fetchall()
+
     conn.close()
 
     # 4) Pick representative + assign location/day/bucket
     clients = []
-    counts = {"pinned": 0, "master": 0, "unmapped": 0}
+    counts = {"pinned": 0, "master": 0, "unmapped": 0, "dormant": 0}
     tuman_agg: dict[str, dict] = {}
 
     for c1c, (last_date, last_kind) in active_last.items():
@@ -561,6 +615,40 @@ def get_customer_coverage(
         agg["monthly_usd"] += monthly_usd
         agg[bkt.lower()] += 1
 
+    # 4b) Append dormant pinned clients (location_source='dormant'). Skipped
+    # by tuman aggregation since they have no monthly_usd, but rendered on
+    # the map so ops can see the gap between agent coverage and trade activity.
+    for r in dormant_rows:
+        lat = float(r["gps_latitude"])
+        lng = float(r["gps_longitude"])
+        blob = " ".join(filter(None, [r["gps_district"], r["gps_address"], r["gps_region"]]))
+        day_key, matched_tuman = _assign_day_pinned(lat, lng, blob)
+        counts["dormant"] += 1
+        if bucket: continue  # dormant has no bucket
+        if day and day_key != day: continue
+        if source and source != "dormant": continue
+        clients.append({
+            "client_id_1c": r["client_id_1c"],
+            "name": r["name"] or "",
+            "phone": r["phone_normalized"],
+            "lat": lat,
+            "lng": lng,
+            "location_source": "dormant",
+            "day": day_key,
+            "matched_tuman": matched_tuman,
+            "bucket": None,
+            "monthly_usd": 0,
+            "last_trade_date": None,
+            "last_trade_kind": None,
+            "address": r["gps_address"],
+            "gps_district": r["gps_district"],
+            "master_viloyat": r["viloyat"] or "",
+            "master_tuman":   r["tuman"] or "",
+            "master_moljal":  r["moljal"] or "",
+            "pinned_by":      r["gps_set_by_name"],
+            "pinned_at":      r["gps_set_at"],
+        })
+
     tuman_list = sorted(tuman_agg.values(), key=lambda x: -x["monthly_usd"])
     for t in tuman_list:
         t["monthly_usd"] = round(t["monthly_usd"], 0)
@@ -572,10 +660,11 @@ def get_customer_coverage(
             "pinned": counts["pinned"],
             "master": counts["master"],
             "unmapped": counts["unmapped"],
+            "dormant": counts["dormant"],
             "shown": len(clients),
         },
         "tumans": tuman_list,
-        "filters": {"since": since, "bucket": bucket, "day": day, "source": source},
+        "filters": {"since": since, "bucket": bucket, "day": day, "source": source, "include_dormant": include_dormant},
     }
 
 

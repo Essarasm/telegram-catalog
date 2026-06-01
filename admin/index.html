@@ -1961,7 +1961,12 @@
                                 <option value="">Pinned + Master</option>
                                 <option value="pinned">GPS pinned only</option>
                                 <option value="master">Master-inferred only</option>
+                                <option value="dormant">Lost only (pinned, no 2026 trade)</option>
                             </select>
+                            <label style="display:flex; align-items:center; gap:6px; color:#e4e4e7; font-size:12px; cursor:pointer;">
+                                <input type="checkbox" id="customersDormant" onchange="loadCustomersData()" style="accent-color:#ef4444;">
+                                <span>Show lost</span>
+                            </label>
                         </div>
                     </div>
 
@@ -1981,6 +1986,8 @@
                         <span><span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:#888; margin-right:4px; vertical-align:middle;"></span>Medium</span>
                         <span><span style="display:inline-block; width:7px; height:7px; border-radius:50%; background:#888; margin-right:4px; vertical-align:middle;"></span>Small</span>
                         <span><span style="display:inline-block; width:5px; height:5px; border-radius:50%; background:#888; margin-right:4px; vertical-align:middle;"></span>Micro</span>
+                        <span style="margin-left:8px; color:#e4e4e7; font-weight:600;">Lost:</span>
+                        <span><span style="display:inline-block; width:14px; height:14px; border-radius:50%; border:3px solid #ef4444; background:transparent; margin-right:4px; vertical-align:middle;"></span>pinned, no 2026 trade</span>
                     </div>
 
                     <div class="kpi-grid">
@@ -1999,6 +2006,10 @@
                         <div class="kpi-card">
                             <div class="kpi-label">No location signal</div>
                             <div class="kpi-value" id="customers-kpi-unmapped" style="color:#f97316;">-</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-label">❌ Lost (pinned, no trade)</div>
+                            <div class="kpi-value" id="customers-kpi-dormant" style="color:#ef4444;">-</div>
                         </div>
                     </div>
 
@@ -5156,6 +5167,8 @@
         async function loadCustomersData() {
             try {
                 const params = new URLSearchParams({ admin_key: ADMIN_KEY, since: '2026-01-01' });
+                const showLost = document.getElementById('customersDormant');
+                if (showLost && showLost.checked) params.set('include_dormant', 'true');
                 const res = await fetch(`/api/locations/customer-coverage?${params.toString()}`);
                 if (!res.ok) throw new Error(`customer-coverage ${res.status}`);
                 customersData = await res.json();
@@ -5186,6 +5199,7 @@
             document.getElementById('customers-kpi-pinned').textContent = t.pinned ?? '-';
             document.getElementById('customers-kpi-master').textContent = t.master ?? '-';
             document.getElementById('customers-kpi-unmapped').textContent = t.unmapped ?? '-';
+            document.getElementById('customers-kpi-dormant').textContent = t.dormant ?? '-';
 
             // Clear old markers
             if (customersMarkerLayer) {
@@ -5196,26 +5210,41 @@
 
             pts.forEach(c => {
                 if (!c.lat || !c.lng) return;
-                const color = CUST_DAY_COLOR[c.day] || '#666';
-                const radius = CUST_BUCKET_RADIUS[c.bucket] || 6;
+                const dormant = c.location_source === 'dormant';
+                const color = dormant ? '#ef4444' : (CUST_DAY_COLOR[c.day] || '#666');
+                const radius = dormant ? 8 : (CUST_BUCKET_RADIUS[c.bucket] || 6);
                 const precise = c.location_source === 'pinned';
-                const opts = precise
-                    ? { radius, color, fillColor: color, fillOpacity: 0.85, weight: 2 }
-                    : { radius, color, fillColor: color, fillOpacity: 0.25, weight: 2, dashArray: '4,3' };
-                const popup =
-                    `<div style="font-size:13px; line-height:1.5; color:#222;">` +
-                    `<b>${escHtml(c.client_id_1c)}</b><br>` +
-                    (c.name ? `${escHtml(c.name)}<br>` : '') +
-                    `<span style="color:#c00; font-weight:600;">${c.bucket}</span>` +
-                    (c.monthly_usd ? ` · ~$${Math.round(c.monthly_usd)}/mo` : '') + `<br>` +
-                    `📞 ${escHtml(c.phone || '—')}<br>` +
-                    `${precise ? '📍 GPS pin' : '≈ Master tuman (approx)'}<br>` +
-                    `📍 ${escHtml(c.address || c.gps_district || c.master_tuman || '—')}` +
-                    (!precise && c.master_moljal ? ` → ${escHtml(c.master_moljal)}` : '') + `<br>` +
-                    `🗓 last trade ${escHtml(c.last_trade_date || '—')} (${escHtml(c.last_trade_kind || '')})<br>` +
-                    (precise && c.pinned_by ? `🧑 pinned by ${escHtml(c.pinned_by)}<br>` : '') +
-                    `➡️ <b>${escHtml(c.day)}</b> — ${escHtml(c.matched_tuman || '')}` +
-                    `</div>`;
+                let opts;
+                if (dormant) {
+                    opts = { radius, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 0.0, weight: 3 };
+                } else if (precise) {
+                    opts = { radius, color, fillColor: color, fillOpacity: 0.85, weight: 2 };
+                } else {
+                    opts = { radius, color, fillColor: color, fillOpacity: 0.25, weight: 2, dashArray: '4,3' };
+                }
+                const popup = dormant
+                    ? `<div style="font-size:13px; line-height:1.5; color:#222;">` +
+                      `<b>${escHtml(c.client_id_1c || c.name || '(no 1c)')}</b><br>` +
+                      `<span style="color:#ef4444; font-weight:600;">❌ LOST</span> — pinned but no 2026 trade<br>` +
+                      `📞 ${escHtml(c.phone || '—')}<br>` +
+                      `📍 ${escHtml(c.address || c.gps_district || '—')}<br>` +
+                      (c.master_tuman ? `Master: ${escHtml(c.master_tuman)}${c.master_moljal ? ' → ' + escHtml(c.master_moljal) : ''}<br>` : '') +
+                      (c.pinned_by ? `🧑 pinned by ${escHtml(c.pinned_by)}` : '') +
+                      (c.pinned_at ? ` on ${escHtml(c.pinned_at.slice(0, 10))}` : '') +
+                      `</div>`
+                    : `<div style="font-size:13px; line-height:1.5; color:#222;">` +
+                      `<b>${escHtml(c.client_id_1c)}</b><br>` +
+                      (c.name ? `${escHtml(c.name)}<br>` : '') +
+                      `<span style="color:#c00; font-weight:600;">${c.bucket}</span>` +
+                      (c.monthly_usd ? ` · ~$${Math.round(c.monthly_usd)}/mo` : '') + `<br>` +
+                      `📞 ${escHtml(c.phone || '—')}<br>` +
+                      `${precise ? '📍 GPS pin' : '≈ Master tuman (approx)'}<br>` +
+                      `📍 ${escHtml(c.address || c.gps_district || c.master_tuman || '—')}` +
+                      (!precise && c.master_moljal ? ` → ${escHtml(c.master_moljal)}` : '') + `<br>` +
+                      `🗓 last trade ${escHtml(c.last_trade_date || '—')} (${escHtml(c.last_trade_kind || '')})<br>` +
+                      (precise && c.pinned_by ? `🧑 pinned by ${escHtml(c.pinned_by)}<br>` : '') +
+                      `➡️ <b>${escHtml(c.day)}</b> — ${escHtml(c.matched_tuman || '')}` +
+                      `</div>`;
                 L.circleMarker([c.lat, c.lng], opts).bindPopup(popup).addTo(group);
             });
 
