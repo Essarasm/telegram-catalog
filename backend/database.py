@@ -99,7 +99,7 @@ def gather_sibling_phones(conn, client_id):
     return phones
 
 
-SCHEMA_VERSION = 19  # 2026-05-28: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
+SCHEMA_VERSION = 20  # 2026-06-01: v20 adds client_identity_drift_queue (#74 importer drift-guard hold table). Earlier: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
 
 
 def init_db():
@@ -2316,11 +2316,41 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pbi_product ON photo_batch_items(product_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pbi_status ON photo_batch_items(status)")
 
+    # v20 (2026-06-01): client_identity_drift_queue — the #74 importer
+    # drift-guard's hold table. import_clients writes a row here instead of
+    # silently rewriting client_id_1c when a phone/raqam-match upsert would
+    # change the name on a row carrying curated state (pin / credit / linked
+    # user). 1C can reassign a phone between exports (САРДОР Пищевой → Мурод
+    # ака Вокзал); the old upsert hijacked the curated row. Held rows await
+    # manual resolution; the consistency audit surfaces unresolved ones.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS client_identity_drift_queue (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            allowed_client_id     INTEGER NOT NULL,
+            phone_normalized      TEXT,
+            existing_client_id_1c TEXT,
+            incoming_client_id_1c TEXT,
+            incoming_name         TEXT,
+            curated_state         TEXT,
+            matched_via           TEXT,
+            detected_at           TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved              INTEGER NOT NULL DEFAULT 0,
+            resolution            TEXT,
+            resolved_at           TEXT,
+            resolved_by           TEXT,
+            FOREIGN KEY (allowed_client_id) REFERENCES allowed_clients(id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_cidq_unresolved "
+        "ON client_identity_drift_queue(resolved)"
+    )
+
     # Stamp schema version if newer
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "v19 = photo_batch_items — catalog-group /foto workflow tracking. Each row binds a Telegram message_id in the catalog group to a product_id awaiting a photo. Status transitions pending → photographed (Drive upload succeeded) or pending → skipped (employee tapped ⏭). drive_file_id captures the Google Drive destination for offline trimming. Earlier history: v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
+            (SCHEMA_VERSION, "v20 = client_identity_drift_queue — #74 importer drift-guard hold table; import_clients queues a phone-match upsert that would rewrite client_id_1c on a curated-state row instead of mutating it. Earlier: v19 = photo_batch_items (catalog /foto workflow); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
         )
 
     conn.commit()

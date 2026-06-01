@@ -5,6 +5,7 @@ Two-tier result:
   • whitelisted — already in allowed_clients, tap to link (fast path)
   • new_1c      — only in client_balances, needs allowed_clients insert first
 """
+import re
 import unicodedata
 from collections import OrderedDict
 from typing import Optional
@@ -20,6 +21,31 @@ from backend.routers.products import _trigram_similarity
 # Stricter than /api/products fallback (0.25). Typeahead fires after every
 # keystroke and the agent panel result set is small, so noise tolerance is low.
 CLIENT_FUZZY_MIN_SCORE = 0.45
+
+
+def client_display_label(client_id_1c, name):
+    """Picker label for a client row. Normally just ``client_id_1c``.
+
+    Error Log #74 (bot-search display sub-fix): when ``name`` and
+    ``client_id_1c`` are DRIFT-LIKE divergent — i.e. ``name`` is itself a
+    full multi-word entity name that shares NO token with ``client_id_1c``
+    (e.g. name='САРДОР Пищевой' vs client_id_1c='Мурод ака Вокзал') — show
+    both so an agent who searched by the other name still recognises the
+    match. Deliberately NOT triggered for the common benign case where
+    ``name`` is a single-word Telegram label (e.g. 'Abror' vs 'Аброр ЖУШ')
+    or a bracket/spelling variant that shares a token — those would be noise.
+    """
+    cid = (client_id_1c or "").strip()
+    nm = (name or "").strip()
+    if not cid:
+        return nm
+    if nm and nm.lower() != cid.lower() and " " in nm:
+        def _toks(s):
+            return set(re.sub(r"[^\w\s]", " ", s.lower()).split())
+        cid_toks, nm_toks = _toks(cid), _toks(nm)
+        if cid_toks and nm_toks and not (cid_toks & nm_toks):
+            return f"{cid} (sotuvchi: {nm})"
+    return cid
 
 
 def _normalize(q: str) -> str:

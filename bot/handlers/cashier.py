@@ -75,7 +75,7 @@ from backend.services.payment_intake import (
     retire_dedicated_card,
     format_card_number,
 )
-from backend.services.client_search import search_clients
+from backend.services.client_search import search_clients, client_display_label
 from bot.shared import is_admin, is_admin_cb
 
 logger = logging.getLogger(__name__)
@@ -1958,7 +1958,7 @@ async def direct_search_name(message: Message, state: FSMContext):
         return
     rows = []
     for c in whitelisted[:8]:
-        label = (c.get("client_id_1c") or c.get("name") or f"ID {c['id']}")[:55]
+        label = (client_display_label(c.get("client_id_1c"), c.get("name")) or f"ID {c['id']}")[:55]
         rows.append([InlineKeyboardButton(
             text=label,
             callback_data=f"cashier:pick_{c['id']}",

@@ -46,7 +46,7 @@ from aiogram.types import (
     Message,
 )
 
-from backend.services.client_search import search_clients
+from backend.services.client_search import search_clients, client_display_label
 from backend.services.notify_registration import _resolve_notification_chat_id
 from bot.shared import (
     get_db,
@@ -309,7 +309,7 @@ async def cb_link_entry(cb: CallbackQuery, state: FSMContext):
 
     if matched_row and len(matched_row) == 1:
         ac = matched_row[0]
-        c1c = ac["client_id_1c"] or ac["name"] or f"ID {ac['id']}"
+        c1c = client_display_label(ac["client_id_1c"], ac["name"]) or f"ID {ac['id']}"
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text=f"✅ Ha, bog'lash: {c1c[:40]}",

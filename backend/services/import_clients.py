@@ -103,10 +103,33 @@ def normalize_phone(raw: str) -> str:
     return digits[-9:] if len(digits) >= 9 else digits
 
 
+def _curated_state(conn, ac_id, gps_lat, credit_score, credit_limit):
+    """Return the list of curated-state markers present on an allowed_clients
+    row (pin / credit / linked user). Non-empty → the row is a #74 drift target
+    and its client_id_1c must not be silently rewritten on a phone-match upsert.
+    """
+    state = []
+    if gps_lat is not None:
+        state.append("gps")
+    if credit_score is not None:
+        state.append("credit_score")
+    if credit_limit is not None:
+        state.append("credit_limit")
+    if conn.execute(
+        "SELECT 1 FROM users WHERE client_id = ? LIMIT 1", (ac_id,)
+    ).fetchone():
+        state.append("linked_user")
+    return state
+
+
 def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
                             cid_1c, company, changed_by_tag):
     """Shared upsert used by both the bot path (apply_clients_upload) and the
-    CSV CLI path (import_clients). Returns ``("inserted"|"updated"|"skipped", existing_id_or_new)``.
+    CSV CLI path (import_clients). Returns ``("inserted"|"updated"|"skipped"|"drift_held", existing_id_or_new)``.
+
+    ``drift_held`` (Error Log #74): a phone/raqam match would have rewritten
+    ``client_id_1c`` on a curated-state row → held in
+    ``client_identity_drift_queue`` instead, row left untouched + needs_review=1.
 
     Handles 1C multi-phone cells: primary goes to ``phone_normalized``, extras
     fill ``raqam_02/03`` (fill-only — never overwrites a non-null existing slot).
@@ -133,15 +156,20 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
         cid_1c = client_name
 
     select_cols = ("id, phone_normalized, raqam_02, raqam_03, ism_02, ism_03, "
-                   "client_id_1c")
+                   "client_id_1c, gps_latitude, credit_score, credit_limit")
     not_merged = "COALESCE(status, 'active') NOT LIKE 'merged%'"
 
+    # Track which key matched the existing row — the #74 drift guard only fires
+    # on a phone/raqam match (a cid_1c match can't drift the name by definition).
+    match_via = None
     existing = conn.execute(
         f"SELECT {select_cols} FROM allowed_clients "
         f"WHERE phone_normalized = ? AND {not_merged} "
         f"ORDER BY id LIMIT 1",
         (primary,),
     ).fetchone()
+    if existing is not None:
+        match_via = "phone"
 
     if existing is None and cid_1c:
         existing = conn.execute(
@@ -150,6 +178,8 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
             f"ORDER BY id LIMIT 1",
             (cid_1c,),
         ).fetchone()
+        if existing is not None:
+            match_via = "cid_1c"
 
     if existing is None:
         existing = conn.execute(
@@ -158,10 +188,43 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
             f"ORDER BY id LIMIT 1",
             (primary, primary),
         ).fetchone()
+        if existing is not None:
+            match_via = "raqam"
 
     if existing is not None:
         (existing_id, existing_phone, existing_r02, existing_r03,
-         existing_i02, existing_i03, existing_cid) = existing
+         existing_i02, existing_i03, existing_cid,
+         existing_gps, existing_cs, existing_cl) = existing
+
+        # ── #74 IDENTITY-DRIFT GUARD ──────────────────────────────────────
+        # A phone/raqam match whose incoming client_id_1c differs from the
+        # existing row's, on a row carrying CURATED state (pin / credit /
+        # linked user), is identity drift — 1C reassigned a phone between
+        # exports and the old upsert would silently rewrite client_id_1c,
+        # hijacking that row's curated state (САРДОР Пищевой → Мурод ака
+        # Вокзал, Error Log #74). Hold it in client_identity_drift_queue for
+        # manual resolution instead of mutating the curated row. The queue
+        # row is the audit-first record (zero-data-loss rule).
+        if (match_via in ("phone", "raqam") and existing_cid and cid_1c
+                and existing_cid != cid_1c):
+            curated = _curated_state(conn, existing_id,
+                                     existing_gps, existing_cs, existing_cl)
+            if curated:
+                conn.execute(
+                    """INSERT INTO client_identity_drift_queue
+                         (allowed_client_id, phone_normalized,
+                          existing_client_id_1c, incoming_client_id_1c,
+                          incoming_name, curated_state, matched_via)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (existing_id, primary, existing_cid, cid_1c,
+                     client_name or "", ",".join(curated), match_via),
+                )
+                conn.execute(
+                    "UPDATE allowed_clients SET needs_review = 1 WHERE id = ?",
+                    (existing_id,),
+                )
+                return ("drift_held", existing_id)
+        # ──────────────────────────────────────────────────────────────────
         updates, params = [], []
         flag_needs_review = False
 
@@ -305,6 +368,7 @@ def import_clients():
     import csv
     rows_inserted = 0
     rows_updated = 0
+    rows_drift_held = 0
     seen_phones = set()
 
     with open(CLIENTS_FILE, "r", encoding="utf-8") as f:
@@ -330,6 +394,8 @@ def import_clients():
                 rows_inserted += 1
             elif outcome == "updated":
                 rows_updated += 1
+            elif outcome == "drift_held":
+                rows_drift_held += 1
 
     conn.commit()
     total = conn.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0]
@@ -364,7 +430,8 @@ def import_clients():
     conn.commit()
     conn.close()
 
-    print(f"[import_clients] Inserted {rows_inserted}, updated {rows_updated}. Total: {total}")
+    print(f"[import_clients] Inserted {rows_inserted}, updated {rows_updated}, "
+          f"drift-held {rows_drift_held}. Total: {total}")
     if approved_count:
         print(f"[import_clients] Retroactively approved {approved_count} existing users.")
     if any(orphans_healed.values()):
@@ -530,7 +597,7 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
     conn = sqlite3.connect(DATABASE_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
 
-    inserted = updated = skipped = 0
+    inserted = updated = skipped = drift_held = 0
     seen = set()
     for raw in rows:
         raw_phone_str = str(raw.get("phone") or "")
@@ -554,6 +621,8 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
             inserted += 1
         elif outcome == "updated":
             updated += 1
+        elif outcome == "drift_held":
+            drift_held += 1
         else:
             skipped += 1
 
@@ -573,6 +642,7 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
         "inserted": inserted,
         "updated": updated,
         "skipped": skipped,
+        "drift_held": drift_held,
         "total_clients": total,
         "orphans_healed": orphans_healed,
         "headers_seen": header_raw,

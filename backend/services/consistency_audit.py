@@ -296,25 +296,93 @@ def run_audit(fix: bool = False) -> dict:
                 "sample": [dict(r) for r in trend_drift[:5]],
             }
 
-        # 11. Fuzzy-duplicate allowed_clients — same client_id_1c modulo
-        # whitespace/case. Typically caused by manual entry drift or
-        # inconsistent 1C export spellings.
-        fuzzy_dups = conn.execute(
-            """SELECT LOWER(TRIM(client_id_1c)) AS norm,
-                      COUNT(*) AS n,
-                      GROUP_CONCAT(id || ':' || client_id_1c, ' | ') AS rows
+        # 11. Genuine duplicate allowed_clients rows — same client_id_1c AND a
+        # SHARED PHONE across ≥2 sibling rows. The shared phone is the only
+        # reliable signature of "one real person with two rows"; the merge
+        # tool resolves these.
+        #
+        # Definitive principle (Alisher + Ulugbek, 2026-06-01, Error Log #67):
+        # client_id_1c is a 1C *name label*, NOT a unique key. Many genuinely
+        # DIFFERENT shops legitimately share a name ("two shops literally next
+        # to each other"). A same-name cluster with all-distinct phones is
+        # therefore NOT a duplicate and must never be flagged — that was the
+        # 380-cluster daily false-alarm (audit also under-reported it: the old
+        # query's `count` was `len()` of a `LIMIT 20` fetch, Error Log #56).
+        #
+        # We cluster + phone-test in Python because SQLite's LOWER() is
+        # ASCII-only (won't lowercase Cyrillic) and the per-cluster phone
+        # cross-match isn't expressible cheaply in one SQL pass.
+        from collections import defaultdict
+
+        from backend.services.client_identity_reviewed import (
+            CONFIRMED_DISTINCT_SHARED_NAMES,
+            normalize_1c,
+        )
+
+        ac_rows = conn.execute(
+            """SELECT id, client_id_1c, phone_normalized, raqam_02, raqam_03
                FROM allowed_clients
                WHERE COALESCE(status, 'active') NOT LIKE 'merged%'
-                 AND client_id_1c IS NOT NULL AND client_id_1c != ''
-               GROUP BY LOWER(TRIM(client_id_1c))
-               HAVING COUNT(*) > 1
-               ORDER BY n DESC
-               LIMIT 20"""
+                 AND client_id_1c IS NOT NULL AND client_id_1c != ''"""
         ).fetchall()
-        if fuzzy_dups:
+        by_name: dict[str, list] = defaultdict(list)
+        for r in ac_rows:
+            by_name[normalize_1c(r["client_id_1c"])].append(r)
+
+        flagged = []
+        for norm, members in by_name.items():
+            if len(members) < 2:
+                continue
+            # Confirmed legitimate multi-shop name-collision — never flag.
+            if norm in CONFIRMED_DISTINCT_SHARED_NAMES:
+                continue
+            # Phone cross-match: does any phone appear on >1 sibling row?
+            owners: dict[str, set] = defaultdict(set)
+            for m in members:
+                for ph in (m["phone_normalized"], m["raqam_02"], m["raqam_03"]):
+                    ph = (str(ph).strip() if ph is not None else "")
+                    if ph:
+                        owners[ph].add(m["id"])
+            if any(len(ids) >= 2 for ids in owners.values()):
+                flagged.append((norm, members))
+
+        if flagged:
+            flagged.sort(key=lambda x: -len(x[1]))
             result["fuzzy_client_1c_dups"] = {
-                "count": len(fuzzy_dups),
-                "sample": [dict(r) for r in fuzzy_dups[:5]],
+                "count": len(flagged),  # TRUE count (no LIMIT cap — Error Log #56)
+                "sample": [
+                    {
+                        "norm": norm,
+                        "n": len(members),
+                        "rows": " | ".join(
+                            f"{m['id']}:{m['client_id_1c']}" for m in members[:4]
+                        ),
+                    }
+                    for norm, members in flagged[:5]
+                ],
+            }
+
+        # 12. Identity-drift holds awaiting manual resolution (#74). The
+        # import_clients drift-guard parks phone-match upserts that would
+        # rewrite client_id_1c on a curated-state row. Unresolved rows here
+        # mean a real client's daily 1C row is being held out — needs a human
+        # to accept the rename or keep the existing identity. Table may not
+        # exist on a not-yet-migrated DB, so guard the query.
+        try:
+            held = conn.execute(
+                """SELECT allowed_client_id, existing_client_id_1c,
+                          incoming_client_id_1c, curated_state
+                   FROM client_identity_drift_queue
+                   WHERE resolved = 0
+                   ORDER BY detected_at DESC
+                   LIMIT 20"""
+            ).fetchall()
+        except Exception:
+            held = []
+        if held:
+            result["identity_drift_held"] = {
+                "count": len(held),
+                "sample": [dict(r) for r in held[:5]],
             }
 
     finally:
@@ -340,6 +408,7 @@ SEVERITY_THRESHOLDS = {
     "debt_usd_coverage_zero":   (1, 1),    # schema-drift class, always critical
     "trend_currency_drift":     (5, 1),
     "fuzzy_client_1c_dups":     (10, 1),
+    "identity_drift_held":      (5, 1),    # #74 — any held drift needs a human
     # Informational only — never critical
     "recent_phone_changes_7d":  (None, None),
 }
@@ -450,7 +519,8 @@ def format_audit_message(findings: dict, prior_findings: dict | None = None) -> 
         "tombstoned_fk_pointers":  "💀 Tombstone'ga ko'rsatuvchi finance qatorlari (merged_into rowga FK)",
         "debt_usd_coverage_zero":  "💵 client_debts: USD butunlay yo'q (В Валюте column?)",
         "trend_currency_drift":    "📉 Cabinet trend: valyuta yo'qoldi (oldin bor edi, oxirgi 6 oyda yo'q)",
-        "fuzzy_client_1c_dups":    "👥 client_id_1c dublikat (case/whitespace)",
+        "fuzzy_client_1c_dups":    "👥 client_id_1c dublikat (bir xil telefon — birlashtirish kerak)",
+        "identity_drift_held":     "🛑 Identity drift ushlab turilibdi (1C nomi o'zgargan — qo'lda hal qiling)",
     }
 
     # Group findings by severity. Render CRITICAL first so the most

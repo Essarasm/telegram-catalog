@@ -38,7 +38,7 @@ from aiogram.types import (
 from bot.shared import get_db, html_escape, DRIVER_GROUP_CHAT_ID
 from bot.handlers.location import _audit_insert, _audit_finalize, _reverse_geocode
 from bot.handlers.location_decisions import dispatch_location_decision
-from backend.services.client_search import search_clients
+from backend.services.client_search import search_clients, client_display_label
 from backend.services.location_compare import evaluate_location_conflict
 from backend.services.location_display import backfill_text_from_gps
 
@@ -179,7 +179,7 @@ async def client_search_text(message: Message, state: FSMContext):
         return
     rows = []
     for c in whitelisted[:8]:
-        label = (c.get("client_id_1c") or c.get("name") or f"ID {c['id']}")[:55]
+        label = (client_display_label(c.get("client_id_1c"), c.get("name")) or f"ID {c['id']}")[:55]
         rows.append([InlineKeyboardButton(
             text=label,
             callback_data=f"driver:pick_{c['id']}",

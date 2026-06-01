@@ -56,7 +56,7 @@ from backend.services.payment_intake import (
     admin_cancel_payment,
     resolve_client_telegram_ids,
 )
-from backend.services.client_search import search_clients
+from backend.services.client_search import search_clients, client_display_label
 
 logger = logging.getLogger(__name__)
 router = Router(name="bank_transfer")
@@ -270,7 +270,7 @@ async def search_name(message: Message, state: FSMContext):
         return
     rows = []
     for c in whitelisted[:8]:
-        label = (c.get("client_id_1c") or c.get("name") or f"ID {c['id']}")[:55]
+        label = (client_display_label(c.get("client_id_1c"), c.get("name")) or f"ID {c['id']}")[:55]
         rows.append([InlineKeyboardButton(
             text=label,
             callback_data=f"bt:pick_{c['id']}",

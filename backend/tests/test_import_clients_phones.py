@@ -122,7 +122,26 @@ def conn():
             status TEXT DEFAULT 'active',
             needs_review INTEGER DEFAULT 0,
             raqam_02 TEXT, ism_02 TEXT,
-            raqam_03 TEXT, ism_03 TEXT
+            raqam_03 TEXT, ism_03 TEXT,
+            gps_latitude REAL, credit_score INTEGER, credit_limit REAL
+        )
+    """)
+    # users + drift queue: the #74 guard's _curated_state() reads users and
+    # the upsert writes held rows to client_identity_drift_queue.
+    c.execute("CREATE TABLE users (telegram_id INTEGER PRIMARY KEY, client_id INTEGER)")
+    c.execute("""
+        CREATE TABLE client_identity_drift_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            allowed_client_id INTEGER NOT NULL,
+            phone_normalized TEXT,
+            existing_client_id_1c TEXT,
+            incoming_client_id_1c TEXT,
+            incoming_name TEXT,
+            curated_state TEXT,
+            matched_via TEXT,
+            detected_at TEXT DEFAULT (datetime('now')),
+            resolved INTEGER DEFAULT 0,
+            resolution TEXT, resolved_at TEXT, resolved_by TEXT
         )
     """)
     c.execute("""

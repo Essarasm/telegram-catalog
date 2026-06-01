@@ -433,9 +433,48 @@ def main() -> int:
     print("=" * 80)
     print()
 
+    # Safety gates (Error Log #75): client_id_1c is a non-unique NAME, so a
+    # same-name cluster is only a real duplicate when its rows SHARE A PHONE.
+    # Different-phone clusters are legitimate "two shops, same name" and must
+    # NOT be merged. Confirmed-distinct names are hard-excluded; human-confirmed
+    # same-shop names (e.g. Фуркат, which has no shared phone) bypass the phone
+    # gate. Mirrors backend/services/consistency_audit.fuzzy_client_1c_dups.
+    from backend.services.client_identity_reviewed import (
+        CONFIRMED_DISTINCT_SHARED_NAMES,
+        CONFIRMED_SAME_SHOP,
+        normalize_1c,
+    )
+
+    def _one_phone_component(rows):
+        # True iff every row links into ONE connected component via a shared
+        # phone (union-find). Merging the whole cluster is only safe when it's
+        # a single entity — a cluster with a phone-isolated row (e.g. a
+        # separately-registered shop that happens to share the name) or two
+        # disjoint phone groups must NOT be collapsed into one canonical.
+        parent = {r["id"]: r["id"] for r in rows}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        phone_row = {}
+        for r in rows:
+            for col in ("phone_normalized", "raqam_02", "raqam_03"):
+                ph = (str(r[col]).strip() if r[col] is not None else "")
+                if not ph:
+                    continue
+                if ph in phone_row:
+                    parent[find(r["id"])] = find(phone_row[ph])
+                else:
+                    phone_row[ph] = r["id"]
+        return len({find(r["id"]) for r in rows}) == 1
+
     summary = {"merged": 0, "would_merge": 0,
                "flag_gps_conflict": 0, "flag_no_1c_source": 0,
-               "apply_failed": 0}
+               "apply_failed": 0,
+               "skip_confirmed_distinct": 0, "skip_not_one_entity": 0}
     flagged_details = []
 
     for c in clusters:
@@ -446,6 +485,15 @@ def main() -> int:
               AND COALESCE(status, 'active') = 'active'
             ORDER BY id
         """, (cid_1c,)).fetchall()
+
+        # --- genuine-duplicate gates ---
+        norm = normalize_1c(cid_1c)
+        if norm in CONFIRMED_DISTINCT_SHARED_NAMES:
+            summary["skip_confirmed_distinct"] += 1
+            continue
+        if norm not in CONFIRMED_SAME_SHOP and not _one_phone_component(rows):
+            summary["skip_not_one_entity"] += 1
+            continue
 
         result = merge_cluster(conn, cid_1c, rows, fk_refs, args.apply)
         summary[result["status"]] = summary.get(result["status"], 0) + 1
