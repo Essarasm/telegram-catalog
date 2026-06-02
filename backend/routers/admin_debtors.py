@@ -23,6 +23,23 @@ def _check_admin(admin_key: str):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _check_admin_or_agent(admin_key: str) -> dict:
+    """Allow admin OR agent role; return the resolved auth dict.
+
+    The debtors list + callback comment/history are visible to agents so they
+    can follow up on debtors and leave comments under their own name (captured
+    from their dashboard session identity). Assignment changes stay admin-only.
+    Note: the env-var admin key resolves to role='admin' (name=None → 'admin'),
+    so the shared-link path is unaffected.
+    """
+    from backend.admin_auth import resolve_auth
+
+    auth = resolve_auth(admin_key)
+    if not auth or auth.get("role") not in ("admin", "agent"):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return auth
+
+
 def _latest_fxrate(conn, fallback: float = 12000.0) -> float:
     row = conn.execute(
         """SELECT rate FROM daily_fx_rates
@@ -234,7 +251,7 @@ def debtors_list(admin_key: str = Query(...)):
         sql_exclusion_clause, sql_exclusion_params,
     )
 
-    _check_admin(admin_key)
+    _check_admin_or_agent(admin_key)
     conn = get_db()
 
     report_date = conn.execute(
@@ -321,6 +338,8 @@ def debtors_list(admin_key: str = Query(...)):
                    lcb.set_at AS callback_set_at, lcb.note AS callback_note,
                    cbs.cb_date_count AS cb_date_count,
                    ac.phone_normalized AS anchor_phone,
+                   ac.raqam_02 AS anchor_raqam_02,
+                   ac.raqam_03 AS anchor_raqam_03,
                    sib.phones AS sibling_phones,
                    ac.assigned_agent_tg_id,
                    ac.assigned_agent_set_at,
@@ -336,12 +355,30 @@ def debtors_list(admin_key: str = Query(...)):
               LEFT JOIN allowed_clients ac ON ac.id = cd.client_id
               LEFT JOIN users ma ON ma.telegram_id = ac.assigned_agent_tg_id
               LEFT JOIN (
+                  -- All phone slots (primary + raqam_02/raqam_03) across every
+                  -- sibling row sharing a client_id_1c. The merge tool parks a
+                  -- client's second number in raqam_02/03, so a primary-only
+                  -- read goes blind to it (Error Log #64 family). UNION dedupes
+                  -- across both columns and sibling rows.
                   SELECT client_id_1c,
-                         GROUP_CONCAT(DISTINCT phone_normalized) AS phones
-                    FROM allowed_clients
-                   WHERE phone_normalized IS NOT NULL
-                     AND phone_normalized != ''
-                     AND client_id_1c IS NOT NULL
+                         GROUP_CONCAT(phone) AS phones
+                    FROM (
+                        SELECT client_id_1c, phone_normalized AS phone
+                          FROM allowed_clients
+                         WHERE phone_normalized IS NOT NULL
+                           AND phone_normalized != ''
+                           AND client_id_1c IS NOT NULL
+                        UNION
+                        SELECT client_id_1c, raqam_02
+                          FROM allowed_clients
+                         WHERE raqam_02 IS NOT NULL AND raqam_02 != ''
+                           AND client_id_1c IS NOT NULL
+                        UNION
+                        SELECT client_id_1c, raqam_03
+                          FROM allowed_clients
+                         WHERE raqam_03 IS NOT NULL AND raqam_03 != ''
+                           AND client_id_1c IS NOT NULL
+                    )
                    GROUP BY client_id_1c
               ) sib ON sib.client_id_1c = ac.client_id_1c
              WHERE cd.report_date = ?
@@ -391,7 +428,10 @@ def debtors_list(admin_key: str = Query(...)):
         # Phones: sibling group via shared client_id_1c if available, else
         # fall back to the anchor row's own phone. Keep digits-only —
         # frontend prefixes +998 for tel: links + display formatting.
-        phones_raw = r["sibling_phones"] or r["anchor_phone"] or ""
+        phones_raw = r["sibling_phones"] or ",".join(
+            p for p in (r["anchor_phone"], r["anchor_raqam_02"],
+                        r["anchor_raqam_03"]) if p
+        ) or ""
         phones = sorted({
             p.strip() for p in str(phones_raw).split(",")
             if p and p.strip()
@@ -566,16 +606,16 @@ def debtors_callback_set(
     Passing `callback_date=""` (or omitting it) records an explicit clear
     so the audit trail captures who cleared and when.
 
-    Admin role only — captures `set_by_telegram_id` + `set_by_name` from
+    Admin or agent role — captures `set_by_telegram_id` + `set_by_name` from
     the dashboard session so the next employee can see who scheduled the
-    callback. The env-var admin path (no session identity) records
-    `set_by_name='admin'`; use the bot's /dashboard button for full
-    attribution.
+    callback / left the comment. The env-var admin path (no session identity)
+    records `set_by_name='admin'`; agents and admins who open the dashboard via
+    the bot's /dashboard button get full name attribution.
     """
     from backend.admin_auth import resolve_auth
 
     auth = resolve_auth(admin_key)
-    if not auth or auth.get("role") != "admin":
+    if not auth or auth.get("role") not in ("admin", "agent"):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     name = (client_name_1c or "").strip()
@@ -626,7 +666,7 @@ def debtors_callback_history(
     limit: int = Query(20, ge=1, le=200),
 ):
     """Per-client callback history (newest first). Read-only audit view."""
-    _check_admin(admin_key)
+    _check_admin_or_agent(admin_key)
     conn = get_db()
     rows = conn.execute(
         """SELECT id, callback_date, set_by_name, set_by_telegram_id, set_at, note
