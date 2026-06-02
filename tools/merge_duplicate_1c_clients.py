@@ -64,7 +64,10 @@ FILL_ONLY_COLUMNS = [
     "name", "location", "notes", "company_name",
     # Master-owned soft fields (per memory feedback_master_fill_only)
     "segment", "hajm", "mijoz_holati", "eslatmalar",
-    "ism_02", "ism_03",   # secondary/tertiary contact names
+    # NOTE: ism_02/ism_03 are deliberately NOT here — they are paired with
+    # raqam_02/raqam_03 and owned solely by plan_phone_slots(), which keeps the
+    # number and its contact-name together. Filling them independently here
+    # decoupled name from number (Error Log #77).
     "viloyat", "tuman", "moljal",
     # Structured location
     "location_district_id", "location_moljal_id",
@@ -161,44 +164,60 @@ def detect_gps_conflict(canonical: sqlite3.Row,
     return None
 
 
-def plan_phone_slot_moves(canonical: sqlite3.Row,
-                          non_canon_rows: list[sqlite3.Row]) -> tuple[list[tuple[str, str, str]], bool]:
-    """Plan moves of phone numbers from non-canonical rows into canonical's
-    empty raqam_02/raqam_03 slots. Returns (moves, overflow):
-    - moves: list of (target_phone_col, phone, name)
-    - overflow: True if any phone couldn't fit (needs_review will be set)
+def _norm_phone(v) -> str:
+    """Whitespace-normalized phone string for dedupe comparison."""
+    return str(v).strip() if v is not None else ""
+
+
+def plan_phone_slots(canonical: sqlite3.Row,
+                     non_canon_rows: list[sqlite3.Row]
+                     ) -> tuple[dict, bool, list]:
+    """Compute the canonical row's FINAL secondary-phone slots after merge.
+
+    Collects every distinct phone across the canonical row's own secondary
+    slots + all non-canonical rows (primary + secondaries), EXCLUDING the
+    canonical primary (phone_normalized), preserving order (canonical's own
+    secondaries first, then non-canonical by row order). The first two distinct
+    numbers fill raqam_02 / raqam_03; >2 sets overflow.
+
+    Returns (assignments, overflow, dropped):
+    - assignments: {raqam_col: (phone, name)} for slots that should hold a value
+    - overflow:    True if >2 distinct secondaries (excess dropped → needs_review)
+    - dropped:     phones that didn't fit
+
+    Slots NOT in `assignments` must be CLEARED (set NULL) by the caller — this
+    is what removes a stale `raqam_02 == primary` duplicate left by older runs,
+    and reclaims the slot for a genuinely distinct second number. Two prior
+    defects this replaces (Error Log #77): (a) the old planner only filled
+    *empty* slots, so a primary-dup blocked promotion forever (the
+    `phone_moves_count: 0` symptom); (b) it could leave a number == primary in a
+    slot.
     """
-    moves = []
-    overflow = False
-    # Track what's already in canonical's slots + its primary phone
-    occupied_phones = {canonical["phone_normalized"]}
-    free_slots = []
-    for raqam_col, ism_col in PHONE_SLOT_COLUMNS:
-        if canonical[raqam_col]:
-            occupied_phones.add(canonical[raqam_col])
-        else:
-            free_slots.append((raqam_col, ism_col))
+    primary = _norm_phone(canonical["phone_normalized"])
+    seen = set()
+    if primary:
+        seen.add(primary)
+    ordered: list[tuple[str, Optional[str]]] = []  # (phone, name)
 
-    # Gather all non-canonical phones (primary + secondaries) to migrate.
-    # Each phone paired with the name field that owns it on the non-canonical row.
-    candidate_phones = []
+    def consider(phone, name):
+        p = _norm_phone(phone)
+        if p and p not in seen:
+            seen.add(p)
+            ordered.append((p, (name or "").strip() or None))
+
+    # Canonical's own secondaries first — preserve genuine ones, skip primary-dups.
+    consider(canonical["raqam_02"], canonical["ism_02"])
+    consider(canonical["raqam_03"], canonical["ism_03"])
+    # Then every non-canonical phone, paired with its owning name field.
     for r in non_canon_rows:
-        for phone_col, name_col in [("phone_normalized", "name"),
-                                     ("raqam_02", "ism_02"),
-                                     ("raqam_03", "ism_03")]:
-            ph = r[phone_col]
-            if ph and ph not in occupied_phones:
-                candidate_phones.append((ph, r[name_col] or ""))
-                occupied_phones.add(ph)
+        consider(r["phone_normalized"], r["name"])
+        consider(r["raqam_02"], r["ism_02"])
+        consider(r["raqam_03"], r["ism_03"])
 
-    for ph, nm in candidate_phones:
-        if free_slots:
-            raqam_col, ism_col = free_slots.pop(0)
-            moves.append((raqam_col, ph, nm))
-        else:
-            overflow = True
-            break  # Stop — remaining phones won't fit either
-    return moves, overflow
+    slot_cols = [c for c, _ in PHONE_SLOT_COLUMNS]  # ["raqam_02", "raqam_03"]
+    assignments = {col: (ph, nm) for col, (ph, nm) in zip(slot_cols, ordered)}
+    dropped = [p for p, _ in ordered[len(slot_cols):]]
+    return assignments, bool(dropped), dropped
 
 
 def plan_fill_only_copies(canonical: sqlite3.Row,
@@ -246,7 +265,7 @@ def merge_cluster(conn: sqlite3.Connection, cluster_1c: str,
 
     # Plan the moves
     fill_plan = plan_fill_only_copies(canonical, non_canon)
-    phone_moves, phone_overflow = plan_phone_slot_moves(canonical, non_canon)
+    phone_slots, phone_overflow, phone_dropped = plan_phone_slots(canonical, non_canon)
 
     # Count FK rows that will be remapped per table
     non_canon_ids = [r["id"] for r in non_canon]
@@ -270,8 +289,9 @@ def merge_cluster(conn: sqlite3.Connection, cluster_1c: str,
             "canonical_id": canonical["id"],
             "non_canon_ids": non_canon_ids,
             "fill_plan": fill_plan,
-            "phone_moves": phone_moves,
+            "phone_slots": phone_slots,
             "phone_overflow": phone_overflow,
+            "phone_dropped": phone_dropped,
             "fk_updates": fk_updates,
             "total_fk_rows": total_fk_rows,
         }
@@ -287,14 +307,25 @@ def merge_cluster(conn: sqlite3.Connection, cluster_1c: str,
                 (val, canonical["id"]),
             )
 
-        # 2. Phone slot moves
-        for raqam_col, phone, name in phone_moves:
+        # 2. Phone slots — write the FULL computed secondary state. Each slot is
+        # either set to its assigned (number, name) pair or cleared to NULL.
+        # Clearing is what removes a stale raqam_02==primary duplicate and frees
+        # the slot for a genuinely distinct second number (Error Log #77).
+        for raqam_col, _ism in PHONE_SLOT_COLUMNS:
             ism_col = raqam_col.replace("raqam_", "ism_")
-            conn.execute(
-                f"UPDATE allowed_clients SET {raqam_col} = ?, {ism_col} = ? "
-                f"WHERE id = ?",
-                (phone, name, canonical["id"]),
-            )
+            if raqam_col in phone_slots:
+                phone, name = phone_slots[raqam_col]
+                conn.execute(
+                    f"UPDATE allowed_clients SET {raqam_col} = ?, {ism_col} = ? "
+                    f"WHERE id = ?",
+                    (phone, name, canonical["id"]),
+                )
+            else:
+                conn.execute(
+                    f"UPDATE allowed_clients SET {raqam_col} = NULL, "
+                    f"{ism_col} = NULL WHERE id = ?",
+                    (canonical["id"],),
+                )
 
         # 3. needs_review flag if any phone overflowed
         if phone_overflow:
@@ -347,8 +378,9 @@ def merge_cluster(conn: sqlite3.Connection, cluster_1c: str,
             "canonical_id": canonical["id"],
             "merged_ids": non_canon_ids,
             "fill_plan_columns": list(fill_plan.keys()),
-            "phone_moves_count": len(phone_moves),
+            "phone_slot_count": len(phone_slots),
             "phone_overflow": phone_overflow,
+            "phone_dropped": phone_dropped,
             "fk_update_count": sum(cnt for _, _, cnt in fk_updates),
         }, ensure_ascii=False)
         conn.execute(
@@ -374,8 +406,9 @@ def merge_cluster(conn: sqlite3.Connection, cluster_1c: str,
         "canonical_id": canonical["id"],
         "non_canon_ids": non_canon_ids,
         "fill_plan": fill_plan,
-        "phone_moves": phone_moves,
+        "phone_slots": phone_slots,
         "phone_overflow": phone_overflow,
+        "phone_dropped": phone_dropped,
         "fk_updates": fk_updates,
         "total_fk_rows": total_fk_rows,
     }
@@ -509,11 +542,12 @@ def main() -> int:
             if result["fill_plan"]:
                 print(f"   → fill-only copies: "
                       f"{', '.join(f'{k}<-id{v[1]}' for k,v in result['fill_plan'].items())}")
-            if result["phone_moves"]:
-                print(f"   → phone slot moves: "
-                      f"{', '.join(f'{p}→{c}' for c,p,_ in result['phone_moves'])}")
+            if result["phone_slots"]:
+                print(f"   → phone slots: "
+                      f"{', '.join(f'{c}={ph}' for c,(ph,_) in result['phone_slots'].items())}")
             if result["phone_overflow"]:
-                print(f"   → phone OVERFLOW: needs_review will be set on canonical")
+                print(f"   → phone OVERFLOW (dropped {len(result['phone_dropped'])}): "
+                      f"needs_review will be set on canonical")
             if result["fk_updates"]:
                 fk_summary = ", ".join(f"{t}.{c}={n}" for t, c, n in result["fk_updates"])
                 print(f"   → FK updates: {fk_summary} (total {result['total_fk_rows']} rows)")
