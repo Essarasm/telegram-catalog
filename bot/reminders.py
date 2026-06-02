@@ -934,6 +934,7 @@ async def _run_payment_reconciler(bot, target_chat_id: int) -> None:
     from backend.services.payment_reconciler import (
         reconcile_payments,
         get_yesterday_client_totals,
+        find_unrecorded_discounts,
     )
     from bot.shared import html_escape
 
@@ -941,6 +942,7 @@ async def _run_payment_reconciler(bot, target_chat_id: int) -> None:
     try:
         summary = reconcile_payments(conn, lookback_days=30)
         detail = get_yesterday_client_totals(conn, summary["reconcile_date"])
+        unrecorded = find_unrecorded_discounts(conn, summary["reconcile_date"])
     except Exception as e:
         logger.exception("payment_reconciler failed: %s", e)
         try:
@@ -963,7 +965,10 @@ async def _run_payment_reconciler(bot, target_chat_id: int) -> None:
     matched_clients = detail["matched_clients"]
     mismatched = detail["mismatched"]
     orphans = detail["orphan_onec_rows"]
-    clean = not mismatched and not orphans
+    discounts = detail.get("discounts", [])
+    # Unrecorded discounts are an issue (Alisher forgot to book it); 1C-only
+    # discounts that ARE booked are just info and don't break "clean".
+    clean = not mismatched and not orphans and not unrecorded
 
     fx_note = (
         f"FX (kecha): <b>{_fmt_uzs(fx_rate)}</b> so'm/$"
@@ -985,6 +990,8 @@ async def _run_payment_reconciler(bot, target_chat_id: int) -> None:
             bits.append(f"⚠️ Farq: <b>{len(mismatched)}</b> mijoz")
         if orphans:
             bits.append(f"❓ 1C-da ulanmagan: <b>{len(orphans)}</b>")
+        if unrecorded:
+            bits.append(f"💸 Kiritilmagan chegirma: <b>{len(unrecorded)}</b>")
         lines.append(" · ".join(bits))
 
     def _fmt_amt(amount: float, currency: str) -> str:
@@ -1036,6 +1043,42 @@ async def _run_payment_reconciler(bot, target_chat_id: int) -> None:
             client = html_escape(r["client_name_1c"] or "?")
             doc = html_escape(r["doc_no"] or "")
             lines.append(f"• {client} — {_fmt_onec_amt(r)} (1C #{doc})")
+
+    # Part B — real-order discounts Alisher hasn't booked into 1C касса.
+    if unrecorded:
+        lines.append("")
+        lines.append(
+            "💸 <b>Chegirma 1C ga kiritilmagan</b> "
+            "(real orderda bor, kassada yo'q):"
+        )
+        for u in unrecorded[:15]:
+            client = html_escape(u["client"] or "?")
+            if u["amount"] is not None:
+                amt = (
+                    f"${_fmt_usd(u['amount'])}" if u["currency"] == "USD"
+                    else f"{_fmt_uzs(u['amount'])} so'm"
+                )
+            else:
+                amt = html_escape((u["comment"] or "").strip()[:40])
+            age = u["age_days"]
+            age_txt = "bugun" if age <= 0 else f"{age} kun"
+            lines.append(f"• {client} — {amt}  <i>({age_txt})</i>")
+        if len(unrecorded) > 15:
+            lines.append(f"  …va yana {len(unrecorded) - 15} ta")
+
+    # Part A — 1C-only discounts that ARE booked (info; kept out of the match).
+    if discounts:
+        def _fmt_disc(d: dict) -> str:
+            if d["currency"] == "USD":
+                return f"${_fmt_usd(d['amount_currency'])}"
+            return f"{_fmt_uzs(d['amount_local'])} so'm"
+        lines.append("")
+        lines.append(f"💸 <i>1C chegirmalar (kecha): {len(discounts)} ta</i>")
+        for d in discounts[:10]:
+            client = html_escape(d["client"] or "?")
+            lines.append(f"• {client} — {_fmt_disc(d)}")
+        if len(discounts) > 10:
+            lines.append(f"  …va yana {len(discounts) - 10} ta")
 
     text = "\n".join(lines)
     try:

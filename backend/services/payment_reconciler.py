@@ -31,6 +31,7 @@ started at ≥17%; the gap leaves wide safety margin.
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Optional
@@ -40,6 +41,53 @@ logger = logging.getLogger(__name__)
 _FX_FALLBACK_UZS_PER_USD = 12200.0
 _TOLERANCE_PCT = 0.02
 _TOLERANCE_FLOOR_USD = 2.0
+
+# A discount ("скидка"/"skidka", any writing style) appears two ways:
+#   • 1C касса (client_payments.attachment) — Alisher books it as phantom
+#     money to close a debt. The cashier NEVER records discounts, so these
+#     rows must not inflate the 1C side of the cashier↔1C comparison.
+#   • real_orders.comment (примечание) — the sales-side note that a discount
+#     was granted. The sole independent signal we can cross-check against 1C.
+_DISCOUNT_TOKENS = ("skidka", "скидка")
+
+# Discount figure embedded in a real_orders.comment, e.g.
+#   'СКИДКА-40000' · 'skidka 30 000' · 'SKIDKA - 12$' · 'skidka - $18'
+#   'ДАФТАР-3427500/СКИДКА 22500/' · 'skidka 15 000 sum qarz 200$'
+# Captures the number adjacent to the token (not unrelated figures like a
+# daftar total or a separate qarz amount). Display-only — never gates a flag.
+_DISCOUNT_AMT_RE = re.compile(
+    r"(?:skidka|скидка)\s*[-:–]?\s*(\$)?\s*(\d[\d\s]*\d|\d)\s*(\$|sum|сум|so'm)?",
+    re.IGNORECASE,
+)
+
+
+def _is_discount_note(text) -> bool:
+    """True if a free-text note marks a discount (skidka/скидка), any writing
+    style. SQLite UPPER/LOWER/LIKE are ASCII-only (SQLITE_LOWER_ASCII_ONLY),
+    so Cyrillic case-folding must happen in Python — never in a SQL LIKE."""
+    if not text:
+        return False
+    low = str(text).casefold()
+    return any(tok in low for tok in _DISCOUNT_TOKENS)
+
+
+def _parse_discount_amount(comment) -> Optional[tuple]:
+    """Best-effort extraction of the discount figure from a real_orders
+    comment. Returns (amount: float, currency: 'USD'|'UZS') or None when no
+    clean number sits next to the skidka token. Display-only — when None the
+    caller falls back to showing the raw comment."""
+    if not comment:
+        return None
+    m = _DISCOUNT_AMT_RE.search(str(comment))
+    if not m:
+        return None
+    lead_usd, num_raw, trail = m.group(1), m.group(2), m.group(3)
+    digits = num_raw.replace(" ", "")
+    if not digits.isdigit():
+        return None
+    amount = float(digits)
+    is_usd = bool(lead_usd) or (trail or "").casefold() == "$"
+    return (amount, "USD" if is_usd else "UZS")
 
 
 def _to_usd_eq(amount: float, currency: str, fx_rate: float | None) -> float:
@@ -86,7 +134,7 @@ def _fetch_onec(conn, client_id: int, lookback_days: int) -> list[dict]:
     # tomorrow morning.
     rows = conn.execute(
         """SELECT cp.doc_number_1c, cp.currency, cp.amount_local,
-                  cp.amount_currency, cp.doc_date,
+                  cp.amount_currency, cp.doc_date, cp.attachment,
                   fx.rate AS fx_rate
            FROM client_payments cp
            LEFT JOIN daily_fx_rates fx
@@ -100,6 +148,11 @@ def _fetch_onec(conn, client_id: int, lookback_days: int) -> list[dict]:
     ).fetchall()
     out = []
     for r in rows:
+        # Discounts are 1C-only phantom money the cashier never collects —
+        # excluding them keeps the cash-vs-cash sum honest (else every
+        # discount day is a guaranteed false mismatch).
+        if _is_discount_note(r["attachment"]):
+            continue
         if r["currency"] == "USD":
             usdeq = float(r["amount_currency"] or 0)
         else:
@@ -336,6 +389,10 @@ def get_yesterday_client_totals(
                 {doc_no, currency, amount_local, amount_currency,
                   client_name_1c}, ...
             ],
+            "discounts": [          # 1C-only skidka rows, pulled out of the
+                {client, client_id, doc_no, currency,   # cash-vs-cash sum
+                  amount_local, amount_currency}, ...
+            ],
         }
     """
     if reconcile_date is None:
@@ -380,6 +437,7 @@ def get_yesterday_client_totals(
                   cp.currency,
                   cp.amount_local,
                   cp.amount_currency,
+                  cp.attachment,
                   COALESCE(cp.client_name_1c, 'unknown') AS client
            FROM client_payments cp
            WHERE cp.doc_date = ?""",
@@ -396,6 +454,7 @@ def get_yesterday_client_totals(
         }
     )
     orphan_onec_rows: list[dict] = []
+    discounts: list[dict] = []
 
     for r in intake_rows:
         cid = r["client_id"]
@@ -410,6 +469,19 @@ def get_yesterday_client_totals(
         })
 
     for r in onec_rows:
+        # Discounts are 1C-only — pull them out of the cash-vs-cash sum and
+        # surface separately as an info line (never a mismatch, never an
+        # orphan), so a discount day reconciles cleanly.
+        if _is_discount_note(r["attachment"]):
+            discounts.append({
+                "client": r["client"],
+                "client_id": r["client_id"],
+                "doc_no": r["doc_no"],
+                "currency": r["currency"],
+                "amount_local": float(r["amount_local"] or 0),
+                "amount_currency": float(r["amount_currency"] or 0),
+            })
+            continue
         cid = r["client_id"]
         if cid is None:
             orphan_onec_rows.append({
@@ -463,7 +535,89 @@ def get_yesterday_client_totals(
         "matched_clients": matched_clients,
         "mismatched": mismatched,
         "orphan_onec_rows": orphan_onec_rows,
+        "discounts": discounts,   # 1C-only skidka rows, excluded from match
     }
+
+
+def find_unrecorded_discounts(
+    conn,
+    reconcile_date: Optional[str] = None,
+    scan_days: int = 7,
+    match_window_days: int = 1,
+) -> list[dict]:
+    """Sales-side discounts (real_orders.comment 'скидка') that the bookkeeper
+    has NOT mirrored into 1C касса as a matching skidka row within
+    [doc_date, doc_date + match_window_days].
+
+    Discounts live only in 1C — the cashier never records them — so the
+    real_orders примечание is the sole independent signal that a discount was
+    granted. A real-order discount with no companion касса skidka row means
+    Alisher forgot to book it, and the client's debt is overstated.
+
+    Scans the last `scan_days` of real orders so a still-missing discount
+    re-surfaces daily (with its age) until entered, rather than getting one
+    mention and vanishing.
+
+    Returns list sorted by age desc:
+        [{client, client_id, doc_date, age_days, comment,
+          amount, currency}, ...]   # amount/currency None when not parseable
+    """
+    if reconcile_date is None:
+        reconcile_date = conn.execute(
+            "SELECT date('now', '+5 hours') AS d"
+        ).fetchone()["d"]
+
+    start = conn.execute(
+        "SELECT date(?, ?) AS d", (reconcile_date, f"-{int(scan_days)} days")
+    ).fetchone()["d"]
+    end = conn.execute(
+        "SELECT date(?, '-1 day') AS d", (reconcile_date,)
+    ).fetchone()["d"]
+
+    # Over-fetch real-order comments in the window, then confirm each is a
+    # discount in Python — SQL LIKE can't reliably catch mixed-case Cyrillic
+    # (ASCII-only fold), so the discount test lives in _is_discount_note.
+    ro_rows = conn.execute(
+        """SELECT doc_date, client_id,
+                  COALESCE(client_name_1c, 'unknown') AS client, comment
+           FROM real_orders
+           WHERE doc_date BETWEEN ? AND ?
+             AND client_id IS NOT NULL
+             AND comment IS NOT NULL AND TRIM(comment) <> ''
+           ORDER BY doc_date""",
+        (start, end),
+    ).fetchall()
+
+    out: list[dict] = []
+    for r in ro_rows:
+        if not _is_discount_note(r["comment"]):
+            continue
+        d = r["doc_date"]
+        # Did Alisher book a 1C касса skidka for this client within [d, d+N]?
+        candidates = conn.execute(
+            """SELECT cp.attachment FROM client_payments cp
+               WHERE cp.client_id = ?
+                 AND cp.doc_date BETWEEN ? AND date(?, ?)""",
+            (r["client_id"], d, d, f"+{int(match_window_days)} days"),
+        ).fetchall()
+        if any(_is_discount_note(c["attachment"]) for c in candidates):
+            continue  # properly booked — no issue
+        age = conn.execute(
+            "SELECT CAST(julianday(?) - julianday(?) AS INTEGER) AS a",
+            (reconcile_date, d),
+        ).fetchone()["a"]
+        parsed = _parse_discount_amount(r["comment"])
+        out.append({
+            "client": r["client"],
+            "client_id": r["client_id"],
+            "doc_date": d,
+            "age_days": int(age or 0),
+            "comment": r["comment"],
+            "amount": parsed[0] if parsed else None,
+            "currency": parsed[1] if parsed else None,
+        })
+    out.sort(key=lambda x: x["age_days"], reverse=True)
+    return out
 
 
 def get_intake_match_status(conn, intake_ids: list[int]) -> dict[int, str]:

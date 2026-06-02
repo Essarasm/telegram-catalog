@@ -64,7 +64,7 @@ _doc_counter = 80000
 
 def _seed_onec(
     db, *, client_id: int, currency: str, amount_local: float,
-    amount_currency: float, doc_date: str,
+    amount_currency: float, doc_date: str, attachment: str | None = None,
 ) -> str:
     global _doc_counter
     _doc_counter += 1
@@ -73,9 +73,29 @@ def _seed_onec(
     db.execute(
         """INSERT INTO client_payments
            (doc_number_1c, doc_date, corr_account, client_id, currency,
-            amount_local, amount_currency)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (doc_no, doc_date, corr, client_id, currency, amount_local, amount_currency),
+            amount_local, amount_currency, attachment)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (doc_no, doc_date, corr, client_id, currency, amount_local,
+         amount_currency, attachment),
+    )
+    return doc_no
+
+
+_ro_counter = 90000
+
+
+def _seed_realorder(
+    db, *, client_id: int, doc_date: str, comment: str,
+    client_name_1c: str = "RO client",
+) -> str:
+    global _ro_counter
+    _ro_counter += 1
+    doc_no = str(_ro_counter)
+    db.execute(
+        """INSERT INTO real_orders
+           (doc_number_1c, doc_date, client_id, client_name_1c, comment)
+           VALUES (?, ?, ?, ?, ?)""",
+        (doc_no, doc_date, client_id, client_name_1c, comment),
     )
     return doc_no
 
@@ -276,3 +296,153 @@ def test_match_client_pure_function():
     assert set(result["matched_intake"].keys()) == {1, 2, 3}
     assert not result["bot_only_ids"]
     assert not result["kassa_only_doc_nos"]
+
+
+# ---------------------------------------------------------------------------
+# Discount handling — Part A (discount-aware matching) + Part B (unbooked
+# discount detection). Discounts live ONLY in 1C (cashier never records them);
+# real_orders.comment is the sole independent signal a discount was granted.
+# ---------------------------------------------------------------------------
+
+from backend.services.payment_reconciler import (  # noqa: E402
+    _is_discount_note,
+    _parse_discount_amount,
+    find_unrecorded_discounts,
+    get_yesterday_client_totals,
+)
+
+
+def test_is_discount_note_all_writing_styles():
+    # ASCII + Cyrillic, upper/lower/mixed — casefold catches all of them
+    for s in ("SKIDKA", "skidka", "Skidka", "скидка", "СКИДКА",
+              "СКИДКА ЭЛЕРОНГА", "НАЛИЧКА-СКИДКА 25000", "daftar skidka 25 000"):
+        assert _is_discount_note(s), s
+    # Non-discounts (incl. the SQLite-ASCII-fold trap: Cyrillic upper)
+    for s in ("NALICHKA", "выручка", "KARTA", "", None, "БОНУС-2025"):
+        assert not _is_discount_note(s), s
+
+
+def test_parse_discount_amount_formats():
+    assert _parse_discount_amount("СКИДКА-40000") == (40000.0, "UZS")
+    assert _parse_discount_amount("skidka 30 000") == (30000.0, "UZS")
+    assert _parse_discount_amount("skidka 15 000 sum qarz 200$") == (15000.0, "UZS")
+    assert _parse_discount_amount("ДАФТАР-3427500/СКИДКА 22500/") == (22500.0, "UZS")
+    assert _parse_discount_amount("SKIDKA - 12$") == (12.0, "USD")
+    assert _parse_discount_amount("dostavka skidka - $18") == (18.0, "USD")
+    # No clean number next to the token → None (caller shows raw comment)
+    assert _parse_discount_amount("skidka berildi") is None
+    assert _parse_discount_amount("NALICHKA") is None
+    assert _parse_discount_amount(None) is None
+
+
+def test_discount_excluded_from_match_cash_plus_discount(db):
+    """Part A: cashier collected the real cash; 1C has the same cash PLUS a
+    phantom skidka row. Including skidka would falsely inflate the 1C side —
+    excluding it makes the client reconcile cleanly."""
+    _seed_client(db, 8801)
+    _seed_fx(db, _isodate(2), 12000.0)
+    # Cashier: 1,200,000 UZS ($100)
+    iid = _seed_intake(db, client_id=8801, amount=1200000, currency="UZS",
+                       submitted_at=_isodatetime(2))
+    # 1C: 1,200,000 cash + 50,000 skidka (phantom). Without exclusion the 1C
+    # side = $104.17 vs cashier $100 → 4% mismatch.
+    _seed_onec(db, client_id=8801, currency="UZS", amount_local=1200000,
+               amount_currency=0, doc_date=_isodate(2), attachment="NALICHKA")
+    _seed_onec(db, client_id=8801, currency="UZS", amount_local=50000,
+               amount_currency=0, doc_date=_isodate(2), attachment="SKIDKA")
+
+    reconcile_payments(db, lookback_days=30)
+    statuses = get_intake_match_status(db, [iid])
+    assert statuses[iid] == "matched"
+
+
+def test_discount_only_day_is_not_a_mismatch(db):
+    """Part A: a day with ONLY a skidka row (no cash either side) must not
+    surface as a mismatch in the morning report."""
+    _seed_client(db, 8802)
+    today = _isodate(0)
+    yesterday = _isodate(1)
+    _seed_fx(db, yesterday, 12000.0)
+    _seed_onec(db, client_id=8802, currency="UZS", amount_local=30000,
+               amount_currency=0, doc_date=yesterday, attachment="скидка")
+
+    detail = get_yesterday_client_totals(db, today)
+    assert detail["mismatched"] == []
+    assert len(detail["discounts"]) == 1
+    assert detail["discounts"][0]["client_id"] == 8802
+
+
+def test_get_yesterday_totals_strips_discount_from_sum(db):
+    """Part A: the report's per-client 1C total excludes the skidka row, so
+    cashier == 1C and the client is counted matched, not mismatched."""
+    _seed_client(db, 8803)
+    today = _isodate(0)
+    yesterday = _isodate(1)
+    _seed_fx(db, yesterday, 12000.0)
+    _seed_intake(db, client_id=8803, amount=600000, currency="UZS",
+                 submitted_at=_isodatetime(1))
+    _seed_onec(db, client_id=8803, currency="UZS", amount_local=600000,
+               amount_currency=0, doc_date=yesterday, attachment="VYRUCHKA")
+    _seed_onec(db, client_id=8803, currency="UZS", amount_local=25000,
+               amount_currency=0, doc_date=yesterday, attachment="SKIDKA")
+
+    detail = get_yesterday_client_totals(db, today)
+    assert detail["matched_clients"] == 1
+    assert detail["mismatched"] == []
+    assert len(detail["discounts"]) == 1
+
+
+def test_unrecorded_discount_flagged(db):
+    """Part B: real order says skidka, but no 1C касса skidka exists in
+    [D, D+1] → flagged as unbooked."""
+    _seed_client(db, 8804)
+    yesterday = _isodate(1)
+    _seed_realorder(db, client_id=8804, doc_date=yesterday,
+                    comment="DAFTAR SKIDKA 25 000", client_name_1c="Ikrom")
+
+    result = find_unrecorded_discounts(db, _isodate(0))
+    assert len(result) == 1
+    assert result[0]["client_id"] == 8804
+    assert result[0]["amount"] == 25000.0
+    assert result[0]["currency"] == "UZS"
+    assert result[0]["age_days"] == 1
+
+
+def test_booked_discount_not_flagged(db):
+    """Part B: real order says skidka AND 1C касса has a matching skidka row
+    within [D, D+1] → not flagged."""
+    _seed_client(db, 8805)
+    yesterday = _isodate(1)
+    today = _isodate(0)
+    _seed_realorder(db, client_id=8805, doc_date=yesterday,
+                    comment="СКИДКА - 30 000")
+    # Alisher booked it the next morning (D+1) — within the window
+    _seed_onec(db, client_id=8805, currency="UZS", amount_local=30000,
+               amount_currency=0, doc_date=today, attachment="SKIDKA")
+
+    result = find_unrecorded_discounts(db, today)
+    assert result == []
+
+
+def test_unrecorded_discount_outside_window_still_flagged(db):
+    """Part B: a 1C skidka booked TWO days after the real order is outside
+    [D, D+1], so the real order is (correctly) still flagged at report time."""
+    _seed_client(db, 8806)
+    d_order = _isodate(3)
+    d_booked = _isodate(1)  # 2 days later — outside [D, D+1]
+    _seed_realorder(db, client_id=8806, doc_date=d_order, comment="skidka 20000")
+    _seed_onec(db, client_id=8806, currency="UZS", amount_local=20000,
+               amount_currency=0, doc_date=d_booked, attachment="SKIDKA")
+
+    result = find_unrecorded_discounts(db, _isodate(0))
+    assert len(result) == 1
+    assert result[0]["client_id"] == 8806
+
+
+def test_non_discount_realorder_ignored(db):
+    """Part B: real orders without a skidka note are never flagged."""
+    _seed_client(db, 8807)
+    _seed_realorder(db, client_id=8807, doc_date=_isodate(1),
+                    comment="DOSTAVKA Dilshod aka")
+    result = find_unrecorded_discounts(db, _isodate(0))
+    assert result == []
