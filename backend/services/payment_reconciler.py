@@ -53,10 +53,17 @@ _DISCOUNT_TOKENS = ("skidka", "скидка")
 # Discount figure embedded in a real_orders.comment, e.g.
 #   'СКИДКА-40000' · 'skidka 30 000' · 'SKIDKA - 12$' · 'skidka - $18'
 #   'ДАФТАР-3427500/СКИДКА 22500/' · 'skidka 15 000 sum qarz 200$'
+#   'skidka 74,4 $' · 'скидка - 146,80$' · 'SKIDKA - 2.6$' · 'скидка-187у.е.'
 # Captures the number adjacent to the token (not unrelated figures like a
-# daftar total or a separate qarz amount). Display-only — never gates a flag.
+# daftar total or a separate qarz amount). Currency cues: '$' / 'у.е.' / 'y.e.'
+# → USD; 'sum' / 'сум' / "so'm" or none → UZS. Space = thousands separator;
+# ','/'.' = decimal (USD cents). Display-only — never gates a flag.
 _DISCOUNT_AMT_RE = re.compile(
-    r"(?:skidka|скидка)\s*[-:–]?\s*(\$)?\s*(\d[\d\s]*\d|\d)\s*(\$|sum|сум|so'm)?",
+    r"(?:skidka|скидка)\s*[-–:]?\s*"
+    r"(\$)?\s*"                       # leading $ (e.g. 'skidka - $18')
+    r"(\d[\d\s]*\d|\d)"               # integer part (spaces = thousands sep)
+    r"(?:[.,](\d{1,3}))?\s*"          # optional decimal (1-2) or 3-digit group
+    r"(\$|sum|сум|so'm|у\.?\s?е\.?|y\.?\s?e\.?)?",  # trailing currency cue
     re.IGNORECASE,
 )
 
@@ -81,12 +88,20 @@ def _parse_discount_amount(comment) -> Optional[tuple]:
     m = _DISCOUNT_AMT_RE.search(str(comment))
     if not m:
         return None
-    lead_usd, num_raw, trail = m.group(1), m.group(2), m.group(3)
-    digits = num_raw.replace(" ", "")
-    if not digits.isdigit():
+    lead_usd, int_raw, frac, trail = m.group(1), m.group(2), m.group(3), m.group(4)
+    integer = int_raw.replace(" ", "")
+    if not integer.isdigit():
         return None
-    amount = float(digits)
-    is_usd = bool(lead_usd) or (trail or "").casefold() == "$"
+    if frac and len(frac) <= 2:
+        amount = float(f"{integer}.{frac}")          # decimal cents (USD)
+    elif frac:                                       # 3-digit group → thousands
+        amount = float(integer + frac)
+    else:
+        amount = float(integer)
+    trail_low = (trail or "").casefold()
+    is_usd = bool(lead_usd) or (
+        bool(trail) and (trail_low == "$" or trail_low[0] in ("у", "y"))
+    )
     return (amount, "USD" if is_usd else "UZS")
 
 

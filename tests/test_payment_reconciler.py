@@ -335,6 +335,22 @@ def test_parse_discount_amount_formats():
     assert _parse_discount_amount(None) is None
 
 
+def test_parse_discount_amount_usd_and_decimals():
+    # у.е. (условные единицы) = USD — previously mis-parsed as UZS
+    assert _parse_discount_amount("скидка-187у.е.") == (187.0, "USD")
+    assert _parse_discount_amount("СКИДКА 7у.е.") == (7.0, "USD")
+    assert _parse_discount_amount("бартер скидка 5 y.e.") == (5.0, "USD")
+    # Comma / period decimals with $ — previously truncated the cents + currency
+    assert _parse_discount_amount("skidka 74,4 $") == (74.4, "USD")
+    assert _parse_discount_amount("скидка - 146,80$") == (146.8, "USD")
+    assert _parse_discount_amount("SKIDKA - 2.6$") == (2.6, "USD")
+    assert _parse_discount_amount("skidka - $4,5") == (4.5, "USD")
+    # 3-digit group after comma is a thousands separator, not cents
+    assert _parse_discount_amount("skidka 2,750 sum") == (2750.0, "UZS")
+    # UZS still wins with no currency cue, decimals untouched
+    assert _parse_discount_amount("skidka 50 000") == (50000.0, "UZS")
+
+
 def test_discount_excluded_from_match_cash_plus_discount(db):
     """Part A: cashier collected the real cash; 1C has the same cash PLUS a
     phantom skidka row. Including skidka would falsely inflate the 1C side —
