@@ -385,6 +385,45 @@ def run_audit(fix: bool = False) -> dict:
                 "sample": [dict(r) for r in held[:5]],
             }
 
+        # 13. Mislinked users — a client-role (non-agent) approved user whose
+        # phone matches a DIFFERENT *real* client than the one their account is
+        # linked to. The Турдиев class (2026-06-02, Error Log): a manual
+        # registration mispick (sales team replies with the wrong client) or an
+        # import phone-collision attaches a Telegram account to the wrong shop,
+        # so the user's orders / cabinet / location pins all flow to that wrong
+        # shop (the users.client_id blast radius). Excludes: agents (they
+        # legitimately repoint client_id via the act-as / switch-client flow),
+        # bot_approved placeholder rows (client_id_1c NULL — e.g. a tester's
+        # self-registration), merged/tombstoned rows, and siblings sharing the
+        # same client_id_1c (multi-row clients). substr(...,-9) is the cheap
+        # last-9-digit normalization; tools/high_conf_mislinks.py is the
+        # authoritative offline version that also handles dirty phone strings.
+        mislinked = conn.execute(
+            """SELECT u.telegram_id, u.first_name,
+                      u.client_id AS linked_id, linked.name AS linked_name,
+                      m.id AS should_be_id, m.name AS should_be_name
+               FROM users u
+               JOIN allowed_clients linked ON linked.id = u.client_id
+               JOIN allowed_clients m
+                 ON substr(u.phone, -9) IN (m.phone_normalized, m.raqam_02, m.raqam_03)
+               WHERE u.is_approved = 1
+                 AND u.is_agent = 0
+                 AND u.client_id IS NOT NULL
+                 AND u.phone IS NOT NULL AND u.phone != ''
+                 AND m.id != u.client_id
+                 AND COALESCE(m.status, 'active') NOT LIKE 'merged%'
+                 AND m.client_id_1c IS NOT NULL AND m.client_id_1c != ''
+                 AND (linked.client_id_1c IS NULL
+                      OR linked.client_id_1c != m.client_id_1c)
+               ORDER BY u.telegram_id
+               LIMIT 20"""
+        ).fetchall()
+        if mislinked:
+            result["mislinked_users"] = {
+                "count": len(mislinked),
+                "sample": [dict(r) for r in mislinked[:5]],
+            }
+
     finally:
         conn.close()
     return result
@@ -409,6 +448,7 @@ SEVERITY_THRESHOLDS = {
     "trend_currency_drift":     (5, 1),
     "fuzzy_client_1c_dups":     (10, 1),
     "identity_drift_held":      (5, 1),    # #74 — any held drift needs a human
+    "mislinked_users":          (3, 1),    # Турдиев class — any wrong link needs a human
     # Informational only — never critical
     "recent_phone_changes_7d":  (None, None),
 }
@@ -521,6 +561,7 @@ def format_audit_message(findings: dict, prior_findings: dict | None = None) -> 
         "trend_currency_drift":    "📉 Cabinet trend: valyuta yo'qoldi (oldin bor edi, oxirgi 6 oyda yo'q)",
         "fuzzy_client_1c_dups":    "👥 client_id_1c dublikat (bir xil telefon — birlashtirish kerak)",
         "identity_drift_held":     "🛑 Identity drift ushlab turilibdi (1C nomi o'zgargan — qo'lda hal qiling)",
+        "mislinked_users":         "🔗 Mijoz noto'g'ri ulangan (foydalanuvchi telefoni boshqa mijozga tegishli)",
     }
 
     # Group findings by severity. Render CRITICAL first so the most
