@@ -523,7 +523,7 @@ async def cmd_skipupload(message: Message):
         await message.reply(
             "❌ <b>Foydalanish:</b>\n"
             "<code>/skipupload &lt;type&gt; &lt;date&gt; &lt;reason&gt;</code>\n\n"
-            "Turlar: balances_uzs, balances_usd, stock, prices, debtors, realorders, cash, fxrate, all\n"
+            "Turlar: balances_uzs, balances_usd, stock, prices, debtors, realorders, cash, cash_week, cash_month, fxrate, supply, clients, all\n"
             "Sana: YYYY-MM-DD yoki <b>today</b>\n\n"
             "Masalan:\n"
             "<code>/skipupload cash today 1C offline</code>\n"

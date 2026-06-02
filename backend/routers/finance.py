@@ -152,6 +152,7 @@ async def import_cash(
     file: UploadFile = File(...),
     admin_key: str = Form(""),
     force: bool = Form(False),
+    repull: bool = Form(False),
 ):
     """Import Касса (cash receipts journal) from 1C.
 
@@ -168,7 +169,9 @@ async def import_cash(
     if not file_bytes:
         return JSONResponse({"ok": False, "error": "Empty file"}, status_code=400)
 
-    result = apply_cash_import(file_bytes, filename_hint=file.filename or "", force=force)
+    result = apply_cash_import(
+        file_bytes, filename_hint=file.filename or "", force=force, repull=repull
+    )
     return result
 
 
@@ -1243,6 +1246,25 @@ def bucket_examples(
     return {"ok": True, "recalc_date": d, "thresholds_usd": edges, "pct": pct,
             "fx_rate_used": fx_rate, "buckets": out,
             "excluded_pseudo_count": excluded_pseudo}
+
+
+@router.get("/portfolio-matrix")
+def portfolio_matrix():
+    """Live client-portfolio Level × Trajectory matrix, cohorts, call-lists.
+
+    Single source of truth for the Client Portfolio tab: both the size rows and
+    the trajectory matrix are computed from the same 12-month clean roster, so
+    the Heavy count agrees everywhere (avoids the dual-source blind-reader drift
+    in `.claude/rules/12-dual-source-columns.md`). Bands are data-anchored
+    (quartiles of the relative-YoY distribution), recomputed each call.
+    """
+    from backend.services.client_portfolio import compute_portfolio
+    conn = get_db()
+    try:
+        data = compute_portfolio(conn)
+    finally:
+        conn.close()
+    return {"status": "ok", "data": data}
 
 
 @router.get("/bucket-aggregate")

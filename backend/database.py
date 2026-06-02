@@ -545,6 +545,7 @@ def init_db():
             command TEXT NOT NULL,
             expected_count_per_day INTEGER DEFAULT 1,
             required_weekdays TEXT DEFAULT '1,2,3,4,5,6',
+            schedule_kind TEXT DEFAULT 'weekday',
             sort_order INTEGER DEFAULT 0,
             is_active INTEGER DEFAULT 1
         );
@@ -1235,6 +1236,23 @@ def init_db():
             "UPDATE daily_upload_schedule SET reminder_count_per_day = 2 "
             "WHERE upload_type = 'cash'"
         )
+
+    # Migration: add schedule_kind to daily_upload_schedule.
+    # 'weekday'      → required on the ISO weekdays in required_weekdays (default)
+    # 'first_monday' → required only on the first Monday of the month
+    # Drives the weekly/monthly Касса re-pull checklist items (Session F,
+    # 2026-06-02) that catch backdated 1C payments the daily feed misses.
+    if "schedule_kind" not in sched_cols:
+        conn.execute(
+            "ALTER TABLE daily_upload_schedule ADD COLUMN "
+            "schedule_kind TEXT DEFAULT 'weekday'"
+        )
+    # Runs for both fresh + existing DBs (cash_month is seeded above with the
+    # default 'weekday'; promote it to first-Monday-only here).
+    conn.execute(
+        "UPDATE daily_upload_schedule SET schedule_kind = 'first_monday' "
+        "WHERE upload_type = 'cash_month'"
+    )
 
     # Migration: add client_id to orders so wish-list orders are scoped
     # to the correct client (fixes /testclient cross-contamination).
@@ -2690,7 +2708,19 @@ def _seed_locations(conn):
 
 
 def _seed_daily_upload_schedule(conn):
-    """Seed the 9 checklist items. Idempotent (INSERT OR IGNORE by PK)."""
+    """Seed the checklist items. Idempotent (INSERT OR IGNORE by PK).
+
+    cash_week / cash_month are the weekly/monthly Касса re-pull items
+    (Session F, 2026-06-02). The bookkeeper exports a full-period Касса and
+    feeds it through /cashweek (every Monday, prior week) or /cashmonth
+    (first Monday of the month, prior month). The re-pull is idempotent and
+    backfills any backdated payments the single-day daily feed structurally
+    misses — see Error Log + .claude/rules/12-dual-source-columns.md.
+    """
+    # NOTE: schedule_kind is intentionally NOT in this INSERT. This seed runs
+    # before the schedule_kind ALTER migration (init_db ordering), so on an
+    # existing prod DB the column may not exist yet. cash_month's 'first_monday'
+    # kind is set in that migration (which runs after this seed).
     rows = [
         # (upload_type, ru, uz, command, expected, required_weekdays, sort_order)
         ("balances_uzs", "Оборотка 40.10 (UZS)", "Aylanma 40.10 (UZS)", "/balances", 1, "1,2,3,4,5,6", 10),
@@ -2700,6 +2730,8 @@ def _seed_daily_upload_schedule(conn):
         ("debtors",      "Дебиторы",            "Qarzdorlar",         "/debtors",  1, "1,2,3,4,5,6", 50),
         ("realorders",   "Реализация",          "Realizatsiya",       "/realorders", 1, "1,2,3,4,5,6", 60),
         ("cash",         "Касса",               "Kassa",              "/cash",     2, "1,2,3,4,5,6", 70),
+        ("cash_week",    "Касса (прошлая неделя)", "Kassa (o'tgan hafta)", "/cashweek",  1, "1", 71),
+        ("cash_month",   "Касса (прошлый месяц)",  "Kassa (o'tgan oy)",    "/cashmonth", 1, "1", 72),
         ("fxrate",       "Курс валют",          "Valyuta kursi",      "/fxrate",   1, "1,2,3,4,5,6", 80),
         ("supply",       "Поступление/Возврат", "Kirim/Qaytarish",    "/supply",   1, "1,2,3,4,5,6", 90),
         ("clients",      "Клиенты",             "Mijozlar",           "/clients",  1, "1,2,3,4,5,6", 100),

@@ -81,6 +81,8 @@ SPECS = {
             Cmd("/debtors (reply XLS)", "Дебиторка (дебиторская задолженность)"),
             Cmd("/realorders (reply XLS)", "Реализация товаров — haqiqiy buyurtmalar"),
             Cmd("/cash (reply XLS)", "Касса — tushgan to'lovlar"),
+            Cmd("/cashweek (reply XLS)", "Касса sverka — o'tgan hafta (har dushanba, orqaga sanali to'lovlar)"),
+            Cmd("/cashmonth (reply XLS)", "Касса sverka — o'tgan oy (oyning 1-dushanbasi)"),
             Cmd("/fxrate 12650", "Bugungi USD/UZS kursi (raqam)"),
             Cmd("/supply (reply XLS)", "Kirim/Qaytarish — Поступление/Возврат"),
             Cmd("/clients (reply Excel)", "Mijozlar ro'yxati — Справочник Контрагенты"),

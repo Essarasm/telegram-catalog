@@ -230,7 +230,12 @@ def _str_or_none(v) -> Optional[str]:
 MAX_DATE_SPAN_DAYS = 0  # max (date_max - date_min).days; 0 = single calendar day
 
 
-def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = False) -> dict:
+def apply_cash_import(
+    file_bytes: bytes,
+    filename_hint: str = "",
+    force: bool = False,
+    repull: bool = False,
+) -> dict:
     """Parse a Касса file and upsert every payment row.
 
     Idempotent on doc_number_1c. Re-uploading the same file is a no-op at
@@ -240,7 +245,19 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = 
     Guards against the May 6 2026 incident where a 31-day range was
     uploaded instead of a single day: aborts before any DB write if the
     file's date span exceeds MAX_DATE_SPAN_DAYS. Override with force=True.
+
+    ``repull=True`` is the weekly/monthly full-period re-pull (Session F,
+    2026-06-02). It implies force=True (multi-day spans are expected) and:
+      - returns a ``repull_report`` diffing each client's last-payment date
+        before vs after, so the daily feed's backdated-row blind spot is
+        surfaced to the reconciliation group;
+      - SUPPRESSES per-client "payment received" notifications — the
+        backfilled rows are weeks old and re-notifying would confuse clients
+        (reconciliation is internal). Revisit if late-ack is ever wanted.
     """
+    if repull:
+        force = True
+
     parsed = parse_cash_xls(file_bytes, filename_hint)
     if not parsed.get("ok"):
         return parsed
@@ -274,6 +291,26 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = 
         updated = 0
         matched_clients = 0
         client_cache: Dict[str, Optional[int]] = {}
+
+        # Re-pull diff: snapshot each client's last-payment date BEFORE the
+        # upsert so we can report which clients had a backdated row the daily
+        # feed missed. Restricted to names present in this file.
+        repull_names = set()
+        before_last: Dict[str, Optional[str]] = {}
+        inserted_rows: List[dict] = []
+        if repull:
+            repull_names = {
+                (p.get("client_name_1c") or "").strip()
+                for p in payments if (p.get("client_name_1c") or "").strip()
+            }
+            for row in conn.execute(
+                """SELECT client_name_1c, MAX(doc_date) AS m
+                   FROM client_payments
+                   WHERE client_name_1c IS NOT NULL AND client_name_1c != ''
+                   GROUP BY client_name_1c"""
+            ).fetchall():
+                if row["client_name_1c"] in repull_names:
+                    before_last[row["client_name_1c"]] = row["m"]
 
         for p in payments:
             client_name = p.get("client_name_1c") or ""
@@ -333,6 +370,8 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = 
                     ),
                 )
                 inserted += 1
+                if repull:
+                    inserted_rows.append(p)
 
         # Auto-link unbound allowed_clients rows before heal so the heal pass
         # picks up freshly-set client_id_1c values from admin/agent creations.
@@ -354,12 +393,14 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = 
 
         # Queue "payment received" notifications (Session N). Must run after
         # orphan-heal so late-matched rows can resolve their client_id.
-        try:
-            from backend.services.payment_notifications import queue_from_cash_payments
-            notif_counts = queue_from_cash_payments(conn, payments)
-        except Exception as e:
-            logger.error(f"payment_notifications.queue failed: {e}")
-            notif_counts = {"queued": 0, "missed_unmatched": 0, "missed_no_bind": 0}
+        # Skipped on re-pull: backfilled rows are weeks old (see docstring).
+        notif_counts = {"queued": 0, "missed_unmatched": 0, "missed_no_bind": 0}
+        if not repull:
+            try:
+                from backend.services.payment_notifications import queue_from_cash_payments
+                notif_counts = queue_from_cash_payments(conn, payments)
+            except Exception as e:
+                logger.error(f"payment_notifications.queue failed: {e}")
 
         conn.commit()
 
@@ -398,10 +439,71 @@ def apply_cash_import(file_bytes: bytes, filename_hint: str = "", force: bool = 
                 if len(top_payers) >= 5:
                     break
 
+        # Re-pull diff report: which clients' last-payment date moved because
+        # the daily feed had missed a backdated row. Pseudo-clients excluded.
+        repull_report = None
+        if repull:
+            after_last: Dict[str, Optional[str]] = {}
+            for row in conn.execute(
+                """SELECT client_name_1c, MAX(doc_date) AS m
+                   FROM client_payments
+                   WHERE client_name_1c IS NOT NULL AND client_name_1c != ''
+                   GROUP BY client_name_1c"""
+            ).fetchall():
+                if row["client_name_1c"] in repull_names:
+                    after_last[row["client_name_1c"]] = row["m"]
+
+            missed_by_client: Dict[str, int] = {}
+            for p in inserted_rows:
+                nm = (p.get("client_name_1c") or "").strip()
+                if nm:
+                    missed_by_client[nm] = missed_by_client.get(nm, 0) + 1
+
+            moved = []
+            for nm in repull_names:
+                if is_pseudo_client(nm):
+                    continue
+                old = before_last.get(nm)
+                new = after_last.get(nm)
+                if new and (old is None or new > old):
+                    moved.append({
+                        "client": nm,
+                        "old": old,
+                        "new": new,
+                        "missed": missed_by_client.get(nm, 0),
+                    })
+            moved.sort(key=lambda m: (m["old"] or "0000-00-00"))
+
+            channels: Dict[str, int] = {}
+            for p in inserted_rows:
+                att = (p.get("attachment") or "").strip().lower()
+                if att.startswith("пер"):
+                    cat = "transfer"      # Перечисление — bank transfer (Uchqun)
+                elif att.startswith("karta") or "карта" in att:
+                    cat = "card"
+                elif "skidka" in att or "скидка" in att:
+                    cat = "discount"
+                elif "nalichka" in att or "наличка" in att:
+                    cat = "cash"
+                elif "vyruchka" in att or "vyrychka" in att or "выручка" in att:
+                    cat = "cash"
+                else:
+                    cat = "other"
+                channels[cat] = channels.get(cat, 0) + 1
+
+            repull_report = {
+                "inserted": inserted,
+                "updated": updated,
+                "clients_moved": len(moved),
+                "moved": moved,
+                "channels": channels,
+            }
+
         return {
             "ok": True,
             "inserted": inserted,
             "updated": updated,
+            "repull_report": repull_report,
             "matched_clients": matched_clients,
             "orphans_healed": orphans_healed,
             "notifications_queued": notif_counts.get("queued", 0),

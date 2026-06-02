@@ -27,6 +27,8 @@ VALID_UPLOAD_TYPES = {
     "balances_uzs", "balances_usd", "stock", "prices",
     "debtors", "realorders", "cash", "fxrate", "supply",
     "clients",
+    # Weekly/monthly full-period Касса re-pulls (Session F, 2026-06-02).
+    "cash_week", "cash_month",
 }
 
 
@@ -78,6 +80,24 @@ def is_required_weekday(target_date: date, required_weekdays: str) -> bool:
     iso_weekday = target_date.isoweekday()
     allowed = {int(x) for x in required_weekdays.split(",") if x.strip()}
     return iso_weekday in allowed
+
+
+def is_first_monday(target_date: date) -> bool:
+    """True if target_date is the first Monday of its month."""
+    return target_date.isoweekday() == 1 and target_date.day <= 7
+
+
+def is_required_on(target_date: date, sched: dict) -> bool:
+    """Whether a schedule row is required on target_date.
+
+    Honors schedule_kind:
+      'first_monday' → only the first Monday of the month
+      'weekday' (or missing) → the ISO weekdays in required_weekdays
+    """
+    kind = sched.get("schedule_kind") or "weekday"
+    if kind == "first_monday":
+        return is_first_monday(target_date)
+    return is_required_weekday(target_date, sched.get("required_weekdays") or "1,2,3,4,5,6")
 
 
 # ── Core tracking API ──────────────────────────────────────────────────
@@ -241,7 +261,7 @@ def get_checklist(target_date: Optional[date] = None) -> dict:
         total_required = 0
         for s in sched_rows:
             sched = dict(s)
-            required_here = is_required_weekday(target_date, sched["required_weekdays"])
+            required_here = is_required_on(target_date, sched)
             upload = upload_rows.get(sched["upload_type"])
 
             if holiday_name and not upload:
@@ -637,9 +657,8 @@ def get_missing_gaps(
             for sched in sched_list:
                 utype = sched["upload_type"]
                 expected = int(sched.get("expected_count_per_day", 1) or 1)
-                required_wdays = sched.get("required_weekdays", "1,2,3,4,5,6")
 
-                if not is_required_weekday(d, required_wdays):
+                if not is_required_on(d, sched):
                     continue
 
                 upload = upload_rows.get((d_str, utype))

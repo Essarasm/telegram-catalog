@@ -15,7 +15,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.shared import (
     get_db, html_escape, is_admin, is_admin_cb, logger, BOT_TOKEN, _BASE_URL,
     track_daily_upload, extract_snapshot_date, sender_display_name,
-    log_admin_action,
+    log_admin_action, RECONCILIATION_GROUP_CHAT_ID,
 )
 from backend.admin_auth import get_admin_key
 from backend.services.upload_warnings import stale_upload_warnings
@@ -1680,12 +1680,167 @@ async def cmd_cash(message: types.Message):
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
+@router.message(F.document & F.caption.startswith("/cashweek"))
+async def handle_cashweek_document(message: types.Message):
+    """Handle XLS/XLSX sent with /cashweek caption."""
+    if not is_admin(message):
+        return
+    await _run_cash_repull(message, "cash_week", "прошлая неделя", "o'tgan hafta")
+
+
+@router.message(F.document & F.caption.startswith("/cashmonth"))
+async def handle_cashmonth_document(message: types.Message):
+    """Handle XLS/XLSX sent with /cashmonth caption."""
+    if not is_admin(message):
+        return
+    await _run_cash_repull(message, "cash_month", "прошлый месяц", "o'tgan oy")
+
+
 @router.message(F.document & F.caption.startswith("/cash"))
 async def handle_cash_document(message: types.Message):
     """Handle XLS/XLSX file sent with /cash as caption."""
     if not is_admin(message):
         return
     await cmd_cash(message)
+
+
+@router.message(Command("cashweek"))
+async def cmd_cashweek(message: types.Message):
+    """Full-period Касса re-pull for the prior week (every Monday).
+
+    Backfills backdated payments the single-day daily feed structurally
+    misses, then posts a diff report to the reconciliation group.
+    """
+    if not is_admin(message):
+        return
+    await _run_cash_repull(message, "cash_week", "прошлая неделя", "o'tgan hafta")
+
+
+@router.message(Command("cashmonth"))
+async def cmd_cashmonth(message: types.Message):
+    """Full-period Касса re-pull for the prior month (first Monday)."""
+    if not is_admin(message):
+        return
+    await _run_cash_repull(message, "cash_month", "прошлый месяц", "o'tgan oy")
+
+
+def _format_repull_report(rep: dict, period_ru: str) -> str:
+    """Render the re-pull diff for the reconciliation group (RU)."""
+    moved = rep.get("moved", [])
+    ch = rep.get("channels", {})
+    ch_parts = []
+    for key, label in (
+        ("cash", "наличка"), ("transfer", "перечисление"),
+        ("card", "карта"), ("discount", "скидка"), ("other", "прочее"),
+    ):
+        if ch.get(key):
+            ch_parts.append(f"{label}: {ch[key]}")
+    lines = [
+        f"🔁 <b>Касса сверка — {period_ru}</b>\n",
+        f"➕ Восстановлено пропущенных платежей: <b>{rep.get('inserted', 0)}</b>",
+        f"🔄 Обновлено (уже были): {rep.get('updated', 0)}",
+    ]
+    if ch_parts:
+        lines.append("📂 " + " · ".join(ch_parts))
+    if moved:
+        lines.append(
+            f"\n📅 <b>{len(moved)} клиентов</b> с изменившейся датой "
+            f"последнего платежа (дневная выгрузка пропустила задним числом):"
+        )
+        for m in moved[:40]:
+            old = m.get("old") or "—"
+            lines.append(
+                f"  • {html_escape(m['client'])}: {old} → {m['new']}"
+                + (f"  (+{m['missed']})" if m.get("missed") else "")
+            )
+        if len(moved) > 40:
+            lines.append(f"  … ещё {len(moved) - 40}")
+    else:
+        lines.append("\n✅ Расхождений по датам не найдено.")
+    return "\n".join(lines)
+
+
+async def _run_cash_repull(message, upload_type: str, period_ru: str, period_uz: str):
+    """Shared body for /cashweek and /cashmonth — force + repull import."""
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            f"1C'dan to'liq davr ({period_uz}) Касса XLS faylni\n"
+            "faylga javob sifatida yuboring.\n\n"
+            "💡 Bu re-pull: kunlik yuklash o'tkazib yuborgan\n"
+            "orqaga sanali to'lovlarni to'ldiradi.",
+            parse_mode="HTML",
+        )
+        return
+
+    if not doc.file_name or not doc.file_name.lower().endswith(('.xls', '.xlsx')):
+        await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
+        return
+
+    status_msg = await message.reply(f"⏳ Касса ({period_uz}) sverka yuklanmoqda...")
+
+    try:
+        import httpx
+
+        file = await message.bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+
+        api_url = f"{_BASE_URL}/api/finance/import-cash"
+        async with httpx.AsyncClient(timeout=600) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
+                data={"admin_key": get_admin_key(), "repull": "true"},
+            )
+            result = resp.json()
+
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+
+        track_daily_upload(
+            upload_type, message, file_name=doc.file_name,
+            row_count=int(result.get("inserted") or 0) + int(result.get("updated") or 0),
+        )
+
+        rep = result.get("repull_report") or {}
+        st = result.get("stats", {})
+        d_range = st.get("date_min")
+        if st.get("date_max") and st.get("date_max") != d_range:
+            d_range = f"{st.get('date_min')} — {st.get('date_max')}"
+        await status_msg.edit_text(
+            "✅ <b>Касса sverka tugadi</b>\n\n"
+            f"📅 Davr: {d_range or '?'}\n"
+            f"➕ Topilgan (o'tkazib yuborilgan): <b>{rep.get('inserted', 0)}</b>\n"
+            f"🔄 Yangilangan: {rep.get('updated', 0)}\n"
+            f"👥 Sanasi o'zgargan mijozlar: <b>{rep.get('clients_moved', 0)}</b>\n\n"
+            "📋 Batafsil hisobot reconciliation guruhiga yuborildi.",
+            parse_mode="HTML",
+        )
+
+        # Post the detailed diff to the reconciliation group.
+        if RECONCILIATION_GROUP_CHAT_ID:
+            try:
+                await message.bot.send_message(
+                    RECONCILIATION_GROUP_CHAT_ID,
+                    _format_repull_report(rep, period_ru)[:3900],
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.error(f"repull report send failed: {e}")
+
+    except Exception as e:
+        logger.error(f"Cash re-pull error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
 
 
 @router.message(Command("fxrate"))
