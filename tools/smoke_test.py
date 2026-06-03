@@ -65,6 +65,20 @@ CHECKS = [
     ("Admin receivables", "GET", f"/api/admin/receivables?currency=UZS&admin_key={ADMIN_KEY}", 200, None),
 ]
 
+# Admin-gated GET endpoints that expose business data (per-client revenue, debt,
+# receivables). Each MUST reject a junk admin_key with a 4xx. A 2xx here means the
+# endpoint shipped without an auth gate — the class that put an unauthenticated
+# /portfolio-matrix on prod (Rule Violations #14, #8; Error Log UI_SURFACE_AUTH_DIVERGE
+# #42). Static pre-commit grep (Foundation Guard #3) misses endpoints reached via
+# other code paths; this is the live assertion. When you add a new admin-gated GET
+# endpoint, add it here.
+AUTH_GATED = [
+    "/api/finance/portfolio-matrix",
+    "/api/finance/bucket-aggregate?thresholds_usd=125,621,1721,4120",
+    "/api/admin/receivables?currency=UZS",
+    "/api/collections/debt-by-client",
+]
+
 
 def _check_admin_history_contract(client: httpx.Client) -> tuple[int, int]:
     """Layer 1 (required): hit /api/admin/client/{name}/history and assert
@@ -158,10 +172,40 @@ def _check_cabinet_contract(client: httpx.Client) -> tuple[int, int]:
     return passed, failed
 
 
+def _check_auth_gates(client: httpx.Client) -> tuple[int, int]:
+    """Every admin-gated endpoint MUST reject a junk admin_key with a 4xx.
+
+    A 2xx = the endpoint is unauthenticated and leaking business data (RV #14
+    class). A 5xx is also a failure here — a properly-gated endpoint rejects on
+    auth *before* doing any work, so it can never 500 on a junk key (this is
+    exactly how the #14 endpoint behaved: it 500'd because it skipped the auth
+    check entirely and fell through to a missing import).
+    """
+    passed = failed = 0
+    JUNK = "junk-key-definitely-not-valid"
+    for path in AUTH_GATED:
+        sep = "&" if "?" in path else "?"
+        url = f"{BASE}{path}{sep}admin_key={JUNK}"
+        try:
+            code = client.get(url).status_code
+            if 400 <= code < 500:
+                print(f"  ✅ Auth gate: {path.split('?')[0]} rejects junk key ({code})")
+                passed += 1
+            else:
+                print(f"  ❌ AUTH LEAK: {path.split('?')[0]} returned {code} for a JUNK "
+                      f"key — endpoint is NOT auth-gated (Rule Violations #14 class). "
+                      f"Add `if not check_admin_key(admin_key): return 401`.")
+                failed += 1
+        except Exception as e:
+            print(f"  ❌ Auth gate: {path.split('?')[0]} raised — {str(e)[:100]}")
+            failed += 1
+    return passed, failed
+
+
 def run(pre_deploy: bool = False) -> bool:
     mode_label = "pre-deploy" if pre_deploy else "smoke"
     print(f"🔍 {mode_label} test — {BASE}")
-    print(f"   {len(CHECKS)} liveness checks"
+    print(f"   {len(CHECKS)} liveness + {len(AUTH_GATED)} auth-gate checks"
           + (" + dual-currency contract" if pre_deploy else "") + "\n")
 
     passed = failed = 0
@@ -195,6 +239,12 @@ def run(pre_deploy: bool = False) -> bool:
         except Exception as e:
             print(f"  ❌ {name} — {str(e)[:80]}")
             failed += 1
+
+    # Auth-gate checks run in BOTH modes — an unauthenticated data endpoint is a
+    # leak regardless of deploy mode (Rule Violations #8, #14).
+    gp, gf = _check_auth_gates(client)
+    passed += gp
+    failed += gf
 
     if pre_deploy:
         ap, af = _check_admin_history_contract(client)

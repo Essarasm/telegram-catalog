@@ -1278,12 +1278,19 @@ def portfolio_matrix(admin_key: str = Query("")):
 def bucket_aggregate(
     thresholds_usd: str = Query("125,621,1721,4120"),
     include_pseudo: bool = Query(False),
+    admin_key: str = Query(""),
 ):
     """Aggregate clients by arbitrary volume thresholds.
 
     Excludes 1C pseudo-accounts (Наличка, Организации (переч.), etc.) by default.
     Pass `include_pseudo=true` to see the raw-data view.
+
+    Admin-only: exposes per-client volume/score/debt. No live frontend caller
+    (superseded by /portfolio-matrix size_rows) — kept gated, not open.
     """
+    if not check_admin_key(admin_key):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
     from backend.services.pseudo_clients import is_pseudo_client
     try:
         edges = [float(x.strip()) for x in thresholds_usd.split(",")]
