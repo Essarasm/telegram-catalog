@@ -139,13 +139,42 @@ def run_audit(fix: bool = False) -> dict:
                 "sample": [dict(r) for r in stuck[:5]],
             }
 
-        # 6. Recent phone changes (informational)
-        recent_phones = conn.execute(
-            """SELECT COUNT(*) AS n FROM phone_history
-               WHERE changed_at >= datetime('now', '-7 days')"""
-        ).fetchone()
-        if recent_phones and recent_phones["n"]:
-            result["recent_phone_changes_7d"] = {"count": recent_phones["n"]}
+        # 6. Recent phone changes (last 7d), classified by direction so a
+        #    parser-corruption wave reads as the incident it is, not benign
+        #    churn. invalid->valid = correction, valid->valid = reshuffle,
+        #    valid->invalid = CORRUPTION (the 2026-06 MULTI_PHONE_CELL_MISALIGNMENT
+        #    class, Error Log). System repairs (backfill_repair_*) are excluded —
+        #    this metric watches the IMPORT pipeline, not our own repair tool.
+        from backend.services.import_clients import is_valid_uz_mobile
+        ph_rows = conn.execute(
+            """SELECT client_id, old_phone, new_phone FROM phone_history
+               WHERE changed_at >= datetime('now', '-7 days')
+                 AND reason NOT LIKE 'backfill_repair%'"""
+        ).fetchall()
+        if ph_rows:
+            corr = resh = corrupt = 0
+            corrupt_sample = []
+            for r in ph_rows:
+                old_ok = is_valid_uz_mobile(r["old_phone"])
+                new_ok = is_valid_uz_mobile(r["new_phone"])
+                if old_ok and not new_ok:
+                    corrupt += 1
+                    if len(corrupt_sample) < 3:
+                        corrupt_sample.append({
+                            "client_id": r["client_id"],
+                            "old": r["old_phone"], "new": r["new_phone"],
+                        })
+                elif not old_ok and new_ok:
+                    corr += 1
+                elif old_ok and new_ok:
+                    resh += 1
+            result["recent_phone_changes_7d"] = {
+                "count": len(ph_rows),
+                "corrections": corr,
+                "reshuffles": resh,
+                "corruption": corrupt,
+                "sample": corrupt_sample,
+            }
 
         # 7. DB size snapshot for trend tracking. `clients` counts only
         # active rows so the daily summary reflects the canonical client
@@ -502,6 +531,16 @@ SEVERITY_THRESHOLDS = {
 def _severity(key: str, item: dict) -> str:
     """Map a finding to CRITICAL / WARNING / INFO using its row count."""
     n = item.get("count", 0)
+    # Phone-change severity is driven by the CORRUPTION sub-count, not the raw
+    # total: a benign correction/reshuffle wave can be large and harmless, but
+    # even one valid->invalid corruption is a parser regression worth a human.
+    if key == "recent_phone_changes_7d":
+        corrupt = item.get("corruption", 0)
+        if corrupt >= 10:
+            return "CRITICAL"
+        if corrupt >= 1:
+            return "WARNING"
+        return "INFO"
     if key in SEVERITY_THRESHOLDS:
         crit, warn = SEVERITY_THRESHOLDS[key]
         if crit is None:
@@ -631,6 +670,14 @@ def format_audit_message(findings: dict, prior_findings: dict | None = None) -> 
             n = item.get("count", 0)
             spike_marker = _spike_marker(key, item, prior_findings)
             lines.append(f"{prefix} <b>{label}:</b> {n}{spike_marker}")
+            # Phone changes: show the direction breakdown so corruption is
+            # never hidden inside a benign-looking total.
+            if key == "recent_phone_changes_7d":
+                lines.append(
+                    f"   ✅ to'g'rilangan: {item.get('corrections', 0)} · "
+                    f"🔄 almashtirilgan: {item.get('reshuffles', 0)} · "
+                    f"🛑 buzilgan: {item.get('corruption', 0)}"
+                )
             sample = item.get("sample") or []
             for s in sample[:3]:
                 # Compact sample rendering

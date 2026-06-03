@@ -14,6 +14,8 @@ import pytest
 from backend.services.import_clients import (
     parse_phone_cell,
     normalize_phone,
+    is_valid_uz_mobile,
+    UZ_MOBILE_OPERATOR_CODES,
     _upsert_client_from_row,
 )
 
@@ -72,6 +74,72 @@ from backend.services.import_clients import (
 def test_parse_phone_cell(raw, expected_digits):
     result = parse_phone_cell(raw)
     assert [p["digits"] for p in result] == expected_digits
+
+
+# ---------- MULTI_PHONE_CELL_MISALIGNMENT regression matrix ----------
+# A 1C cell's concatenated digits aren't always a clean multiple of 9. Before
+# the operator-prefix anchoring fix, _walk_digits_into_phones blindly sliced
+# fixed 9-digit windows, so any leading stray digit rotated every slice into an
+# invalid-prefix number — overwriting ~88 live primaries with garbage like
+# 549009591 (2026-06). These cases lock in the realignment behaviour.
+
+@pytest.mark.parametrize("raw, expected_digits", [
+    # Stray leading digit before the real number — must re-anchor, not slice.
+    ("5 915194019", ["915194019"]),
+    # Leading zero (common 1C artefact).
+    ("0 915194019", ["915194019"]),
+    # Russian "8" trunk prefix glued to a mobile.
+    ("8 915 194 019", ["915194019"]),
+    # Multi-digit junk glued by a single space (one piece, misaligned).
+    ("1234 915194019", ["915194019"]),
+    # Two clean numbers glued with no separator — both valid, both kept.
+    ("915194019901234567", ["915194019", "901234567"]),
+    # Two numbers glued where the trailing slice is invalid — drop the garbage,
+    # keep the valid primary (was: emitted 549009591 into raqam_02).
+    ("915194019549009591", ["915194019"]),
+    # 998 country code followed by a NON-operator pair → not stripped as a
+    # country code; "99" is itself a valid operator, so it reads as a 99-number
+    # rather than being dropped (sensible fallback on ambiguous input).
+    ("998123456789", ["998123456"]),
+])
+def test_parse_phone_cell_misalignment(raw, expected_digits):
+    result = parse_phone_cell(raw)
+    assert [p["digits"] for p in result] == expected_digits
+
+
+def test_misaligned_primary_is_recovered_even_with_mid_stray():
+    """A stray digit *between* two phones is ambiguous and can't be perfectly
+    unglued, but the PRIMARY must still recover correctly — that's the field
+    that makes or breaks reachability. (The secondary is best-effort.)"""
+    phones = parse_phone_cell("99 165 73 80 9 952657380")
+    assert phones[0]["digits"] == "991657380"      # primary correct
+    assert is_valid_uz_mobile(phones[0]["digits"])  # and not corrupt
+
+
+def test_no_parsed_primary_is_ever_an_invalid_prefix():
+    """Invariant: across the full existing corpus of cell shapes, the PRIMARY
+    (phones[0]) always starts with a known operator code. A corrupt primary is
+    the exact failure that made a client unreachable by their main number."""
+    corpus = [
+        "93 356 12 12, эри 97 918 33 33", "+998 90 605 79 36, 90 194 34 74",
+        "5 915194019", "0 915194019", "8 915 194 019", "1234 915194019",
+        "915194019549009591", "99 165 73 80 952657380",
+        "+99897-776-22-26 . 91 532 33 23",
+    ]
+    for raw in corpus:
+        phones = parse_phone_cell(raw)
+        if phones:
+            assert is_valid_uz_mobile(phones[0]["digits"]), (
+                f"{raw!r} produced invalid primary {phones[0]['digits']!r}")
+
+
+def test_is_valid_uz_mobile_helper():
+    assert is_valid_uz_mobile("915194019")     # 91 operator
+    assert not is_valid_uz_mobile("549009591")  # 54 not an operator
+    assert not is_valid_uz_mobile("91519401")   # only 8 digits
+    assert not is_valid_uz_mobile("")
+    assert not is_valid_uz_mobile(None)
+    assert "90" in UZ_MOBILE_OPERATOR_CODES and "54" not in UZ_MOBILE_OPERATOR_CODES
 
 
 def test_parse_phone_cell_annotation_husband():

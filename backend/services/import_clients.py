@@ -41,19 +41,56 @@ CLIENTS_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "clients_data
 _PHONE_CELL_SPLIT_RE = re.compile(r"[,;|]|\s{2,}|-\s+(?=\d)")
 _PHONE_RUN_RE = re.compile(r"\+?\(?\d[\d\s\-\.\(\)]{7,}\d")
 
+# Known Uzbek mobile operator prefixes (the first two local digits). A valid
+# 9-digit mobile always starts with one of these. Centralised here so the
+# parser, the consistency audit, and the phone-repair backfill all agree on
+# what "valid" means — see .claude/rules/12-dual-source-columns.md (one helper,
+# no inline column/format checks scattered across readers).
+# Derived empirically from the prod allowed_clients corpus (2026-06): these are
+# the prefixes with real operator support; the scattered 1–2-count tail (54, 35,
+# 66, …) is corruption/landline noise, not operators. "50" is Ucell — omitting
+# it would make the parser drop valid 50… numbers as stray digits.
+UZ_MOBILE_OPERATOR_CODES = frozenset({
+    "20", "33", "50", "77", "88", "90", "91", "93", "94", "95", "97", "98", "99",
+})
+
+
+def is_valid_uz_mobile(phone) -> bool:
+    """True when `phone` is a 9-digit string starting with a known operator code."""
+    return (isinstance(phone, str) and len(phone) == 9
+            and phone[:2] in UZ_MOBILE_OPERATOR_CODES)
+
 
 def _walk_digits_into_phones(digits):
-    """Slice a digit string into 9-digit phones; drop 998 country-code prefix."""
+    """Slice a digit string into 9-digit phones, anchored on operator prefixes.
+
+    A 1C phone cell's concatenated digits are NOT guaranteed to be a clean
+    multiple of 9: stray leading digits (an ``8`` trunk prefix, a typo, a
+    glued partial number) shift every fixed-width window so each slice is a
+    rotation of garbage with an invalid operator prefix — the 2026-06
+    MULTI_PHONE_CELL_MISALIGNMENT corruption (Error Log) that overwrote ~88
+    primaries with malformed numbers like ``549009591``.
+
+    The fix: only emit a 9-digit slice when it *starts on a valid operator
+    code*. When the current position doesn't, advance one digit and retry —
+    realigning past the stray digit instead of emitting corruption. The 998
+    country code is stripped only when a valid operator code follows it.
+    """
     out = []
     pos = 0
     n = len(digits)
     while pos + 9 <= n:
-        if n - pos >= 12 and digits[pos:pos + 3] == "998":
+        if (n - pos >= 12 and digits[pos:pos + 3] == "998"
+                and digits[pos + 3:pos + 5] in UZ_MOBILE_OPERATOR_CODES):
             out.append(digits[pos + 3:pos + 12])
             pos += 12
-        else:
+        elif digits[pos:pos + 2] in UZ_MOBILE_OPERATOR_CODES:
             out.append(digits[pos:pos + 9])
             pos += 9
+        else:
+            # Misaligned — skip the stray digit and re-anchor on the next
+            # operator-code boundary rather than slicing invalid digits.
+            pos += 1
     return out
 
 
