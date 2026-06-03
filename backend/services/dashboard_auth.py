@@ -120,8 +120,13 @@ def _gc() -> None:
 # Tab visibility per role. Add cashier/worker entries when those roles
 # are wired up; today only `admin` and `agent` are defined.
 ROLE_ALLOWED_TABS: dict[str, list[str]] = {
-    "admin": ["overview", "clients", "inventory", "supply", "health", "search", "coverage", "collections"],
-    "agent": ["coverage"],
+    "admin": ["overview", "clients", "debt", "inventory", "supply", "health", "search", "coverage", "collections"],
+    # Agents get the debt tab so they can comment on debtors under their own
+    # name (writes captured via their session identity). Within the tab the
+    # admin-only analytics band (KPIs/charts/map) is hidden client-side and
+    # the agent-assignment dropdown is read-only — agents see only the
+    # Qarzdorlar Ro'yxati list + comment/history.
+    "agent": ["coverage", "debt"],
 }
 
 

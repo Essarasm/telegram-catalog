@@ -429,6 +429,23 @@
             margin-bottom: 30px;
         }
 
+        /* 3-up variant — Debt tab trends + aging on one row (collapses below). */
+        .chart-row-3 {
+            grid-template-columns: repeat(3, 1fr);
+        }
+
+        /* Equalize the three card boxes: the aging card has an extra caption
+           line below its chart, so without this its box is taller. Stretch
+           each .chart-container to fill its (equal-height) grid cell. Scoped
+           to this row so other tabs' chart cards are unaffected. */
+        .chart-row-3 .row-item {
+            display: flex;
+        }
+        .chart-row-3 .chart-container {
+            flex: 1;
+            margin-bottom: 0;
+        }
+
         /* Tables */
         .table-container {
             background: #1a1d27;
@@ -737,7 +754,8 @@
 
         /* Responsive */
         @media (max-width: 1200px) {
-            .chart-row {
+            .chart-row,
+            .chart-row-3 {
                 grid-template-columns: 1fr;
             }
         }
@@ -1079,16 +1097,17 @@
 
                     <!-- 🪣 Client buckets — Proposal B size split (population 40/30/20/8/2).
                          Per-bucket client count, share, monthly-volume range, and avg credit
-                         score. Sourced from /api/finance/bucket-aggregate over the latest
-                         client_scores recalc — the CURRENTLY-SCORED SUBSET, not the canonical
-                         691-client benchmark (memory: bucketing_schemes). Pseudo-accounts excluded. -->
+                         score. Sourced from /api/finance/portfolio-matrix (size_rows) over the
+                         trailing-12-month CLEAN ROSTER — the SAME population as the portfolio
+                         matrix below, so the Heavy count agrees everywhere (Rule 12).
+                         Pseudo-accounts excluded. (memory: bucketing_schemes) -->
                     <div class="table-container" style="margin-bottom: 16px;">
                         <div class="table-title" style="display: flex; align-items: center; gap: 8px;">
                             Mijozlar — o'lcham bo'yicha
                             <span id="bucketsMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
                         </div>
                         <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
-                            Proposal B o'lcham taqsimoti · oylik hajm (USD) bo'yicha · joriy baholangan mijozlar to'plami (pseudo-hisoblar chiqarib tashlangan).
+                            Proposal B o'lcham taqsimoti · oylik hajm (USD) bo'yicha · so'nggi 12 oy faol mijozlar (pseudo-hisoblar chiqarib tashlangan).
                         </div>
                         <div class="table-wrapper">
                             <table>
@@ -1107,6 +1126,25 @@
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+
+                    <!-- 📊 Portfolio matrix — Level (Proposal B size, 12mo) × Trajectory
+                         (120d spend vs same 120d last year, RELATIVE to the business YoY
+                         tide; Rising/Sliding cut points are data-anchored quartiles, not
+                         hardcoded). Click any cell → live client call-list. Cohorts
+                         (Established / New / Dormant) are mutually exclusive. Source:
+                         /api/finance/portfolio-matrix — same 12mo clean roster as the size
+                         table above. Session X, 2026-06-01. -->
+                    <div class="table-container" style="margin-bottom: 16px;">
+                        <div class="table-title" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            Portfel matritsasi — o'lcham × yo'nalish
+                            <span id="matrixMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
+                        </div>
+                        <div id="matrixCohorts" style="font-size: 12px; padding: 4px 0 10px; display: flex; gap: 16px; flex-wrap: wrap;"></div>
+                        <div class="table-wrapper">
+                            <div id="matrixGrid"></div>
+                        </div>
+                        <div id="matrixDrill" style="margin-top: 12px;"></div>
                     </div>
 
                     <div class="table-container">
@@ -1141,7 +1179,7 @@
                          Receivable Aging + per-bucket amount breakdown (moved here from Business
                          Overview / Client Portfolio). Elements keep their original ids so the
                          existing loaders (loadOverviewData / loadClientsData) populate them by id. -->
-                    <div class="kpi-grid">
+                    <div class="kpi-grid debt-admin-only">
                         <div class="kpi-card">
                             <div class="kpi-label">Total Receivable</div>
                             <div class="kpi-value" id="kpi-total-receivable">-</div>
@@ -1149,11 +1187,14 @@
                         </div>
                     </div>
 
-                    <div class="chart-row" style="margin-top: 16px;">
+                    <!-- One row, three charts: two last-14-days daily trends
+                         (collection rate = cash ÷ revenue per day; receivable =
+                         debt_usd_eq snapshot, both from /daily-recap) + aging. -->
+                    <div class="chart-row chart-row-3 debt-admin-only" style="margin-top: 16px;">
                         <div class="row-item">
                             <div class="chart-container">
                                 <div class="chart-title" style="display: flex; justify-content: space-between; align-items: center;">
-                                    <span>Collection Rate Trend</span>
+                                    <span>Collection Rate Trend <span style="font-size: 11px; color: #8b8fa3; font-weight: 400;">· last 14 days</span></span>
                                     <span id="collectionFreshness" style="font-size: 11px; color: #8b8fa3; font-weight: 400;"></span>
                                 </div>
                                 <div class="chart-wrapper">
@@ -1164,10 +1205,21 @@
                         <div class="row-item">
                             <div class="chart-container">
                                 <div class="chart-title" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span>Total Receivable Trend <span style="font-size: 11px; color: #8b8fa3; font-weight: 400;">· last 14 days</span></span>
+                                    <span id="receivableTrendFreshness" style="font-size: 11px; color: #8b8fa3; font-weight: 400;"></span>
+                                </div>
+                                <div class="chart-wrapper">
+                                    <canvas id="receivableTrendChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row-item">
+                            <div class="chart-container">
+                                <div class="chart-title" style="display: flex; justify-content: space-between; align-items: center;">
                                     <span>Receivable Aging <span id="agingInfoIcon" title="" style="cursor: help; color: #8b8fa3; font-size: 13px;">ⓘ</span></span>
                                     <button id="agingDetailToggle" onclick="toggleAgingDetail()" style="background: none; border: 1px solid #2a2d3a; color: #8b8fa3; font-size: 11px; padding: 2px 8px; border-radius: 4px; cursor: pointer;">Details ▾</button>
                                 </div>
-                                <div class="chart-wrapper-250">
+                                <div class="chart-wrapper">
                                     <canvas id="agingChart"></canvas>
                                 </div>
                                 <div id="agingMeta" style="font-size: 11px; color: #8b8fa3; padding: 4px 0; text-align: center;">—</div>
@@ -1240,11 +1292,11 @@
                     </div>
 
                     <!-- 🗺 Qarzdorlar Xaritasi — debtors with a GPS pin, colored by oldest aging bucket -->
-                    <div class="section-title collapsible" onclick="toggleSection('debtMapSection')" style="margin-top: 24px;">
+                    <div class="section-title collapsible debt-admin-only" onclick="toggleSection('debtMapSection')" style="margin-top: 24px;">
                         🗺 Qarzdorlar Xaritasi <span id="debtMapMeta" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
                         <span class="toggle-arrow" id="debtMapSection-arrow">▾</span>
                     </div>
-                    <div id="debtMapSection" class="collapsible-content">
+                    <div id="debtMapSection" class="collapsible-content debt-admin-only">
                         <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
                             Debtors with a GPS pin, colored by oldest aging bucket (same scheme as the list above). Only clients that have a pin appear — debtors without a pin are in the list but not on the map. Tap a pin for debt amount + aging.
                         </div>
@@ -2467,8 +2519,22 @@
                 const t = el.getAttribute('data-tab');
                 el.style.display = (!ALLOWED_TABS || ALLOWED_TABS.includes(t)) ? '' : 'none';
             });
-            if (ALLOWED_TABS && ALLOWED_TABS.length === 1) {
-                switchTab(ALLOWED_TABS[0]);
+            // Within the Debt tab, agents see only the Qarzdorlar Ro'yxati
+            // list — the receivables KPI band, trend charts, and debt map all
+            // source from admin-only endpoints, so hide them for non-admins.
+            const adminOnly = DASHBOARD_ROLE === 'admin';
+            document.querySelectorAll('.debt-admin-only').forEach(el => {
+                el.style.display = adminOnly ? '' : 'none';
+            });
+            // If the currently-active tab isn't permitted for this role, jump
+            // to the first allowed tab (the default active tab is 'overview',
+            // which agents can't see — without this they'd land on a blank tab).
+            if (ALLOWED_TABS && ALLOWED_TABS.length) {
+                const active = document.querySelector('.nav-tab.active');
+                const activeTab = active && active.getAttribute('data-tab');
+                if (!activeTab || !ALLOWED_TABS.includes(activeTab)) {
+                    switchTab(ALLOWED_TABS[0]);
+                }
             }
         }
 
@@ -2675,7 +2741,7 @@
             const loaders = [
                 ['overview', loadOverviewData],
                 ['clients', loadClientsData],
-                ['clients', loadClientBuckets],
+                ['clients', loadPortfolioMatrix],
                 ['debt', loadDebtorsList],
                 ['debt', loadDebtMap],
                 ['debt', loadDebtSummary],
@@ -2733,7 +2799,8 @@
 
             updateKpis();
             drawRevenueChart();
-            drawCollectionChart();
+            // Collection Rate Trend now sources from /daily-recap (cachedDaily),
+            // drawn by loadDailyRecap() below once that data lands.
             renderWeeklyBreakdown();
             drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
             loadTopSellersWoW();
@@ -2779,6 +2846,9 @@
                 cachedDaily = data;
                 renderDailyRecap(data);
                 drawDailyRecapChart();
+                // Debt-tab trends share cachedDaily — redraw whenever it refreshes.
+                drawCollectionChart();
+                drawReceivableTrendChart();
             } catch (e) {
                 console.warn('daily-recap load failed', e);
             }
@@ -3176,6 +3246,19 @@
             const author = (setBy || setAt)
                 ? `<div style="font-size:10px; color:#8b8fa3; margin-top:2px;">👤 ${setBy}${setBy && setAt ? ' · ' : ''}${setAt}</div>`
                 : '';
+            // Always-visible history link — every comment/callback is preserved
+            // (append-only `client_callbacks`), but the ×N reschedule badge only
+            // shows after a *date* is pushed. This link surfaces the full
+            // "who wrote what, when" trail (name · date · comment) regardless,
+            // so single comments and note-only edits are never hidden. Shown
+            // whenever there's at least one prior entry (author present).
+            const historyLink = (setBy || note)
+                ? `<span
+                    onclick="toggleCallbackHistory(this)"
+                    title="Izohlar tarixi — kim, qachon, nima yozgan"
+                    style="cursor:pointer; font-size:10px; color:#8b8fa3; margin-top:1px; text-decoration:underline dotted; width:fit-content;"
+                  >🕘 tarix</span>`
+                : '';
             return `
                 <div class="cb-cell" style="display:flex; flex-direction:column; gap:3px;">
                     <div style="display:flex; align-items:center;">
@@ -3199,6 +3282,7 @@
                         style="background:#1a1d28; color:#e4e6ee; border:1px solid #2a2d3a; border-radius:4px; padding:3px 6px; font-size:11px; resize:vertical; width:160px; font-family:inherit;"
                     >${note}</textarea>
                     ${author}
+                    ${historyLink}
                     <div class="cb-history" data-loaded="0" style="display:none;"></div>
                 </div>
             `;
@@ -3276,6 +3360,13 @@
 
         function buildAgentCell(it, availableAgents) {
             const clientId = it.client_id;
+            // Agents view the list but can't reassign (client-assign-agent is
+            // admin-only) — show the current assignee as plain text for them.
+            if (DASHBOARD_ROLE !== 'admin') {
+                return it.agent_name
+                    ? `<span style="font-size:11px;">${escapeHtml(it.agent_name)}</span>`
+                    : '<span style="color:#8b8fa3;">—</span>';
+            }
             if (!clientId) {
                 // No allowed_clients row to write to — read-only fallback.
                 return '<span style="color:#8b8fa3;">—</span>';
@@ -3721,29 +3812,40 @@
             });
         }
 
+        // Last 14 active days of /daily-recap rows (cachedDaily is filtered to
+        // drop zero-activity days, so this is the most recent 14 with movement).
+        // Shared by the two Debt-tab trend charts so they sit on the same x-axis.
+        function debtTrendRows() {
+            return ((cachedDaily && cachedDaily.rows) || []).slice(-14);
+        }
+
         function drawCollectionChart() {
-            const weeks = weeklyList();
-            const ctx = document.getElementById('collectionChart').getContext('2d');
+            const el = document.getElementById('collectionChart');
+            if (!el) return;
+            const ctx = el.getContext('2d');
             if (charts.collection) charts.collection.destroy();
-            // Freshness label — latest closed week in the series (weekly-recap is
-            // inherently current: last 13 closed weeks).
+            // Per-day collection rate = cash ÷ revenue (USD-eq). Days with no
+            // revenue render as a gap (spanGaps bridges the line across them).
+            const rows = debtTrendRows();
             const freshEl = document.getElementById('collectionFreshness');
             if (freshEl) {
-                const last = weeks.length ? weeks[weeks.length - 1] : null;
+                const last = rows.length ? rows[rows.length - 1] : null;
                 freshEl.textContent = last ? `latest: ${last.label}` : '';
             }
-            if (!weeks.length) return;
+            if (!rows.length) return;
 
             charts.collection = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: weeks.map(w => w.label),
+                    labels: rows.map(r => r.label),
                     datasets: [{
                         label: 'Collection Rate %',
-                        data: weeks.map(w => w.collection_rate_pct || 0),
+                        data: rows.map(r => (r.revenue_usd_eq > 0)
+                            ? Math.round(r.cash_usd_eq / r.revenue_usd_eq * 1000) / 10
+                            : null),
                         borderColor: '#22c55e',
                         backgroundColor: 'rgba(34, 197, 94, 0.05)',
-                        borderWidth: 2, fill: true, tension: 0.3,
+                        borderWidth: 2, fill: true, tension: 0.3, spanGaps: true,
                         pointBackgroundColor: '#22c55e',
                         pointBorderColor: '#1a1d27',
                         pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6
@@ -3751,9 +3853,67 @@
                 },
                 options: {
                     responsive: true, maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: {
+                            label: (c) => c.parsed.y === null
+                                ? 'no revenue that day'
+                                : `Collection: ${c.parsed.y.toFixed(1)}%`
+                        } }
+                    },
                     scales: {
-                        y: { min: 0, max: 200, grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3' } },
+                        y: { min: 0, grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => v + '%' } },
+                        x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
+                    }
+                }
+            });
+        }
+
+        function drawReceivableTrendChart() {
+            const el = document.getElementById('receivableTrendChart');
+            if (!el) return;
+            const ctx = el.getContext('2d');
+            if (charts.receivableTrend) charts.receivableTrend.destroy();
+            // Total receivable per day = debt_usd_eq (client_debt_snapshots_daily,
+            // USD-equivalent at that day's FX). Snapshots that lag the row date
+            // are flagged debt_stale and footnoted in the tooltip.
+            const rows = debtTrendRows();
+            const freshEl = document.getElementById('receivableTrendFreshness');
+            if (freshEl) {
+                const last = rows.length ? rows[rows.length - 1] : null;
+                freshEl.textContent = last ? `latest: ${last.label}` : '';
+            }
+            if (!rows.length) return;
+
+            charts.receivableTrend = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: rows.map(r => r.label),
+                    datasets: [{
+                        label: 'Total Receivable (USD-eq)',
+                        data: rows.map(r => r.debt_usd_eq || 0),
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.06)',
+                        borderWidth: 2, fill: true, tension: 0.3,
+                        pointBackgroundColor: '#f59e0b',
+                        pointBorderColor: '#1a1d27',
+                        pointBorderWidth: 2, pointRadius: 4, pointHoverRadius: 6
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: {
+                            label: (c) => `Receivable: $${fmt(Math.round(c.parsed.y))}`,
+                            afterLabel: (c) => {
+                                const r = rows[c.dataIndex];
+                                return (r && r.debt_stale) ? `snapshot ${r.debt_report_date}` : '';
+                            }
+                        } }
+                    },
+                    scales: {
+                        y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => '$' + fmt(v) } },
                         x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
                     }
                 }
@@ -3822,6 +3982,9 @@
                 },
                 options: {
                     responsive: true, maintainAspectRatio: false,
+                    // Cap the doughnut radius so its visual weight matches the two
+                    // line-chart trends beside it (default fills the whole cell).
+                    radius: '70%',
                     plugins: {
                         legend: { position: 'bottom', labels: { color: '#8b8fa3', padding: 12, font: { size: 11 } } },
                         tooltip: {
@@ -3978,84 +4141,165 @@
             Heavy:  '#ef4444',
         };
 
-        // Client Portfolio — clients divided into Proposal B size buckets.
-        // GET /api/finance/bucket-aggregate (no admin_key — open GET) with the
-        // canonical thresholds 125/621/1721/4120. Renders count + share + volume
-        // range + avg score per bucket, with a Σ footer. This is the
-        // currently-scored subset, NOT the 691-client benchmark.
-        async function loadClientBuckets() {
+        // Band palette for the trajectory axis.
+        const BAND_COLORS = { Rising: '#22c55e', Stable: '#8b8fa3', Sliding: '#ef4444' };
+
+        // Last portfolio-matrix payload — lets cell/cohort clicks render
+        // call-lists without refetching.
+        let portfolioData = null;
+
+        // Client Portfolio — single source of truth for BOTH the size table and
+        // the Level×Trajectory matrix. GET /api/finance/portfolio-matrix computes
+        // everything from the trailing-12-month clean roster, so the Heavy count
+        // agrees between them (Rule 12). Bands are data-anchored quartiles.
+        async function loadPortfolioMatrix() {
             const tbody = document.getElementById('bucketsTableBody');
             const meta = document.getElementById('bucketsMeta');
-            if (!tbody) return;
             try {
-                const res = await fetch('/api/finance/bucket-aggregate?thresholds_usd=125,621,1721,4120');
+                const res = await fetch('/api/finance/portfolio-matrix');
                 if (!res.ok) throw new Error(`API error: ${res.status}`);
-                const data = await res.json();
-                if (!data.ok) throw new Error(data.error || 'no data');
+                const json = await res.json();
+                if (json.status !== 'ok' || !json.data) throw new Error('no data');
+                const d = json.data;
+                portfolioData = d;
 
-                const buckets = data.buckets || [];
-                const totalClients = buckets.reduce((s, b) => s + (b.clients || 0), 0);
-                const totalVol = buckets.reduce((s, b) => s + (b.total_vol_usd || 0), 0);
-
-                if (meta) {
-                    meta.textContent = `· ${totalClients} mijoz · baholangan ${data.recalc_date || ''}`
-                        + (data.excluded_pseudo_count ? ` · ${data.excluded_pseudo_count} pseudo chiqarildi` : '');
-                }
-
-                if (!totalClients) {
-                    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#8b8fa3; padding:16px;">Baholash ma'lumoti yo'q.</td></tr>`;
-                    return;
-                }
-
-                const ORDER = ['Micro', 'Small', 'Medium', 'Large', 'Heavy'];
-                const byName = {};
-                buckets.forEach(b => { byName[b.bucket] = b; });
-
-                let rows = ORDER.map(name => {
-                    const b = byName[name] || { clients: 0 };
-                    const n = b.clients || 0;
-                    const share = totalClients ? (n / totalClients * 100) : 0;
-                    const color = BUCKET_COLORS[name] || '#8b8fa3';
-                    const badge = `<span style="display:inline-block; font-size:11px; font-weight:600; color:${color}; background:${color}1f; padding:2px 8px; border-radius:8px; white-space:nowrap;">${name}</span>`;
-                    if (!n) {
+                // ---- Size table (repointed to the 12mo clean roster) ----
+                if (tbody) {
+                    const total = d.roster_total || 0;
+                    if (meta) meta.textContent = `· ${total} mijoz · so'nggi 12 oy · ${d.as_of}`;
+                    const rowsArr = d.size_rows || [];
+                    let rows = rowsArr.map(b => {
+                        const color = BUCKET_COLORS[b.bucket] || '#8b8fa3';
+                        const badge = `<span style="display:inline-block; font-size:11px; font-weight:600; color:${color}; background:${color}1f; padding:2px 8px; border-radius:8px; white-space:nowrap;">${b.bucket}</span>`;
+                        if (!b.clients) {
+                            return `<tr><td>${badge}</td><td style="text-align:right; color:#8b8fa3;">0</td><td style="text-align:right; color:#8b8fa3;">—</td><td style="text-align:right; color:#3a3d4a;">—</td><td style="text-align:right; color:#3a3d4a;">—</td><td style="text-align:right; color:#3a3d4a;">—</td><td style="text-align:right; color:#3a3d4a;">—</td></tr>`;
+                        }
+                        const range = `$${fmt(b.vol_min)} – $${fmt(b.vol_max)}`;
+                        const avgScore = (b.avg_score === null || b.avg_score === undefined) ? '—' : b.avg_score.toFixed(0);
                         return `<tr>
                             <td>${badge}</td>
-                            <td style="text-align:right; color:#8b8fa3;">0</td>
-                            <td style="text-align:right; color:#8b8fa3;">—</td>
-                            <td style="text-align:right; color:#3a3d4a;">—</td>
-                            <td style="text-align:right; color:#3a3d4a;">—</td>
-                            <td style="text-align:right; color:#3a3d4a;">—</td>
-                            <td style="text-align:right; color:#3a3d4a;">—</td>
+                            <td style="text-align:right; font-weight:600;">${b.clients}</td>
+                            <td style="text-align:right; color:#8b8fa3;">${b.share_pct.toFixed(0)}%</td>
+                            <td style="text-align:right;">${range}</td>
+                            <td style="text-align:right;">$${fmt(b.vol_avg)}</td>
+                            <td style="text-align:right;">$${fmt(b.vol_total)}</td>
+                            <td style="text-align:right;">${avgScore}</td>
                         </tr>`;
-                    }
-                    const range = `$${fmt(Math.round(b.vol_min || 0))} – $${fmt(Math.round(b.vol_max || 0))}`;
-                    const avgScore = (b.avg_score === null || b.avg_score === undefined) ? '—' : b.avg_score.toFixed(0);
-                    return `<tr>
-                        <td>${badge}</td>
-                        <td style="text-align:right; font-weight:600;">${n}</td>
-                        <td style="text-align:right; color:#8b8fa3;">${share.toFixed(0)}%</td>
-                        <td style="text-align:right;">${range}</td>
-                        <td style="text-align:right;">$${fmt(Math.round(b.avg_vol_usd || 0))}</td>
-                        <td style="text-align:right;">$${fmt(Math.round(b.total_vol_usd || 0))}</td>
-                        <td style="text-align:right;">${avgScore}</td>
+                    }).join('');
+                    const totVol = rowsArr.reduce((s, b) => s + (b.vol_total || 0), 0);
+                    rows += `<tr style="border-top:1px solid #2a2d3a;">
+                        <td style="font-weight:700; color:#8b8fa3;">Σ</td>
+                        <td style="text-align:right; font-weight:700;">${total}</td>
+                        <td style="text-align:right; color:#8b8fa3;">100%</td>
+                        <td style="text-align:right; color:#3a3d4a;">—</td>
+                        <td style="text-align:right; color:#3a3d4a;">—</td>
+                        <td style="text-align:right; font-weight:700;">$${fmt(Math.round(totVol))}</td>
+                        <td style="text-align:right; color:#3a3d4a;">—</td>
                     </tr>`;
-                }).join('');
+                    tbody.innerHTML = rows;
+                }
 
-                rows += `<tr style="border-top:1px solid #2a2d3a;">
-                    <td style="font-weight:700; color:#8b8fa3;">Σ</td>
-                    <td style="text-align:right; font-weight:700;">${totalClients}</td>
-                    <td style="text-align:right; color:#8b8fa3;">100%</td>
-                    <td style="text-align:right; color:#3a3d4a;">—</td>
-                    <td style="text-align:right; color:#3a3d4a;">—</td>
-                    <td style="text-align:right; font-weight:700;">$${fmt(Math.round(totalVol))}</td>
-                    <td style="text-align:right; color:#3a3d4a;">—</td>
-                </tr>`;
-
-                tbody.innerHTML = rows;
+                renderMatrix(d);
             } catch (e) {
-                console.warn('client buckets load failed', e);
-                tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#8b8fa3; padding:16px;">Yuklab bo'lmadi.</td></tr>`;
+                console.warn('portfolio matrix load failed', e);
+                if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#8b8fa3; padding:16px;">Yuklab bo'lmadi.</td></tr>`;
+                const grid = document.getElementById('matrixGrid');
+                if (grid) grid.innerHTML = `<div style="color:#8b8fa3; padding:12px;">Yuklab bo'lmadi.</div>`;
             }
+        }
+
+        // Render the Level×Trajectory grid + cohort strip from a payload.
+        function renderMatrix(d) {
+            const meta = document.getElementById('matrixMeta');
+            if (meta) {
+                const tideColor = d.tide_pct >= 0 ? '#22c55e' : '#ef4444';
+                meta.innerHTML = `· ${d.as_of} · biznes YoY (to'lqin) <b style="color:${tideColor};">${d.tide_pct > 0 ? '+' : ''}${d.tide_pct}%</b>`
+                    + ` · Rising ≥ ${d.band_cuts.rising_at_or_above}% · Sliding ≤ ${d.band_cuts.sliding_at_or_below}% (to'lqinga nisbatan)`;
+            }
+            const co = document.getElementById('matrixCohorts');
+            if (co && d.cohorts) {
+                const chip = (label, n, key) => `<span ${key ? `class="clickable" onclick="showCohort('${key}')"` : ''} style="font-weight:600; ${key ? 'cursor:pointer; text-decoration:underline dotted;' : ''}">${label}: ${n}</span>`;
+                co.innerHTML =
+                    chip("Established", d.cohorts.established, null)
+                    + chip("New", d.cohorts.new_active, 'new_active')
+                    + chip("Dormant (60k+)", d.cohorts.dormant, 'dormant')
+                    + `<span style="color:#8b8fa3;">trayektoriya baholanmagan: ${d.cohorts.established_unrated}</span>`;
+            }
+
+            const ORDER = ['Heavy', 'Large', 'Medium', 'Small', 'Micro'];
+            const BANDS = ['Rising', 'Stable', 'Sliding'];
+            let html = `<table style="width:100%; border-collapse:collapse;"><thead><tr>`
+                + `<th style="text-align:left; padding:6px 8px; color:#8b8fa3; font-size:12px;">O'lcham \\ Yo'nalish</th>`;
+            BANDS.forEach(bd => {
+                html += `<th style="text-align:center; padding:6px 8px; font-size:12px; color:${BAND_COLORS[bd]};">${bd}</th>`;
+            });
+            html += `<th style="text-align:right; padding:6px 8px; color:#8b8fa3; font-size:12px;">Σ</th></tr></thead><tbody>`;
+            ORDER.forEach(bk => {
+                const color = BUCKET_COLORS[bk] || '#8b8fa3';
+                const rowSum = BANDS.reduce((s, bd) => s + ((d.matrix[bk] || {})[bd] || 0), 0);
+                html += `<tr><td style="padding:6px 8px;"><span style="font-size:11px; font-weight:600; color:${color}; background:${color}1f; padding:2px 8px; border-radius:8px;">${bk}</span></td>`;
+                BANDS.forEach(bd => {
+                    const n = (d.matrix[bk] || {})[bd] || 0;
+                    const bc = BAND_COLORS[bd];
+                    if (!n) {
+                        html += `<td style="text-align:center; padding:6px 8px; color:#3a3d4a;">·</td>`;
+                    } else {
+                        html += `<td style="text-align:center; padding:6px 8px;"><span class="clickable" onclick="showMatrixCell('${bk}','${bd}')" style="display:inline-block; min-width:32px; font-weight:700; color:${bc}; background:${bc}1f; padding:4px 10px; border-radius:8px; cursor:pointer;">${n}</span></td>`;
+                    }
+                });
+                html += `<td style="text-align:right; padding:6px 8px; color:#8b8fa3; font-weight:600;">${rowSum}</td></tr>`;
+            });
+            html += `</tbody></table>`;
+            const grid = document.getElementById('matrixGrid');
+            if (grid) grid.innerHTML = html;
+            const drill = document.getElementById('matrixDrill');
+            if (drill) drill.innerHTML = `<div style="font-size:12px; color:#8b8fa3; padding:4px;">Katakchani bosing — mijozlar ro'yxati chiqadi.</div>`;
+        }
+
+        // Expand a matrix cell into its client call-list.
+        function showMatrixCell(bucket, band) {
+            if (!portfolioData) return;
+            const list = (portfolioData.cells || {})[`${bucket}|${band}`] || [];
+            const title = `${bucket} · ${band} — ${list.length} mijoz`;
+            const rows = list.map(c => {
+                const safe = (c.name || '').replace(/'/g, "\\'");
+                const yc = c.yoy_rel_pct >= 0 ? '#22c55e' : '#ef4444';
+                return `<tr class="clickable" onclick="showClientHistory('${safe}')">
+                    <td class="table-name">${escapeHtml(c.name || '')}</td>
+                    <td style="text-align:right;">$${fmt(c.monthly_usd)}/oy</td>
+                    <td style="text-align:right; color:${yc};">${c.yoy_rel_pct > 0 ? '+' : ''}${c.yoy_rel_pct}%</td>
+                    <td style="text-align:right; color:#8b8fa3;">${c.last_order || '—'}</td>
+                </tr>`;
+            }).join('') || `<tr><td colspan="4" style="text-align:center; color:#8b8fa3; padding:12px;">Bo'sh.</td></tr>`;
+            renderDrill(title, ["Mijoz", "$/oy", "YoY % (to'lqinga nisbatan)", "Oxirgi buyurtma"], rows);
+        }
+
+        // Expand a cohort (New / Dormant) into its client list.
+        function showCohort(key) {
+            if (!portfolioData) return;
+            const list = (portfolioData.cohort_lists || {})[key] || [];
+            const label = key === 'new_active' ? "New (<12 oy)" : "Dormant (60+ kun)";
+            const title = `${label} — ${list.length} mijoz`;
+            const rows = list.map(c => {
+                const safe = (c.name || '').replace(/'/g, "\\'");
+                const color = BUCKET_COLORS[c.bucket] || '#8b8fa3';
+                return `<tr class="clickable" onclick="showClientHistory('${safe}')">
+                    <td class="table-name">${escapeHtml(c.name || '')}</td>
+                    <td style="text-align:right;"><span style="font-size:11px; color:${color};">${c.bucket}</span></td>
+                    <td style="text-align:right;">$${fmt(c.monthly_usd)}/oy</td>
+                    <td style="text-align:right; color:#8b8fa3;">${c.last_order || '—'}</td>
+                </tr>`;
+            }).join('') || `<tr><td colspan="4" style="text-align:center; color:#8b8fa3; padding:12px;">Bo'sh.</td></tr>`;
+            renderDrill(title, ["Mijoz", "O'lcham", "$/oy", "Oxirgi buyurtma"], rows);
+        }
+
+        function renderDrill(title, headers, rowsHtml) {
+            const drill = document.getElementById('matrixDrill');
+            if (!drill) return;
+            const ths = headers.map((h, i) => `<th style="padding:6px 8px; font-size:12px; color:#8b8fa3; text-align:${i === 0 ? 'left' : 'right'};">${h}</th>`).join('');
+            drill.innerHTML = `<div style="font-weight:600; margin:8px 4px;">${title}</div>`
+                + `<div class="table-wrapper"><table style="width:100%; border-collapse:collapse;">`
+                + `<thead><tr>${ths}</tr></thead><tbody>${rowsHtml}</tbody></table></div>`;
         }
 
         // ==================== DEBT MANAGEMENT — receivables summary band ====================
@@ -4067,12 +4311,17 @@
         // has the 'debt' tab WITHOUT 'overview'/'clients' — keeping the band
         // self-sufficient and avoiding a double-fetch for everyone else.
         async function loadDebtSummary() {
+            // Agents see only the Qarzdorlar Ro'yxati list; the receivables
+            // KPI band + charts source from admin-only endpoints.
+            if (DASHBOARD_ROLE !== 'admin') return;
             const overviewLoads = (!ALLOWED_TABS) || ALLOWED_TABS.includes('overview');
             const clientsLoads = (!ALLOWED_TABS) || ALLOWED_TABS.includes('clients');
             if (!overviewLoads) {
-                if (!cachedWeekly) cachedWeekly = await apiCall('weekly-recap?weeks=13');
+                // loadDailyRecap() fills cachedDaily and draws both 14-day
+                // trends (collection rate + receivable); guards on missing
+                // overview-only elements, so it's safe without that tab.
+                await loadDailyRecap();
                 if (!cachedReceivables) cachedReceivables = await apiCall('receivables');
-                drawCollectionChart();
                 drawAgingChart(cachedReceivables.aging || {}, cachedReceivables);
             }
             if (!clientsLoads) {
@@ -5443,6 +5692,8 @@
         }
 
         async function loadDebtMap() {
+            // Admin-only: the debt heatmap sources from admin endpoints.
+            if (DASHBOARD_ROLE !== 'admin') return;
             try {
                 const [res, debtRes] = await Promise.all([
                     fetch(`/api/locations/heatmap?admin_key=${encodeURIComponent(ADMIN_KEY)}&role=all`),
