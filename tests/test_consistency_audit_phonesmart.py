@@ -40,10 +40,17 @@ def test_all_distinct_phones_not_flagged(db):
     assert _audit(db) is None
 
 
-def test_confirmed_distinct_name_suppressed_even_with_shared_phone(db):
+def test_confirmed_distinct_name_suppressed_even_with_shared_phone(db, monkeypatch):
     # Registry override: a confirmed legitimate multi-shop name is never
     # flagged, even if a (coincidental) phone overlap would otherwise trip it.
-    name = "АБДУЛЛО ЯНГИ-АРИК /ЯНГИ ЗАПЧ. БОЗОР/"  # in CONFIRMED_DISTINCT_SHARED_NAMES
+    # Inject a synthetic distinct name so this tests the MECHANISM, not a
+    # specific data value — the real registry contents change as shops are
+    # adjudicated (e.g. АБДУЛЛО was reclassified same-shop on 2026-06-03 once
+    # its corrupted phone, which had poisoned the 06-01 verdict, was fixed).
+    from backend.services import client_identity_reviewed as cir
+    name = "ТЕСТ КОЛЛИЗИЯ /ИК КИ ДУКОН/"
+    monkeypatch.setattr(cir, "CONFIRMED_DISTINCT_SHARED_NAMES",
+                        {cir.normalize_1c(name)})
     _add(db, 23, name, phone="555")
     _add(db, 24, name, phone="666", r02="555")
     assert _audit(db) is None

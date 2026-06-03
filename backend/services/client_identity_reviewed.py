@@ -48,9 +48,12 @@ def normalize_1c(name: str) -> str:
 # Alisher + Ulugbek, 2026-06-01 (Client_Card_Check doc, Part B). These are
 # legitimate name-collisions, NOT duplicates. The audit must never flag them.
 _DISTINCT_SHARED_NAMES_RAW = [
-    "АБДУЛЛО ЯНГИ-АРИК /ЯНГИ ЗАПЧ. БОЗОР/",  # ids 23,24 — confirmed two real shops:
-                                              # name==client_id_1c on both, different geo
-                                              # (Yangi-Ariq vs Хиршрав), different telegram users.
+    # NB: "АБДУЛЛО ЯНГИ-АРИК /ЯНГИ ЗАПЧ. БОЗОР/" (ids 23,24) was here — the
+    # 2026-06-01 verdict said two shops, but it was made on CORRUPTED phone data
+    # (the form showed Card 2 as 549009591, the MULTI_PHONE_CELL_MISALIGNMENT
+    # garbage; real # is 915194019). Re-reviewed 2026-06-03 on corrected data
+    # (both Telegram accounts = "ALISTROY 313") → confirmed ONE shop. Moved to
+    # CONFIRMED_SAME_SHOP below (Error Log #81).
     # NB: "Мурод ака Вокзал" is deliberately NOT here. Its apparent 3rd row
     # (id 1302) was a #74 phone-upsert DRIFT artifact — 1302 is really
     # "САРДОР Пищевой" (reverted 2026-06-01). The live cluster is {957, 41090}
@@ -68,8 +71,37 @@ CONFIRMED_DISTINCT_SHARED_NAMES = {
 # importer phone-upsert drift-guard (Error Log #74) is not yet in prod, and #74
 # rule (b) says don't run merge_duplicate_1c_clients.py before that guard
 # lands. Tracked in Session F Active TODOs.
+# ── 2026-06-03 batch (Error Log #81): the MULTI_PHONE_CELL_MISALIGNMENT parser
+# bug corrupted one row's primary phone in each of these clusters, so a later
+# import couldn't phone-match and INSERTed a hollow duplicate. Ulugbek reviewed
+# all 20 on corrected data (Client_Card_Check Part 2, 2026-06-03) → ALL one shop.
+# Merge each (keep BOTH numbers); the corrupted/garbage number is dropped.
+# Format: normalize_1c(name): "ids A+B — one shop; keep both real numbers".
+_SAME_SHOP_2026_06_03 = {
+    "АБДУЛЛО ЯНГИ-АРИК /ЯНГИ ЗАПЧ. БОЗОР/": "ids 23+24 — keep 915194019, 915490095 (supersedes 06-01 two-shops verdict)",
+    "БЕКНАЗАР ЖАМБАЙ /Аль-Бухорий/": "ids 328+330 — keep 993039487, 997149487, 773108794",
+    "БОБУР Жомбой /Кулбости МФЙ/": "ids 352+353 — keep 971573752, 995913752",
+    "БОЙНАЗАР ака Нурабад": "ids 359+360 — keep 933595851, 973953069",
+    "ДОСТОН ГУС УРГУТ": "ids 535+41038 — keep 942830030, 906550373 (corrupt row 535 is lower id)",
+    "ЖАМШЕД АЛИКУЛОВ ПАЯРИК": "ids 577+578 — keep 996628833, 997545915",
+    "Ислом ака Паярик/ Нариман": "ids 786+787 — keep 901591919, 941853636",
+    "КОСИМ ОКДАРЁ": "ids 844+845 — keep 981906655, 997706655",
+    "Максуд Наримон": "ids 870+871 — keep 886155678, 933550002",
+    "МУРОД ака Супер": "ids 963+964 — keep 915350660, 982732224",
+    "МУСОБЕК /БиоНУР/": "ids 978+979 — keep 906027773, 944780202",
+    "МУХИДДИН АКА  /Жамбай - Охунбобоев КАНГЛИ мах./": "ids 991+992 — keep 938365515, 994503350",
+    "МУХТОР АКА КУШРАБАД /ЗАРМИТАН/": "ids 1006+1007 — keep 937226669, 991048080",
+    "НУРАЛИ  /Метан/": "ids 1053+1054 — keep 932208459, 942577091",
+    "Сиддик ака СУПЕР": "ids 1310+1311 — keep 337075727, 937290853",
+    "Фарход Булунгур /Фозил Юлдош/": "ids 1588+1589 — keep 915487774, 994227478",
+    "Хуснидин Рахмонов ЖОМБОЙ": "ids 1750+1751 — keep 933491449, 997525894",
+    "Шахзод Гофуров Паярик/9-совхоз/": "ids 1797+1798 — keep 931759986, 990930896",
+    "Шухрат Туронов /Жомбой-ГАЗРА/": "ids 1935+1936 — keep 883920489, 888937701",
+    "ЭЛЬЕР НАРИМАН": "ids 1957+1958 — keep 889142121, 945352424",
+}
 CONFIRMED_SAME_SHOP = {
     normalize_1c("Фуркат Галлаорол"): "ids 1151+40902 — one shop; merge pending #74 importer guard",
+    **{normalize_1c(k): v for k, v in _SAME_SHOP_2026_06_03.items()},
 }
 
 
