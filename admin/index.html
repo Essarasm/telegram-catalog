@@ -4156,7 +4156,7 @@
             const tbody = document.getElementById('bucketsTableBody');
             const meta = document.getElementById('bucketsMeta');
             try {
-                const res = await fetch('/api/finance/portfolio-matrix');
+                const res = await fetch('/api/finance/portfolio-matrix?admin_key=' + encodeURIComponent(ADMIN_KEY));
                 if (!res.ok) throw new Error(`API error: ${res.status}`);
                 const json = await res.json();
                 if (json.status !== 'ok' || !json.data) throw new Error('no data');

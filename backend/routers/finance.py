@@ -1249,7 +1249,7 @@ def bucket_examples(
 
 
 @router.get("/portfolio-matrix")
-def portfolio_matrix():
+def portfolio_matrix(admin_key: str = Query("")):
     """Live client-portfolio Level × Trajectory matrix, cohorts, call-lists.
 
     Single source of truth for the Client Portfolio tab: both the size rows and
@@ -1257,7 +1257,14 @@ def portfolio_matrix():
     the Heavy count agrees everywhere (avoids the dual-source blind-reader drift
     in `.claude/rules/12-dual-source-columns.md`). Bands are data-anchored
     (quartiles of the relative-YoY distribution), recomputed each call.
+
+    Admin-only: exposes per-client revenue + names. The tab is admin-scoped in
+    ROLE_ALLOWED_TABS; `check_admin_key` accepts the env ADMIN_API_KEY or an
+    admin-role dashboard session token.
     """
+    if not check_admin_key(admin_key):
+        return JSONResponse({"ok": False, "error": "Unauthorized"}, status_code=401)
+
     from backend.services.client_portfolio import compute_portfolio
     conn = get_db()
     try:
