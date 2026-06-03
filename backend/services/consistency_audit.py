@@ -424,6 +424,50 @@ def run_audit(fix: bool = False) -> dict:
                 "sample": [dict(r) for r in mislinked[:5]],
             }
 
+        # 14. Misattributed debt comments — `client_callbacks` (the debt-tab
+        # comment/callback history) is keyed by `client_name_1c` (a non-unique,
+        # mutable 1C name label), never by a stable client_id / allowed_clients.id.
+        # That makes it a latent member of the identity family (Error Log #75:
+        # client_id_1c is a name, not a key). Two failure shapes surface here:
+        #   - commingled: one name shared by ≥2 distinct active shops (different
+        #     phones) that both have comments → their histories merge silently.
+        #   - orphaned: a comment's name matches no active client (rename / #74
+        #     drift) → the comment is lost, or worse, attaches to whoever inherits
+        #     the old name next.
+        # Detection-only tripwire; the durable fix is to add a client_id FK to
+        # client_callbacks + remap it in the merge tool. Table may be absent on a
+        # not-yet-migrated DB, so guard the query.
+        try:
+            bad_cb = conn.execute(
+                """SELECT 'commingled' AS kind, cc.client_name_1c AS name,
+                          COUNT(*) AS callbacks
+                     FROM client_callbacks cc
+                    WHERE (SELECT COUNT(DISTINCT ac.phone_normalized)
+                             FROM allowed_clients ac
+                            WHERE ac.client_id_1c = cc.client_name_1c
+                              AND COALESCE(ac.status,'active') NOT LIKE 'merged%'
+                              AND ac.phone_normalized != '') > 1
+                    GROUP BY cc.client_name_1c
+                   UNION ALL
+                   SELECT 'orphaned' AS kind, cc.client_name_1c AS name,
+                          COUNT(*) AS callbacks
+                     FROM client_callbacks cc
+                    WHERE NOT EXISTS (
+                            SELECT 1 FROM allowed_clients ac
+                             WHERE ac.client_id_1c = cc.client_name_1c
+                               AND COALESCE(ac.status,'active') NOT LIKE 'merged%')
+                    GROUP BY cc.client_name_1c
+                    ORDER BY callbacks DESC
+                    LIMIT 20"""
+            ).fetchall()
+        except Exception:
+            bad_cb = []
+        if bad_cb:
+            result["callbacks_misattributed"] = {
+                "count": len(bad_cb),
+                "sample": [dict(r) for r in bad_cb[:5]],
+            }
+
     finally:
         conn.close()
     return result
@@ -449,6 +493,7 @@ SEVERITY_THRESHOLDS = {
     "fuzzy_client_1c_dups":     (10, 1),
     "identity_drift_held":      (5, 1),    # #74 — any held drift needs a human
     "mislinked_users":          (3, 1),    # Турдиев class — any wrong link needs a human
+    "callbacks_misattributed":  (3, 1),    # name-keyed debt comments — commingled/orphaned
     # Informational only — never critical
     "recent_phone_changes_7d":  (None, None),
 }
@@ -562,6 +607,7 @@ def format_audit_message(findings: dict, prior_findings: dict | None = None) -> 
         "fuzzy_client_1c_dups":    "👥 client_id_1c dublikat (bir xil telefon — birlashtirish kerak)",
         "identity_drift_held":     "🛑 Identity drift ushlab turilibdi (1C nomi o'zgargan — qo'lda hal qiling)",
         "mislinked_users":         "🔗 Mijoz noto'g'ri ulangan (foydalanuvchi telefoni boshqa mijozga tegishli)",
+        "callbacks_misattributed": "📝 Qarz izohlari noto'g'ri biriktirilgan (nom bo'yicha — umumiy nom yoki yetim)",
     }
 
     # Group findings by severity. Render CRITICAL first so the most

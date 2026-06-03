@@ -74,3 +74,46 @@ def test_true_count_not_capped_at_20(db):
         _add(db, 101 + i * 2, f"КЛАСТЕР {i}", phone=f"q{i}", r02=f"p{i}")
     res = _audit(db)
     assert res is not None and res["count"] == 22
+
+
+# ── callbacks_misattributed: debt comments keyed by name, not stable id ──────
+# client_callbacks (debt-tab comment history) is keyed by client_name_1c — a
+# non-unique mutable 1C name label. The audit flags two failure shapes.
+
+def _add_cb(conn, name, note="x"):
+    conn.execute(
+        "INSERT INTO client_callbacks (client_name_1c, set_by_name, note) "
+        "VALUES (?, 'tester', ?)",
+        (name, note),
+    )
+
+
+def _cb_audit(conn):
+    conn.commit()
+    return run_audit().get("callbacks_misattributed")
+
+
+def test_callback_on_shared_name_is_commingled(db):
+    # Same name on two distinct shops (different phones) + a comment on that
+    # name → the comment can't tell which shop → flagged commingled.
+    _add(db, 1, "УМУМИЙ ШОП", phone="111")
+    _add(db, 2, "УМУМИЙ ШОП", phone="222")
+    _add_cb(db, "УМУМИЙ ШОП")
+    res = _cb_audit(db)
+    assert res is not None and res["count"] >= 1
+    assert any(s["kind"] == "commingled" for s in res["sample"])
+
+
+def test_callback_orphaned_when_no_active_client(db):
+    # Comment on a name that matches no active client (rename / drift) → orphan.
+    _add_cb(db, "YO'Q MIJOZ")
+    res = _cb_audit(db)
+    assert res is not None
+    assert any(s["kind"] == "orphaned" for s in res["sample"])
+
+
+def test_callback_on_single_client_not_flagged(db):
+    # Comment on a name that maps to exactly one active client → clean.
+    _add(db, 1, "YAGONA SHOP", phone="111")
+    _add_cb(db, "YAGONA SHOP")
+    assert _cb_audit(db) is None
