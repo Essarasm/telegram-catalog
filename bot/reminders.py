@@ -630,7 +630,24 @@ async def _send_sunday_infra_nudge(bot, chat_id: int) -> None:
     is_quarter_month = today.month in {3, 6, 9, 12}
     is_quarterly = is_first_sunday and is_quarter_month
 
+    # One-time top item, self-expiring after 2026-06-07 (approved 2026-06-03).
+    # Per-session git worktrees — eliminate the parallel-session WIP-bundling
+    # class (Rule Violations #6/#14; an unauth endpoint reached prod this way).
+    # Plain plan in Session F handoff 2026-06-02 / this convo; do it on a quiet
+    # Sunday with no other session live. Drops off automatically next week.
+    onetime = ""
+    if today.isoformat() <= "2026-06-07":
+        onetime = (
+            "⭐ <b>FIRST (one-time setup): per-session git worktrees</b>\n"
+            "Give each Claude session its own private copy so parallel sessions "
+            "can't bundle each other's unfinished work (this is how an "
+            "unauthenticated page reached prod on 2026-06-03). Plan approved — "
+            "start a session and say: <i>\"set up worktrees per the approved plan.\"</i>\n\n"
+            "──────────\n\n"
+        )
+
     base = (
+        onetime +
         "🛠 <b>Sunday infrastructure maintenance</b>\n\n"
         "• <code>bash tools/audit.sh</code> — 30-sec foundation snapshot\n"
         "• Address any 🟡 / ❌ in the summary\n"
