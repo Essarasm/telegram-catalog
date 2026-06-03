@@ -160,7 +160,7 @@ def _curated_state(conn, ac_id, gps_lat, credit_score, credit_limit):
 
 
 def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
-                            cid_1c, company, changed_by_tag):
+                            cid_1c, company, changed_by_tag, onec_card_id=None):
     """Shared upsert used by both the bot path (apply_clients_upload) and the
     CSV CLI path (import_clients). Returns ``("inserted"|"updated"|"skipped"|"drift_held", existing_id_or_new)``.
 
@@ -172,7 +172,13 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
     fill ``raqam_02/03`` (fill-only — never overwrites a non-null existing slot).
     Relationship markers (e.g. "эри") land in ``ism_02/03`` (also fill-only).
 
-    Lookup precedence:
+    Lookup precedence (Client Identity Anchoring Phase 0, 2026-06-03):
+      0. ``onec_card_id`` — the STABLE 1C card anchor ("{folder}:{Код}"). When
+         present, resolves first and definitively: a client whose phone changed
+         or got corrupted is still recognised, so no duplicate row is spawned
+         (ends the #74/#75/#81 family). A card-id match is "same client" by
+         definition → it bypasses the #74 drift guard and the cid-collision
+         freeze (a differing name is a legitimate 1C rename, not drift).
       1. ``phone_normalized = primary``
       2. ``client_id_1c = cid_1c`` — catches cases where the importer's primary
          interpretation changed across runs (e.g. parser bugfix moved the
@@ -186,6 +192,8 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
     primary = phones[0]["digits"]
     extras = phones[1:]
 
+    onec_card_id = (onec_card_id or "").strip() or None
+
     # client_id_1c sanity: never accept a purely-numeric value (1C "Код" leakage).
     if cid_1c and cid_1c.isdigit():
         cid_1c = ""
@@ -193,20 +201,36 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
         cid_1c = client_name
 
     select_cols = ("id, phone_normalized, raqam_02, raqam_03, ism_02, ism_03, "
-                   "client_id_1c, gps_latitude, credit_score, credit_limit")
+                   "client_id_1c, gps_latitude, credit_score, credit_limit, "
+                   "onec_card_id")
     not_merged = "COALESCE(status, 'active') NOT LIKE 'merged%'"
 
     # Track which key matched the existing row — the #74 drift guard only fires
-    # on a phone/raqam match (a cid_1c match can't drift the name by definition).
+    # on a phone/raqam match (a cid_1c or onec_card_id match can't drift the
+    # name by definition).
     match_via = None
-    existing = conn.execute(
-        f"SELECT {select_cols} FROM allowed_clients "
-        f"WHERE phone_normalized = ? AND {not_merged} "
-        f"ORDER BY id LIMIT 1",
-        (primary,),
-    ).fetchone()
-    if existing is not None:
-        match_via = "phone"
+    existing = None
+
+    # Step 0 — resolve by the stable card anchor first.
+    if onec_card_id:
+        existing = conn.execute(
+            f"SELECT {select_cols} FROM allowed_clients "
+            f"WHERE onec_card_id = ? AND {not_merged} "
+            f"ORDER BY id LIMIT 1",
+            (onec_card_id,),
+        ).fetchone()
+        if existing is not None:
+            match_via = "onec_card_id"
+
+    if existing is None:
+        existing = conn.execute(
+            f"SELECT {select_cols} FROM allowed_clients "
+            f"WHERE phone_normalized = ? AND {not_merged} "
+            f"ORDER BY id LIMIT 1",
+            (primary,),
+        ).fetchone()
+        if existing is not None:
+            match_via = "phone"
 
     if existing is None and cid_1c:
         existing = conn.execute(
@@ -231,7 +255,7 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
     if existing is not None:
         (existing_id, existing_phone, existing_r02, existing_r03,
          existing_i02, existing_i03, existing_cid,
-         existing_gps, existing_cs, existing_cl) = existing
+         existing_gps, existing_cs, existing_cl, existing_card) = existing
 
         # ── #74 IDENTITY-DRIFT GUARD ──────────────────────────────────────
         # A phone/raqam match whose incoming client_id_1c differs from the
@@ -272,8 +296,13 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
         # the second row's name/location/company would clobber the first's
         # identity even though it's a different real client. The cid_1c
         # tiebreaker decides the label; everything else freezes.
+        #
+        # EXCEPTION: a card-id match is definitively the SAME client (the card
+        # is the stable anchor), so a differing name is a legitimate 1C rename,
+        # not a collision — don't freeze; let the name update through.
         cid_collision = bool(
             existing_cid and cid_1c and existing_cid != cid_1c
+            and match_via != "onec_card_id"
         )
 
         if existing_phone != primary and not cid_collision:
@@ -306,6 +335,18 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
                 flag_needs_review = True
             updates.append("client_id_1c = ?"); params.append(resolved_cid)
 
+        # Anchor capture (Phase 0) — fill-only. When this row has no card id yet,
+        # stamp it (the natural backfill on every import). Never churn an existing
+        # anchor: if a phone/cid/raqam match landed on a row already anchored to a
+        # DIFFERENT card, the incoming card wasn't found by the step-0 card lookup
+        # → genuine anchor conflict (two 1C cards entangled on one row). Leave the
+        # stored anchor intact and flag for review rather than silently reassign.
+        if onec_card_id:
+            if not existing_card:
+                updates.append("onec_card_id = ?"); params.append(onec_card_id)
+            elif existing_card != onec_card_id and match_via != "onec_card_id":
+                flag_needs_review = True
+
         # Fill-only writes for raqam_02/03 + ism_02/03 from the extra phones.
         slots = [(existing_r02, existing_i02, "raqam_02", "ism_02"),
                  (existing_r03, existing_i03, "raqam_03", "ism_03")]
@@ -334,10 +375,11 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
     cur = conn.execute(
         "INSERT INTO allowed_clients "
         "(phone_normalized, name, location, source_sheet, status, "
-        " client_id_1c, company_name, raqam_02, ism_02, raqam_03, ism_03) "
-        "VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+        " client_id_1c, company_name, raqam_02, ism_02, raqam_03, ism_03, "
+        " onec_card_id) "
+        "VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
         (primary, client_name, location, source or "clients_upload",
-         cid_1c, company, r02, i02, r03, i03),
+         cid_1c, company, r02, i02, r03, i03, onec_card_id),
     )
     return ("inserted", cur.lastrowid)
 
@@ -500,9 +542,15 @@ _HEADER_ALIAS = {
     # source
     "source": "source", "manba": "source", "источник": "source",
     # 1c id (Контрагент in 1C is the client row itself; keep it mapping to client_id_1c
-    # because we use the 1C NAME (string) as the link key — NOT the numeric Код.
-    # The "Код" column is a numeric internal 1C id (e.g. 1701) — don't alias it here,
-    # otherwise it overwrites the human-readable 1C name.
+    # because the human-readable 1C NAME is still the display label — the numeric
+    # "Код" must NOT land in client_id_1c (it would overwrite the name).
+    # Client Identity Anchoring Phase 0 (2026-06-03): "Код" IS captured now, but
+    # to its own anchor field onec_card_id (folder-scoped → de-collided), NEVER to
+    # client_id_1c. See _apply_folder_anchor + _upsert_client_from_row.
+    "код": "onec_code", "kod": "onec_code",
+    # "Вид контрагента" — empty cell marks a folder-header row (Покупатели /
+    # Поставщики / Прочие); used only to track the current folder, never stored.
+    "вид контрагента": "onec_vid", "вид": "onec_vid",
     "client_id_1c": "client_id_1c", "1c": "client_id_1c",
     "1c nomi": "client_id_1c", "1с nomi": "client_id_1c",
     "1c ismi": "client_id_1c", "1c name": "client_id_1c",
@@ -528,7 +576,8 @@ def _normalize_headers(raw_headers: list) -> list:
 
 def _score_header_row(raw_row) -> int:
     """Return the number of canonical fields this row hits."""
-    known = {"phone", "name", "client_id_1c", "company_name", "location", "source"}
+    known = {"phone", "name", "client_id_1c", "company_name", "location", "source",
+             "onec_code", "onec_vid"}
     return sum(1 for h in _normalize_headers(raw_row) if h in known)
 
 
@@ -548,6 +597,53 @@ def _find_header_row(table_rows, max_scan: int = 15) -> int:
     if best_score <= 0:
         return -1
     return best_idx
+
+
+def _normalize_card_code(v) -> str:
+    """1C 'Код' cell → bare integer string ('1056'). xlrd yields floats, openpyxl
+    yields ints/floats/strings; normalise all to the digits we anchor on."""
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    s = str(v).strip()
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+    return s
+
+
+def _apply_folder_anchor(headers: list, rows: list) -> list:
+    """Client Identity Anchoring Phase 0 — stamp ``onec_card_id`` on each data row.
+
+    The 1C Контрагенты export groups rows under folder-header rows
+    (Покупатели / Поставщики / Прочие) whose 'Вид контрагента' cell is empty and
+    whose 'Наименование' cell holds the folder name. 'Код' is folder-scoped (it
+    collides across folders), so the stable anchor is
+    ``onec_card_id = "{folder}:{Код}"`` (e.g. ``"Прочие:1056"``). Walk the rows in
+    order tracking the current folder, stamp each data row, and drop the
+    folder-header rows themselves.
+
+    **No-op unless the file has BOTH the Код and Вид контрагента columns** — any
+    other upload (Client Master, manual phone-fix sheets) is returned untouched,
+    so a missing-column file can never be misread as "all folder headers" and
+    silently drop every data row.
+    """
+    if not ("onec_code" in headers and "onec_vid" in headers):
+        return rows
+    out, folder = [], None
+    for r in rows:
+        vid = str(r.get("onec_vid") or "").strip()
+        if vid == "":
+            # Folder-header row — its Наименование cell names the folder.
+            fname = str(r.get("name") or "").strip()
+            if fname:
+                folder = fname
+            continue  # never a real client row; drop it
+        code = _normalize_card_code(r.get("onec_code"))
+        if folder and code:
+            r["onec_card_id"] = f"{folder}:{code}"
+        out.append(r)
+    return out
 
 
 def _iter_rows_from_xlsx(file_bytes: bytes):
@@ -574,6 +670,7 @@ def _iter_rows_from_xlsx(file_bytes: bytes):
         data = {headers[i]: (row[i] if i < len(row) else None)
                 for i in range(len(headers))}
         out.append(data)
+    out = _apply_folder_anchor(headers, out)
     return header_raw, out
 
 
@@ -605,6 +702,7 @@ def _iter_rows_from_xls(file_bytes: bytes):
                 v = str(int(v))
             row[headers[c]] = v
         out.append(row)
+    out = _apply_folder_anchor(headers, out)
     return header_raw, out
 
 
@@ -653,6 +751,7 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
             cid_1c=str(raw.get("client_id_1c") or "").strip(),
             company=str(raw.get("company_name") or "").strip(),
             changed_by_tag="apply_clients_upload",
+            onec_card_id=str(raw.get("onec_card_id") or "").strip() or None,
         )
         if outcome == "inserted":
             inserted += 1

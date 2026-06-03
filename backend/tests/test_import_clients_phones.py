@@ -187,6 +187,7 @@ def conn():
             source_sheet TEXT,
             client_id_1c TEXT,
             company_name TEXT,
+            onec_card_id TEXT,
             status TEXT DEFAULT 'active',
             needs_review INTEGER DEFAULT 0,
             raqam_02 TEXT, ism_02 TEXT,

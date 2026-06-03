@@ -99,7 +99,7 @@ def gather_sibling_phones(conn, client_id):
     return phones
 
 
-SCHEMA_VERSION = 20  # 2026-06-01: v20 adds client_identity_drift_queue (#74 importer drift-guard hold table). Earlier: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
+SCHEMA_VERSION = 21  # 2026-06-03: v21 adds allowed_clients.onec_card_id ("{folder}:{Код}" stable 1C card anchor) + partial UNIQUE — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed phone can't spawn a duplicate (#74/#75/#81 family). Earlier: v20 adds client_identity_drift_queue (#74 importer drift-guard hold table). Earlier: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
 
 
 def init_db():
@@ -1017,6 +1017,7 @@ def init_db():
     # Migration: add client_id_1c and company_name to allowed_clients
     ac_cols = {row[1] for row in conn.execute("PRAGMA table_info(allowed_clients)").fetchall()}
     for col, coltype in [("client_id_1c", "TEXT"), ("company_name", "TEXT"),
+                          ("onec_card_id", "TEXT"),
                           ("location_district_id", "INTEGER"), ("location_moljal_id", "INTEGER")]:
         if col not in ac_cols:
             conn.execute(f"ALTER TABLE allowed_clients ADD COLUMN {col} {coltype}")
@@ -1024,6 +1025,37 @@ def init_db():
 
     # Create index on client_id_1c (after migration ensures column exists)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_allowed_1c ON allowed_clients(client_id_1c)")
+
+    # v21 — Client Identity Anchoring Phase 0 (2026-06-03). onec_card_id =
+    # "{folder}:{Код}" is the STABLE 1C card anchor (Код is folder-scoped, so
+    # the folder prefix de-collides it). The daily importer resolves by this
+    # before phone/name → a client whose phone changed/corrupted is still
+    # recognised → no silent duplicate INSERT (the #74/#75/#81 family). A
+    # partial UNIQUE across active (non-merged) rows is the structural tripwire
+    # that makes "≥2 active rows sharing one card id" impossible. Guarded like
+    # idx_allowed_phone_unique (v14): on first deploy the column is brand-new
+    # (all NULL) so it lands clean; if a future redeploy finds active dups still
+    # sharing a card id, skip + warn loudly rather than raise IntegrityError —
+    # Phase 0b backfill+merge resolves them, then the index lands on redeploy.
+    dup_card = conn.execute(
+        "SELECT onec_card_id, COUNT(*) AS n FROM allowed_clients "
+        "WHERE onec_card_id IS NOT NULL AND onec_card_id != '' "
+        "  AND COALESCE(status,'active') NOT LIKE 'merged%' "
+        "GROUP BY onec_card_id HAVING n > 1 LIMIT 1"
+    ).fetchone()
+    if dup_card is None:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_allowed_onec_card_id "
+            "ON allowed_clients(onec_card_id) "
+            "WHERE onec_card_id IS NOT NULL AND onec_card_id != '' "
+            "  AND COALESCE(status,'active') NOT LIKE 'merged%'"
+        )
+    else:
+        print(
+            f"[init_db v21] WARNING: skipping idx_allowed_onec_card_id — active "
+            f"rows already share onec_card_id={dup_card[0]!r} (count={dup_card[1]}). "
+            f"Run Phase 0b backfill+merge and redeploy to land the unique index."
+        )
 
     # Phase 1a of Client Data Workflow — sync-guarantee columns.
     # All NULL by default; populated progressively as the pipeline fills them in.
@@ -2368,7 +2400,7 @@ def init_db():
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "v20 = client_identity_drift_queue — #74 importer drift-guard hold table; import_clients queues a phone-match upsert that would rewrite client_id_1c on a curated-state row instead of mutating it. Earlier: v19 = photo_batch_items (catalog /foto workflow); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
+            (SCHEMA_VERSION, "v21 = allowed_clients.onec_card_id ('{folder}:{Код}' stable 1C card anchor) + partial UNIQUE idx_allowed_onec_card_id — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed/corrupted phone can't spawn a duplicate row (ends the #74/#75/#81 recurring family). Earlier: v20 = client_identity_drift_queue (#74 importer drift-guard hold table); v19 = photo_batch_items (catalog /foto workflow); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
         )
 
     conn.commit()
