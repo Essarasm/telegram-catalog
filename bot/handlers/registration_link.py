@@ -740,6 +740,28 @@ async def _execute_new(
             return
 
         phone_norm = normalize_phone(user["phone"] or "")
+
+        # Resolve-or-hold guard (Phase 2): if the phone ambiguously matches
+        # multiple clients, hold for review instead of linking to a guess.
+        from backend.services.client_resolver import resolve_client, queue_hold
+        _verdict = resolve_client(
+            conn, telegram_id=tg_id,
+            phones=[phone_norm] if phone_norm else None, name=fullname,
+        )
+        if _verdict["action"] == "hold":
+            queue_hold(conn, _verdict, phone=phone_norm, name=fullname,
+                       source="admin_panel")
+            conn.commit()
+            if isinstance(source, CallbackQuery):
+                await source.answer("⚠️ Tekshiruvga qo'yildi", show_alert=True)
+            else:
+                await source.answer(
+                    "⚠️ Bu telefon bir nechta mijozga mos keldi — tekshiruvga "
+                    "qo'yildi. 1C kartani qo'lda biriktiring."
+                )
+            await state.clear()
+            return
+
         existing = conn.execute(
             "SELECT id FROM allowed_clients "
             "WHERE phone_normalized = ? "
@@ -794,6 +816,9 @@ async def _execute_new(
             client_id = conn.execute(
                 "SELECT last_insert_rowid()"
             ).fetchone()[0]
+
+        from backend.services.phone_slots import sync_client_phones
+        sync_client_phones(conn, client_id, source="admin_panel")
 
         # users update — store the text address in users.location_address;
         # don't touch users.latitude/longitude (those reflect the user's

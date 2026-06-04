@@ -180,17 +180,27 @@ async def cmd_add(message: types.Message):
 
     conn = get_db()
 
-    existing = conn.execute(
-        "SELECT id, name FROM allowed_clients "
-        "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
-        "ORDER BY id LIMIT 1",
-        (phone_norm,),
-    ).fetchone()
+    # Route through the resolve-or-hold chokepoint (Phase 2).
+    from backend.services.client_resolver import resolve_client, queue_hold
+    from backend.services.phone_slots import sync_client_phones
+    verdict = resolve_client(conn, phones=[phone_norm], name=client_name or None)
 
-    if existing:
+    if verdict["action"] == "matched":
+        ex = conn.execute("SELECT id, name FROM allowed_clients WHERE id = ?",
+                          (verdict["client_id"],)).fetchone()
         await message.reply(
             f"⚠️ Bu raqam allaqachon ro'yxatda.\n"
-            f"ID: {existing['id']}, Ism: {existing['name'] or '—'}",
+            f"ID: {ex['id']}, Ism: {ex['name'] or '—'}",
+        )
+        conn.close()
+        return
+    if verdict["action"] == "hold":
+        queue_hold(conn, verdict, phone=phone_norm, name=client_name or None,
+                   source="bot_added")
+        conn.commit()
+        await message.reply(
+            "⚠️ Bu raqam bir nechta mijozga mos keldi — <b>tekshiruvga</b> "
+            "qo'yildi (client_identity_drift_queue).", parse_mode="HTML",
         )
         conn.close()
         return
@@ -198,6 +208,10 @@ async def cmd_add(message: types.Message):
     conn.execute(
         "INSERT INTO allowed_clients (phone_normalized, name, source_sheet, status) VALUES (?, ?, ?, ?)",
         (phone_norm, client_name or None, "bot_added", "active"),
+    )
+    sync_client_phones(
+        conn, conn.execute("SELECT last_insert_rowid()").fetchone()[0],
+        source="bot_added",
     )
 
     all_users = conn.execute(
