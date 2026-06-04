@@ -518,6 +518,7 @@ def run_audit(fix: bool = False) -> dict:
                   AND ac.source_sheet IN (
                         'bot_new_client', 'bot_approved', 'bot_linked',
                         'agent_panel', 'admin_panel', 'bot_added')
+                  AND COALESCE(u.is_agent, 0) = 0  -- staff aren't pending shops
                   AND u.registered_at IS NOT NULL
                   AND u.registered_at < datetime('now', '-14 days')
                 ORDER BY u.registered_at
