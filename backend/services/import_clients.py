@@ -159,6 +159,17 @@ def _curated_state(conn, ac_id, gps_lat, credit_score, credit_limit):
     return state
 
 
+def _sync_client_phones_safe(conn, client_id):
+    """Mirror the row's phone slots into client_phones (Phase 1). Best-effort:
+    client_phones is not yet a production read source, so a sync hiccup must
+    never break the load-bearing import — log and continue."""
+    try:
+        from backend.services.phone_slots import sync_client_phones
+        sync_client_phones(conn, client_id, source="import")
+    except Exception as e:  # pragma: no cover — defensive on the import hot path
+        print(f"[import_clients] client_phones sync skipped for id={client_id}: {e}")
+
+
 def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
                             cid_1c, company, changed_by_tag, onec_card_id=None):
     """Shared upsert used by both the bot path (apply_clients_upload) and the
@@ -364,6 +375,7 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
                 f"UPDATE allowed_clients SET {', '.join(updates)} WHERE id = ?",
                 params,
             )
+            _sync_client_phones_safe(conn, existing_id)
             return ("updated", existing_id)
         return ("skipped", existing_id)
 
@@ -381,6 +393,7 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
         (primary, client_name, location, source or "clients_upload",
          cid_1c, company, r02, i02, r03, i03, onec_card_id),
     )
+    _sync_client_phones_safe(conn, cur.lastrowid)
     return ("inserted", cur.lastrowid)
 
 

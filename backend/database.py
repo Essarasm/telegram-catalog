@@ -99,7 +99,7 @@ def gather_sibling_phones(conn, client_id):
     return phones
 
 
-SCHEMA_VERSION = 21  # 2026-06-03: v21 adds allowed_clients.onec_card_id ("{folder}:{Код}" stable 1C card anchor) + partial UNIQUE — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed phone can't spawn a duplicate (#74/#75/#81 family). Earlier: v20 adds client_identity_drift_queue (#74 importer drift-guard hold table). Earlier: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
+SCHEMA_VERSION = 22  # 2026-06-04: v22 adds client_phones (one-to-many phone attribute; mirror of allowed_clients phone slots, read via phone_slots.get_client_phones) — Client Identity Anchoring Phase 1. Earlier: v21 adds allowed_clients.onec_card_id ("{folder}:{Код}" stable 1C card anchor) + partial UNIQUE — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed phone can't spawn a duplicate (#74/#75/#81 family). Earlier: v20 adds client_identity_drift_queue (#74 importer drift-guard hold table). Earlier: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
 
 
 def init_db():
@@ -1056,6 +1056,31 @@ def init_db():
             f"rows already share onec_card_id={dup_card[0]!r} (count={dup_card[1]}). "
             f"Run Phase 0b backfill+merge and redeploy to land the unique index."
         )
+
+    # v22 — Client Identity Anchoring Phase 1 (2026-06-04). client_phones makes
+    # phone a one-to-many ATTRIBUTE of the client row instead of three fixed
+    # slots (phone_normalized + raqam_02/03) that overflow (the #71/#81 garble
+    # mess). Direction is ONE-WAY: allowed_clients slots → client_phones, kept in
+    # sync by phone_slots.sync_client_phones() on every phone write (importer +
+    # fill_empty_slot). The slots remain authoritative in Phase 1; client_phones
+    # is a derived mirror + the read helper get_client_phones() — NO production
+    # reader is migrated onto it yet (Phase 2's resolve_client() does that), so
+    # there is no dual-source-blind-reader risk (.claude/rules/12). UNIQUE per
+    # (client_id, phone) keeps the mirror idempotent.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS client_phones (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id        INTEGER NOT NULL,
+            phone_normalized TEXT NOT NULL,
+            is_primary       INTEGER NOT NULL DEFAULT 0,
+            source           TEXT,
+            added_at         TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(client_id, phone_normalized),
+            FOREIGN KEY (client_id) REFERENCES allowed_clients(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_phones_phone ON client_phones(phone_normalized)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_phones_client ON client_phones(client_id)")
 
     # Phase 1a of Client Data Workflow — sync-guarantee columns.
     # All NULL by default; populated progressively as the pipeline fills them in.
@@ -2400,7 +2425,7 @@ def init_db():
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "v21 = allowed_clients.onec_card_id ('{folder}:{Код}' stable 1C card anchor) + partial UNIQUE idx_allowed_onec_card_id — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed/corrupted phone can't spawn a duplicate row (ends the #74/#75/#81 recurring family). Earlier: v20 = client_identity_drift_queue (#74 importer drift-guard hold table); v19 = photo_batch_items (catalog /foto workflow); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
+            (SCHEMA_VERSION, "v22 = client_phones (one-to-many phone attribute; one-way mirror of allowed_clients phone slots maintained by phone_slots.sync_client_phones, read via get_client_phones) — Client Identity Anchoring Phase 1. v21 = allowed_clients.onec_card_id ('{folder}:{Код}' stable 1C card anchor) + partial UNIQUE idx_allowed_onec_card_id — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed/corrupted phone can't spawn a duplicate row (ends the #74/#75/#81 recurring family). Earlier: v20 = client_identity_drift_queue (#74 importer drift-guard hold table); v19 = photo_batch_items (catalog /foto workflow); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
         )
 
     conn.commit()

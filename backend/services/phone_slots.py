@@ -82,18 +82,86 @@ def fill_empty_slot(conn, client_id: int, new_phone_raw: str,
             "UPDATE allowed_clients SET raqam_02 = ? WHERE id = ?",
             (norm, client_id),
         )
+        sync_client_phones(conn, client_id, source="mini_app")
         return "filled_02"
     if not (row["raqam_03"] or "").strip():
         conn.execute(
             "UPDATE allowed_clients SET raqam_03 = ? WHERE id = ?",
             (norm, client_id),
         )
+        sync_client_phones(conn, client_id, source="mini_app")
         return "filled_03"
     conn.execute(
         "UPDATE allowed_clients SET needs_review = 1 WHERE id = ?",
         (client_id,),
     )
     return "no_slot"
+
+
+# ── Client Identity Anchoring Phase 1 — client_phones mirror ────────────────
+# client_phones is a one-to-many ATTRIBUTE store, kept as a ONE-WAY mirror of
+# the allowed_clients phone slots (phone_normalized = primary, raqam_02/03 =
+# secondaries). The slots stay authoritative in Phase 1; these helpers maintain
+# + read the mirror. Phase 2's resolve_client() reads via get_client_phones();
+# no other production reader is migrated yet (.claude/rules/12 — no blind reader
+# until writes route through the resolver). All three use POSITIONAL column
+# access so they work with the importer's raw sqlite3 connection (no row_factory)
+# as well as the _DictRow get_db() connection.
+
+def sync_client_phones(conn, client_id: int, source: str = "slots") -> None:
+    """Rebuild one client's client_phones rows from its allowed_clients slots.
+    Idempotent (UNIQUE(client_id, phone) + full replace). Caller commits.
+    Load-bearing-path callers wrap this so a sync hiccup never breaks a write."""
+    if not client_id:
+        return
+    row = conn.execute(
+        "SELECT phone_normalized, raqam_02, raqam_03 FROM allowed_clients WHERE id = ?",
+        (client_id,),
+    ).fetchone()
+    if not row:
+        return
+    ordered = []
+    for v in (row[0], row[1], row[2]):
+        n = str(v).strip() if v is not None else ""
+        if n and n not in ordered:
+            ordered.append(n)
+    conn.execute("DELETE FROM client_phones WHERE client_id = ?", (client_id,))
+    for i, ph in enumerate(ordered):
+        conn.execute(
+            "INSERT INTO client_phones (client_id, phone_normalized, is_primary, source) "
+            "VALUES (?, ?, ?, ?)",
+            (client_id, ph, 1 if i == 0 else 0, source),
+        )
+
+
+def get_client_phones(conn, client_id: int) -> list[dict]:
+    """All phones for a client, primary first. The single read path for Phase 2.
+    Returns [{phone, is_primary, source}]."""
+    rows = conn.execute(
+        "SELECT phone_normalized, is_primary, source FROM client_phones "
+        "WHERE client_id = ? ORDER BY is_primary DESC, id",
+        (client_id,),
+    ).fetchall()
+    return [{"phone": r[0], "is_primary": bool(r[1]), "source": r[2]} for r in rows]
+
+
+def backfill_client_phones(conn=None) -> dict:
+    """One-shot: rebuild client_phones for every active allowed_clients row from
+    its slots. Idempotent — safe to re-run."""
+    own = conn is None
+    if own:
+        conn = get_db()
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM allowed_clients "
+        "WHERE COALESCE(status,'active') NOT LIKE 'merged%'"
+    ).fetchall()]
+    for cid in ids:
+        sync_client_phones(conn, cid, source="backfill")
+    total = conn.execute("SELECT COUNT(*) FROM client_phones").fetchone()[0]
+    if own:
+        conn.commit()
+        conn.close()
+    return {"clients_synced": len(ids), "phone_rows": total}
 
 
 def backfill_from_users() -> dict:
