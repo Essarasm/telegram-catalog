@@ -281,14 +281,45 @@ def search_clients(
 def relink_orphan_finance_rows(conn, client_id: int, client_name_1c: str) -> dict:
     """Set client_id on any orphan (client_id IS NULL) rows across the four
     finance tables whose client_name_1c matches this client. Heals data that
-    1C imports left unlinked. Returns per-table row counts relinked."""
+    1C imports left unlinked. Returns per-table row counts relinked.
+
+    Phase 4 (name-as-attribute): also reclaims orphans still keyed by this
+    client's OLD 1C names after a rename, using the client_name_history old→new
+    map — so a 1C card rename doesn't strand the client's historical finance
+    rows under the previous name. An old name is skipped if another active
+    client currently uses it as its client_id_1c (name reuse, #75) — those
+    orphans may be the other shop's, so we don't grab them."""
+    names = [client_name_1c] if client_name_1c else []
+    try:
+        for r in conn.execute(
+            "SELECT DISTINCT old_name FROM client_name_history "
+            "WHERE client_id = ? AND old_name IS NOT NULL AND old_name != ''",
+            (client_id,),
+        ).fetchall():
+            old = r[0]
+            if old in names:
+                continue
+            reused = conn.execute(
+                "SELECT 1 FROM allowed_clients WHERE client_id_1c = ? AND id != ? "
+                "AND COALESCE(status,'active') NOT LIKE 'merged%' LIMIT 1",
+                (old, client_id),
+            ).fetchone()
+            if not reused:  # old name is retired → safe to reclaim its orphans
+                names.append(old)
+    except Exception:
+        pass  # client_name_history absent on a not-yet-migrated DB
+
     counts = {}
+    if not names:
+        return {t: 0 for t in ("client_balances", "real_orders",
+                               "client_payments", "client_debts")}
+    placeholders = ",".join("?" * len(names))
     for table in ("client_balances", "real_orders",
                   "client_payments", "client_debts"):
         cur = conn.execute(
             f"UPDATE {table} SET client_id = ? "
-            f"WHERE client_name_1c = ? AND client_id IS NULL",
-            (client_id, client_name_1c),
+            f"WHERE client_name_1c IN ({placeholders}) AND client_id IS NULL",
+            [client_id, *names],
         )
         counts[table] = cur.rowcount
     return counts
