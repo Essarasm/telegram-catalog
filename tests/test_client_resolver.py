@@ -4,7 +4,8 @@ Verifies the resolve-or-hold precedence: onec_card_id → telegram_id →
 client_phones → name (tiebreaker only), and the cardinal rule that only an
 unmatched signal set yields `create` while signal conflicts yield `hold`.
 """
-from backend.services.client_resolver import resolve_client
+from backend.services.client_resolver import resolve_client, resolve_for_registration
+from backend.services.phone_slots import get_client_phones
 
 
 def _client(db, cid, name="C", card=None, phones=()):
@@ -114,3 +115,45 @@ def test_name_only_never_matches(db):
     _client(db, 9, name="Улугбек Ургут", phones=["901230000"])
     # same name, different phone not in client_phones → create, NOT a name match (#75)
     assert resolve_client(db, phones=["907654321"], name="Улугбек Ургут")["action"] == "create"
+
+
+# ── resolve_for_registration (channel-B write path) ──────────────────────────
+
+def test_reg_matched_existing_phone(db):
+    _client(db, 20, name="SHOP", phones=["920000001"])
+    res = resolve_for_registration(db, telegram_id=111, phone="920000001",
+                                   name="SHOP", source="bot_new_client")
+    assert res["action"] == "matched" and res["client_id"] == 20
+    assert db.execute("SELECT matched_telegram_id FROM allowed_clients WHERE id=20"
+                      ).fetchone()[0] == 111
+
+
+def test_reg_creates_new_and_syncs_phones(db):
+    res = resolve_for_registration(db, telegram_id=112, phone="920000002",
+                                   name="NEW SHOP", source="bot_new_client")
+    assert res["action"] == "created" and res["client_id"]
+    cid = res["client_id"]
+    row = db.execute("SELECT phone_normalized, matched_telegram_id, source_sheet "
+                     "FROM allowed_clients WHERE id=?", (cid,)).fetchone()
+    assert row[0] == "920000002" and row[1] == 112 and row[2] == "bot_new_client"
+    assert [p["phone"] for p in get_client_phones(db, cid)] == ["920000002"]
+
+
+def test_reg_hold_on_ambiguous_phone_no_insert(db):
+    _client(db, 21, name="A", phones=["920000010", "920000099"])
+    _client(db, 22, name="B", phones=["920000011", "920000099"])
+    before = db.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0]
+    res = resolve_for_registration(db, telegram_id=113, phone="920000099",
+                                   name="C", source="bot_approved")
+    assert res["action"] == "hold" and res["client_id"] is None
+    assert db.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0] == before
+    assert db.execute("SELECT COUNT(*) FROM client_identity_drift_queue "
+                      "WHERE curated_state LIKE 'resolve_hold%'").fetchone()[0] >= 1
+
+
+def test_reg_link_by_1c_sets_cid(db):
+    res = resolve_for_registration(db, telegram_id=114, phone="920000003",
+                                   name="X", client_id_1c="МОЙ 1С", source="bot_linked")
+    cid = res["client_id"]
+    assert db.execute("SELECT client_id_1c FROM allowed_clients WHERE id=?",
+                      (cid,)).fetchone()[0] == "МОЙ 1С"

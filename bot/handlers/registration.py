@@ -54,24 +54,19 @@ async def handle_registration_reply(message: Message):
             conn.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = ?", (tg_id,))
 
             phone_norm = normalize_phone(phone)
+            reg_action = "created"
             if phone_norm:
-                existing = conn.execute(
-                    "SELECT id FROM allowed_clients "
-                    "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
-                    "ORDER BY id LIMIT 1",
-                    (phone_norm,),
-                ).fetchone()
-                if not existing:
-                    conn.execute(
-                        "INSERT INTO allowed_clients (phone_normalized, name, source_sheet, status, matched_telegram_id) "
-                        "VALUES (?, ?, 'bot_new_client', 'active', ?)",
-                        (phone_norm, user_first_name, tg_id),
-                    )
-                    client_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                else:
-                    client_id = existing["id"]
-                    conn.execute("UPDATE allowed_clients SET matched_telegram_id = ? WHERE id = ?", (tg_id, client_id))
-                conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?", (client_id, tg_id))
+                # Route through the resolve-or-hold chokepoint (Phase 2) instead
+                # of a blind phone-lookup-then-insert.
+                from backend.services.client_resolver import resolve_for_registration
+                res = resolve_for_registration(
+                    conn, telegram_id=tg_id, phone=phone_norm,
+                    name=user_first_name, source="bot_new_client",
+                )
+                reg_action = res["action"]
+                if res["client_id"]:
+                    conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?",
+                                 (res["client_id"], tg_id))
 
             conn.commit()
 
@@ -86,13 +81,21 @@ async def handle_registration_reply(message: Message):
             except Exception:
                 pass
 
-            await message.reply(
-                f"✅ <b>Yangi mijoz</b> sifatida belgilandi!\n\n"
-                f"📛 {user_first_name}\n"
-                f"🆔 {tg_id}\n\n"
-                f"Foydalanuvchi tasdiqlandi. 1C da yangi kontragent yarating.",
-                parse_mode="HTML",
-            )
+            if reg_action == "hold":
+                await message.reply(
+                    f"⚠️ <b>{_h(user_first_name)}</b> tasdiqlandi, lekin telefon raqami "
+                    f"bir nechta mijozga mos keldi — mijoz biriktiruvi <b>tekshiruvga</b> "
+                    f"qo'yildi (client_identity_drift_queue). 1C kartani qo'lda biriktiring.",
+                    parse_mode="HTML",
+                )
+            else:
+                await message.reply(
+                    f"✅ <b>Yangi mijoz</b> sifatida belgilandi!\n\n"
+                    f"📛 {user_first_name}\n"
+                    f"🆔 {tg_id}\n\n"
+                    f"Foydalanuvchi tasdiqlandi. 1C da yangi kontragent yarating.",
+                    parse_mode="HTML",
+                )
 
         else:
             client_row = conn.execute(

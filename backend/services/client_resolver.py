@@ -29,7 +29,7 @@ Verdict dict:
 """
 from __future__ import annotations
 
-from backend.services.phone_slots import _normalize
+from backend.services.phone_slots import _normalize, sync_client_phones
 from backend.services.client_identity_reviewed import normalize_1c
 
 _NOT_MERGED = "COALESCE(status,'active') NOT LIKE 'merged%'"
@@ -57,6 +57,68 @@ def _client_name(conn, client_id) -> str:
 def _verdict(action, client_id=None, matched_via=None, reason="", candidates=None):
     return {"action": action, "client_id": client_id, "matched_via": matched_via,
             "reason": reason, "candidates": candidates or []}
+
+
+def queue_hold(conn, verdict, *, phone=None, name=None, source="") -> int:
+    """Record a `hold` verdict in client_identity_drift_queue (reused from #74)
+    so an ambiguous/conflicting create is held for review instead of spawning a
+    competing row. Returns the queue row id. Caller commits."""
+    cands = verdict.get("candidates") or []
+    cur = conn.execute(
+        """INSERT INTO client_identity_drift_queue
+             (allowed_client_id, phone_normalized, existing_client_id_1c,
+              incoming_client_id_1c, incoming_name, curated_state, matched_via)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (cands[0] if cands else 0, _normalize(phone or "") or "", None, None,
+         (name or "")[:200], f"resolve_hold:{source}",
+         (verdict.get("reason") or "")[:200]),
+    )
+    return cur.lastrowid
+
+
+def resolve_for_registration(conn, *, telegram_id, phone, name,
+                             client_id_1c=None, source):
+    """Channel-(B) Telegram-registration write path, routed through the resolver.
+
+    Replaces the old `SELECT by phone → UPDATE-or-INSERT` guard at every
+    registration site. Returns a dict {client_id, action, verdict}:
+      - matched  → existing row reused; matched_telegram_id (+ client_id_1c if
+                   given, an explicit admin link) stamped; client_phones synced.
+      - created  → a fresh row inserted (the resolver found no stable match).
+      - hold     → ambiguous/conflicting; queued to client_identity_drift_queue,
+                   NO row written, client_id is None. Caller must surface this to
+                   the admin instead of linking.
+    Caller still links users.client_id (it owns the users row) and commits.
+    """
+    verdict = resolve_client(conn, telegram_id=telegram_id,
+                             phones=[phone] if phone else None, name=name)
+    action = verdict["action"]
+
+    if action == "hold":
+        queue_hold(conn, verdict, phone=phone, name=name, source=source)
+        return {"client_id": None, "action": "hold", "verdict": verdict}
+
+    if action == "matched":
+        cid = verdict["client_id"]
+        conn.execute("UPDATE allowed_clients SET matched_telegram_id = ? WHERE id = ?",
+                     (telegram_id, cid))
+        if client_id_1c:
+            conn.execute("UPDATE allowed_clients SET client_id_1c = ? WHERE id = ?",
+                         (client_id_1c, cid))
+        sync_client_phones(conn, cid, source="registration")
+        return {"client_id": cid, "action": "matched", "verdict": verdict}
+
+    # create — no stable match; insert a fresh row (becomes a pending row the
+    # next 1C import adopts by card id / phone, Phase 3).
+    pn = _normalize(phone or "")
+    cur = conn.execute(
+        "INSERT INTO allowed_clients (phone_normalized, name, source_sheet, status, "
+        "client_id_1c, matched_telegram_id) VALUES (?, ?, ?, 'active', ?, ?)",
+        (pn, name, source, client_id_1c, telegram_id),
+    )
+    cid = cur.lastrowid
+    sync_client_phones(conn, cid, source="registration")
+    return {"client_id": cid, "action": "created", "verdict": verdict}
 
 
 def resolve_client(conn, *, onec_card_id=None, telegram_id=None,

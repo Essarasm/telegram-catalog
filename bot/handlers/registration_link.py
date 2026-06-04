@@ -492,55 +492,52 @@ async def _execute_link(
 
         target_1c = ac["client_id_1c"]
         user_phone_norm = normalize_phone(user["phone"] or "")
-        existing_row = conn.execute(
-            "SELECT id FROM allowed_clients "
-            "WHERE phone_normalized = ? "
-            "AND COALESCE(status, 'active') NOT LIKE 'merged%' "
-            "ORDER BY id LIMIT 1",
-            (user_phone_norm,),
-        ).fetchone() if user_phone_norm else None
-
-        if existing_row:
-            conn.execute(
-                "UPDATE allowed_clients SET client_id_1c = ?, "
-                "matched_telegram_id = ? WHERE id = ?",
-                (target_1c, tg_id, existing_row["id"]),
-            )
-            client_id = existing_row["id"]
-        else:
-            conn.execute(
-                "INSERT INTO allowed_clients "
-                "(phone_normalized, name, source_sheet, status, "
-                " client_id_1c, matched_telegram_id) "
-                "VALUES (?, ?, 'bot_linked', 'active', ?, ?)",
-                (user_phone_norm, user["first_name"], target_1c, tg_id),
-            )
-            client_id = conn.execute(
-                "SELECT last_insert_rowid()"
-            ).fetchone()[0]
-
-        conn.execute(
-            "UPDATE users SET is_approved = 1, client_id = ? "
-            "WHERE telegram_id = ?",
-            (client_id, tg_id),
+        # Route through the resolve-or-hold chokepoint (Phase 2).
+        from backend.services.client_resolver import resolve_for_registration
+        res = resolve_for_registration(
+            conn, telegram_id=tg_id, phone=user_phone_norm,
+            name=user["first_name"], client_id_1c=target_1c, source="bot_linked",
         )
-
-        conn.execute(
-            "UPDATE unmatched_registrations "
-            "SET status = 'linked', linked_client_name = ?, "
-            "resolved_at = datetime('now') "
-            "WHERE telegram_id = ?",
-            (target_1c, tg_id),
-        )
+        link_held = res["action"] == "hold"
+        if not link_held:
+            conn.execute(
+                "UPDATE users SET is_approved = 1, client_id = ? "
+                "WHERE telegram_id = ?",
+                (res["client_id"], tg_id),
+            )
+            conn.execute(
+                "UPDATE unmatched_registrations "
+                "SET status = 'linked', linked_client_name = ?, "
+                "resolved_at = datetime('now') "
+                "WHERE telegram_id = ?",
+                (target_1c, tg_id),
+            )
+        # On hold: leave the registration 'pending' (no status churn) so the
+        # admin can re-resolve it after the conflict is sorted out.
 
         conn.commit()
         _backup_user(conn, tg_id)
     finally:
         conn.close()
 
-    _update_approved_overrides(tg_id)
-
     admin_label = _admin_display(cb)
+    if link_held:
+        # Phone ambiguously matched multiple clients — held for review, not linked.
+        await cb.answer("⚠️ Tekshiruvga qo'yildi", show_alert=True)
+        await _edit_notification_outcome(
+            bot,
+            notif_chat or 0,
+            notif_msg or 0,
+            (
+                f"⚠️ <b>Tekshiruvga qo'yildi:</b> {html_escape(target_1c)} — telefon "
+                f"bir nechta mijozga mos keldi\nby {html_escape(admin_label)} · "
+                f"{_now_tashkent_hhmm()}"
+            ),
+        )
+        await state.clear()
+        return
+
+    _update_approved_overrides(tg_id)
     await cb.answer(f"✅ Bog'landi: {target_1c[:60]}")
     await _edit_notification_outcome(
         bot,

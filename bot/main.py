@@ -275,27 +275,16 @@ async def cmd_approve(message: types.Message):
     conn.execute("UPDATE users SET is_approved = 1 WHERE telegram_id = ?", (telegram_id,))
 
     phone_norm = normalize_phone(user["phone"])
-    existing_client = conn.execute(
-        "SELECT id FROM allowed_clients "
-        "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
-        "ORDER BY id LIMIT 1",
-        (phone_norm,),
-    ).fetchone()
-
-    if not existing_client:
-        conn.execute(
-            "INSERT INTO allowed_clients (phone_normalized, name, source_sheet, status, matched_telegram_id) VALUES (?, ?, ?, ?, ?)",
-            (phone_norm, user["first_name"], "bot_approved", "active", telegram_id),
-        )
-        client_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-    else:
-        client_id = existing_client["id"]
-        conn.execute(
-            "UPDATE allowed_clients SET matched_telegram_id = ? WHERE id = ?",
-            (telegram_id, client_id),
-        )
-
-    conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?", (client_id, telegram_id))
+    # Route through the resolve-or-hold chokepoint (Phase 2).
+    from backend.services.client_resolver import resolve_for_registration
+    res = resolve_for_registration(
+        conn, telegram_id=telegram_id, phone=phone_norm,
+        name=user["first_name"], source="bot_approved",
+    )
+    approve_held = res["action"] == "hold"
+    if res["client_id"]:
+        conn.execute("UPDATE users SET client_id = ? WHERE telegram_id = ?",
+                     (res["client_id"], telegram_id))
     conn.commit()
 
     try:
@@ -326,12 +315,15 @@ async def cmd_approve(message: types.Message):
 
     conn.close()
 
+    held_note = ("\n\n⚠️ Mijoz biriktiruvi <b>tekshiruvga</b> qo'yildi (telefon "
+                 "bir nechta mijozga mos keldi) — 1C kartani qo'lda biriktiring."
+                 if approve_held else "")
     await message.reply(
         f"✅ Tasdiqlandi!\n\n"
         f"📛 {user['first_name'] or '—'}\n"
         f"📱 {user['phone']}\n"
         f"🆔 {telegram_id}\n\n"
-        f"Ilovani qayta ochsa, narxlarni ko'radi.",
+        f"Ilovani qayta ochsa, narxlarni ko'radi.{held_note}",
         parse_mode="HTML",
     )
 
@@ -417,27 +409,23 @@ async def cmd_link(message: types.Message):
         return
 
     user_phone_norm = normalize_phone(user["phone"])
-    existing_row = conn.execute(
-        "SELECT id, client_id_1c FROM allowed_clients "
-        "WHERE phone_normalized = ? AND COALESCE(status, 'active') NOT LIKE 'merged%' "
-        "ORDER BY id LIMIT 1",
-        (user_phone_norm,),
-    ).fetchone()
-
-    if existing_row:
-        conn.execute(
-            "UPDATE allowed_clients SET client_id_1c = ?, matched_telegram_id = ? WHERE id = ?",
-            (client_id_1c, telegram_id, existing_row["id"]),
+    # Route through the resolve-or-hold chokepoint (Phase 2).
+    from backend.services.client_resolver import resolve_for_registration
+    res = resolve_for_registration(
+        conn, telegram_id=telegram_id, phone=user_phone_norm,
+        name=user["first_name"], client_id_1c=client_id_1c, source="bot_linked",
+    )
+    if res["action"] == "hold":
+        conn.commit()
+        conn.close()
+        await message.reply(
+            f"⚠️ <b>{user['phone']}</b> bir nechta mijozga mos keldi — biriktiruv "
+            f"<b>tekshiruvga</b> qo'yildi (client_identity_drift_queue). "
+            f"1C kartani qo'lda biriktiring.",
+            parse_mode="HTML",
         )
-        client_id = existing_row["id"]
-    else:
-        conn.execute(
-            "INSERT INTO allowed_clients (phone_normalized, name, source_sheet, status, client_id_1c, matched_telegram_id) "
-            "VALUES (?, ?, 'bot_linked', 'active', ?, ?)",
-            (user_phone_norm, user["first_name"], client_id_1c, telegram_id),
-        )
-        client_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
+        return
+    client_id = res["client_id"]
     conn.execute(
         "UPDATE users SET is_approved = 1, client_id = ? WHERE telegram_id = ?",
         (client_id, telegram_id),
