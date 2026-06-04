@@ -47,6 +47,7 @@ from bot.shared import (
     is_bank_transfer_or_admin_cb,
     get_db,
     html_escape,
+    chunk_message,
 )
 from backend.services.payment_intake import (
     create_bank_transfer_payment,
@@ -623,11 +624,16 @@ async def cmd_perevodlar(message: Message, state: FSMContext):
         date, rows = _today_rows(conn)
     finally:
         conn.close()
-    await message.answer(
-        _render_today_list(date, rows),
-        parse_mode="HTML",
-        reply_markup=_today_list_keyboard(rows),
-    )
+    # On busy days the full list exceeds Telegram's 4096-char cap —
+    # send in chunks, keyboard attached to the last one (Error Log #83).
+    chunks = chunk_message(_render_today_list(date, rows))
+    kb = _today_list_keyboard(rows)
+    for i, chunk in enumerate(chunks):
+        await message.answer(
+            chunk,
+            parse_mode="HTML",
+            reply_markup=kb if i == len(chunks) - 1 else None,
+        )
 
 
 # ── User-side cancel (soft, status flip) ────────────────────────────
@@ -658,10 +664,23 @@ async def cb_user_cancel(cb: CallbackQuery, bot: Bot):
         conn.close()
     text = _render_today_list(date, rows)
     kb = _today_list_keyboard(rows)
-    try:
-        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    # Re-render may exceed the 4096-char cap on busy days (Error Log #83):
+    # edit in place only when the text fits in one chunk, else repost chunked.
+    chunks = chunk_message(text)
+    edited = False
+    if len(chunks) == 1:
+        try:
+            await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+            edited = True
+        except Exception:
+            pass
+    if not edited:
+        for i, chunk in enumerate(chunks):
+            await cb.message.answer(
+                chunk,
+                parse_mode="HTML",
+                reply_markup=kb if i == len(chunks) - 1 else None,
+            )
     cname = row.get("client_id_1c") or row.get("client_name") or ""
     net = _fmt_uzs(row["amount"])
     await cb.answer(f"✖ Bekor qilindi: #{row['id']} — {net} ({cname})"[:200])

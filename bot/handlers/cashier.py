@@ -48,6 +48,7 @@ from bot.shared import (
     is_cashier_role_cb,
     get_db,
     html_escape,
+    chunk_message,
 )
 from backend.services.group_config import legal_transfer_target
 
@@ -252,13 +253,27 @@ async def _cleanup_flow_msgs(
     data = await state.get_data()
     ids = data.get("flow_msg_ids") or []
     keep = set(keep_ids or [])
+    deleted = 0
+    failed = 0
     for mid in ids:
         if mid in keep:
             continue
         try:
             await bot.delete_message(chat_id, mid)
+            deleted += 1
         except Exception as e:
-            logger.debug(f"cashier cleanup: delete msg {mid} failed ({e})")
+            # Bumped debug→warning so silent delete failures (the symptom
+            # behind the recurring group-clutter incidents) are visible in
+            # `railway logs` without re-instrumenting. Telegram refuses
+            # deletes >48h old and already-deleted msgs raise too — those
+            # are expected and harmless, but we now see them.
+            failed += 1
+            logger.warning(f"cashier cleanup: delete msg {mid} failed ({e})")
+    if ids:
+        logger.info(
+            f"cashier cleanup: chat={chat_id} tracked={len(ids)} "
+            f"deleted={deleted} failed={failed} kept={len(keep)}"
+        )
     await state.update_data(flow_msg_ids=[])
 
 
@@ -581,11 +596,16 @@ async def cmd_bugunpul(message: Message, state: FSMContext):
         date, rows = _today_intake_rows(conn)
     finally:
         conn.close()
-    await message.answer(
-        _render_today_list(date, rows),
-        parse_mode="HTML",
-        reply_markup=_today_list_keyboard(rows),
-    )
+    # On busy days the full list exceeds Telegram's 4096-char cap —
+    # send in chunks, keyboard attached to the last one (Error Log #83).
+    chunks = chunk_message(_render_today_list(date, rows))
+    kb = _today_list_keyboard(rows)
+    for i, chunk in enumerate(chunks):
+        await message.answer(
+            chunk,
+            parse_mode="HTML",
+            reply_markup=kb if i == len(chunks) - 1 else None,
+        )
 
 
 def _render_summary(s: dict) -> str:
@@ -973,10 +993,23 @@ async def cb_user_cancel(cb: CallbackQuery, bot: Bot):
         conn.close()
     text = _render_today_list(date, rows)
     kb = _today_list_keyboard(rows)
-    try:
-        await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    except Exception:
-        await cb.message.answer(text, parse_mode="HTML", reply_markup=kb)
+    # Re-render may exceed the 4096-char cap on busy days (Error Log #83):
+    # edit in place only when the text fits in one chunk, else repost chunked.
+    chunks = chunk_message(text)
+    edited = False
+    if len(chunks) == 1:
+        try:
+            await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+            edited = True
+        except Exception:
+            pass
+    if not edited:
+        for i, chunk in enumerate(chunks):
+            await cb.message.answer(
+                chunk,
+                parse_mode="HTML",
+                reply_markup=kb if i == len(chunks) - 1 else None,
+            )
     cname = row.get("client_id_1c") or row.get("client_name") or ""
     amt_str = _fmt_amount(row["amount"], row["currency"])
     await cb.answer(
@@ -1778,6 +1811,14 @@ async def cb_menu_direct(cb: CallbackQuery, state: FSMContext):
     if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
         await cb.answer()
         return
+    # Abandoned-flow cleanup: if a prior /qabul attempt was left mid-step
+    # (e.g. cashier typed a name, got an ambiguous picker, walked away) its
+    # tracked messages still sit in the group. Starting a new action wipes
+    # them. Keep the menu we just tapped — it gets re-tracked + cleaned at
+    # finalize. No-op when flow_msg_ids is empty (the fresh-start case).
+    await _cleanup_flow_msgs(
+        cb.bot, cb.message.chat.id, state, keep_ids=[cb.message.message_id]
+    )
     # Preserve kassa_date if user came via the back-date picker.
     existing = await state.get_data()
     kassa_date = existing.get("kassa_date")
@@ -1808,6 +1849,11 @@ async def cb_menu_queue(cb: CallbackQuery, state: FSMContext):
     if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
         await cb.answer()
         return
+    # Abandoned-flow cleanup (see cb_menu_direct) — wipe any stale tracked
+    # messages from a prior unfinished attempt before starting this one.
+    await _cleanup_flow_msgs(
+        cb.bot, cb.message.chat.id, state, keep_ids=[cb.message.message_id]
+    )
     # Preserve kassa_date if user came via the back-date picker (cleared on
     # cancel / finalize, not on this transition).
     existing = await state.get_data()
@@ -1838,6 +1884,11 @@ async def cb_menu_backdate(cb: CallbackQuery, state: FSMContext):
     if not _is_cashier_chat(cb) or not is_cashier_or_admin_cb(cb):
         await cb.answer()
         return
+    # Abandoned-flow cleanup (see cb_menu_direct) — wipe any stale tracked
+    # messages from a prior unfinished attempt before starting this one.
+    await _cleanup_flow_msgs(
+        cb.bot, cb.message.chat.id, state, keep_ids=[cb.message.message_id]
+    )
     await state.set_state(CashierFlow.backdate_pick)
     await state.update_data(submitter=cb.from_user.id)
     await _track_msg(state, cb.message)

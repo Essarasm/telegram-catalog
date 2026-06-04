@@ -824,11 +824,11 @@ async def _send_cashbook_today_list(bot, chat_id: int) -> None:
             logger.info("Cashbook today-list: 0 rows — staying quiet")
             return
         clients = _aggregate_today_by_client(rows)
-        await bot.send_message(
-            chat_id,
-            _render_today_by_client(date, clients),
-            parse_mode="HTML",
-        )
+        # Chunk to stay under Telegram's 4096-char cap on busy days
+        # (Error Log #83 — /bugunpul hit it first; same growth applies here).
+        from bot.shared import chunk_message
+        for chunk in chunk_message(_render_today_by_client(date, clients)):
+            await bot.send_message(chat_id, chunk, parse_mode="HTML")
         logger.info(
             f"Cashbook today-list sent: {len(clients)} clients, "
             f"{sum(c['count'] for c in clients)} payments"

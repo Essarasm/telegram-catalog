@@ -156,6 +156,29 @@ def html_escape(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def chunk_message(text: str, limit: int = 3900) -> list[str]:
+    """Split a multi-line message into chunks under Telegram's 4096-char
+    cap (3900 leaves headroom for entity overhead). Splits on newlines
+    only — safe for our HTML messages because every <b>/<i> tag opens
+    and closes within a single line. A pathological single line longer
+    than the limit is hard-cut."""
+    if len(text) <= limit:
+        return [text]
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        while len(line) > limit:
+            chunks.append(line[:limit])
+            line = line[limit:]
+        if len(cur) + len(line) + 1 > limit:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur = (cur + "\n" + line) if cur else line
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
 # ── Phone normalization ──────────────────────────────────────────────
 
 def normalize_phone(raw: str) -> str:
