@@ -18,7 +18,7 @@ Storage in `allowed_clients`:
 """
 from typing import Optional
 
-from backend.services.phone_slots import _normalize
+from backend.services.phone_slots import _normalize, sync_client_phones
 
 
 def _check_phone_collision(conn, phone_norm: str) -> Optional[dict]:
@@ -93,8 +93,22 @@ def register_new_shop(
     )
     audit_id = cur.lastrowid
 
-    existing = _check_phone_collision(conn, phone_norm)
-    if existing:
+    # Route through the resolve-or-hold chokepoint (Phase 2) instead of the
+    # ad-hoc phone-collision check. Ambiguous phone (matches >1 client) is HELD
+    # for review rather than linked to an arbitrary first match.
+    from backend.services.client_resolver import resolve_client, queue_hold
+    verdict = resolve_client(conn, phones=[phone_norm], name=full_name)
+
+    if verdict["action"] == "hold":
+        queue_hold(conn, verdict, phone=phone_norm, name=full_name, source="agent_panel")
+        # Leave the audit row 'pending' (re-resolvable once the conflict clears).
+        return {"status": "held", "candidates": verdict["candidates"]}
+
+    if verdict["action"] == "matched":
+        existing = conn.execute(
+            "SELECT id, name, client_id_1c FROM allowed_clients WHERE id = ?",
+            (verdict["client_id"],),
+        ).fetchone()
         conn.execute(
             "UPDATE agent_client_registrations SET status = 'linked_existing', "
             "linked_client_id = ? WHERE id = ?",
@@ -103,10 +117,11 @@ def register_new_shop(
         return {
             "status": "linked_existing",
             "client_id": existing["id"],
-            "client": existing,
+            "client": {"id": existing["id"], "name": existing["name"],
+                       "client_id_1c": existing["client_id_1c"]},
         }
 
-    # Clean phone — create a new whitelist row tagged as agent-panel-sourced.
+    # create — clean phone, no existing match → new agent-panel-sourced row.
     # `moljal` holds the venue/orientir (existing Master-owned column).
     conn.execute(
         """INSERT INTO allowed_clients
@@ -117,6 +132,7 @@ def register_new_shop(
         (phone_norm, full_name, venue, lat, lng, agent_tg_id),
     )
     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    sync_client_phones(conn, new_id, source="agent_panel")
 
     conn.execute(
         "UPDATE agent_client_registrations SET status = 'created', "

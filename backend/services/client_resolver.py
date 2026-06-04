@@ -9,8 +9,8 @@ auditable function while each channel keeps its own write semantics.
 Precedence (most-stable signal first — see Client_Identity_Anchoring_Design):
   1. onec_card_id   → definitive (the 1C card anchor; Phase 0)
   2. linked telegram_id (users.client_id) → remembered identity
-  3. client_phones match → candidate; confirms a stronger signal, or stands
-     alone when it's the only signal; CONFLICTS → hold
+  3. phone (any allowed_clients contact slot) → candidate; confirms a stronger
+     signal, or stands alone when it's the only signal; CONFLICTS → hold
   4. name → tiebreaker ONLY, never a sole basis for a match (#75: name is a
      non-unique label)
 
@@ -152,16 +152,20 @@ def resolve_client(conn, *, onec_card_id=None, telegram_id=None,
         if row and _is_active(conn, row[0]):
             strong_id, strong_via = row[0], "telegram_id"
 
-    # ── 3. client_phones candidates ──────────────────────────────────────────
+    # ── 3. phone candidates — match the AUTHORITATIVE allowed_clients slots ───
+    # (phone_normalized / raqam_02 / raqam_03), not the client_phones mirror, so
+    # resolution never depends on the mirror being freshly synced. client_phones
+    # remains the clean read API (get_client_phones); the resolver reads source.
     phone_ids = []
     if norm_phones:
-        ph = ",".join("?" * len(norm_phones))
+        conds, params = [], []
+        for p in norm_phones:
+            conds.append("(phone_normalized = ? OR raqam_02 = ? OR raqam_03 = ?)")
+            params += [p, p, p]
         rows = conn.execute(
-            f"SELECT DISTINCT cp.client_id FROM client_phones cp "
-            f"JOIN allowed_clients a ON a.id = cp.client_id "
-            f"WHERE cp.phone_normalized IN ({ph}) AND {_NOT_MERGED.replace('status', 'a.status')} "
-            f"ORDER BY cp.client_id",
-            norm_phones,
+            f"SELECT id FROM allowed_clients "
+            f"WHERE ({' OR '.join(conds)}) AND {_NOT_MERGED} ORDER BY id",
+            params,
         ).fetchall()
         phone_ids = [r[0] for r in rows]
 

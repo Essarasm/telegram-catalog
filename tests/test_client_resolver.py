@@ -9,10 +9,17 @@ from backend.services.phone_slots import get_client_phones
 
 
 def _client(db, cid, name="C", card=None, phones=()):
+    # Seed the authoritative slots (the resolver reads these) AND the
+    # client_phones mirror (so get_client_phones-based assertions still hold).
+    phones = list(phones)
     db.execute(
         "INSERT INTO allowed_clients (id, name, client_id_1c, onec_card_id, "
-        "phone_normalized, status) VALUES (?, ?, ?, ?, ?, 'active')",
-        (cid, name, name, card, phones[0] if phones else ""),
+        "phone_normalized, raqam_02, raqam_03, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'active')",
+        (cid, name, name, card,
+         phones[0] if len(phones) > 0 else "",
+         phones[1] if len(phones) > 1 else None,
+         phones[2] if len(phones) > 2 else None),
     )
     for i, p in enumerate(phones):
         db.execute(
@@ -157,3 +164,38 @@ def test_reg_link_by_1c_sets_cid(db):
     cid = res["client_id"]
     assert db.execute("SELECT client_id_1c FROM allowed_clients WHERE id=?",
                       (cid,)).fetchone()[0] == "МОЙ 1С"
+
+
+# ── channel (D): agent self-registration routed through the resolver ─────────
+
+def test_agent_register_creates_and_syncs(db):
+    from backend.services.agent_register import register_new_shop
+    res = register_new_shop(db, agent_tg_id=900, first_name="Ali", last_name="Valiev",
+                            venue="Bozor", phone_raw="998 91 111 22 33", lat=39.6, lng=66.9)
+    assert res["status"] == "created" and res["client_id"]
+    assert [p["phone"] for p in get_client_phones(db, res["client_id"])] == ["911112233"]
+
+
+def test_agent_register_links_existing(db):
+    db.execute("INSERT INTO allowed_clients (id, name, phone_normalized, status) "
+               "VALUES (50, 'Shop', '922223344', 'active')")
+    db.execute("INSERT INTO client_phones (client_id, phone_normalized, is_primary, source) "
+               "VALUES (50, '922223344', 1, 'test')")
+    from backend.services.agent_register import register_new_shop
+    res = register_new_shop(db, agent_tg_id=900, first_name="Ali", last_name="Valiev",
+                            venue="Bozor", phone_raw="922223344", lat=39.6, lng=66.9)
+    assert res["status"] == "linked_existing" and res["client_id"] == 50
+
+
+def test_agent_register_holds_on_ambiguous(db):
+    # Shared number 933339999 sits in raqam_02 of two different shops (distinct
+    # primaries) → resolving it returns two candidates → hold.
+    db.execute("INSERT INTO allowed_clients (id, name, phone_normalized, raqam_02, status) "
+               "VALUES (51, 'A', '933330001', '933339999', 'active'), "
+               "       (52, 'B', '933330002', '933339999', 'active')")
+    before = db.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0]
+    from backend.services.agent_register import register_new_shop
+    res = register_new_shop(db, agent_tg_id=900, first_name="Ali", last_name="Valiev",
+                            venue="Bozor", phone_raw="933339999", lat=39.6, lng=66.9)
+    assert res["status"] == "held"
+    assert db.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0] == before

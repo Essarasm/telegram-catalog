@@ -512,6 +512,17 @@ def agent_register_client(payload: dict = Body(...)):
             return JSONResponse(
                 {"ok": False, "error": result["error"]}, status_code=400
             )
+        if result["status"] == "held":
+            # Phone ambiguously matched multiple existing shops — held for
+            # review (client_identity_drift_queue) instead of guessing. Don't
+            # switch the agent into a guessed shop.
+            conn.commit()  # persist the audit + queued hold row
+            return JSONResponse(
+                {"ok": False, "held": True,
+                 "error": "Bu telefon bir nechta mijozga mos keldi — "
+                          "admin tekshiruvidan keyin biriktiriladi."},
+                status_code=409,
+            )
 
         client_id = result["client_id"]
         target = conn.execute(
