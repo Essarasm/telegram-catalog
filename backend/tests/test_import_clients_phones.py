@@ -225,6 +225,16 @@ def conn():
     # real_orders is only touched by _resolve_cid_1c_tiebreaker, which exits
     # safely when the table is empty.
     c.execute("CREATE TABLE real_orders (client_name_1c TEXT, doc_date TEXT)")
+    # client_name_history: the upsert logs 1C renames here (Phase 4).
+    c.execute("""
+        CREATE TABLE client_name_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            old_name TEXT, new_name TEXT,
+            reason TEXT, changed_by TEXT,
+            changed_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
     yield c
     c.close()
 

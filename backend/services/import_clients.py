@@ -344,6 +344,19 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
             resolved_cid, tb_flag = _resolve_cid_1c_tiebreaker(conn, existing_id, cid_1c)
             if tb_flag:
                 flag_needs_review = True
+            # Name-as-attribute (Phase 4): a real rename (existing non-empty name
+            # → different new name) is logged to client_name_history — the audit
+            # trail + old→new map for relinking historical finance rows still
+            # keyed by the old client_name_1c. First-time name set (empty → X) is
+            # not a rename, so it's not logged.
+            if existing_cid and resolved_cid and existing_cid != resolved_cid:
+                conn.execute(
+                    "INSERT INTO client_name_history "
+                    "(client_id, old_name, new_name, reason, changed_by) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (existing_id, existing_cid, resolved_cid,
+                     f"1C rename via {match_via}", changed_by_tag),
+                )
             updates.append("client_id_1c = ?"); params.append(resolved_cid)
 
         # Anchor capture (Phase 0) — fill-only. When this row has no card id yet,

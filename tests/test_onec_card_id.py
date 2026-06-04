@@ -219,6 +219,38 @@ def test_importer_adopts_pending_registration_row(db):
     assert row[0] == "Прочие:5000" and row[1] == "ДУКОН 1С"
 
 
+def test_rename_logged_to_name_history(db):
+    # Phase 4: a card-id-matched row whose 1C name changed = a rename → logged.
+    db.execute(
+        "INSERT INTO allowed_clients (id, client_id_1c, name, phone_normalized, "
+        "onec_card_id, status) VALUES (70, 'ESKI NOM', 'ESKI NOM', '900700070', "
+        "'Прочие:700', 'active')",
+    )
+    out, rid = _upsert_client_from_row(
+        db, raw_phone_str="900700070", client_name="YANGI NOM", location="",
+        source="clients_upload", cid_1c="YANGI NOM", company="",
+        changed_by_tag="import", onec_card_id="Прочие:700",
+    )
+    assert rid == 70
+    h = db.execute("SELECT old_name, new_name FROM client_name_history WHERE client_id=70").fetchall()
+    assert len(h) == 1 and h[0][0] == "ESKI NOM" and h[0][1] == "YANGI NOM"
+    assert db.execute("SELECT client_id_1c FROM allowed_clients WHERE id=70").fetchone()[0] == "YANGI NOM"
+
+
+def test_first_time_name_set_not_logged_as_rename(db):
+    # A pending row with no 1C name being adopted is NOT a rename → no history.
+    db.execute(
+        "INSERT INTO allowed_clients (id, client_id_1c, name, phone_normalized, status) "
+        "VALUES (71, NULL, 'Pending', '900700071', 'active')",
+    )
+    _upsert_client_from_row(
+        db, raw_phone_str="900700071", client_name="DUKON 1C", location="",
+        source="clients_upload", cid_1c="DUKON 1C", company="",
+        changed_by_tag="import", onec_card_id="Прочие:701",
+    )
+    assert db.execute("SELECT COUNT(*) FROM client_name_history WHERE client_id=71").fetchone()[0] == 0
+
+
 def test_apply_folder_anchor_noop_without_both_columns():
     # Only onec_code present, no onec_vid → no-op (can't track folders safely).
     rows = [{"onec_code": 1, "name": "X", "phone": "900000001"}]

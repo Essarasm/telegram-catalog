@@ -99,7 +99,7 @@ def gather_sibling_phones(conn, client_id):
     return phones
 
 
-SCHEMA_VERSION = 22  # 2026-06-04: v22 adds client_phones (one-to-many phone attribute; mirror of allowed_clients phone slots, read via phone_slots.get_client_phones) — Client Identity Anchoring Phase 1. Earlier: v21 adds allowed_clients.onec_card_id ("{folder}:{Код}" stable 1C card anchor) + partial UNIQUE — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed phone can't spawn a duplicate (#74/#75/#81 family). Earlier: v20 adds client_identity_drift_queue (#74 importer drift-guard hold table). Earlier: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
+SCHEMA_VERSION = 23  # 2026-06-04: v23 adds client_name_history (1C-rename audit trail + old→new name map for finance relink) — Client Identity Anchoring Phase 4. Earlier: v22 adds client_phones (one-to-many phone attribute; mirror of allowed_clients phone slots, read via phone_slots.get_client_phones) — Client Identity Anchoring Phase 1. Earlier: v21 adds allowed_clients.onec_card_id ("{folder}:{Код}" stable 1C card anchor) + partial UNIQUE — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed phone can't spawn a duplicate (#74/#75/#81 family). Earlier: v20 adds client_identity_drift_queue (#74 importer drift-guard hold table). Earlier: v19 adds photo_batch_items for the catalog-group /foto workflow — bot posts 10 product messages per batch, employees reply with File uploads, bot routes raw files to Google Drive for offline trimming. Tracks message_id → product_id mapping + per-item photographed/skipped status + Drive file metadata. Earlier: v18 = real_orders.is_approved (1C col-0 V/X marker); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = composite UNIQUE on real_orders + client_payments.
 
 
 def init_db():
@@ -1081,6 +1081,29 @@ def init_db():
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_client_phones_phone ON client_phones(phone_normalized)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_client_phones_client ON client_phones(client_id)")
+
+    # v23 — Client Identity Anchoring Phase 4 (2026-06-04). Name-as-attribute:
+    # the 1C name (client_id_1c) is a mutable LABEL on the card-anchored row, not
+    # an identity key. When 1C renames a card (same Код, new Наименование), the
+    # importer overwrites client_id_1c on the same row (Phase 0); this table is
+    # the audit trail of those renames — the name analogue of phone_history.
+    # Beyond forensics it preserves the old→new map so historical finance rows
+    # still keyed by the OLD client_name_1c can be recognised/relinked after a
+    # rename (Alisher renames карточки — see finances_1c_card_rename_pattern).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS client_name_history (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id  INTEGER NOT NULL,
+            old_name   TEXT,
+            new_name   TEXT,
+            reason     TEXT,
+            changed_by TEXT,
+            changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (client_id) REFERENCES allowed_clients(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_name_history_client ON client_name_history(client_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_client_name_history_old ON client_name_history(old_name)")
 
     # Phase 1a of Client Data Workflow — sync-guarantee columns.
     # All NULL by default; populated progressively as the pipeline fills them in.
@@ -2425,7 +2448,7 @@ def init_db():
     if current < SCHEMA_VERSION:
         conn.execute(
             "INSERT INTO schema_version (version, description) VALUES (?, ?)",
-            (SCHEMA_VERSION, "v22 = client_phones (one-to-many phone attribute; one-way mirror of allowed_clients phone slots maintained by phone_slots.sync_client_phones, read via get_client_phones) — Client Identity Anchoring Phase 1. v21 = allowed_clients.onec_card_id ('{folder}:{Код}' stable 1C card anchor) + partial UNIQUE idx_allowed_onec_card_id — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed/corrupted phone can't spawn a duplicate row (ends the #74/#75/#81 recurring family). Earlier: v20 = client_identity_drift_queue (#74 importer drift-guard hold table); v19 = photo_batch_items (catalog /foto workflow); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
+            (SCHEMA_VERSION, "v23 = client_name_history (1C-rename audit trail; old→new client_id_1c map written by import_clients when a card-anchored row is renamed; enables finance relink of old-name rows) — Client Identity Anchoring Phase 4. v22 = client_phones (one-to-many phone attribute; one-way mirror of allowed_clients phone slots maintained by phone_slots.sync_client_phones, read via get_client_phones) — Client Identity Anchoring Phase 1. v21 = allowed_clients.onec_card_id ('{folder}:{Код}' stable 1C card anchor) + partial UNIQUE idx_allowed_onec_card_id — Client Identity Anchoring Phase 0; daily import resolves by card id before phone/name so a changed/corrupted phone can't spawn a duplicate row (ends the #74/#75/#81 recurring family). Earlier: v20 = client_identity_drift_queue (#74 importer drift-guard hold table); v19 = photo_batch_items (catalog /foto workflow); v17 = reminder_fire_log; v16 = client_balance_overrides; v15 = real_orders + client_payments composite UNIQUE."),
         )
 
     conn.commit()
