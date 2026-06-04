@@ -190,6 +190,35 @@ def test_no_card_columns_is_strict_noop():
     assert all("onec_card_id" not in r for r in out)
 
 
+def test_importer_adopts_pending_registration_row(db):
+    # Phase 3 foundation: a user-first registration creates a pending row (no
+    # card id, no 1C name). When the daily 1C import later sees that phone under
+    # a real card, it must ADOPT the same row (stamp card id + name) — not INSERT
+    # a competing duplicate.
+    from backend.services.client_resolver import resolve_for_registration
+    from backend.services.import_clients import _upsert_client_from_row
+
+    res = resolve_for_registration(db, telegram_id=777, phone="998 90 111 22 33",
+                                   name="Yangi Dukon", source="bot_new_client")
+    pid = res["client_id"]
+    assert res["action"] == "created"
+    pre = db.execute("SELECT onec_card_id, client_id_1c FROM allowed_clients WHERE id=?",
+                     (pid,)).fetchone()
+    assert pre[0] is None  # pending: no card id yet
+    before = db.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0]
+
+    out, rid = _upsert_client_from_row(
+        db, raw_phone_str="90 111 22 33", client_name="ДУКОН 1С", location="",
+        source="clients_upload", cid_1c="ДУКОН 1С", company="",
+        changed_by_tag="import", onec_card_id="Прочие:5000",
+    )
+    assert rid == pid and out == "updated"  # adopted the SAME row
+    assert db.execute("SELECT COUNT(*) FROM allowed_clients").fetchone()[0] == before
+    row = db.execute("SELECT onec_card_id, client_id_1c FROM allowed_clients WHERE id=?",
+                     (pid,)).fetchone()
+    assert row[0] == "Прочие:5000" and row[1] == "ДУКОН 1С"
+
+
 def test_apply_folder_anchor_noop_without_both_columns():
     # Only onec_code present, no onec_vid → no-op (can't track folders safely).
     rows = [{"onec_code": 1, "name": "X", "phone": "900000001"}]

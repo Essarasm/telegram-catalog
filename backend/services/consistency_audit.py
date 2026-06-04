@@ -497,6 +497,38 @@ def run_audit(fix: bool = False) -> dict:
                 "sample": [dict(r) for r in bad_cb[:5]],
             }
 
+        # 15. Pending 1C adoption (Client Identity Anchoring Phase 3). A
+        # user-/agent-/admin-registered row is a "pending" row until the daily
+        # 1C import adopts it (phone-matches the card and stamps onec_card_id).
+        # Adoption is self-healing AS LONG AS the registration phone equals the
+        # 1C card's phone. When they differ (or no 1C card is ever created), the
+        # row sits card-less forever while 1C inserts its own row — a silent
+        # stranded duplicate. The daily import runs every morning, so any
+        # registration-sourced, card-less, active row older than 14 days has
+        # demonstrably NOT been adopted → surface it for an admin to create/link
+        # the 1C card. Date proxy = the linked user's registered_at (every
+        # registration write path sets matched_telegram_id).
+        pending = conn.execute(
+            """SELECT ac.id, ac.name, ac.phone_normalized, ac.source_sheet,
+                      u.registered_at
+                 FROM allowed_clients ac
+                 JOIN users u ON u.telegram_id = ac.matched_telegram_id
+                WHERE COALESCE(ac.status, 'active') = 'active'
+                  AND (ac.onec_card_id IS NULL OR ac.onec_card_id = '')
+                  AND ac.source_sheet IN (
+                        'bot_new_client', 'bot_approved', 'bot_linked',
+                        'agent_panel', 'admin_panel', 'bot_added')
+                  AND u.registered_at IS NOT NULL
+                  AND u.registered_at < datetime('now', '-14 days')
+                ORDER BY u.registered_at
+                LIMIT 20"""
+        ).fetchall()
+        if pending:
+            result["pending_onec_adoption"] = {
+                "count": len(pending),
+                "sample": [dict(r) for r in pending[:5]],
+            }
+
     finally:
         conn.close()
     return result
@@ -523,6 +555,7 @@ SEVERITY_THRESHOLDS = {
     "identity_drift_held":      (5, 1),    # #74 — any held drift needs a human
     "mislinked_users":          (3, 1),    # Турдиев class — any wrong link needs a human
     "callbacks_misattributed":  (3, 1),    # name-keyed debt comments — commingled/orphaned
+    "pending_onec_adoption":    (20, 1),   # registration rows the 1C import never adopted (phone mismatch / no card)
     # Informational only — never critical
     "recent_phone_changes_7d":  (None, None),
 }
@@ -647,6 +680,7 @@ def format_audit_message(findings: dict, prior_findings: dict | None = None) -> 
         "identity_drift_held":     "🛑 Identity drift ushlab turilibdi (1C nomi o'zgargan — qo'lda hal qiling)",
         "mislinked_users":         "🔗 Mijoz noto'g'ri ulangan (foydalanuvchi telefoni boshqa mijozga tegishli)",
         "callbacks_misattributed": "📝 Qarz izohlari noto'g'ri biriktirilgan (nom bo'yicha — umumiy nom yoki yetim)",
+        "pending_onec_adoption":   "⏳ Ro'yxatdan o'tgan, 1C kartasi biriktirilmagan (14+ kun — 1C karta yarating/ulang)",
     }
 
     # Group findings by severity. Render CRITICAL first so the most
