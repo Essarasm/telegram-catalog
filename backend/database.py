@@ -1331,7 +1331,7 @@ def init_db():
     # default 'weekday'; promote it to first-Monday-only here).
     conn.execute(
         "UPDATE daily_upload_schedule SET schedule_kind = 'first_monday' "
-        "WHERE upload_type = 'cash_month'"
+        "WHERE upload_type IN ('cash_month', 'realorders_month')"
     )
 
     # Migration: add client_id to orders so wish-list orders are scoped
@@ -2809,6 +2809,8 @@ def _seed_daily_upload_schedule(conn):
         ("prices",       "Цены",                "Narxlar",            "/prices",   1, "1,2,3,4,5,6", 40),
         ("debtors",      "Дебиторы",            "Qarzdorlar",         "/debtors",  1, "1,2,3,4,5,6", 50),
         ("realorders",   "Реализация",          "Realizatsiya",       "/realorders", 1, "1,2,3,4,5,6", 60),
+        ("realorders_week",  "Реализация (прошлая неделя)", "Realizatsiya (o'tgan hafta)", "/realordersweek",  1, "1", 61),
+        ("realorders_month", "Реализация (прошлый месяц)",  "Realizatsiya (o'tgan oy)",    "/realordersmonth", 1, "1", 62),
         ("cash",         "Касса",               "Kassa",              "/cash",     2, "1,2,3,4,5,6", 70),
         ("cash_week",    "Касса (прошлая неделя)", "Kassa (o'tgan hafta)", "/cashweek",  1, "1", 71),
         ("cash_month",   "Касса (прошлый месяц)",  "Kassa (o'tgan oy)",    "/cashmonth", 1, "1", 72),

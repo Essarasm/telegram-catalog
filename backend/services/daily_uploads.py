@@ -29,6 +29,9 @@ VALID_UPLOAD_TYPES = {
     "clients",
     # Weekly/monthly full-period Касса re-pulls (Session F, 2026-06-02).
     "cash_week", "cash_month",
+    # Weekly/monthly full-period Реализация re-pulls (2026-06-05) — surface
+    # back-dated order edits + 1C deletions the daily feed misses.
+    "realorders_week", "realorders_month",
 }
 
 
