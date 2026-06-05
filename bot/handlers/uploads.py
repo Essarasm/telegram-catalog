@@ -15,7 +15,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.shared import (
     get_db, html_escape, is_admin, is_admin_cb, logger, BOT_TOKEN, _BASE_URL,
     track_daily_upload, extract_snapshot_date, sender_display_name,
-    log_admin_action, RECONCILIATION_GROUP_CHAT_ID,
+    log_admin_action, RECONCILIATION_GROUP_CHAT_ID, DAILY_GROUP_CHAT_ID,
 )
 from backend.admin_auth import get_admin_key
 from backend.services.upload_warnings import stale_upload_warnings
@@ -1508,6 +1508,146 @@ async def cmd_realorders(message: types.Message):
     except Exception as e:
         logger.error(f"Realorders import error: {e}")
         await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+def _format_realorders_repull_report(rep: dict, period_uz: str) -> str:
+    """Render the Реализация re-pull diff for the daily group (UZ)."""
+    edited = rep.get("edited", [])
+    swept = rep.get("swept", [])
+    lines = [
+        f"🔁 <b>Realizatsiya sverka — {period_uz}</b>\n",
+        f"➕ Yangi (orqaga sanali ham): <b>{rep.get('inserted', 0)}</b>",
+        f"🔄 Yangilangan: {rep.get('updated', 0)}",
+    ]
+    if edited:
+        lines.append(
+            f"\n✏️ <b>{len(edited)} buyurtma summasi o'zgargan</b> "
+            f"(1C'da mahsulot olib tashlangan yoki qaytarilgan):"
+        )
+        for e in edited[:25]:
+            parts = []
+            if e.get("old_uzs") or e.get("new_uzs"):
+                parts.append(f"{e['old_uzs']:,.0f}→{e['new_uzs']:,.0f} so'm")
+            if e.get("old_usd") or e.get("new_usd"):
+                parts.append(f"{e['old_usd']:,.2f}→{e['new_usd']:,.2f}$")
+            lines.append(f"  • {html_escape(e['client'])} #{e['doc']}: " + " · ".join(parts))
+        if len(edited) > 25:
+            lines.append(f"  … yana {len(edited) - 25}")
+    if swept:
+        lines.append(f"\n🗑 <b>{len(swept)} buyurtma 1C'dan o'chirilgan</b>:")
+        for s in swept[:25]:
+            amt = f"{s['uzs']:,.0f} so'm" if s.get("uzs") else f"{s.get('usd', 0):,.2f}$"
+            lines.append(f"  • {html_escape(s['client'])} #{s['doc']} ({s['date']}): {amt}")
+        if len(swept) > 25:
+            lines.append(f"  … yana {len(swept) - 25}")
+    if not edited and not swept:
+        lines.append("\n✅ Tahrir / o'chirish topilmadi.")
+    return "\n".join(lines)
+
+
+async def _run_realorders_repull(message, upload_type: str, period_uz: str):
+    """Shared body for /realordersweek + /realordersmonth — full-period Реализация
+    re-pull that surfaces backdated edits + 1C deletions the daily feed misses."""
+    doc = None
+    if message.reply_to_message and message.reply_to_message.document:
+        doc = message.reply_to_message.document
+    elif message.document:
+        doc = message.document
+    if not doc:
+        await message.reply(
+            "❌ <b>Foydalanish:</b>\n"
+            f"1C'dan to'liq davr ({period_uz}) «Реализация товаров» XLS faylni\n"
+            "faylga javob sifatida yuboring.\n\n"
+            "💡 Bu re-pull: kunlik yuklash o'tkazib yuborgan orqaga sanali\n"
+            "tahrirlar va 1C'da o'chirilgan buyurtmalarni aniqlaydi.",
+            parse_mode="HTML",
+        )
+        return
+    if not doc.file_name or not doc.file_name.lower().endswith(('.xls', '.xlsx')):
+        await message.reply("❌ Faqat Excel (.xls/.xlsx) fayllar qabul qilinadi.")
+        return
+    status_msg = await message.reply(f"⏳ Realizatsiya ({period_uz}) sverka yuklanmoqda...")
+    try:
+        import httpx
+        file = await message.bot.get_file(doc.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+        api_url = f"{_BASE_URL}/api/finance/import-real-orders"
+        async with httpx.AsyncClient(timeout=600) as client:
+            resp = await client.post(
+                api_url,
+                files={"file": (doc.file_name, file_bytes, "application/vnd.ms-excel")},
+                data={"admin_key": get_admin_key()},
+            )
+            result = resp.json()
+        if not result.get("ok"):
+            await status_msg.edit_text(f"❌ Xatolik: {result.get('error', 'Unknown')}")
+            return
+        track_daily_upload(
+            upload_type, message, file_name=doc.file_name,
+            row_count=int(result.get("inserted_docs") or 0) + int(result.get("updated_docs") or 0),
+        )
+        rep = result.get("repull_report") or {}
+        st = result.get("stats", {}) or {}
+        d_range = st.get("date_min")
+        if st.get("date_max") and st.get("date_max") != d_range:
+            d_range = f"{st.get('date_min')} — {st.get('date_max')}"
+        await status_msg.edit_text(
+            "✅ <b>Realizatsiya sverka tugadi</b>\n\n"
+            f"📅 Davr: {d_range or '?'}\n"
+            f"➕ Yangi: <b>{rep.get('inserted', 0)}</b>  🔄 Yangilangan: {rep.get('updated', 0)}\n"
+            f"✏️ Summasi o'zgargan: <b>{len(rep.get('edited', []))}</b>\n"
+            f"🗑 1C'dan o'chirilgan: <b>{len(rep.get('swept', []))}</b>\n\n"
+            "📋 Batafsil hisobot kunlik guruhga yuborildi.",
+            parse_mode="HTML",
+        )
+        if DAILY_GROUP_CHAT_ID:
+            try:
+                await message.bot.send_message(
+                    DAILY_GROUP_CHAT_ID,
+                    _format_realorders_repull_report(rep, period_uz)[:3900],
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.error(f"realorders repull report send failed: {e}")
+    except Exception as e:
+        logger.error(f"Realorders re-pull error: {e}")
+        await status_msg.edit_text(f"❌ Xatolik: {str(e)[:300]}")
+
+
+# NOTE: these specific captions MUST be registered before the generic
+# "/realorders" document handler below (HANDLER_ORDER_SWALLOW — "/realordersweek"
+# startswith "/realorders"). Same ordering as /cashweek before /cash.
+@router.message(F.document & F.caption.startswith("/realordersweek"))
+async def handle_realordersweek_document(message: types.Message):
+    if not is_admin(message):
+        return
+    await _run_realorders_repull(message, "realorders_week", "o'tgan hafta")
+
+
+@router.message(F.document & F.caption.startswith("/realordersmonth"))
+async def handle_realordersmonth_document(message: types.Message):
+    if not is_admin(message):
+        return
+    await _run_realorders_repull(message, "realorders_month", "o'tgan oy")
+
+
+@router.message(Command("realordersweek"))
+async def cmd_realordersweek(message: types.Message):
+    """Full-period Реализация re-pull for the prior week (every Monday)."""
+    if not is_admin(message):
+        return
+    await _run_realorders_repull(message, "realorders_week", "o'tgan hafta")
+
+
+@router.message(Command("realordersmonth"))
+async def cmd_realordersmonth(message: types.Message):
+    """Full-period Реализация re-pull for the prior month (first Monday)."""
+    if not is_admin(message):
+        return
+    await _run_realorders_repull(message, "realorders_month", "o'tgan oy")
 
 
 @router.message(F.document & F.caption.startswith("/realorders"))

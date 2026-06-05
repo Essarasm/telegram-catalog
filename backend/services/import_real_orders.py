@@ -824,6 +824,10 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
     matched_products = 0
     unmatched_clients: List[str] = []
     unmatched_products: List[str] = []
+    # Re-pull diff (/realordersweek + /realordersmonth): docs whose total changed
+    # since the last import = items removed/edited or a return booked in 1C (the
+    # "crappy activity" the daily feed silently overwrites). Surfaced to the group.
+    edited: List[dict] = []
 
     # Stage every (doc_number, doc_date) from the input into a temp table so the
     # post-loop sweep can identify rows that vanished from the source export
@@ -861,7 +865,7 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
 
         # Upsert by doc_number_1c
         existing = conn.execute(
-            "SELECT id FROM real_orders WHERE doc_number_1c = ?",
+            "SELECT id, total_sum, total_sum_currency FROM real_orders WHERE doc_number_1c = ?",
             (d["doc_number_1c"],),
         ).fetchone()
 
@@ -876,6 +880,15 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
 
         if existing:
             real_order_id = existing[0]
+            # Diff: a materially-changed total means the order was edited in 1C
+            # (line items removed / a return booked) between exports.
+            old_uzs, old_usd = existing[1] or 0, existing[2] or 0
+            if abs(old_uzs - total_local) > 1 or abs(old_usd - total_currency) > 0.01:
+                edited.append({
+                    "doc": d["doc_number_1c"], "client": client_name,
+                    "old_uzs": old_uzs, "new_uzs": total_local,
+                    "old_usd": old_usd, "new_usd": total_currency,
+                })
             conn.execute(
                 """UPDATE real_orders SET
                     doc_date=?, doc_time=?, client_name_1c=?, client_id=?,
@@ -1057,6 +1070,20 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
         "db_total_items": db_total_items,
         # Top 5 buyers ranked by UZS primary, USD tiebreaker
         "top_buyers": top_buyers,
+        # Re-pull diff for /realordersweek + /realordersmonth (the daily feed's
+        # blind spot: backdated edits + 1C deletions). edited = total changed;
+        # swept = doc deleted in 1C (already computed by the ORPHAN_ON_IMPORT pass).
+        "repull_report": {
+            "inserted": inserted_docs,
+            "updated": updated_docs,
+            "edited": edited,
+            "swept": [
+                {"doc": sr["doc_number_1c"], "date": sr["doc_date"],
+                 "client": sr["client_name_1c"],
+                 "uzs": sr["total_sum"] or 0, "usd": sr["total_sum_currency"] or 0}
+                for sr in stale_rows
+            ],
+        },
     }
 
 

@@ -129,6 +129,39 @@ def test_x_to_v_transition_preserves_first_pending_at(db):
     assert updated["first_pending_at"] == original_pending_at
 
 
+def test_repull_diff_flags_edited_order(db):
+    # /realordersweek: a re-import whose total dropped = items removed/returned
+    # in 1C → must surface in repull_report.edited (the daily feed silently
+    # overwrites this; the re-pull report makes it visible).
+    apply_real_orders_import(_xlsx([("V", "I-500", "Client E", [("Prod", 2, 50000, 5)])]))
+    res = apply_real_orders_import(_xlsx([("V", "I-500", "Client E", [("Prod", 1, 30000, 3)])]))
+    edited = res["repull_report"]["edited"]
+    hit = next((e for e in edited if e["doc"] == "I-500"), None)
+    assert hit is not None
+    assert hit["old_uzs"] == 50000 and hit["new_uzs"] == 30000
+    assert hit["old_usd"] == 5 and hit["new_usd"] == 3
+
+
+def test_repull_diff_flags_swept_order(db):
+    # An order present last import but absent now (same date window) = deleted in
+    # 1C → swept + reported.
+    apply_real_orders_import(_xlsx([
+        ("V", "I-600", "C", [("P", 1, 10000, 1)]),
+        ("V", "I-601", "C", [("P", 1, 20000, 2)]),
+    ]))
+    res = apply_real_orders_import(_xlsx([("V", "I-600", "C", [("P", 1, 10000, 1)])]))
+    swept = res["repull_report"]["swept"]
+    assert any(s["doc"] == "I-601" for s in swept)
+    assert db.execute("SELECT COUNT(*) FROM real_orders WHERE doc_number_1c='I-601'").fetchone()[0] == 0
+
+
+def test_repull_diff_clean_when_unchanged(db):
+    apply_real_orders_import(_xlsx([("V", "I-700", "C", [("P", 1, 10000, 1)])]))
+    res = apply_real_orders_import(_xlsx([("V", "I-700", "C", [("P", 1, 10000, 1)])]))
+    assert res["repull_report"]["edited"] == []
+    assert res["repull_report"]["swept"] == []
+
+
 def test_v_to_x_transition_sets_first_pending_at(db):
     # First import as V (no pending history yet)
     apply_real_orders_import(_xlsx([("V", "I-400", "Client D", [("Prod", 1, 5000, 0.5)])]))

@@ -80,6 +80,8 @@ SPECS = {
             Cmd("/balances (reply XLS)", "Оборотка 40.10 (UZS) + 40.11 (USD) — bitta fayl"),
             Cmd("/debtors (reply XLS)", "Дебиторка (дебиторская задолженность)"),
             Cmd("/realorders (reply XLS)", "Реализация товаров — haqiqiy buyurtmalar"),
+            Cmd("/realordersweek (reply XLS)", "Realizatsiya sverka — o'tgan hafta (tahrir/o'chirishlarni aniqlaydi)"),
+            Cmd("/realordersmonth (reply XLS)", "Realizatsiya sverka — o'tgan oy"),
             Cmd("/cash (reply XLS)", "Касса — tushgan to'lovlar"),
             Cmd("/cashweek (reply XLS)", "Касса sverka — o'tgan hafta (har dushanba, orqaga sanali to'lovlar)"),
             Cmd("/cashmonth (reply XLS)", "Касса sverka — o'tgan oy (oyning 1-dushanbasi)"),
