@@ -12,6 +12,15 @@ def test_normalize_phone_basics():
     assert normalize_phone("123") == "123"                       # <9 → partial
 
 
+def test_bot_shared_reexports_normalize_phone():
+    # Regression for Error Log #87: bot/main.py does `from bot.shared import
+    # (... normalize_phone ...)`. The M2 refactor + ruff --fix stripped the
+    # re-export, crash-looping the bot on boot. __all__ now protects it; this
+    # test fails if it's removed again (the suite never imports bot.main itself).
+    from bot.shared import normalize_phone as bot_norm
+    assert bot_norm("998901234567") == "901234567"
+
+
 def test_master_wrapper_blanks_sub9():
     # The master importer deliberately returns "" for sub-9-digit input: an empty
     # phone is exempt from the active-phone partial UNIQUE index, a 7-digit partial

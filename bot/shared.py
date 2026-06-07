@@ -68,6 +68,7 @@ __all__ = [
     "CATALOG_GROUP_CHAT_ID",
     "MANAGER_CHAT_ID",
     "OWNER_DAILY_BRIEF_TARGETS",
+    "normalize_phone",
 ]
 
 
@@ -179,9 +180,12 @@ def chunk_message(text: str, limit: int = 3900) -> list[str]:
     return chunks
 
 
-# (Phone normalization lives in backend/phone_utils.py — the canonical
-#  normalize_phone. bot/shared no longer re-exports it; nothing imported it
-#  from here. Error Log #86, audit M2.)
+# ── Phone normalization ──────────────────────────────────────────────
+# Canonical normalizer lives in backend/phone_utils.py (Error Log #86, M2).
+# RE-EXPORTED here because bot/main.py imports `normalize_phone` from bot.shared
+# (multi-line import). Listed in __all__ so ruff's F401 won't strip it — removing
+# it crash-loops the bot on boot (Error Log #87).
+from backend.phone_utils import normalize_phone
 
 
 # ── Permission checks ───────────────────────────────────────────────
