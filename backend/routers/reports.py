@@ -3,6 +3,7 @@ import os
 import logging
 from pathlib import Path
 from fastapi import APIRouter, Query, HTTPException
+from backend.admin_auth import check_admin_key
 from pydantic import BaseModel
 from typing import Optional
 from backend.database import get_db
@@ -131,10 +132,13 @@ async def create_report(body: ReportCreate):
 
 @router.get("/reports")
 def list_reports(
+    admin_key: str = Query(...),
     status: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
 ):
-    """Admin endpoint: list recent reports."""
+    """Admin endpoint: list recent reports. (Error Log #86 — was unauthenticated.)"""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Unauthorized")
     conn = get_db()
     conditions = []
     params = []
@@ -166,8 +170,10 @@ def list_reports(
 # ── Wrong photo summary (must be before /{report_id} routes for path resolution) ──
 
 @router.get("/reports/wrong-photos")
-def wrong_photo_summary():
-    """Admin endpoint: wrong_photo reports grouped by product, sorted by report count (priority)."""
+def wrong_photo_summary(admin_key: str = Query(...)):
+    """Admin endpoint: wrong_photo reports grouped by product, sorted by report count (priority). (Error Log #86 — was unauthenticated.)"""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Unauthorized")
     conn = get_db()
     rows = conn.execute(
         """SELECT r.product_id, p.name_display, p.name as product_name, p.image_path,
@@ -201,8 +207,11 @@ def wrong_photo_summary():
 # ── Report status update ──
 
 @router.patch("/reports/{report_id}/status")
-def update_report_status(report_id: int, body: ReportStatusUpdate):
-    """Admin endpoint: update report status. TODO: add auth gate in future."""
+def update_report_status(report_id: int, body: ReportStatusUpdate, admin_key: str = Query(...)):
+    """Admin endpoint: update report status. Gated (Error Log #86) — an anonymous
+    PATCH could mark a wrong_photo 'fixed' and delete the catalog photo from disk."""
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Unauthorized")
     if body.status not in VALID_STATUSES:
         raise HTTPException(400, f"Invalid status. Must be one of: {VALID_STATUSES}")
 

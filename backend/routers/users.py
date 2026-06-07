@@ -1,5 +1,5 @@
 """User registration with client whitelist verification."""
-from fastapi import APIRouter, Body, Query
+from fastapi import APIRouter, Body, Query, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from typing import Optional
@@ -263,8 +263,15 @@ def approve_user(telegram_id: int = Query(...), admin_key: str = Query(...)):
 
 
 @router.get("/export-map")
-def export_clients_csv():
-    """Export all clients as CSV for Google My Maps import."""
+def export_clients_csv(admin_key: str = Query(...)):
+    """Export all clients as CSV for Google My Maps import.
+
+    Admin-only: returns bulk PII (name + phone + GPS) for every user, so it must
+    be gated. Was unauthenticated (Error Log #86, UI_SURFACE_AUTH_DIVERGE #42).
+    Callers (incl. any Google-MyMaps workflow) must append ?admin_key=...
+    """
+    if not check_admin_key(admin_key):
+        raise HTTPException(status_code=403, detail="Unauthorized")
     conn = get_db()
     rows = conn.execute(
         """SELECT telegram_id, phone, first_name, last_name, username,
