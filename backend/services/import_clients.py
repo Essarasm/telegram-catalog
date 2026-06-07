@@ -317,14 +317,41 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
         )
 
         if existing_phone != primary and not cid_collision:
-            # Primary phone changed — log to phone_history before overwriting.
-            conn.execute(
-                "INSERT INTO phone_history (client_id, old_phone, new_phone, reason, changed_by) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (existing_id, existing_phone, primary,
-                 "clients_upload multi-phone-cell parse", changed_by_tag),
-            )
-            updates.append("phone_normalized = ?"); params.append(primary)
+            # Cross-client phone-collision guard. The onec_card_id match (step 0)
+            # bypasses the phone lookup (step 1), so `primary` may already belong
+            # to a DIFFERENT active row. Overwriting it would violate
+            # idx_allowed_phone_unique and — because the upload loop had no
+            # per-row guard — abort the ENTIRE import (Error Log #85). 1C moving a
+            # phone between two active clients is a genuine identity contention,
+            # not churn: mirror import_client_master_v2's policy — freeze the
+            # phone, flag BOTH rows for review, never auto-move/merge.
+            phone_clash = conn.execute(
+                "SELECT id FROM allowed_clients "
+                "WHERE phone_normalized = ? AND id != ? "
+                f"AND {not_merged}",
+                (primary, existing_id),
+            ).fetchone()
+            if phone_clash:
+                conn.execute(
+                    "INSERT INTO phone_history (client_id, old_phone, new_phone, reason, changed_by) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (existing_id, existing_phone, primary,
+                     f"collision_with_{phone_clash[0]}", changed_by_tag),
+                )
+                conn.execute(
+                    "UPDATE allowed_clients SET needs_review = 1 WHERE id IN (?, ?)",
+                    (existing_id, phone_clash[0]),
+                )
+                flag_needs_review = True
+            else:
+                # Primary phone changed — log to phone_history before overwriting.
+                conn.execute(
+                    "INSERT INTO phone_history (client_id, old_phone, new_phone, reason, changed_by) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (existing_id, existing_phone, primary,
+                     "clients_upload multi-phone-cell parse", changed_by_tag),
+                )
+                updates.append("phone_normalized = ?"); params.append(primary)
 
         # Identity fields (name, location, company) — only overwrite when this
         # is unambiguously the same client. Cross-client collision freezes them.
@@ -474,6 +501,7 @@ def import_clients():
     rows_inserted = 0
     rows_updated = 0
     rows_drift_held = 0
+    rows_errored = 0
     seen_phones = set()
 
     with open(CLIENTS_FILE, "r", encoding="utf-8") as f:
@@ -485,16 +513,24 @@ def import_clients():
                 continue
             seen_phones.add(primary)
 
-            outcome, _ = _upsert_client_from_row(
-                conn,
-                raw_phone_str=raw_phone,
-                client_name=row.get("name", "").strip(),
-                location=row.get("location", "").strip(),
-                source=row.get("source", "").strip(),
-                cid_1c=row.get("client_id_1c", "").strip(),
-                company=row.get("company_name", "").strip(),
-                changed_by_tag="import_clients_csv",
-            )
+            # Per-row resilience: one bad row must never abort the startup import
+            # (this runs in the railway boot chain). Error Log #85.
+            try:
+                outcome, _ = _upsert_client_from_row(
+                    conn,
+                    raw_phone_str=raw_phone,
+                    client_name=row.get("name", "").strip(),
+                    location=row.get("location", "").strip(),
+                    source=row.get("source", "").strip(),
+                    cid_1c=row.get("client_id_1c", "").strip(),
+                    company=row.get("company_name", "").strip(),
+                    changed_by_tag="import_clients_csv",
+                )
+            except sqlite3.IntegrityError as e:
+                rows_errored += 1
+                print(f"[import_clients] row skipped on IntegrityError "
+                      f"(phone={primary}): {e}")
+                continue
             if outcome == "inserted":
                 rows_inserted += 1
             elif outcome == "updated":
@@ -536,7 +572,7 @@ def import_clients():
     conn.close()
 
     print(f"[import_clients] Inserted {rows_inserted}, updated {rows_updated}, "
-          f"drift-held {rows_drift_held}. Total: {total}")
+          f"drift-held {rows_drift_held}, errored {rows_errored}. Total: {total}")
     if approved_count:
         print(f"[import_clients] Retroactively approved {approved_count} existing users.")
     if any(orphans_healed.values()):
@@ -758,7 +794,7 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
     conn = sqlite3.connect(DATABASE_PATH)
     conn.execute("PRAGMA journal_mode=WAL")
 
-    inserted = updated = skipped = drift_held = 0
+    inserted = updated = skipped = drift_held = errored = 0
     seen = set()
     for raw in rows:
         raw_phone_str = str(raw.get("phone") or "")
@@ -768,17 +804,27 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
             continue
         seen.add(primary)
 
-        outcome, _ = _upsert_client_from_row(
-            conn,
-            raw_phone_str=raw_phone_str,
-            client_name=str(raw.get("name") or "").strip(),
-            location=str(raw.get("location") or "").strip(),
-            source=str(raw.get("source") or "clients_upload").strip(),
-            cid_1c=str(raw.get("client_id_1c") or "").strip(),
-            company=str(raw.get("company_name") or "").strip(),
-            changed_by_tag="apply_clients_upload",
-            onec_card_id=str(raw.get("onec_card_id") or "").strip() or None,
-        )
+        # Per-row resilience: a single row's constraint violation must never
+        # abort the whole upload (Error Log #85). The collision guard in
+        # _upsert_client_from_row handles the known phone case; this catches any
+        # other UNIQUE violation — log + count + continue (zero silent failure).
+        try:
+            outcome, _ = _upsert_client_from_row(
+                conn,
+                raw_phone_str=raw_phone_str,
+                client_name=str(raw.get("name") or "").strip(),
+                location=str(raw.get("location") or "").strip(),
+                source=str(raw.get("source") or "clients_upload").strip(),
+                cid_1c=str(raw.get("client_id_1c") or "").strip(),
+                company=str(raw.get("company_name") or "").strip(),
+                changed_by_tag="apply_clients_upload",
+                onec_card_id=str(raw.get("onec_card_id") or "").strip() or None,
+            )
+        except sqlite3.IntegrityError as e:
+            errored += 1
+            print(f"[apply_clients_upload] row skipped on IntegrityError "
+                  f"(phone={primary}): {e}")
+            continue
         if outcome == "inserted":
             inserted += 1
         elif outcome == "updated":
@@ -805,6 +851,7 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
         "updated": updated,
         "skipped": skipped,
         "drift_held": drift_held,
+        "errored": errored,
         "total_clients": total,
         "orphans_healed": orphans_healed,
         "headers_seen": header_raw,

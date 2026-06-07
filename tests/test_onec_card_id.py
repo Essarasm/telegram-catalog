@@ -144,6 +144,34 @@ def test_merged_row_does_not_collide_on_card(db):
     assert _active_count(db) == 1
 
 
+def test_card_match_phone_collision_freezes_not_crashes(db):
+    # Regression for Error Log #85. The card match (step 0) bypasses the phone
+    # lookup, so the incoming primary phone may already belong to ANOTHER active
+    # client (1C moved the number between two clients). Overwriting it would
+    # violate idx_allowed_phone_unique and abort the whole upload. The guard
+    # mirrors import_client_master_v2: freeze E's phone, flag BOTH rows, no crash.
+    _seed(db, 20, "E CLIENT", "900000001", card="Прочие:500")
+    _seed(db, 21, "F CLIENT", "900000002", card="Прочие:501")
+    # 1C now reports card 500 (== E) carrying F's phone number.
+    out, rid = _upsert(db, "900000002", name="E CLIENT", card="Прочие:500")
+    assert out == "updated" and rid == 20                     # NO IntegrityError
+    assert _row(db, 20)["phone_normalized"] == "900000001"    # E's phone frozen
+    assert _row(db, 21)["phone_normalized"] == "900000002"    # F untouched
+    assert _row(db, 20)["needs_review"] == 1                  # both flagged
+    assert _row(db, 21)["needs_review"] == 1
+    assert _active_count(db) == 2                             # both rows intact
+
+
+def test_phone_change_no_collision_still_overwrites(db):
+    # Control: when the incoming phone is NOT held by another active row, the
+    # card-matched row's phone IS updated as before (guard must not over-freeze).
+    _seed(db, 30, "G CLIENT", "900000030", card="Прочие:600")
+    out, rid = _upsert(db, "900000099", name="G CLIENT", card="Прочие:600")
+    assert out == "updated" and rid == 30
+    assert _row(db, 30)["phone_normalized"] == "900000099"    # overwrite happened
+    assert _row(db, 30)["needs_review"] == 0                  # not flagged
+
+
 # ── _apply_folder_anchor (parse) ───────────────────────────────────────────────
 
 def _xlsx_bytes(rows):
