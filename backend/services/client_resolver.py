@@ -64,12 +64,24 @@ def queue_hold(conn, verdict, *, phone=None, name=None, source="") -> int:
     so an ambiguous/conflicting create is held for review instead of spawning a
     competing row. Returns the queue row id. Caller commits."""
     cands = verdict.get("candidates") or []
+    ac_id = cands[0] if cands else 0
+    ph = _normalize(phone or "") or ""
+    # Idempotent: a registration retry must not stack duplicate unresolved holds
+    # for the same client/phone (Error Log #86 #3 — drift-queue dedup).
+    existing = conn.execute(
+        """SELECT id FROM client_identity_drift_queue
+           WHERE allowed_client_id = ? AND phone_normalized = ?
+             AND COALESCE(resolved, 0) = 0 LIMIT 1""",
+        (ac_id, ph),
+    ).fetchone()
+    if existing:
+        return existing[0]
     cur = conn.execute(
         """INSERT INTO client_identity_drift_queue
              (allowed_client_id, phone_normalized, existing_client_id_1c,
               incoming_client_id_1c, incoming_name, curated_state, matched_via)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (cands[0] if cands else 0, _normalize(phone or "") or "", None, None,
+        (ac_id, ph, None, None,
          (name or "")[:200], f"resolve_hold:{source}",
          (verdict.get("reason") or "")[:200]),
     )

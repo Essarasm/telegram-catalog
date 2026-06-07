@@ -425,20 +425,30 @@ def import_from_catalog_clean(xlsx_path: str):
 
 
 if __name__ == "__main__":
-    # Check multiple possible locations
-    candidates = [
-        os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'products.xlsx'),
-        os.path.join(os.path.dirname(__file__), '..', '..', '..', '09.03.26 List of products (Inventory) - FINAL.xlsx'),
-        '/sessions/clever-vibrant-hamilton/mnt/Catalogue:Telegram app/09.03.26 List of products (Inventory) - FINAL.xlsx',
-        './data/products.xlsx',
-    ]
-    xlsx_path = None
-    for c in candidates:
-        if os.path.exists(c):
-            xlsx_path = os.path.abspath(c)
-            break
-    if xlsx_path:
-        import_from_catalog_clean(xlsx_path)
-    else:
-        print("ERROR: No xlsx file found. Checked:", [os.path.abspath(c) for c in candidates])
-        sys.exit(1)
+    startup = "--startup" in sys.argv
+    try:
+        # Check multiple possible locations
+        candidates = [
+            os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'products.xlsx'),
+            os.path.join(os.path.dirname(__file__), '..', '..', '..', '09.03.26 List of products (Inventory) - FINAL.xlsx'),
+            '/sessions/clever-vibrant-hamilton/mnt/Catalogue:Telegram app/09.03.26 List of products (Inventory) - FINAL.xlsx',
+            './data/products.xlsx',
+        ]
+        xlsx_path = None
+        for c in candidates:
+            if os.path.exists(c):
+                xlsx_path = os.path.abspath(c)
+                break
+        if xlsx_path:
+            import_from_catalog_clean(xlsx_path)
+        else:
+            print("ERROR: No xlsx file found. Checked:", [os.path.abspath(c) for c in candidates])
+            if not startup:
+                sys.exit(1)
+    except Exception as e:
+        # Boot-chain tolerance (Error Log #86 H1): under --startup a fatal here
+        # must not halt the railway.toml && chain before start_all.py.
+        if startup:
+            print(f"[import_products] ERROR (startup, continuing boot): {e}")
+            sys.exit(0)
+        raise

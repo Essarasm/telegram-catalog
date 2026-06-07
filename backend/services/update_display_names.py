@@ -224,4 +224,12 @@ def update_display_names():
 
 
 if __name__ == '__main__':
-    update_display_names()
+    import sys
+    try:
+        update_display_names()
+    except Exception as e:
+        # Boot-chain tolerance (Error Log #86 H1).
+        if "--startup" in sys.argv:
+            print(f"[update_display_names] ERROR (startup, continuing boot): {e}")
+            sys.exit(0)
+        raise

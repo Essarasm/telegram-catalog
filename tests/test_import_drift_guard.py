@@ -49,6 +49,16 @@ def test_drift_held_on_curated_phone_match(db):
                       ).fetchone()[0] == 1
 
 
+def test_drift_hold_is_idempotent(db):
+    # Re-running the same drift (e.g. the daily import) must NOT stack duplicate
+    # queue rows — that is what produced client 722's double rows (Error Log #86 #3).
+    _seed(db, 1302, "САРДОР Пищевой", "979310404", gps=39.6)
+    out1, _ = _upsert(db, "979310404", "Мурод ака Вокзал")
+    out2, _ = _upsert(db, "979310404", "Мурод ака Вокзал")
+    assert out1 == "drift_held" and out2 == "drift_held"
+    assert len(_queue(db)) == 1          # one unresolved hold, not two
+
+
 def test_credit_and_linked_user_also_trigger_hold(db):
     _seed(db, 700, "OLD NAME", "900000001", credit=82, limit=820000, user_tg=555)
     out, _ = _upsert(db, "900000001", "NEW NAME")

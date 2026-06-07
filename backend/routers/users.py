@@ -11,7 +11,6 @@ from backend.services.agent_signup import submit_agent_application
 from backend.admin_auth import check_admin_key
 import json
 import os
-import re
 import threading
 
 # Load always-approved IDs from multiple sources (belt + suspenders):
@@ -36,10 +35,9 @@ except Exception:
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
-def normalize_phone(raw: str) -> str:
-    """Strip to last 9 digits for matching."""
-    digits = re.sub(r"\D", "", raw or "")
-    return digits[-9:] if len(digits) >= 9 else digits
+# Canonical normalizer (Error Log #86, audit M2). Re-exported so existing
+# `from backend.routers.users import normalize_phone` callers keep working.
+from backend.phone_utils import normalize_phone
 
 
 class UserRegister(BaseModel):

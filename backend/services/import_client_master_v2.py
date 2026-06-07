@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 import os
-import re
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -46,9 +45,8 @@ MASTER_ROW_HEADER = "master_row_id"
 CHUNK_SIZE = 500
 
 
-def _normalize_phone(raw: str) -> str:
-    digits = re.sub(r"\D", "", (raw or ""))
-    return digits[-9:] if len(digits) >= 9 else digits
+# Canonical normalizer (Error Log #86, audit M2).
+from backend.phone_utils import normalize_phone as _normalize_phone
 
 
 def _cell_val(raw) -> Optional[str]:

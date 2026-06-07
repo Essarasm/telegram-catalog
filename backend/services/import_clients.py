@@ -282,15 +282,25 @@ def _upsert_client_from_row(conn, raw_phone_str, client_name, location, source,
             curated = _curated_state(conn, existing_id,
                                      existing_gps, existing_cs, existing_cl)
             if curated:
-                conn.execute(
-                    """INSERT INTO client_identity_drift_queue
-                         (allowed_client_id, phone_normalized,
-                          existing_client_id_1c, incoming_client_id_1c,
-                          incoming_name, curated_state, matched_via)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (existing_id, primary, existing_cid, cid_1c,
-                     client_name or "", ",".join(curated), match_via),
-                )
+                # Idempotent: don't stack a duplicate unresolved hold for the
+                # same (row, incoming 1C name) on every daily import — that's what
+                # produced client 722's double queue rows (Error Log #86 #3).
+                dup = conn.execute(
+                    """SELECT 1 FROM client_identity_drift_queue
+                       WHERE allowed_client_id = ? AND incoming_client_id_1c = ?
+                         AND COALESCE(resolved, 0) = 0 LIMIT 1""",
+                    (existing_id, cid_1c),
+                ).fetchone()
+                if not dup:
+                    conn.execute(
+                        """INSERT INTO client_identity_drift_queue
+                             (allowed_client_id, phone_normalized,
+                              existing_client_id_1c, incoming_client_id_1c,
+                              incoming_name, curated_state, matched_via)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (existing_id, primary, existing_cid, cid_1c,
+                         client_name or "", ",".join(curated), match_via),
+                    )
                 conn.execute(
                     "UPDATE allowed_clients SET needs_review = 1 WHERE id = ?",
                     (existing_id,),
@@ -860,4 +870,13 @@ def apply_clients_upload(file_bytes: bytes, filename_hint: str = "") -> dict:
 
 
 if __name__ == "__main__":
-    import_clients()
+    import sys
+    try:
+        import_clients()
+    except Exception as e:
+        # Boot-chain tolerance (Error Log #86 H1). The per-row guard handles bad
+        # rows; this catches a pre-loop fatal (unreadable CSV, schema mismatch).
+        if "--startup" in sys.argv:
+            print(f"[import_clients] ERROR (startup, continuing boot): {e}")
+            sys.exit(0)
+        raise

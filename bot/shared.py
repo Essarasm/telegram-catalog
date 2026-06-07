@@ -179,11 +179,9 @@ def chunk_message(text: str, limit: int = 3900) -> list[str]:
     return chunks
 
 
-# ── Phone normalization ──────────────────────────────────────────────
-
-def normalize_phone(raw: str) -> str:
-    digits = re.sub(r"\D", "", raw or "")
-    return digits[-9:] if len(digits) >= 9 else digits
+# (Phone normalization lives in backend/phone_utils.py — the canonical
+#  normalize_phone. bot/shared no longer re-exports it; nothing imported it
+#  from here. Error Log #86, audit M2.)
 
 
 # ── Permission checks ───────────────────────────────────────────────

@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import io
 import os
-import re
 import sqlite3
 from typing import Any, Dict, List
 
@@ -80,19 +79,16 @@ USTO_COLS = {
 }
 
 
-def _normalize_phone(raw: Any) -> str:
-    """Strip to last 9 digits (Uzbek local number without country code).
+from backend.phone_utils import normalize_phone as _np_canonical
 
-    Identical semantics to `import_clients.normalize_phone`. Re-implemented
-    here to avoid a circular import (`import_clients` would otherwise pull in
-    the migration path on first call in test runs).
-    """
-    if raw is None:
-        return ""
-    digits = re.sub(r"\D", "", str(raw))
-    if len(digits) >= 9:
-        return digits[-9:]
-    return ""  # too short to be a usable Uzbek mobile
+
+def _normalize_phone(raw: Any) -> str:
+    """Master-specific normalizer: the canonical last-9-digits, but returns ""
+    for sub-9-digit input. The distinction is load-bearing — an empty phone is
+    exempt from the active-phone partial UNIQUE index, a partial is not — so
+    don't collapse this into the canonical (Error Log #86, audit M2)."""
+    p = _np_canonical(raw)
+    return p if len(p) >= 9 else ""
 
 
 def _str(v: Any) -> str:

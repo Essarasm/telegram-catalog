@@ -61,4 +61,13 @@ def sync():
 
 
 if __name__ == "__main__":
-    sync()
+    import sys
+    try:
+        sync()
+    except Exception as e:
+        # Boot-chain tolerance (Error Log #86 H1): under --startup a fatal here
+        # must not halt the railway.toml && chain before start_all.py.
+        if "--startup" in sys.argv:
+            print(f"[sync_images] ERROR (startup, continuing boot): {e}")
+            sys.exit(0)
+        raise
