@@ -20,7 +20,9 @@ from __future__ import annotations
 import os
 from typing import Iterable, Optional
 
-VALID_ROLES = ("admin", "cashier", "agent", "worker")
+# observer = read-only panel role: may enter the panel and see read views,
+# but is excluded from every write gate (see agent.py _WRITE_ROLES).
+VALID_ROLES = ("admin", "cashier", "agent", "worker", "observer")
 
 
 def _env_id_set(var: str) -> set[int]:

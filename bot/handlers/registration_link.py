@@ -130,8 +130,9 @@ _ROLE_LABEL = {
     "cashier": "💰 Kassir",
     "agent": "👔 Agent",
     "worker": "🚚 Ishchi",
+    "observer": "👁 Kuzatuvchi",
 }
-_ROLE_ORDER = ("admin", "cashier", "agent", "worker")
+_ROLE_ORDER = ("admin", "cashier", "agent", "worker", "observer")
 _VALID_ROLES = set(_ROLE_ORDER)
 
 
@@ -165,6 +166,8 @@ def _role_picker_kb(tg_id: int) -> InlineKeyboardMarkup:
                               callback_data=f"reg:setrole:{tg_id}:agent"),
          InlineKeyboardButton(text=_ROLE_LABEL["worker"],
                               callback_data=f"reg:setrole:{tg_id}:worker")],
+        [InlineKeyboardButton(text=_ROLE_LABEL["observer"],
+                              callback_data=f"reg:setrole:{tg_id}:observer")],
         [InlineKeyboardButton(text="🚫 Rolni olib tashlash",
                               callback_data=f"reg:setrole:{tg_id}:off")],
         [InlineKeyboardButton(text="⬅️ Orqaga",

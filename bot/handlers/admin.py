@@ -363,8 +363,9 @@ _ROLE_LABEL = {
     "cashier": "💰 Kassir",
     "agent": "👔 Agent",
     "worker": "🚚 Ishchi",
+    "observer": "👁 Kuzatuvchi",
 }
-_ROLE_ORDER = ("admin", "cashier", "agent", "worker")
+_ROLE_ORDER = ("admin", "cashier", "agent", "worker", "observer")
 _VALID_ROLES = set(_ROLE_ORDER)
 
 
@@ -447,6 +448,7 @@ async def cmd_makeagent(message: types.Message):
                 "<code>/makeagent 652836922 cashier</code>\n"
                 "<code>/makeagent 652836922 agent</code>\n"
                 "<code>/makeagent 652836922 worker</code>\n"
+                "<code>/makeagent 652836922 observer</code> — faqat ko'rish\n"
                 "<code>/makeagent 652836922 off</code> — olib tashlash\n"
                 "<code>/makeagent list</code> — ro'yxat",
                 parse_mode="HTML",

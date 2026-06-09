@@ -42,8 +42,9 @@ _ROLE_LABEL = {
     "agent":   "👔 Agent",
     "cashier": "💰 Kassir",
     "worker":  "🚚 Ishchi",
+    "observer": "👁 Kuzatuvchi",
 }
-_ROLE_ORDER = ("admin", "agent", "cashier", "worker")
+_ROLE_ORDER = ("admin", "agent", "cashier", "worker", "observer")
 
 
 def _is_real_admin(conn, telegram_id: int) -> bool:

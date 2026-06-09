@@ -29,8 +29,12 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 
 # Roles that may use the panel at all (any non-worker still has full access).
-_PANEL_ROLES = {"admin", "cashier", "agent", "worker"}
+_PANEL_ROLES = {"admin", "cashier", "agent", "worker", "observer"}
 _NON_WORKER_ROLES = {"admin", "cashier", "agent"}
+# Writes a worker may perform but an observer may NOT — i.e. every panel role
+# except the read-only observer. Use this (not _is_agent / _PANEL_ROLES) on any
+# state-changing endpoint so observer stays read-only by construction.
+_WRITE_ROLES = {"admin", "cashier", "agent", "worker"}
 
 
 def _is_agent(conn, telegram_id: int) -> bool:
@@ -389,8 +393,11 @@ def agent_switch_client(payload: dict = Body(...)):
 
     conn = get_db()
     try:
-        if not _is_agent(conn, telegram_id):
-            return JSONResponse({"ok": False, "error": "not an agent"}, status_code=403)
+        if not role_in(conn, telegram_id, _WRITE_ROLES):
+            # switch-client is a WRITE (links/creates client rows) — observer
+            # is read-only and must not pass here, unlike the search/recent
+            # readers which keep _is_agent.
+            return JSONResponse({"ok": False, "error": "not allowed"}, status_code=403)
 
         if payload.get("clear"):
             conn.execute(
