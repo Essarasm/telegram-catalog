@@ -165,6 +165,8 @@ def _role_picker_kb(tg_id: int) -> InlineKeyboardMarkup:
                               callback_data=f"reg:setrole:{tg_id}:agent"),
          InlineKeyboardButton(text=_ROLE_LABEL["worker"],
                               callback_data=f"reg:setrole:{tg_id}:worker")],
+        [InlineKeyboardButton(text="🚫 Rolni olib tashlash",
+                              callback_data=f"reg:setrole:{tg_id}:off")],
         [InlineKeyboardButton(text="⬅️ Orqaga",
                               callback_data=f"reg:link:{tg_id}")],
     ]
@@ -679,7 +681,8 @@ async def cb_set_role(cb: CallbackQuery, state: FSMContext, bot: Bot):
         return
     tg_id = int(parts[2])
     role = parts[3].lower()
-    if role not in _VALID_ROLES:
+    is_off = role == "off"
+    if not is_off and role not in _VALID_ROLES:
         await cb.answer("Noma'lum rol", show_alert=True)
         return
 
@@ -689,11 +692,19 @@ async def cb_set_role(cb: CallbackQuery, state: FSMContext, bot: Bot):
             "INSERT OR IGNORE INTO users (telegram_id, is_approved) VALUES (?, 1)",
             (tg_id,),
         )
-        conn.execute(
-            "UPDATE users SET is_agent = 1, agent_role = ?, is_approved = 1 "
-            "WHERE telegram_id = ?",
-            (role, tg_id),
-        )
+        if is_off:
+            # Mirror /makeagent off — strip role + is_agent (keeps the account).
+            conn.execute(
+                "UPDATE users SET is_agent = 0, agent_role = NULL "
+                "WHERE telegram_id = ?",
+                (tg_id,),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET is_agent = 1, agent_role = ?, is_approved = 1 "
+                "WHERE telegram_id = ?",
+                (role, tg_id),
+            )
         conn.commit()
         _backup_user(conn, tg_id)
         user = conn.execute(
@@ -706,20 +717,23 @@ async def cb_set_role(cb: CallbackQuery, state: FSMContext, bot: Bot):
 
     name = " ".join(filter(None, [user["first_name"], user["last_name"]])) if user else str(tg_id)
     admin_label = _admin_display(cb)
-    await cb.answer(f"✅ Rol: {_ROLE_LABEL[role]}")
     try:
         await cb.message.edit_reply_markup(reply_markup=None)
     except Exception:
         pass
-    await _edit_notification_outcome(
-        bot,
-        notif_chat or 0,
-        notif_msg or 0,
-        (
+    if is_off:
+        await cb.answer("🚫 Rol olib tashlandi")
+        outcome = (
+            f"🚫 <b>Rol olib tashlandi:</b> {html_escape(name)}\n"
+            f"by {html_escape(admin_label)} · {_now_tashkent_hhmm()}"
+        )
+    else:
+        await cb.answer(f"✅ Rol: {_ROLE_LABEL[role]}")
+        outcome = (
             f"👔 <b>Xodim:</b> {html_escape(name)} → {_ROLE_LABEL[role]}\n"
             f"by {html_escape(admin_label)} · {_now_tashkent_hhmm()}"
-        ),
-    )
+        )
+    await _edit_notification_outcome(bot, notif_chat or 0, notif_msg or 0, outcome)
     await state.clear()
 
 

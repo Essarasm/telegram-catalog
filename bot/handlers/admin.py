@@ -212,15 +212,16 @@ async def cmd_unlinked(message: types.Message):
         # pick → confirm) from registration_link.py, which stamps the chosen 1C
         # name onto the user's row via resolve_for_registration. The old
         # ul:link branch only printed a manual /testclient instruction; reg:link
-        # actually performs the link. Dismiss stays on the local ul: handler.
+        # actually performs the link. "Boshqarish" opens the Hide/Block/Delete
+        # submenu (ul:menu).
         kb_rows.append([
             InlineKeyboardButton(
-                text=f"🔗 {name[:20]} → bog'lash",
+                text=f"🔗 {name[:18]} → bog'lash",
                 callback_data=f"reg:link:{tg_id}",
             ),
             InlineKeyboardButton(
-                text="❌ Demo/Xodim",
-                callback_data=f"ul:dismiss:{tg_id}",
+                text="⚙️ Boshqarish",
+                callback_data=f"ul:menu:{tg_id}",
             ),
         ])
 
@@ -229,64 +230,124 @@ async def cmd_unlinked(message: types.Message):
 
 
 
+def _ul_user_name(conn, tg: int) -> str:
+    row = conn.execute(
+        "SELECT first_name, last_name FROM users WHERE telegram_id = ?", (tg,)
+    ).fetchone()
+    if not row:
+        return str(tg)
+    return " ".join(filter(None, [row["first_name"], row["last_name"]])) or str(tg)
+
+
 @router.callback_query(F.data.startswith("ul:"))
 async def on_unlinked_callback(cb: types.CallbackQuery):
-    """Handle /unlinked inline buttons — link or dismiss."""
+    """Handle /unlinked inline buttons.
+
+    ul:menu   — open the Hide / Block / Delete submenu for one user
+    ul:hide   — dismiss_status='demo_or_employee' (full access, hidden from list)
+    ul:block  — is_approved=0 + dismiss_status='blocked' (revoke app access)
+    ul:del    — DELETE the user row + remove backup entry (see caveat below)
+    ul:dismiss — legacy alias for ul:hide (older posted messages)
+    """
     if not is_admin(cb.message):
         await cb.answer("Ruxsat yo'q", show_alert=False)
         return
 
     data = (cb.data or "").split(":")
-    if len(data) < 3:
+    if len(data) < 3 or not data[2].isdigit():
         await cb.answer()
         return
 
     action = data[1]
-    target_tg = data[2]
+    tg = int(data[2])
 
-    if action == "dismiss":
+    if action == "menu":
         conn = get_db()
+        name = _ul_user_name(conn, tg)
+        conn.close()
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🙈 Yashirish (kirish saqlanadi)",
+                                  callback_data=f"ul:hide:{tg}")],
+            [InlineKeyboardButton(text="🚫 Bloklash (kirishni o'chirish)",
+                                  callback_data=f"ul:block:{tg}")],
+            [InlineKeyboardButton(text="🗑 O'chirish (butunlay)",
+                                  callback_data=f"ul:del:{tg}")],
+            [InlineKeyboardButton(text="⬅️ Bekor", callback_data="ul:noop:0")],
+        ])
+        await cb.message.answer(
+            f"⚙️ <b>{html_escape(name)}</b> "
+            f"(ID: <code>{tg}</code>) bilan nima qilamiz?",
+            parse_mode="HTML", reply_markup=kb,
+        )
+        await cb.answer()
+        return
+
+    if action == "noop":
+        await cb.answer()
+        try:
+            await cb.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    if action in ("hide", "dismiss"):
+        conn = get_db()
+        name = _ul_user_name(conn, tg)
         conn.execute(
             "UPDATE users SET dismiss_status = 'demo_or_employee' WHERE telegram_id = ?",
-            (int(target_tg),),
+            (tg,),
         )
         conn.commit()
-        # Get name for confirmation
-        row = conn.execute(
-            "SELECT first_name FROM users WHERE telegram_id = ?", (int(target_tg),)
-        ).fetchone()
         conn.close()
-        name = row["first_name"] if row else target_tg
-        await cb.answer(f"❌ {name} — demo/xodim deb belgilandi", show_alert=False)
+        await cb.answer(f"🙈 {name} — yashirildi")
         try:
             await cb.message.reply(
-                f"❌ <b>{html_escape(str(name))}</b> (ID: <code>{target_tg}</code>) "
-                f"— demo/xodim deb belgilandi. Keyingi /unlinked da ko'rinmaydi.",
+                f"🙈 <b>{html_escape(name)}</b> (ID: <code>{tg}</code>) "
+                f"yashirildi — kirish saqlanadi, /unlinked da ko'rinmaydi.",
                 parse_mode="HTML",
             )
         except Exception:
             pass
         return
 
-    if action == "link":
-        # Trigger the testclient search for this user's name
+    if action == "block":
         conn = get_db()
-        row = conn.execute(
-            "SELECT first_name, phone FROM users WHERE telegram_id = ?", (int(target_tg),)
-        ).fetchone()
+        name = _ul_user_name(conn, tg)
+        conn.execute(
+            "UPDATE users SET is_approved = 0, dismiss_status = 'blocked' "
+            "WHERE telegram_id = ?",
+            (tg,),
+        )
+        conn.commit()
         conn.close()
-        if not row:
-            await cb.answer("Foydalanuvchi topilmadi", show_alert=True)
-            return
-        name = row["first_name"] or ""
-        await cb.answer(f"🔗 {name} uchun qidirish...", show_alert=False)
-        # Send the testclient search prompt with the user's name
+        await cb.answer(f"🚫 {name} — bloklandi")
         try:
             await cb.message.reply(
-                f"🔗 <b>{html_escape(name)}</b> (ID: <code>{target_tg}</code>) "
-                f"uchun mijoz topish:\n\n"
-                f"<code>/testclient link {target_tg} CLIENT_ID</code>\n\n"
-                f"Yoki qidiring: <code>/testclient {html_escape(name)}</code>",
+                f"🚫 <b>{html_escape(name)}</b> (ID: <code>{tg}</code>) "
+                f"bloklandi — narxlar va buyurtma berish o'chirildi.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return
+
+    if action == "del":
+        from backend.services.backup_users import remove_user_from_backup
+        conn = get_db()
+        name = _ul_user_name(conn, tg)
+        conn.execute("DELETE FROM users WHERE telegram_id = ?", (tg,))
+        conn.commit()
+        conn.close()
+        try:
+            remove_user_from_backup(tg)
+        except Exception:
+            pass
+        await cb.answer(f"🗑 {name} — o'chirildi")
+        try:
+            await cb.message.reply(
+                f"🗑 <b>{html_escape(name)}</b> (ID: <code>{tg}</code>) o'chirildi.\n"
+                f"<i>Eslatma: agar u Mini App'ni qayta ochsa, yangi foydalanuvchi "
+                f"sifatida qaytadan ro'yxatdan o'tadi.</i>",
                 parse_mode="HTML",
             )
         except Exception:
@@ -345,24 +406,38 @@ async def cmd_makeagent(message: types.Message):
                 else:
                     legacy.append(r)
             lines: list[str] = []
+            kb_rows: list[list[InlineKeyboardButton]] = []
             total = sum(len(v) for v in buckets.values()) + len(legacy)
             lines.append(f"👥 <b>Panel foydalanuvchilari ({total}):</b>")
+            lines.append("<i>Rolni o'zgartirish / olib tashlash uchun tugmani bosing.</i>")
+
+            def _staff_btn(r, icon: str):
+                nm = " ".join(filter(None, [r["first_name"], r["last_name"]])) or str(r["telegram_id"])
+                kb_rows.append([InlineKeyboardButton(
+                    text=f"{icon} {nm}"[:60],
+                    callback_data=f"reg:role:{r['telegram_id']}",
+                )])
+
             for role in _ROLE_ORDER:
                 rs = buckets[role]
                 if not rs:
                     continue
                 lines.append("")
                 lines.append(f"<b>{_ROLE_LABEL[role]} ({len(rs)})</b>")
+                icon = _ROLE_LABEL[role].split()[0]
                 for r in rs:
                     name = " ".join(filter(None, [r["first_name"], r["last_name"]])) or "—"
                     lines.append(f"  <code>{r['telegram_id']}</code> — {html_escape(name)}")
+                    _staff_btn(r, icon)
             if legacy:
                 lines.append("")
                 lines.append(f"<b>⚠️ Roli yo'q ({len(legacy)})</b> — eski is_agent=1 yozuvlari")
                 for r in legacy:
                     name = " ".join(filter(None, [r["first_name"], r["last_name"]])) or "—"
                     lines.append(f"  <code>{r['telegram_id']}</code> — {html_escape(name)}")
-            await message.reply("\n".join(lines), parse_mode="HTML")
+                    _staff_btn(r, "⚠️")
+            kb = InlineKeyboardMarkup(inline_keyboard=kb_rows) if kb_rows else None
+            await message.reply("\n".join(lines), parse_mode="HTML", reply_markup=kb)
             return
 
         if len(parts) < 2 or not parts[1].isdigit():
