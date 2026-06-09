@@ -104,6 +104,23 @@ def _parse_cb(cb_data: str, expected_parts: int) -> Optional[list]:
     return parts
 
 
+def _has_real_link(conn, client_id) -> bool:
+    """True only if the user's linked allowed_clients row carries a real 1C
+    name (client_id_1c). A *placeholder* link (bot_approved row with empty
+    client_id_1c — e.g. a user auto-approved before being linked) is NOT a
+    real link: those users must stay re-linkable via /unlinked, even though
+    they have a non-NULL users.client_id. Without this distinction the
+    'Allaqachon bog'langan' guards lock placeholder users out forever
+    (Error Log: baratovv — approved onto an empty placeholder, invisible to
+    the link flow)."""
+    if not client_id:
+        return False
+    row = conn.execute(
+        "SELECT client_id_1c FROM allowed_clients WHERE id = ?", (client_id,)
+    ).fetchone()
+    return bool(row and (row["client_id_1c"] or "").strip())
+
+
 def _update_approved_overrides(telegram_id: int) -> None:
     """Mirror of the approved_overrides.json update in cmd_link / cmd_approve
     (bot/main.py:312-325). Persists across restarts via JSON; the SQLite-
@@ -277,7 +294,7 @@ async def cb_link_entry(cb: CallbackQuery, state: FSMContext):
             await cb.answer("Foydalanuvchi topilmadi", show_alert=True)
             return
 
-        if user["is_approved"] and user["client_id"]:
+        if user["is_approved"] and _has_real_link(conn, user["client_id"]):
             await cb.answer("Allaqachon bog'langan", show_alert=True)
             try:
                 await cb.message.edit_reply_markup(reply_markup=None)
@@ -471,7 +488,7 @@ async def _execute_link(
             await cb.answer("Foydalanuvchi topilmadi", show_alert=True)
             await state.clear()
             return
-        if user["is_approved"] and user["client_id"]:
+        if user["is_approved"] and _has_real_link(conn, user["client_id"]):
             await cb.answer("Allaqachon bog'langan", show_alert=True)
             try:
                 await cb.message.edit_reply_markup(reply_markup=None)
@@ -572,7 +589,7 @@ async def cb_new_entry(cb: CallbackQuery, state: FSMContext):
             "SELECT is_approved, client_id FROM users WHERE telegram_id = ?",
             (tg_id,),
         ).fetchone()
-        if user and user["is_approved"] and user["client_id"]:
+        if user and user["is_approved"] and _has_real_link(conn, user["client_id"]):
             await cb.answer("Allaqachon bog'langan", show_alert=True)
             try:
                 await cb.message.edit_reply_markup(reply_markup=None)
@@ -730,8 +747,9 @@ async def _execute_new(
         if not user:
             await state.clear()
             return
-        if user["is_approved"] and user["client_id"]:
-            # Race: another admin already linked this user. Bail.
+        if user["is_approved"] and _has_real_link(conn, user["client_id"]):
+            # Race: another admin already linked this user to a REAL 1C client.
+            # (A placeholder link is not real — those stay re-linkable.) Bail.
             if isinstance(source, CallbackQuery):
                 await source.answer("Allaqachon bog'langan", show_alert=True)
             else:

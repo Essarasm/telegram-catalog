@@ -169,14 +169,23 @@ async def cmd_unlinked(message: types.Message):
         return
 
     conn = get_db()
+    # "Unlinked" is TWO buckets, not one:
+    #   (A) users with no client_id at all, and
+    #   (B) users approved onto an empty PLACEHOLDER row (client_id is set, but
+    #       the linked allowed_clients row has no real 1C name) — e.g. anyone
+    #       auto-approved before being linked. Bucket B has a non-NULL client_id
+    #       so the old `client_id IS NULL` filter hid them entirely (the baratovv
+    #       trap). LEFT JOIN + the client_id_1c-empty test surfaces both.
     rows = conn.execute(
-        """SELECT telegram_id, first_name, last_name, phone, registered_at,
-                  username
-           FROM users
-           WHERE client_id IS NULL
-             AND (dismiss_status IS NULL OR dismiss_status = '')
-             AND phone IS NOT NULL AND phone != ''
-           ORDER BY registered_at DESC
+        """SELECT u.telegram_id, u.first_name, u.last_name, u.phone,
+                  u.registered_at, u.username
+           FROM users u
+           LEFT JOIN allowed_clients ac ON ac.id = u.client_id
+           WHERE (u.dismiss_status IS NULL OR u.dismiss_status = '')
+             AND u.phone IS NOT NULL AND u.phone != ''
+             AND (u.client_id IS NULL
+                  OR ac.client_id_1c IS NULL OR TRIM(ac.client_id_1c) = '')
+           ORDER BY u.registered_at DESC
            LIMIT 20""",
     ).fetchall()
     conn.close()
@@ -198,10 +207,15 @@ async def cmd_unlinked(message: types.Message):
             lines.append(f"   📅 {reg_date}")
 
         tg_id = r["telegram_id"]
+        # "bog'lash" reuses the full registration link flow (reg:link → search →
+        # pick → confirm) from registration_link.py, which stamps the chosen 1C
+        # name onto the user's row via resolve_for_registration. The old
+        # ul:link branch only printed a manual /testclient instruction; reg:link
+        # actually performs the link. Dismiss stays on the local ul: handler.
         kb_rows.append([
             InlineKeyboardButton(
                 text=f"🔗 {name[:20]} → bog'lash",
-                callback_data=f"ul:link:{tg_id}",
+                callback_data=f"reg:link:{tg_id}",
             ),
             InlineKeyboardButton(
                 text="❌ Demo/Xodim",
