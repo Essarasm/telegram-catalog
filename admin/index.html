@@ -2329,7 +2329,7 @@
                         <div class="kpi-card">
                             <div class="kpi-label">No photo</div>
                             <div class="kpi-value" id="cleanupKpiNoPhoto">—</div>
-                            <div class="kpi-sub" style="font-size:11px; color:#8b8fa3;">priority queue products lacking image</div>
+                            <div class="kpi-sub" id="cleanupKpiNoPhotoSub" style="font-size:11px; color:#8b8fa3;">missing image (excludes captured/pending)</div>
                         </div>
                         <div class="kpi-card">
                             <div class="kpi-label">No supplier</div>
@@ -2346,7 +2346,9 @@
                                 style="padding:8px 12px; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px;">
                             <option value="all">All products</option>
                             <option value="needs_weight">Weight: fill or mismatch</option>
-                            <option value="no_photo">No photo</option>
+                            <option value="no_photo">No photo (missing)</option>
+                            <option value="pending_photo">Photo: captured — pending trim</option>
+                            <option value="has_photo">Has photo (review / replace)</option>
                             <option value="no_supplier">No supplier</option>
                             <option value="no_weight_extractable">Manual weight only (no regex match)</option>
                         </select>
@@ -6699,11 +6701,15 @@
             if (!cleanupData) return;
             const p = cleanupData.products;
             const weightFix = p.filter(x => x.weight_action === 'fill' || x.weight_action === 'mismatch').length;
-            const noPhoto = p.filter(x => !x.has_image).length;
+            const noPhoto = p.filter(x => (x.photo_state || (x.has_image ? 'has_image' : 'missing')) === 'missing').length;
+            const pending = p.filter(x => x.photo_state === 'pending_processing').length;
             const noSupplier = p.filter(x => !x.supplier_name).length;
             document.getElementById('cleanupKpiTotal').textContent = p.length;
             document.getElementById('cleanupKpiWeight').textContent = weightFix;
             document.getElementById('cleanupKpiNoPhoto').textContent = noPhoto;
+            document.getElementById('cleanupKpiNoPhotoSub').textContent = pending > 0
+                ? `missing image · ${pending} captured (pending trim)`
+                : 'missing image (excludes captured/pending)';
             document.getElementById('cleanupKpiNoSupplier').textContent = noSupplier;
         }
 
@@ -6716,17 +6722,31 @@
                     const hay = ((p.name || '') + ' ' + (p.name_display || '')).toLowerCase();
                     if (!hay.includes(q)) return false;
                 }
+                const state = p.photo_state || (p.has_image ? 'has_image' : 'missing');
                 if (filter === 'needs_weight') return p.weight_action === 'fill' || p.weight_action === 'mismatch';
-                if (filter === 'no_photo') return !p.has_image;
+                if (filter === 'no_photo') return state === 'missing' || state === 'skipped';
+                if (filter === 'pending_photo') return state === 'pending_processing';
+                if (filter === 'has_photo') return state === 'has_image';
                 if (filter === 'no_supplier') return !p.supplier_name;
                 if (filter === 'no_weight_extractable') return p.weight_action === 'manual';
                 return true;
             });
         }
 
+        // Photo-state sort rank: action-needed on top, finished photos at the
+        // bottom. Within a rank the backend's order_count-DESC order is kept
+        // (Array.sort is stable). Mirrors backend photo_state() precedence.
+        const PHOTO_STATE_RANK = { missing: 0, skipped: 1, pending_processing: 2, has_image: 3 };
+        function cleanupPhotoState(p) {
+            return p.photo_state || (p.has_image ? 'has_image' : 'missing');
+        }
+
         function renderCleanupTable() {
             const tbody = document.getElementById('cleanupRows');
             const rows = filteredCleanupRows();
+            rows.sort((a, b) =>
+                (PHOTO_STATE_RANK[cleanupPhotoState(a)] ?? 0) -
+                (PHOTO_STATE_RANK[cleanupPhotoState(b)] ?? 0));
             const countLabel = document.getElementById('cleanupCountLabel');
             countLabel.textContent = cleanupData ? `${rows.length} shown / ${cleanupData.count} total` : '';
             if (!rows.length) {
@@ -6749,17 +6769,37 @@
                 const applyBtn = (p.weight_action === 'fill' || p.weight_action === 'mismatch')
                     ? `<button onclick="acceptWeight(${p.id})" style="padding:3px 8px; background:#6366f1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:11px;">✓</button>`
                     : '';
-                const photoCell = p.has_image
-                    ? `<div style="display:flex; flex-direction:column; align-items:center; gap:3px;">
+                const pState = cleanupPhotoState(p);
+                const uploadBtn = (label, dashed) =>
+                    `<button onclick="document.getElementById('cleanupFile_${p.id}').click()"
+                             style="padding:6px 10px; background:#2a2d3a; color:#e4e4e7; border:1px ${dashed ? 'dashed' : 'solid'} #4b5563; border-radius:4px; cursor:pointer; font-size:11px;">${label}</button>`;
+                let photoCell;
+                if (pState === 'has_image') {
+                    photoCell = `<div style="display:flex; flex-direction:column; align-items:center; gap:3px;">
                          <img src="/images/${p.id}.webp" loading="lazy"
                               style="height:64px; width:64px; object-fit:cover; border-radius:4px; cursor:zoom-in;"
                               onclick="openCleanupLightbox(${p.id}, ${JSON.stringify(p.name || '').replace(/"/g, '&quot;')})">
                          <button onclick="replaceCleanupPhoto(${p.id})"
                                  title="Replace photo"
                                  style="padding:1px 8px; background:#2a2d3a; color:#8b8fa3; border:1px solid #2a2d3a; border-radius:3px; cursor:pointer; font-size:10px;">↻ Replace</button>
-                       </div>`
-                    : `<button onclick="document.getElementById('cleanupFile_${p.id}').click()"
+                       </div>`;
+                } else if (pState === 'pending_processing') {
+                    const when = p.photographed_at ? String(p.photographed_at).slice(0, 10) : '';
+                    photoCell = `<div style="display:flex; flex-direction:column; align-items:center; gap:3px;">
+                         <div title="Raw photo captured via /foto — in Google Drive, awaiting offline trim"
+                              style="font-size:11px; color:#f59e0b; white-space:nowrap;">📷 captured</div>
+                         <div style="font-size:9px; color:#8b8fa3;">pending trim${when ? ' · ' + when : ''}</div>
+                         ${uploadBtn('+ Trimmed', false)}
+                       </div>`;
+                } else if (pState === 'skipped') {
+                    photoCell = `<div style="display:flex; flex-direction:column; align-items:center; gap:3px;">
+                         <div style="font-size:11px; color:#8b8fa3;">⏭ skipped</div>
+                         ${uploadBtn('+ Upload', true)}
+                       </div>`;
+                } else {
+                    photoCell = `<button onclick="document.getElementById('cleanupFile_${p.id}').click()"
                                style="padding:6px 10px; background:#2a2d3a; color:#e4e4e7; border:1px dashed #4b5563; border-radius:4px; cursor:pointer; font-size:11px; height:64px; width:64px;">+ Upload</button>`;
+                }
                 const fileInput = `<input type="file" id="cleanupFile_${p.id}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="uploadCleanupPhoto(${p.id}, this.files[0])">`;
                 return `
                     <tr data-pid="${p.id}">
@@ -6898,7 +6938,7 @@
                 const res = await fetch('/api/admin/upload-single-image', { method: 'POST', body: fd });
                 const data = await res.json();
                 if (!data.ok) throw new Error(data.error || 'Upload failed');
-                if (p) p.has_image = true;
+                if (p) { p.has_image = true; p.photo_state = 'has_image'; }
                 renderCleanupKpis();
                 renderCleanupTable();
                 // Cache-bust the lightbox preview if it was open on this product

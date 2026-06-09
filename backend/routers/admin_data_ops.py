@@ -488,6 +488,7 @@ def cleanup_queue(
     """
     _check_admin(admin_key)
     from backend.services.parse_weight import parse_weight_detailed
+    from backend.services.photo_state import photo_state
 
     conn = get_db()
     rows = conn.execute(
@@ -505,6 +506,9 @@ def cleanup_queue(
           c.name          AS category_name,
           pr.name         AS producer_name,
           s.name_1c       AS supplier_name,
+          pb.has_photographed,
+          pb.has_skipped,
+          pb.last_photographed_at,
           COUNT(DISTINCT roi.real_order_id) AS order_count
         FROM products p
         JOIN real_order_items roi ON roi.product_id = p.id
@@ -512,6 +516,18 @@ def cleanup_queue(
         LEFT JOIN categories c    ON c.id = p.category_id
         LEFT JOIN producers pr    ON pr.id = p.producer_id
         LEFT JOIN suppliers s     ON s.id = p.latest_supplier_id
+        -- /foto raw-capture state (second compartment for photo_state, rule #12).
+        -- Aggregated per product across all batches: 'photographed' (raw in
+        -- Drive, awaiting offline trim) and/or 'skipped'.
+        LEFT JOIN (
+            SELECT product_id,
+                   MAX(status = 'photographed')                          AS has_photographed,
+                   MAX(status = 'skipped')                               AS has_skipped,
+                   MAX(CASE WHEN status = 'photographed'
+                            THEN photographed_at END)                    AS last_photographed_at
+            FROM photo_batch_items
+            GROUP BY product_id
+        ) pb ON pb.product_id = p.id
         WHERE p.is_active = 1
           AND ro.doc_date >= date('now', ?)
         GROUP BY p.id
@@ -552,6 +568,12 @@ def cleanup_queue(
             "suggested_source": parsed["source"] if parsed else None,
             "weight_action": action,
             "has_image": bool(r["image_path"]),
+            "photo_state": photo_state(
+                r["image_path"],
+                bool(r["has_photographed"]),
+                bool(r["has_skipped"]),
+            ),
+            "photographed_at": r["last_photographed_at"],
             "order_count_60d": r["order_count"],
         })
 
