@@ -183,6 +183,7 @@ async def cmd_unlinked(message: types.Message):
            LEFT JOIN allowed_clients ac ON ac.id = u.client_id
            WHERE (u.dismiss_status IS NULL OR u.dismiss_status = '')
              AND u.phone IS NOT NULL AND u.phone != ''
+             AND u.agent_role IS NULL
              AND (u.client_id IS NULL
                   OR ac.client_id_1c IS NULL OR TRIM(ac.client_id_1c) = '')
            ORDER BY u.registered_at DESC

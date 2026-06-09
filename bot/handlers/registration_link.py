@@ -121,6 +121,56 @@ def _has_real_link(conn, client_id) -> bool:
     return bool(row and (row["client_id_1c"] or "").strip())
 
 
+# Panel roles — kept in lockstep with bot/handlers/admin.py::_ROLE_LABEL and
+# the /makeagent command. An unlinked person reached via /unlinked is either a
+# CLIENT (link to a 1C card) or an EMPLOYEE (assign a panel role) — the fork
+# below lets the admin pick which without leaving Telegram.
+_ROLE_LABEL = {
+    "admin": "🛡 Admin",
+    "cashier": "💰 Kassir",
+    "agent": "👔 Agent",
+    "worker": "🚚 Ishchi",
+}
+_ROLE_ORDER = ("admin", "cashier", "agent", "worker")
+_VALID_ROLES = set(_ROLE_ORDER)
+
+
+def _who_is_this_kb(tg_id: int) -> InlineKeyboardMarkup:
+    """The 'who is this?' fork shown when bog'lash is tapped: link as a 1C
+    client, or assign a panel role as an employee."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🔎 Klient (1C mijoz)",
+            callback_data=f"reg:link_search:{tg_id}",
+        )],
+        [InlineKeyboardButton(
+            text="👔 Xodim — rol tanlash",
+            callback_data=f"reg:role:{tg_id}",
+        )],
+        [InlineKeyboardButton(
+            text="❌ Bekor",
+            callback_data=f"reg:cancel:{tg_id}",
+        )],
+    ])
+
+
+def _role_picker_kb(tg_id: int) -> InlineKeyboardMarkup:
+    """2×2 role buttons + back."""
+    rows = [
+        [InlineKeyboardButton(text=_ROLE_LABEL["admin"],
+                              callback_data=f"reg:setrole:{tg_id}:admin"),
+         InlineKeyboardButton(text=_ROLE_LABEL["cashier"],
+                              callback_data=f"reg:setrole:{tg_id}:cashier")],
+        [InlineKeyboardButton(text=_ROLE_LABEL["agent"],
+                              callback_data=f"reg:setrole:{tg_id}:agent"),
+         InlineKeyboardButton(text=_ROLE_LABEL["worker"],
+                              callback_data=f"reg:setrole:{tg_id}:worker")],
+        [InlineKeyboardButton(text="⬅️ Orqaga",
+                              callback_data=f"reg:link:{tg_id}")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _update_approved_overrides(telegram_id: int) -> None:
     """Mirror of the approved_overrides.json update in cmd_link / cmd_approve
     (bot/main.py:312-325). Persists across restarts via JSON; the SQLite-
@@ -337,6 +387,10 @@ async def cb_link_entry(cb: CallbackQuery, state: FSMContext):
                 callback_data=f"reg:link_search:{tg_id}",
             )],
             [InlineKeyboardButton(
+                text="👔 Xodim — rol tanlash",
+                callback_data=f"reg:role:{tg_id}",
+            )],
+            [InlineKeyboardButton(
                 text="❌ Bekor",
                 callback_data=f"reg:cancel:{tg_id}",
             )],
@@ -350,11 +404,12 @@ async def cb_link_entry(cb: CallbackQuery, state: FSMContext):
         await cb.answer()
         return
 
-    await state.set_state(LinkClientFlow.awaiting_name)
     await cb.message.answer(
-        "🔎 <b>Klient nomini kiriting</b> (1C nomi yoki kompaniya):",
+        "👤 <b>Bu kim?</b>\n\n"
+        "• <b>Klient</b> — mavjud 1C mijozga bog'lash\n"
+        "• <b>Xodim</b> — panel roli berish (admin/kassir/agent/ishchi)",
         parse_mode="HTML",
-        reply_markup=_cancel_kb(tg_id),
+        reply_markup=_who_is_this_kb(tg_id),
     )
     await cb.answer()
 
@@ -566,6 +621,105 @@ async def _execute_link(
         ),
     )
     await _dm_user_approved(bot, tg_id, target_1c)
+    await state.clear()
+
+
+# ── Employee: assign a panel role ───────────────────────────────────
+
+
+@router.callback_query(F.data.startswith("reg:role:"))
+async def cb_role_menu(cb: CallbackQuery, state: FSMContext):
+    """Show the panel-role picker for an unlinked person who is an employee
+    (reached via the 'Xodim — rol tanlash' fork on bog'lash)."""
+    if not is_admin_cb(cb):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+    parts = _parse_cb(cb.data, 3)
+    if not parts or not parts[2].isdigit():
+        await cb.answer("Noto'g'ri tugma", show_alert=True)
+        return
+    tg_id = int(parts[2])
+
+    conn = get_db()
+    try:
+        user = conn.execute(
+            "SELECT first_name, last_name, agent_role FROM users "
+            "WHERE telegram_id = ?",
+            (tg_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not user:
+        await cb.answer("Foydalanuvchi topilmadi", show_alert=True)
+        return
+
+    name = " ".join(filter(None, [user["first_name"], user["last_name"]])) or str(tg_id)
+    cur = (user["agent_role"] or "").lower()
+    cur_line = f"\n\nHozirgi rol: <b>{_ROLE_LABEL.get(cur, '—')}</b>" if cur else ""
+    await cb.message.answer(
+        f"👔 <b>{html_escape(name)}</b> uchun rol tanlang:{cur_line}",
+        parse_mode="HTML",
+        reply_markup=_role_picker_kb(tg_id),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("reg:setrole:"))
+async def cb_set_role(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """Assign a panel role to an employee. Mirrors the /makeagent SQL
+    (is_agent=1 + agent_role + is_approved=1) so both paths behave identically.
+    A role-holder is excluded from /unlinked, so this also removes them from
+    the list."""
+    if not is_admin_cb(cb):
+        await cb.answer("Ruxsat yo'q", show_alert=False)
+        return
+    parts = _parse_cb(cb.data, 4)
+    if not parts or not parts[2].isdigit():
+        await cb.answer("Noto'g'ri tugma", show_alert=True)
+        return
+    tg_id = int(parts[2])
+    role = parts[3].lower()
+    if role not in _VALID_ROLES:
+        await cb.answer("Noma'lum rol", show_alert=True)
+        return
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO users (telegram_id, is_approved) VALUES (?, 1)",
+            (tg_id,),
+        )
+        conn.execute(
+            "UPDATE users SET is_agent = 1, agent_role = ?, is_approved = 1 "
+            "WHERE telegram_id = ?",
+            (role, tg_id),
+        )
+        conn.commit()
+        _backup_user(conn, tg_id)
+        user = conn.execute(
+            "SELECT first_name, last_name FROM users WHERE telegram_id = ?",
+            (tg_id,),
+        ).fetchone()
+        notif_chat, notif_msg = _fetch_notification_ctx(conn, tg_id)
+    finally:
+        conn.close()
+
+    name = " ".join(filter(None, [user["first_name"], user["last_name"]])) if user else str(tg_id)
+    admin_label = _admin_display(cb)
+    await cb.answer(f"✅ Rol: {_ROLE_LABEL[role]}")
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await _edit_notification_outcome(
+        bot,
+        notif_chat or 0,
+        notif_msg or 0,
+        (
+            f"👔 <b>Xodim:</b> {html_escape(name)} → {_ROLE_LABEL[role]}\n"
+            f"by {html_escape(admin_label)} · {_now_tashkent_hhmm()}"
+        ),
+    )
     await state.clear()
 
 
