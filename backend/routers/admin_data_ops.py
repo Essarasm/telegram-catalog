@@ -95,37 +95,32 @@ def backfill_order_item_names(admin_key: str = Query(...)):
 
 @router.post("/fix-weights")
 def fix_weights_from_names(admin_key: str = Query(...)):
-    """One-time fix: parse weight from product name (original cyrillic)
-    when the DB weight is NULL or a round integer that contradicts a
-    decimal weight found in the name.
+    """Resolve products.weight to the authoritative kg/unit (Error Log #89).
 
-    E.g. name="Грунтовка акриловая 0.75 кг", weight=1 → weight=0.75
+    Anchors on the sales-derived weight (1C сумма веса / qty), forces kg-sold
+    units to 1.0, and only falls back to name-parse for never-shipped products.
+    Superseded the old pure name-parse writer, which re-introduced pack weights
+    (a /20 кг/ kg-sold item became 20). Goes through the shared helper per
+    .claude/rules/12-dual-source-columns.md.
     """
     _check_admin(admin_key)
-    from backend.services.parse_weight import parse_weight_from_name
+    from backend.services.product_weight import compute_sales_weights, authoritative_weight
 
     conn = get_db()
-    rows = conn.execute("SELECT id, name, weight FROM products").fetchall()
+    sales_weights = compute_sales_weights(conn)
+    rows = conn.execute(
+        "SELECT id, name, weight, unit FROM products WHERE is_active = 1"
+    ).fetchall()
 
     updated = []
     for row in rows:
-        pid, name, db_weight = row["id"], row["name"], row["weight"]
-        parsed = parse_weight_from_name(name or "")
-        if parsed is None:
+        pid, name, db_weight, unit = row["id"], row["name"], row["weight"], row["unit"]
+        target = authoritative_weight(db_weight, unit, sales_weights.get(pid), name=name)
+        if target is None:
             continue
-
-        # Update if: no weight, or DB weight differs from what the name says
-        should_update = False
-        if db_weight is None or db_weight == 0:
-            should_update = True
-        elif round(db_weight, 4) != round(parsed, 4):
-            # DB weight doesn't match name — could be wrong Excel data
-            # or a bad parse from a previous run
-            should_update = True
-
-        if should_update:
-            conn.execute("UPDATE products SET weight = ? WHERE id = ?", (parsed, pid))
-            updated.append({"id": pid, "name": name, "old": db_weight, "new": parsed})
+        if db_weight is None or round(db_weight, 4) != round(target, 4):
+            conn.execute("UPDATE products SET weight = ? WHERE id = ?", (target, pid))
+            updated.append({"id": pid, "name": name, "old": db_weight, "new": target})
 
     conn.commit()
     conn.close()
@@ -487,10 +482,13 @@ def cleanup_queue(
     without follow-up requests.
     """
     _check_admin(admin_key)
-    from backend.services.parse_weight import parse_weight_detailed
+    from backend.services.product_weight import compute_sales_weights, suggest_weight
     from backend.services.photo_state import photo_state
 
     conn = get_db()
+    # Sales-derived weight anchor — the suggestion the tab shows must be the
+    # ground-truth kg/unit, not a name-parse pack weight (Error Log #89, rule #12).
+    sales_weights = compute_sales_weights(conn)
     rows = conn.execute(
         """
         SELECT
@@ -540,15 +538,16 @@ def cleanup_queue(
 
     products = []
     for r in rows:
-        parsed = parse_weight_detailed(r["name"] or "")
         cur_w = r["current_weight"]
-        suggested_weight_kg = parsed["weight_kg"] if parsed else None
-        action = "manual"
-        if parsed is None:
+        cur_unit = r["current_unit"]
+        suggested_weight_kg, src = suggest_weight(
+            cur_unit, sales_weights.get(r["id"]), r["name"] or ""
+        )
+        if suggested_weight_kg is None:
             action = "manual"
         elif cur_w is None or cur_w == 0:
             action = "fill"
-        elif round(float(cur_w), 4) != round(parsed["weight_kg"], 4):
+        elif round(float(cur_w), 4) != round(suggested_weight_kg, 4):
             action = "mismatch"
         else:
             action = "match"
@@ -561,11 +560,13 @@ def cleanup_queue(
             "producer_name": r["producer_name"],
             "supplier_name": r["supplier_name"],
             "current_weight_kg": cur_w,
-            "current_unit": r["current_unit"],
+            "current_unit": cur_unit,
             "suggested_weight_kg": suggested_weight_kg,
-            "suggested_value": parsed["value"] if parsed else None,
-            "suggested_unit": parsed["unit"] if parsed else None,
-            "suggested_source": parsed["source"] if parsed else None,
+            "suggested_value": suggested_weight_kg,
+            # Keep the product's real sold unit — never reassign unit from a
+            # name-parse, or a шт item would be relabelled кг on confirm.
+            "suggested_unit": cur_unit,
+            "suggested_source": src,
             "weight_action": action,
             "has_image": bool(r["image_path"]),
             "photo_state": photo_state(

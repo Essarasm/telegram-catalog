@@ -166,6 +166,11 @@ def _refresh_from_catalog_clean(file_bytes: bytes) -> dict:
         if norm not in db_by_name:
             db_by_name[norm] = p
 
+    # Authoritative sales-derived weights — anchor weight writes so the untrusted
+    # Excel "Вес" column can't corrupt products.weight (Error Log #89, rule #12).
+    from backend.services.product_weight import compute_sales_weights, authoritative_weight
+    sales_weights = compute_sales_weights(conn)
+
     # Existing categories and producers
     cat_rows = conn.execute("SELECT id, name FROM categories").fetchall()
     cat_map = {r["name"]: r["id"] for r in cat_rows}
@@ -262,8 +267,13 @@ def _refresh_from_catalog_clean(file_bytes: bytes) -> dict:
                 changes.append(("price_usd", p_usd))
             if p_uzs > 0 and abs((existing["price_uzs"] or 0) - p_uzs) > 0.5:
                 changes.append(("price_uzs", p_uzs))
-            if weight and abs((existing["weight"] or 0) - weight) > 0.001:
-                changes.append(("weight", weight))
+            # Reconcile Excel/name-parse weight against the sales-derived anchor.
+            target_w = authoritative_weight(
+                existing["weight"], unit, sales_weights.get(existing["id"]),
+                name=name, excel_candidate=weight,
+            )
+            if target_w is not None and abs((existing["weight"] or 0) - target_w) > 0.001:
+                changes.append(("weight", target_w))
             if existing["category_id"] != cat_map[category]:
                 changes.append(("category_id", cat_map[category]))
             if existing["producer_id"] != prod_map[producer_latin]:
@@ -280,13 +290,15 @@ def _refresh_from_catalog_clean(file_bytes: bytes) -> dict:
                 updated_products += 1
         else:
             search_text = build_search_text(original_cyrillic, display_name, producer_latin)
+            # New product has no sales history yet; kg-unit still forces 1.0.
+            insert_w = authoritative_weight(None, unit, None, name=name, excel_candidate=weight)
             conn.execute(
                 """INSERT INTO products
                    (name, name_display, category_id, producer_id, unit,
                     price_usd, price_uzs, weight, is_active, search_text)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
                 (original_cyrillic, display_name, cat_map[category], prod_map[producer_latin],
-                 unit, p_usd, p_uzs, weight, search_text)
+                 unit, p_usd, p_uzs, insert_w, search_text)
             )
             new_products += 1
             new_product_names.append(display_name[:50])
@@ -354,8 +366,12 @@ def _refresh_from_1c(file_bytes: bytes) -> dict:
 
     # Build DB lookups
     db_products = conn.execute(
-        "SELECT id, name, name_display, price_usd, price_uzs, weight FROM products WHERE is_active = 1"
+        "SELECT id, name, name_display, price_usd, price_uzs, weight, unit FROM products WHERE is_active = 1"
     ).fetchall()
+
+    # Sales-derived weight anchor (Error Log #89, rule #12).
+    from backend.services.product_weight import compute_sales_weights, authoritative_weight
+    sales_weights = compute_sales_weights(conn)
 
     db_by_exact = {}
     db_by_normalized = {}
@@ -406,15 +422,20 @@ def _refresh_from_1c(file_bytes: bytes) -> dict:
                 })
                 changes_made = True
 
-        # ── Weight update ──
-        if pd.notna(weight_1c) and weight_1c > 0:
+        # ── Weight update — reconcile 1C "Вес" against the sales-derived anchor ──
+        cand_1c = float(weight_1c) if (pd.notna(weight_1c) and weight_1c > 0) else None
+        target_w = authoritative_weight(
+            product["weight"], product["unit"], sales_weights.get(product["id"]),
+            name=product["name"], excel_candidate=cand_1c,
+        )
+        if target_w is not None:
             old_weight = product["weight"] or 0
-            if abs(old_weight - weight_1c) > 0.001:
+            if abs(old_weight - target_w) > 0.001:
                 conn.execute("UPDATE products SET weight = ? WHERE id = ?",
-                             (float(weight_1c), product["id"]))
+                             (target_w, product["id"]))
                 weight_changes.append({
                     "name": (product["name_display"] or product["name"])[:50],
-                    "old": old_weight, "new": float(weight_1c)
+                    "old": old_weight, "new": target_w
                 })
                 changes_made = True
 

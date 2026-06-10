@@ -1952,9 +1952,17 @@ def ingest_unmatched_skus() -> dict:
         producer_cyrillic = prod_row["name"] if prod_row else ""
         display_name = generate_display_name(name_1c, producer_cyrillic)
 
-        # Step 4: Parse weight from name
-        from backend.services.parse_weight import parse_weight_from_name
-        weight = parse_weight_from_name(name_1c)
+        # Step 4: Weight — prefer this shipment's own сумма веса (kg/unit) over a
+        # name-parse guess, which extracts the pack weight (Error Log #89, rule #12).
+        from backend.services.product_weight import authoritative_weight
+        _sw = conn.execute(
+            """SELECT SUM(total_weight) AS tw, SUM(quantity) AS q
+               FROM real_order_items
+               WHERE product_name_1c = ? AND total_weight > 0 AND quantity > 0""",
+            (row["product_name_1c"],),
+        ).fetchone()
+        sales_w = (_sw["tw"] / _sw["q"]) if (_sw and _sw["q"] and _sw["q"] > 0 and _sw["tw"]) else None
+        weight = authoritative_weight(None, "sht", sales_w, name=name_1c)
 
         # Build search text
         cat_row = conn.execute("SELECT name FROM categories WHERE id = ?", (cat_id,)).fetchone()

@@ -46,6 +46,12 @@ def update_display_names():
         conn.close()
         return
 
+    # Sales-derived weight anchor — this runs on every startup, so it must not
+    # re-corrupt products.weight from the Excel/name-parse sources (Error Log #89,
+    # rule #12). Resolve every weight write through the shared helper.
+    from backend.services.product_weight import compute_sales_weights, authoritative_weight
+    sales_weights = compute_sales_weights(conn)
+
     # Build category id → name map from DB
     db_cat_id_to_name = {}
     for row in conn.execute("SELECT id, name FROM categories").fetchall():
@@ -153,26 +159,27 @@ def update_display_names():
         if result.rowcount > 0:
             updated_names += 1
 
-        # Update weight if Excel has a value; fallback to parsing from DB name
+        # Weight — resolve through the authoritative helper: sales-derived kg/unit
+        # wins, kg-sold units force 1.0, Excel/name-parse only fill never-shipped
+        # products. The Excel unit (set below) is applied first so kg-units resolve.
+        row_db = conn.execute("SELECT name, weight, unit FROM products WHERE id = ?", (db_id,)).fetchone()
+        excel_w = None
         if weight is not None:
             try:
-                w = float(weight)
-                conn.execute(
-                    "UPDATE products SET weight = ? WHERE id = ?",
-                    (w, db_id)
-                )
-                updated_weights += 1
+                excel_w = float(weight)
             except (ValueError, TypeError):
-                pass
-        else:
-            # No weight in Excel — try parsing from original Cyrillic name
-            from backend.services.parse_weight import parse_weight_from_name
-            row_db = conn.execute("SELECT name, weight FROM products WHERE id = ?", (db_id,)).fetchone()
-            if row_db and (row_db["weight"] is None or row_db["weight"] == 0):
-                parsed_w = parse_weight_from_name(row_db["name"] or "")
-                if parsed_w is not None:
-                    conn.execute("UPDATE products SET weight = ? WHERE id = ?", (parsed_w, db_id))
-                    updated_weights += 1
+                excel_w = None
+        eff_unit = str(unit).strip() if (unit is not None and str(unit).strip()) else (row_db["unit"] if row_db else None)
+        target_w = authoritative_weight(
+            row_db["weight"] if row_db else None, eff_unit,
+            sales_weights.get(db_id), name=(row_db["name"] if row_db else None),
+            excel_candidate=excel_w,
+        )
+        if target_w is not None and row_db is not None and (
+            row_db["weight"] is None or round(row_db["weight"], 4) != round(target_w, 4)
+        ):
+            conn.execute("UPDATE products SET weight = ? WHERE id = ?", (target_w, db_id))
+            updated_weights += 1
 
         # Update unit if Excel has a value
         if unit is not None:

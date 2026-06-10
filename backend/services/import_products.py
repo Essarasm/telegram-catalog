@@ -255,6 +255,13 @@ def import_from_catalog_clean(xlsx_path: str):
     # Reset auto-increment so IDs start from 1 on fresh import
     conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('products','producers','categories')")
 
+    # Sales-derived weight anchor, keyed by 1C name (product IDs were just reset
+    # above, so product_id-keyed lookups are stale here). Error Log #89, rule #12.
+    from backend.services.product_weight import (
+        compute_sales_weights_by_name, authoritative_weight, _norm_name,
+    )
+    sales_by_name = compute_sales_weights_by_name(conn)
+
     cat_map = {}   # name -> id
     prod_map = {}  # name -> id
     imported = 0
@@ -322,24 +329,24 @@ def import_from_catalog_clean(xlsx_path: str):
         except (ValueError, TypeError):
             pass
 
-        # Parse weight — from Excel column first, fallback to product name
-        weight = None
+        # Excel "Вес" candidate (untrusted; reconciled against sales below)
+        excel_w = None
         try:
             if weight_val is not None and weight_val != '':
-                weight = float(weight_val)
+                excel_w = float(weight_val)
         except (ValueError, TypeError):
             pass
-
-        # Fallback: parse weight from product name if Excel had none
-        if weight is None or weight == 0:
-            from backend.services.parse_weight import parse_weight_from_name
-            parsed_w = parse_weight_from_name(name)
-            if parsed_w is not None:
-                weight = parsed_w
 
         # name = ORIGINAL Cyrillic from col L (for bilingual/search support)
         # Falls back to col C if col L is empty (backwards compatibility)
         original_cyrillic = str(original_cyrillic_col).strip() if original_cyrillic_col else name
+
+        # Weight — sales-derived kg/unit wins; kg-sold units force 1.0; Excel/
+        # name-parse only fill never-shipped products (Error Log #89, rule #12).
+        weight = authoritative_weight(
+            None, unit, sales_by_name.get(_norm_name(original_cyrillic)),
+            name=name, excel_candidate=excel_w,
+        )
 
         # name_display = CURATED Latin name from col C
         # (hand-adjusted in Rassvet_Master.xlsx col E, synced to Catalog Clean col C)

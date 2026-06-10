@@ -265,8 +265,13 @@ def apply_price_updates(file_bytes: bytes) -> dict:
 
     conn = get_db()
     db_products = conn.execute(
-        "SELECT id, name, name_display, price_usd, price_uzs, weight, stock_status FROM products WHERE is_active = 1"
+        "SELECT id, name, name_display, price_usd, price_uzs, weight, unit, stock_status FROM products WHERE is_active = 1"
     ).fetchall()
+
+    # Sales-derived weight anchor (Error Log #89, rule #12) — the Excel "Вес"
+    # column is untrusted when a shipment signal exists.
+    from backend.services.product_weight import compute_sales_weights, authoritative_weight
+    sales_weights = compute_sales_weights(conn)
 
     # Build normalized lookup for DB products
     db_by_exact = {}      # exact name → product
@@ -314,11 +319,15 @@ def apply_price_updates(file_bytes: bytes) -> dict:
             if new_uzs > 0 and abs(old_uzs - new_uzs) > 0.5:
                 needs_update = True
 
-            # Also update weight if provided and different
+            # Also update weight — reconcile the Excel candidate against the
+            # sales-derived anchor before writing (Error Log #89).
             old_weight = product["weight"] or 0
-            new_weight = ep.get('weight')
+            new_weight = authoritative_weight(
+                product["weight"], product["unit"], sales_weights.get(product["id"]),
+                name=product["name"], excel_candidate=ep.get('weight'),
+            )
             weight_changed = False
-            if new_weight and abs(old_weight - new_weight) > 0.001:
+            if new_weight is not None and abs(old_weight - new_weight) > 0.001:
                 weight_changed = True
 
             if needs_update or weight_changed:
