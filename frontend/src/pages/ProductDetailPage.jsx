@@ -341,7 +341,7 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
                 }, product.package_quantity)}
                 className="w-full mt-1.5 bg-tg-secondary text-tg-link rounded-lg py-1.5 text-xs active:scale-[0.98] transition-transform"
               >
-                + {t.add_pack_button || 'Qadoq qo\'shish'} ({product.package_quantity} {t.pieces || 'dona'})
+                + {t.add_pack_button || 'Qadoq qo\'shish'} ({product.package_quantity} {/^(кг|kg)$/i.test((product.unit || '').trim()) ? 'kg' : (t.pieces || 'dona')})
               </button>
             )}
           </div>

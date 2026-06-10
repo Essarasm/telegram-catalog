@@ -355,7 +355,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                         </div>
                         {packStr && (
                           <div className="text-[10px] text-tg-hint leading-tight mt-0.5">
-                            {packStr} / {t.pack_unit || 'qadoq'} ({product.package_quantity} {t.pieces || 'dona'})
+                            {packStr} / {t.pack_unit || 'qadoq'} ({product.package_quantity} {/^(кг|kg)$/i.test((product.unit || '').trim()) ? 'kg' : (t.pieces || 'dona')})
                           </div>
                         )}
                       </div>
