@@ -131,7 +131,8 @@ def update_display_names():
         name = row[4]           # Column E = Ilovadagi nomi (Latin)
         unit = row[6]           # Column G = Birlik (unit type)
         weight = row[9]         # Column J = Og'irligi (kg)
-        pack_qty = row[10] if len(row) > 10 else None  # Column K = Qadoqdagi soni
+        # Column K (Qadoqdagi soni) intentionally no longer read — package_quantity
+        # is owned solely by the prices file's ОригиналУпаковка (Error Log #90).
         if excel_id is None or name is None:
             skipped += 1
             continue
@@ -162,7 +163,7 @@ def update_display_names():
         # Weight — resolve through the authoritative helper: sales-derived kg/unit
         # wins, kg-sold units force 1.0, Excel/name-parse only fill never-shipped
         # products. The Excel unit (set below) is applied first so kg-units resolve.
-        row_db = conn.execute("SELECT name, weight, unit FROM products WHERE id = ?", (db_id,)).fetchone()
+        row_db = conn.execute("SELECT name, weight, unit, package_quantity FROM products WHERE id = ?", (db_id,)).fetchone()
         excel_w = None
         if weight is not None:
             try:
@@ -200,20 +201,13 @@ def update_display_names():
             )
             updated_cats += 1
 
-        # Update package_quantity from master col K (Qadoqdagi soni).
-        # Integer cast — float pack sizes don't make sense ("3.5 nails per box").
-        # NULL in xlsx leaves the column untouched (no overwrite-to-NULL).
-        if pack_qty is not None:
-            try:
-                pq = int(float(pack_qty))
-                if pq > 0:
-                    conn.execute(
-                        "UPDATE products SET package_quantity = ? WHERE id = ?",
-                        (pq, db_id)
-                    )
-                    updated_packs += 1
-            except (ValueError, TypeError):
-                pass
+        # package_quantity is now owned SOLELY by the prices file's ОригиналУпаковка
+        # column (update_prices.py) — the authoritative, daily, 1C-canonical source.
+        # The old Master col K (Qadoqdagi soni) write is retired: it held muddy
+        # marketing counts (e.g. 6400 screws → $16,000 pack price) and, worse, would
+        # re-assert them on every startup over the correct prices value — even a
+        # "sold singly" item the prices file had deliberately cleared. See Error
+        # Log #90. `pack_qty` (col K) is intentionally no longer read here.
 
     conn.commit()
 

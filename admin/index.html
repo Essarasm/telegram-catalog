@@ -2373,6 +2373,7 @@
                                     <th style="width:90px;">Current</th>
                                     <th style="width:120px;">Suggested</th>
                                     <th style="width:60px;">Apply</th>
+                                    <th style="width:104px;" title="ОригиналУпаковка — sold-units per package (pieces/box for шт, kg/package for кг). Auto-filled from the daily prices file; blank = sold singly.">Pack</th>
                                     <th style="width:84px;">Photo</th>
                                     <th>Category</th>
                                     <th>Producer</th>
@@ -2380,7 +2381,7 @@
                                 </tr>
                             </thead>
                             <tbody id="cleanupRows">
-                                <tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:32px;">Loading…</td></tr>
+                                <tr><td colspan="12" style="text-align:center; color:#8b8fa3; padding:32px;">Loading…</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -6685,7 +6686,7 @@
         // ==================== PRODUCT CLEANUP ====================
         async function loadCleanupData() {
             const tbody = document.getElementById('cleanupRows');
-            tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:32px;">Loading…</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="12" style="text-align:center; color:#8b8fa3; padding:32px;">Loading…</td></tr>';
             try {
                 const data = await apiCall('cleanup-queue?window_days=60&min_orders=1&limit=1500');
                 cleanupData = data;
@@ -6693,7 +6694,7 @@
                 renderCleanupKpis();
                 renderCleanupTable();
             } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; color:#ef4444; padding:32px;">Error: ${esc(err.message)}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="12" style="text-align:center; color:#ef4444; padding:32px;">Error: ${esc(err.message)}</td></tr>`;
             }
         }
 
@@ -6750,7 +6751,7 @@
             const countLabel = document.getElementById('cleanupCountLabel');
             countLabel.textContent = cleanupData ? `${rows.length} shown / ${cleanupData.count} total` : '';
             if (!rows.length) {
-                tbody.innerHTML = '<tr><td colspan="11" style="text-align:center; color:#8b8fa3; padding:32px;">No products match the current filter.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="12" style="text-align:center; color:#8b8fa3; padding:32px;">No products match the current filter.</td></tr>';
                 return;
             }
             const actionBadge = {
@@ -6801,6 +6802,14 @@
                                style="padding:6px 10px; background:#2a2d3a; color:#e4e4e7; border:1px dashed #4b5563; border-radius:4px; cursor:pointer; font-size:11px; height:64px; width:64px;">+ Upload</button>`;
                 }
                 const fileInput = `<input type="file" id="cleanupFile_${p.id}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="uploadCleanupPhoto(${p.id}, this.files[0])">`;
+                const packVal = (p.current_pack != null && p.current_pack > 1) ? p.current_pack : '';
+                const packCell = `<div style="display:flex; align-items:center; gap:3px;">
+                        <input type="number" step="0.01" min="0" id="pack_${p.id}" value="${packVal}" placeholder="—"
+                               title="sold-units per package; empty = sold singly"
+                               style="width:52px; padding:3px; background:#1a1d2a; color:#e4e4e7; border:1px solid #4b5563; border-radius:4px; font-size:11px;">
+                        <button onclick="savePack(${p.id})" title="Save pack size"
+                                style="padding:3px 7px; background:#6366f1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:11px;">✓</button>
+                       </div>`;
                 return `
                     <tr data-pid="${p.id}">
                         <td><input type="checkbox" ${checked} ${checkboxDisabled} onchange="toggleCleanupRow(${p.id}, this.checked)"></td>
@@ -6813,6 +6822,7 @@
                         <td>${cur}<div style="color:#8b8fa3; font-size:10px;">${esc(p.current_unit || '')}</div></td>
                         <td>${sug} ${actionBadge[p.weight_action] || ''}</td>
                         <td>${applyBtn}</td>
+                        <td>${packCell}</td>
                         <td>${photoCell}${fileInput}</td>
                         <td>${esc(p.category_name || '')}</td>
                         <td>${esc(p.producer_name || '')}</td>
@@ -6915,6 +6925,26 @@
                 renderCleanupTable();
                 const failed = res.results.length - res.updated;
                 if (failed > 0) alert(`${res.updated} updated, ${failed} failed.`);
+            } catch (err) {
+                alert(`Failed: ${err.message}`);
+            }
+        }
+
+        // Save a manually-edited pack size (ОригиналУпаковка). Empty → 0 = sold
+        // singly. The daily prices file is the primary source; this is for the ~66
+        // items not in the price list, or to override an ambiguous one.
+        async function savePack(productId) {
+            const el = document.getElementById('pack_' + productId);
+            if (!el) return;
+            const raw = el.value.trim();
+            const pack = raw === '' ? 0 : parseFloat(raw);
+            if (raw !== '' && (isNaN(pack) || pack < 0)) { alert('Invalid pack size'); return; }
+            const btn = el.nextElementSibling;
+            try {
+                await postJsonAdmin('confirm-weight', { items: [{ product_id: productId, package_quantity: pack }] });
+                const p = cleanupData.products.find(x => x.id === productId);
+                if (p) p.current_pack = pack > 1 ? pack : 0;
+                if (btn) { btn.style.background = '#22c55e'; setTimeout(() => { btn.style.background = '#6366f1'; }, 900); }
             } catch (err) {
                 alert(`Failed: ${err.message}`);
             }

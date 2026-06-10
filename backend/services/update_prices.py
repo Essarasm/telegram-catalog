@@ -30,7 +30,10 @@ COL_TYPE = 2        # Тип номенклатуры (== "Товар" for produ
 COL_UNIT = 5        # Единица измерения
 COL_UZS = 6         # Цена (UZS)
 COL_USD = 15        # ЦенаВал (wholesale USD)
-COL_WEIGHT = 18     # Вес
+COL_PACK = 17       # ОригиналУпаковка — sold-units per original package (pieces
+                    # per box for шт items; kg per package for кг items). Authoritative
+                    # source for products.package_quantity (the mini-app pack feature).
+COL_WEIGHT = 18     # Вес — kg per sold-unit (cross-validates the sales-derived weight)
 
 # Category name for auto-added products (admin assigns real category later)
 NEW_ARRIVALS_CATEGORY = "Yangi mahsulotlar"
@@ -156,11 +159,27 @@ def parse_price_excel(file_bytes: bytes) -> Dict[str, dict]:
             if unit_raw and unit_raw.lower() not in ('', 'none', 'nan'):
                 unit = unit_raw
 
+        # Parse pack size (ОригиналУпаковка). May be fractional (1.65 kg packs),
+        # so keep it as a float — do NOT int-cast (would truncate 1.65 -> 1 and
+        # mis-price the pack). R>1 = real pack; R<=1 = sold singly, recorded as an
+        # explicit 0 so the daily upload CLEARS any stale pack (the mini-app treats
+        # <=0 as "no pack button"). None only on a missing/garbled cell (leave as-is).
+        pack = None
+        if len(row) > COL_PACK:
+            try:
+                pack_raw = str(row[COL_PACK]).strip()
+                if pack_raw:
+                    pv = float(pack_raw)
+                    pack = pv if pv > 1 else 0
+            except (ValueError, TypeError):
+                pack = None
+
         prices[name] = {
             'usd': usd,
             'uzs': uzs if uzs > 0 else 0,
             'weight': weight,
             'unit': unit,
+            'pack': pack,
         }
 
     logger.info(f"Parsed {len(prices)} products with USD prices from Excel")
@@ -227,10 +246,10 @@ def _auto_add_product(conn, cyrillic_name, price_data, category_id, producer_id,
     conn.execute(
         """INSERT INTO products
            (name, name_display, category_id, producer_id, unit,
-            price_usd, price_uzs, weight, is_active,
+            price_usd, price_uzs, weight, package_quantity, is_active,
             stock_quantity, stock_status, stock_updated_at, search_text,
             created_at, auto_classified)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'in_stock', ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NULL, 'in_stock', ?, ?, ?, ?)""",
         (
             cyrillic_name,
             display_name,
@@ -240,6 +259,7 @@ def _auto_add_product(conn, cyrillic_name, price_data, category_id, producer_id,
             price_data['usd'],
             price_data['uzs'],
             price_data.get('weight'),
+            price_data.get('pack'),
             now,
             search_text,
             now,
@@ -265,7 +285,7 @@ def apply_price_updates(file_bytes: bytes) -> dict:
 
     conn = get_db()
     db_products = conn.execute(
-        "SELECT id, name, name_display, price_usd, price_uzs, weight, unit, stock_status FROM products WHERE is_active = 1"
+        "SELECT id, name, name_display, price_usd, price_uzs, weight, unit, package_quantity, stock_status FROM products WHERE is_active = 1"
     ).fetchall()
 
     # Sales-derived weight anchor (Error Log #89, rule #12) — the Excel "Вес"
@@ -330,7 +350,17 @@ def apply_price_updates(file_bytes: bytes) -> dict:
             if new_weight is not None and abs(old_weight - new_weight) > 0.001:
                 weight_changed = True
 
-            if needs_update or weight_changed:
+            # package_quantity from ОригиналУпаковка (col R) — authoritative source
+            # for the mini-app pack feature. Fixes the live pack-pricing bug where
+            # Master col K held a marketing count (6400 screws) instead of the real
+            # sold-units-per-package. NULL/<=1 in the file means "sold singly".
+            old_pack = product["package_quantity"]
+            new_pack = ep.get('pack')
+            pack_changed = False
+            if new_pack is not None and (old_pack is None or abs((old_pack or 0) - new_pack) > 0.001):
+                pack_changed = True
+
+            if needs_update or weight_changed or pack_changed:
                 update_sql = "UPDATE products SET price_usd = ?, price_uzs = ?"
                 params = [
                     new_usd if new_usd > 0 else old_usd,
@@ -340,6 +370,9 @@ def apply_price_updates(file_bytes: bytes) -> dict:
                 if weight_changed:
                     update_sql += ", weight = ?"
                     params.append(new_weight)
+                if pack_changed:
+                    update_sql += ", package_quantity = ?"
+                    params.append(new_pack)
 
                 update_sql += " WHERE id = ?"
                 params.append(product["id"])
@@ -356,6 +389,9 @@ def apply_price_updates(file_bytes: bytes) -> dict:
                 if weight_changed:
                     change_record["old_weight"] = old_weight
                     change_record["new_weight"] = new_weight
+                if pack_changed:
+                    change_record["old_pack"] = old_pack
+                    change_record["new_pack"] = new_pack
                 updated.append(change_record)
 
             # /prices should ONLY touch price fields. Stock is owned by

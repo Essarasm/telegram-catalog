@@ -497,6 +497,7 @@ def cleanup_queue(
           p.name_display,
           p.weight        AS current_weight,
           p.unit          AS current_unit,
+          p.package_quantity AS current_pack,
           p.image_path,
           p.category_id,
           p.producer_id,
@@ -561,6 +562,11 @@ def cleanup_queue(
             "supplier_name": r["supplier_name"],
             "current_weight_kg": cur_w,
             "current_unit": cur_unit,
+            # package_quantity (ОригиналУпаковка) — pieces/box for шт, kg/package for
+            # кг; 0/null = sold singly. Authoritative source is the daily prices file;
+            # this surfaces it for review + manual fill of the ~66 not-in-file items.
+            "current_pack": r["current_pack"],
+            "pack_action": "set" if (r["current_pack"] and r["current_pack"] > 1) else "none",
             "suggested_weight_kg": suggested_weight_kg,
             "suggested_value": suggested_weight_kg,
             # Keep the product's real sold unit — never reassign unit from a
@@ -617,30 +623,42 @@ def confirm_weight(payload: dict = Body(...)):
         pid = it.get("product_id")
         weight = it.get("weight_kg")
         unit = it.get("unit")
+        # package_quantity (ОригиналУпаковка): >1 = real pack, 0 = sold singly
+        # (clears the pack), absent = leave as-is. May be fractional (kg packs).
+        has_pack = "package_quantity" in it
+        pack = it.get("package_quantity")
         if not isinstance(pid, int) or pid <= 0:
             results.append({"product_id": pid, "ok": False, "error": "bad product_id"})
             continue
-        if weight is None or not isinstance(weight, (int, float)) or weight <= 0:
-            results.append({"product_id": pid, "ok": False, "error": "bad weight_kg"})
+
+        # Build the SET clause from whichever fields were supplied — allows a
+        # weight-only, pack-only, or combined edit from the cleanup tab.
+        sets, vals = [], []
+        if weight is not None:
+            if not isinstance(weight, (int, float)) or weight <= 0:
+                results.append({"product_id": pid, "ok": False, "error": "bad weight_kg"})
+                continue
+            sets.append("weight = ?"); vals.append(float(weight))
+            if unit and isinstance(unit, str) and unit.strip():
+                sets.append("unit = ?"); vals.append(unit.strip())
+        if has_pack:
+            if pack is None or (isinstance(pack, (int, float)) and pack <= 1):
+                sets.append("package_quantity = ?"); vals.append(0)  # sold singly
+            elif isinstance(pack, (int, float)):
+                sets.append("package_quantity = ?"); vals.append(float(pack))
+            else:
+                results.append({"product_id": pid, "ok": False, "error": "bad package_quantity"})
+                continue
+        if not sets:
+            results.append({"product_id": pid, "ok": False, "error": "nothing to update"})
             continue
 
-        exists = conn.execute(
-            "SELECT 1 FROM products WHERE id = ?", (pid,)
-        ).fetchone()
+        exists = conn.execute("SELECT 1 FROM products WHERE id = ?", (pid,)).fetchone()
         if not exists:
             results.append({"product_id": pid, "ok": False, "error": "not found"})
             continue
 
-        if unit and isinstance(unit, str) and unit.strip():
-            conn.execute(
-                "UPDATE products SET weight = ?, unit = ? WHERE id = ?",
-                (float(weight), unit.strip(), pid),
-            )
-        else:
-            conn.execute(
-                "UPDATE products SET weight = ? WHERE id = ?",
-                (float(weight), pid),
-            )
+        conn.execute(f"UPDATE products SET {', '.join(sets)} WHERE id = ?", vals + [pid])
         updated += 1
         results.append({"product_id": pid, "ok": True})
 
