@@ -2351,6 +2351,13 @@
                             <option value="has_photo">Has photo (review / replace)</option>
                             <option value="no_supplier">No supplier</option>
                             <option value="no_weight_extractable">Manual weight only (no regex match)</option>
+                            <option value="needs_pack">Pack: missing (sold by box?)</option>
+                        </select>
+                        <select id="cleanupWindow" onchange="loadCleanupData()" title="How far back to include ordered products"
+                                style="padding:8px 12px; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px;">
+                            <option value="60">Last 60 days</option>
+                            <option value="180">Last 180 days</option>
+                            <option value="365" selected>Last 365 days</option>
                         </select>
                         <button onclick="loadCleanupData()" class="btn" style="padding:8px 14px; background:#2a2d3a; color:#e4e4e7; border:none; border-radius:6px; cursor:pointer;">Reload</button>
                         <span id="cleanupCountLabel" style="margin-left:auto; color:#8b8fa3; font-size:13px;"></span>
@@ -6688,7 +6695,8 @@
             const tbody = document.getElementById('cleanupRows');
             tbody.innerHTML = '<tr><td colspan="12" style="text-align:center; color:#8b8fa3; padding:32px;">Loading…</td></tr>';
             try {
-                const data = await apiCall('cleanup-queue?window_days=60&min_orders=1&limit=1500');
+                const win = (document.getElementById('cleanupWindow') || {}).value || '365';
+                const data = await apiCall(`cleanup-queue?window_days=${win}&min_orders=1&limit=3000`);
                 cleanupData = data;
                 cleanupSelected.clear();
                 renderCleanupKpis();
@@ -6730,6 +6738,7 @@
                 if (filter === 'has_photo') return state === 'has_image';
                 if (filter === 'no_supplier') return !p.supplier_name;
                 if (filter === 'no_weight_extractable') return p.weight_action === 'manual';
+                if (filter === 'needs_pack') return !(p.current_pack && p.current_pack > 1);
                 return true;
             });
         }
