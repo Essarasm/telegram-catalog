@@ -351,6 +351,26 @@ async def _send_weekly_scorecard(bot, chat_id: int) -> None:
         logger.error(f"Weekly ops scorecard failed: {e}")
 
 
+async def _send_daily_xqueue(bot, chat_id: int) -> None:
+    """Morning 08:30 — today's delivery queue (X-marked recorded-but-not-shipped
+    orders grouped by zone + suggested truck). The daily-execution layer under the
+    weekly scorecard. Skips posting when nothing is queued (no noise)."""
+    try:
+        from backend.database import get_db
+        from backend.services.x_queue import compute_x_queue, format_x_queue
+        conn = get_db()
+        try:
+            if compute_x_queue(conn)["total_orders"] == 0:
+                return  # empty queue — don't spam
+            text = format_x_queue(conn)
+        finally:
+            conn.close()
+        await bot.send_message(chat_id, text, parse_mode="HTML")
+        logger.info("Daily X-queue sent")
+    except Exception as e:
+        logger.error(f"Daily X-queue failed: {e}")
+
+
 async def _send_stock_alert(bot, chat_id: int) -> None:
     """08:00 daily — inventory alert. Three modes by Tashkent weekday:
 
@@ -1162,6 +1182,11 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, ops, 9, 0, _send_weekly_scorecard),
             name="weekly-ops-scorecard",
+        ),
+        # Daily X-queue (delivery manifest) → Platform-Ops group (08:30, skips when empty).
+        asyncio.create_task(
+            run_daily_reminder(bot, ops, 8, 30, _send_daily_xqueue),
+            name="daily-x-queue",
         ),
         # Daily stock alert → Inventory group.
         asyncio.create_task(

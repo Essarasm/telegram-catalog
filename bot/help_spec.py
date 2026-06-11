@@ -134,6 +134,7 @@ SPECS = {
         ("📈 Hisobotlar", [
             Cmd("/morningbrief [YYYY-MM-DD]", "Kunlik hisobot — kassa+realizatsiya+top mijozlar+anomaliya (avto 09:00)"),
             Cmd("/scorecard", "Haftalik ko'rsatkichlar — yuk/tushum tarqalishi, mashina to'ldirilishi, buyurtma kutishi (avto Du 09:00)"),
+            Cmd("/navbat", "Bugungi yetkazish navbati — joʻnatilmagan (X) buyurtmalar zona+mashina boʻyicha (avto 08:30)"),
             Cmd("/reports", "So'nggi xatolik xabarlari va mahsulot so'rovlari"),
             Cmd("/wrongphotos", "Noto'g'ri rasm xabarlari"),
             Cmd("/searches [kunlar]", "Qidiruv statistikasi (default 7)"),

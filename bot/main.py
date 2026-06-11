@@ -119,6 +119,20 @@ async def cmd_scorecard(message: types.Message):
     await message.answer(text, parse_mode="HTML")
 
 
+@dp.message(Command("navbat"))
+async def cmd_navbat(message: types.Message):
+    """X-queue — today's delivery manifest (recorded-but-not-shipped orders by zone).
+    The daily-execution layer of operational-resource-balancing."""
+    if not is_admin(message):
+        return
+    from backend.services.x_queue import format_x_queue
+    try:
+        text = format_x_queue()
+    except Exception as e:
+        text = f"⚠️ Navbat xatosi: {e}"
+    await message.answer(text, parse_mode="HTML")
+
+
 @dp.message(Command("dashboard"))
 async def cmd_dashboard(message: types.Message):
     """Open the admin dashboard as a Telegram WebApp. The dashboard derives
