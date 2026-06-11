@@ -304,6 +304,8 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
           const displayName = product.name || product.name_display;
           const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
           const packStr = approved ? formatPackPrice(product.price_usd, product.price_uzs, product.package_quantity) : null;
+          const hasPack = product.package_quantity > 1;
+          const unitLabel = /^(кг|kg)$/i.test((product.unit || '').trim()) ? 'kg' : (t.pieces || 'dona');
 
           return (
             <div
@@ -355,7 +357,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                         </div>
                         {packStr && (
                           <div className="text-[10px] text-tg-hint leading-tight mt-0.5">
-                            {packStr} / {t.pack_unit || 'qadoq'} ({product.package_quantity} {/^(кг|kg)$/i.test((product.unit || '').trim()) ? 'kg' : (t.pieces || 'dona')})
+                            {packStr} / {t.pack_unit || 'qadoq'} ({product.package_quantity} {unitLabel})
                           </div>
                         )}
                       </div>
@@ -394,7 +396,7 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
 
               {/* Add to cart / quantity controls */}
               {approved && (
-                <div className="px-3 pb-3 mt-auto">
+                <div className="px-3 pb-3 mt-auto space-y-1.5">
                   {product.hidden ? (
                     <button
                       disabled
@@ -420,6 +422,26 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                       className="w-full bg-tg-button text-tg-button-text text-sm font-semibold rounded-lg py-2.5 active:scale-95 transition-transform"
                     >
                       + {t.add_to_cart}
+                    </button>
+                  )}
+                  {/* B2B "order by box" — full pack added on top of any loose qty.
+                      Stays available whether or not the item is already in cart. */}
+                  {hasPack && !product.hidden && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        cart.addItem({
+                          ...product,
+                          price: getPriceValue(product.price_usd, product.price_uzs),
+                          currency: getPriceCurrency(product.price_usd, product.price_uzs),
+                        }, product.package_quantity);
+                        if (searchQuery) {
+                          logSearchClick({ searchLogId, telegramId: getTelegramUserId(), productId: product.id, action: 'cart' });
+                        }
+                      }}
+                      className="w-full border-2 border-tg-button text-tg-link text-xs font-semibold rounded-lg py-2 bg-tg-button/10 active:scale-95 transition-transform"
+                    >
+                      📦 {(t.pack_unit || 'qadoq').replace(/^./, c => c.toUpperCase())} ({product.package_quantity} {unitLabel})
                     </button>
                   )}
                 </div>
