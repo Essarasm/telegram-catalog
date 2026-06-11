@@ -38,7 +38,9 @@ def compute_x_queue(conn) -> dict:
     """Group the current X backlog by zone. Returns city/districts/unlocated buckets."""
     cur = conn.cursor()
     rows = cur.execute(
-        "SELECT ro.client_name_1c, COALESCE(ro.total_weight, 0), "
+        # CAST: real_orders.total_weight is sometimes stored as TEXT (SQLite dynamic
+        # typing) — row-level read needs explicit coercion (SUM would coerce, this won't)
+        "SELECT ro.client_name_1c, CAST(COALESCE(ro.total_weight, 0) AS REAL), "
         "       ac.tuman, ac.gps_district, ac.viloyat, "
         "       CASE WHEN ac.gps_latitude IS NOT NULL THEN 1 ELSE 0 END AS has_pin "
         "FROM real_orders ro LEFT JOIN allowed_clients ac ON ac.id = ro.client_id "
