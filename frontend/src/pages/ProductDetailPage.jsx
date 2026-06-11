@@ -259,7 +259,10 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
         {/* Details row */}
         <div className="flex flex-wrap items-center gap-2 text-xs text-tg-hint">
           {product.unit && <span>{t.unit || 'Birlik'}: {product.unit}</span>}
-          {product.weight ? <span>{product.weight} kg</span> : null}
+          {/* Only when the name doesn't already show the weight (avoids repeating
+              it, and the confusing per-unit "1 kg" next to a "/20кг/" name). */}
+          {product.weight > 0 && !/\d[\d.,]*\s*(кг|kg|гр|gr|мл|ml|г|л|l)(?![а-яёa-zA-Z])/i.test(displayName || '')
+            ? <span>{product.weight} kg</span> : null}
           {product.stock_status === 'in_stock' && (
             <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-500/15 text-green-600">
               <span className="w-1.5 h-1.5 rounded-full bg-green-500" />

@@ -351,7 +351,10 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                   <div className="text-sm font-medium leading-snug line-clamp-2 min-h-[2.5rem]">
                     {displayName}
                   </div>
-                  {product.weight > 0 && (
+                  {/* De-dupe: only show weight here when the NAME doesn't already
+                      carry it (e.g. "…/20кг/"), to avoid repeating it — and to drop
+                      the confusing per-unit "1 kg" next to a "/20кг/" name. */}
+                  {product.weight > 0 && !/\d[\d.,]*\s*(кг|kg|гр|gr|мл|ml|г|л|l)(?![а-яёa-zA-Z])/i.test(displayName || '') && (
                     <div className="text-[11px] text-tg-hint mt-0.5">{product.weight} kg</div>
                   )}
                   <div className="flex items-center gap-2 mt-1.5">
