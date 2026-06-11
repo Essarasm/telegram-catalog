@@ -56,7 +56,13 @@ def compute_x_queue(conn) -> dict:
     for name, wt, tuman, gdist, viloyat, has_pin in rows:
         if name and any(k in name.lower() for k in _PSEUDO):
             continue
-        t = (wt or 0) / 1000.0
+        # get_db() can return numeric columns as str (SQLite text affinity through
+        # this connection) — coerce in Python, don't trust SQL CAST/typeof here.
+        try:
+            t = (float(wt) if wt not in (None, "") else 0.0) / 1000.0
+        except (TypeError, ValueError):
+            t = 0.0
+        pinned = str(has_pin) in ("1", "1.0")
         total_t += t
         total_orders += 1
         zone = (tuman or gdist or viloyat or "").strip()
@@ -68,7 +74,7 @@ def compute_x_queue(conn) -> dict:
             city["tonnes"] += t
             city["orders"] += 1
             city["clients"].add(name)
-            if not has_pin:
+            if not pinned:
                 city["no_pin"] += 1
         else:
             z = districts.setdefault(
@@ -77,7 +83,7 @@ def compute_x_queue(conn) -> dict:
             z["tonnes"] += t
             z["orders"] += 1
             z["clients"].add(name)
-            if not has_pin:
+            if not pinned:
                 z["no_pin"] += 1
 
     return {
