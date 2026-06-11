@@ -34,6 +34,11 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
   const priceStr = approved ? formatPrice(product.price_usd, product.price_uzs) : null;
   const packPriceStr = approved ? formatPackPrice(product.price_usd, product.price_uzs, product.package_quantity) : null;
   const inCart = cart.items.find(i => i.id === product.id);
+  // Pack-ordering (B2B): show a first-class "by package" button alongside the
+  // per-unit one when the product has a real pack size. Label reflects the sold
+  // unit (kg for kg-sold goods, else dona/pieces).
+  const hasPack = product.package_quantity > 1;
+  const unitLabel = /^(кг|kg)$/i.test((product.unit || '').trim()) ? 'kg' : (t.pieces || 'dona');
 
   // ── Pinch / double-tap zoom on the product image ──────────────────────────
   const imgWrapRef = useRef(null);
@@ -284,20 +289,22 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
         {/* Price + add-to-cart in a single row — hidden if product.hidden (banner above replaces it) */}
         {product.hidden ? null : approved ? (
           <div className="pt-1">
-            <div className="flex items-center gap-3">
-              <div className="shrink-0">
-                <div className="text-xl font-bold text-tg-link">
-                  {priceStr}
+            {/* Price line: per-unit price + (if packed) the package price */}
+            <div className="flex items-baseline flex-wrap gap-x-2 gap-y-0.5 mb-2">
+              <div className="text-xl font-bold text-tg-link">{priceStr}</div>
+              {packPriceStr && (
+                <div className="text-[11px] text-tg-hint leading-tight">
+                  {packPriceStr} / {t.pack_unit || 'qadoq'} ({product.package_quantity} {unitLabel})
                 </div>
-                {packPriceStr && (
-                  <div className="text-[10px] text-tg-hint leading-tight mt-0.5">
-                    {packPriceStr} / {t.pack_unit || 'qadoq'}
-                  </div>
-                )}
-              </div>
+              )}
+            </div>
+            {/* Two first-class actions: by unit (left) + by package (right). The
+                package button stays available even after the item is in cart, so
+                a B2B buyer can stack a full box onto a loose quantity. */}
+            <div className="flex items-stretch gap-2">
               <div className="flex-1">
                 {inCart ? (
-                  <div className="flex items-center justify-center gap-3 bg-tg-secondary rounded-xl py-2">
+                  <div className="flex items-center justify-center gap-2 bg-tg-secondary rounded-xl py-2 h-full">
                     <button
                       onClick={() => cart.updateQuantity(product.id, inCart.quantity - 1)}
                       className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
@@ -326,24 +333,23 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
                     })}
                     className="w-full bg-tg-button text-tg-button-text font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform"
                   >
-                    + {t.add_to_cart}
+                    + {hasPack ? `1 ${unitLabel}` : t.add_to_cart}
                   </button>
                 )}
               </div>
+              {hasPack && (
+                <button
+                  onClick={() => cart.addItem({
+                    ...product,
+                    price: getPriceValue(),
+                    currency: getCurrency(),
+                  }, product.package_quantity)}
+                  className="flex-1 border-2 border-tg-button text-tg-link font-semibold rounded-xl py-2.5 text-sm bg-tg-button/10 active:scale-[0.98] transition-transform"
+                >
+                  📦 {(t.pack_unit || 'qadoq').replace(/^./, c => c.toUpperCase())} ({product.package_quantity} {unitLabel})
+                </button>
+              )}
             </div>
-            {/* Secondary "Add 1 pack" — only when pack size is set and product isn't already in cart */}
-            {product.package_quantity > 0 && !inCart && (
-              <button
-                onClick={() => cart.addItem({
-                  ...product,
-                  price: getPriceValue(),
-                  currency: getCurrency(),
-                }, product.package_quantity)}
-                className="w-full mt-1.5 bg-tg-secondary text-tg-link rounded-lg py-1.5 text-xs active:scale-[0.98] transition-transform"
-              >
-                + {t.add_pack_button || 'Qadoq qo\'shish'} ({product.package_quantity} {/^(кг|kg)$/i.test((product.unit || '').trim()) ? 'kg' : (t.pieces || 'dona')})
-              </button>
-            )}
           </div>
         ) : (
           <div className="bg-tg-secondary rounded-xl p-3 text-center">
