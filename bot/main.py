@@ -105,6 +105,20 @@ async def cmd_chatid(message: types.Message):
     )
 
 
+@dp.message(Command("scorecard"))
+async def cmd_scorecard(message: types.Message):
+    """Weekly ops scorecard — crew-load spread, revenue spread, truck fill, order aging.
+    The learning-loop engine for operational-resource-balancing."""
+    if not is_admin(message):
+        return
+    from backend.services.ops_scorecard import format_scorecard
+    try:
+        text = format_scorecard()
+    except Exception as e:  # never silently fail — surface to the requester
+        text = f"⚠️ Scorecard xatosi: {e}"
+    await message.answer(text, parse_mode="HTML")
+
+
 @dp.message(Command("dashboard"))
 async def cmd_dashboard(message: types.Message):
     """Open the admin dashboard as a Telegram WebApp. The dashboard derives

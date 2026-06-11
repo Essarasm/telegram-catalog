@@ -605,7 +605,7 @@ def build_route(req: BuildRouteRequest, admin_key: str = Query(...)):
 # Hardcoded truck catalogue. Free-text `users.vehicle` may contain other
 # values ("Жигули", "boshqa"); we accept those as truck_type=="other".
 TRUCK_CATALOGUE = {
-    "labo": ("Labo", 1.0),
+    "labo": ("Labo", 1.5),
     "jac": ("Jac", 2.5),
     "foton": ("Foton", 3.0),
     "isuzu": ("Isuzu", 7.0),

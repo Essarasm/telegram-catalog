@@ -331,6 +331,26 @@ async def _send_weekly_unlinked(bot, chat_id: int) -> None:
         logger.error(f"Weekly unlinked reminder failed: {e}")
 
 
+async def _send_weekly_scorecard(bot, chat_id: int) -> None:
+    """Monday 09:00 — weekly ops scorecard (the learning-loop ritual).
+
+    Four KPIs measuring even-distribution of human resource + revenue and
+    resource effectiveness. See backend/services/ops_scorecard.py and the
+    operational-resource-balancing skill.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone(timedelta(hours=5)))
+    if now.weekday() != 0:  # 0 = Monday
+        return
+    try:
+        from backend.services.ops_scorecard import format_scorecard
+        text = format_scorecard()
+        await bot.send_message(chat_id, text, parse_mode="HTML")
+        logger.info("Weekly ops scorecard sent")
+    except Exception as e:
+        logger.error(f"Weekly ops scorecard failed: {e}")
+
+
 async def _send_stock_alert(bot, chat_id: int) -> None:
     """08:00 daily — inventory alert. Three modes by Tashkent weekday:
 
@@ -1137,6 +1157,11 @@ def start_reminder_tasks(bot, chat_id: int) -> list[asyncio.Task]:
         asyncio.create_task(
             run_daily_reminder(bot, chat_id, 17, 0, _send_weekly_unlinked),
             name="weekly-unlinked-reminder",
+        ),
+        # Weekly ops scorecard → Platform-Ops group (Monday 09:00, the learning ritual).
+        asyncio.create_task(
+            run_daily_reminder(bot, ops, 9, 0, _send_weekly_scorecard),
+            name="weekly-ops-scorecard",
         ),
         # Daily stock alert → Inventory group.
         asyncio.create_task(
