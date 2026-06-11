@@ -293,18 +293,23 @@ function PostOrderFeedback({ orderId, onGoToCatalog }) {
 
 /* Cart item quantity stepper with long-press auto-repeat */
 function CartQtyControls({ item, cart }) {
+  // Whole-package items (paint bucket) are counted in base units but ordered by
+  // the bucket — step by package_quantity so +/- moves whole buckets.
+  const wholePkg = item.whole_package_only && item.package_quantity > 1;
+  const step = wholePkg ? item.package_quantity : 1;
   const decBind = useLongPress(
     () => {
-      const qty = cart.items.find(i => i.id === item.id)?.quantity || 1;
-      if (qty <= 1) return false; // stop at 1 — require single tap to remove
-      cart.updateQuantity(item.id, qty - 1);
+      const qty = cart.items.find(i => i.id === item.id)?.quantity || step;
+      if (qty <= step) return false; // stop at one step — require single tap to remove
+      cart.updateQuantity(item.id, qty - step);
     },
-    { onTap: () => cart.updateQuantity(item.id, item.quantity - 1) }
+    { onTap: () => cart.updateQuantity(item.id, item.quantity - step) }
   );
   const incBind = useLongPress(
-    () => cart.updateQuantity(item.id, (cart.items.find(i => i.id === item.id)?.quantity || 0) + 1),
-    { onTap: () => cart.updateQuantity(item.id, item.quantity + 1) }
+    () => cart.updateQuantity(item.id, (cart.items.find(i => i.id === item.id)?.quantity || 0) + step),
+    { onTap: () => cart.updateQuantity(item.id, item.quantity + step) }
   );
+  const qtyDisplay = wholePkg ? Math.max(1, Math.round(item.quantity / item.package_quantity)) : item.quantity;
 
   return (
     <div className="flex items-center gap-1.5">
@@ -315,7 +320,7 @@ function CartQtyControls({ item, cart }) {
         −
       </button>
       <span className="text-sm font-bold min-w-[40px] text-center py-1.5 px-2 select-none no-callout">
-        {item.quantity}
+        {qtyDisplay}
       </span>
       <button
         {...incBind}
@@ -585,7 +590,9 @@ export default function CartPage({ cart, onNavigate, supplementingOrderId, onOrd
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium leading-tight truncate">{item.name || item.name_display}</div>
                 <div className="text-xs text-tg-hint mt-0.5">
-                  {formatCartPrice(item.price, item.currency)} × {item.quantity} {item.unit}
+                  {item.whole_package_only && item.package_quantity > 1
+                    ? `${formatCartPrice(item.price * item.package_quantity, item.currency)} × ${Math.max(1, Math.round(item.quantity / item.package_quantity))} qadoq`
+                    : `${formatCartPrice(item.price, item.currency)} × ${item.quantity} ${item.unit || ''}`}
                 </div>
               </div>
 

@@ -39,6 +39,12 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
   // unit (kg for kg-sold goods, else dona/pieces).
   const hasPack = product.package_quantity > 1;
   const unitLabel = /^(кг|kg)$/i.test((product.unit || '').trim()) ? 'kg' : (t.pieces || 'dona');
+  // Sealed-whole-package items (a 20kg paint bucket): order BY the bucket, not the
+  // per-unit kg. 1 qadoq = package_quantity base units; cart stays in base units so
+  // order total + weight stay correct — only the step and the display change.
+  const wholePkg = hasPack && product.whole_package_only;
+  const packLabel = (t.pack_unit || 'qadoq');
+  const packCount = inCart ? Math.max(1, Math.round(inCart.quantity / product.package_quantity)) : 1;
 
   // ── Pinch / double-tap zoom on the product image ──────────────────────────
   const imgWrapRef = useRef(null);
@@ -289,6 +295,48 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
         {/* Price + add-to-cart in a single row — hidden if product.hidden (banner above replaces it) */}
         {product.hidden ? null : approved ? (
           <div className="pt-1">
+            {wholePkg ? (
+              /* Whole-package mode: order by the bucket. Bucket price is the
+                 headline; per-unit price is a small reference line. */
+              <>
+                <div className="flex items-baseline flex-wrap gap-x-2 gap-y-0.5 mb-2">
+                  <div className="text-xl font-bold text-tg-link">{packPriceStr}</div>
+                  <div className="text-sm text-tg-hint">/ {packLabel}</div>
+                  <div className="w-full text-[11px] text-tg-hint leading-tight">
+                    {priceStr} / {unitLabel} · {product.package_quantity} {unitLabel}/{packLabel}
+                  </div>
+                </div>
+                {inCart ? (
+                  <div className="flex items-center justify-center gap-3 bg-tg-secondary rounded-xl py-2">
+                    <button
+                      onClick={() => cart.updateQuantity(product.id, inCart.quantity - product.package_quantity)}
+                      className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
+                    >
+                      −
+                    </button>
+                    <span className="text-base font-semibold min-w-[72px] text-center">{packCount} {packLabel}</span>
+                    <button
+                      onClick={() => cart.updateQuantity(product.id, inCart.quantity + product.package_quantity)}
+                      className="bg-tg-button text-tg-button-text font-bold text-lg w-9 h-9 rounded-full flex items-center justify-center"
+                    >
+                      +
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => cart.addItem({
+                      ...product,
+                      price: getPriceValue(),
+                      currency: getCurrency(),
+                    }, product.package_quantity)}
+                    className="w-full bg-tg-button text-tg-button-text font-semibold rounded-xl py-2.5 text-sm active:scale-[0.98] transition-transform"
+                  >
+                    + {t.add_to_cart} (1 {packLabel} · {product.package_quantity} {unitLabel})
+                  </button>
+                )}
+              </>
+            ) : (
+            <>
             {/* Price line: per-unit price + (if packed) the package price */}
             <div className="flex items-baseline flex-wrap gap-x-2 gap-y-0.5 mb-2">
               <div className="text-xl font-bold text-tg-link">{priceStr}</div>
@@ -350,6 +398,8 @@ export default function ProductDetailPage({ product, producer, cart, approved, o
                 </button>
               )}
             </div>
+            </>
+            )}
           </div>
         ) : (
           <div className="bg-tg-secondary rounded-xl p-3 text-center">

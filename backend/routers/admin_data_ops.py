@@ -498,6 +498,7 @@ def cleanup_queue(
           p.weight        AS current_weight,
           p.unit          AS current_unit,
           p.package_quantity AS current_pack,
+          p.whole_package_only AS whole_pkg,
           p.image_path,
           p.category_id,
           p.producer_id,
@@ -557,6 +558,7 @@ def cleanup_queue(
             "id": r["id"],
             "name": r["name"],
             "name_display": r["name_display"],
+            "category_id": r["category_id"],
             "category_name": r["category_name"],
             "producer_name": r["producer_name"],
             "supplier_name": r["supplier_name"],
@@ -567,6 +569,9 @@ def cleanup_queue(
             # this surfaces it for review + manual fill of the ~66 not-in-file items.
             "current_pack": r["current_pack"],
             "pack_action": "set" if (r["current_pack"] and r["current_pack"] > 1) else "none",
+            # Sold only as a whole sealed package (paint bucket) — mini-app orders
+            # by the package, not the per-unit kg.
+            "whole_package_only": bool(r["whole_pkg"]),
             "suggested_weight_kg": suggested_weight_kg,
             "suggested_value": suggested_weight_kg,
             # Keep the product's real sold unit — never reassign unit from a
@@ -627,6 +632,7 @@ def confirm_weight(payload: dict = Body(...)):
         # (clears the pack), absent = leave as-is. May be fractional (kg packs).
         has_pack = "package_quantity" in it
         pack = it.get("package_quantity")
+        has_whole = "whole_package_only" in it
         if not isinstance(pid, int) or pid <= 0:
             results.append({"product_id": pid, "ok": False, "error": "bad product_id"})
             continue
@@ -649,6 +655,9 @@ def confirm_weight(payload: dict = Body(...)):
             else:
                 results.append({"product_id": pid, "ok": False, "error": "bad package_quantity"})
                 continue
+        if has_whole:
+            sets.append("whole_package_only = ?")
+            vals.append(1 if it.get("whole_package_only") else 0)
         if not sets:
             results.append({"product_id": pid, "ok": False, "error": "nothing to update"})
             continue
@@ -665,6 +674,35 @@ def confirm_weight(payload: dict = Body(...)):
     conn.commit()
     conn.close()
     return {"ok": True, "updated": updated, "results": results}
+
+
+@router.post("/set-whole-package-by-category")
+def set_whole_package_by_category(payload: dict = Body(...)):
+    """Bulk-set products.whole_package_only for every active product in a category.
+
+    Lets the owner flag an entire category at once (e.g. all paint/emal = sealed
+    buckets sold whole), then fine-tune exceptions per product. Only touches
+    products that actually have a pack (package_quantity > 1) — a "whole package"
+    is meaningless without one.
+
+    payload: { admin_key, category_id, whole_package_only: true|false }
+    """
+    _check_admin(payload.get("admin_key", ""))
+    cat_id = payload.get("category_id")
+    value = 1 if payload.get("whole_package_only") else 0
+    if not isinstance(cat_id, int):
+        raise HTTPException(status_code=400, detail="category_id required")
+
+    conn = get_db()
+    cur = conn.execute(
+        """UPDATE products SET whole_package_only = ?
+           WHERE category_id = ? AND is_active = 1 AND package_quantity > 1""",
+        (value, cat_id),
+    )
+    conn.commit()
+    updated = cur.rowcount
+    conn.close()
+    return {"ok": True, "updated": updated, "whole_package_only": bool(value)}
 
 
 @router.post("/upload-single-image")

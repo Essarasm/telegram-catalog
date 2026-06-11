@@ -104,18 +104,18 @@ function ProductsEmptyState({ searchQuery, onSuggestionClick }) {
 }
 
 /* Quantity stepper with long-press auto-repeat */
-function QtyControls({ product, cart, inCart }) {
+function QtyControls({ product, cart, inCart, step = 1, displayValue }) {
   const decBind = useLongPress(
     () => {
-      const qty = cart.items.find(i => i.id === product.id)?.quantity || 1;
-      if (qty <= 1) return false; // stop at 1 — require single tap to remove
-      cart.updateQuantity(product.id, qty - 1);
+      const qty = cart.items.find(i => i.id === product.id)?.quantity || step;
+      if (qty <= step) return false; // stop at one step — require single tap to remove
+      cart.updateQuantity(product.id, qty - step);
     },
-    { onTap: () => cart.updateQuantity(product.id, inCart.quantity - 1) }
+    { onTap: () => cart.updateQuantity(product.id, inCart.quantity - step) }
   );
   const incBind = useLongPress(
-    () => cart.updateQuantity(product.id, (cart.items.find(i => i.id === product.id)?.quantity || 0) + 1),
-    { onTap: () => cart.updateQuantity(product.id, inCart.quantity + 1) }
+    () => cart.updateQuantity(product.id, (cart.items.find(i => i.id === product.id)?.quantity || 0) + step),
+    { onTap: () => cart.updateQuantity(product.id, inCart.quantity + step) }
   );
 
   return (
@@ -127,7 +127,7 @@ function QtyControls({ product, cart, inCart }) {
         −
       </button>
       <span className="text-tg-button-text text-base font-bold px-2 py-1 min-w-[36px] text-center select-none no-callout">
-        {inCart.quantity}
+        {displayValue != null ? displayValue : inCart.quantity}
       </span>
       <button
         {...incBind}
@@ -306,6 +306,11 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
           const packStr = approved ? formatPackPrice(product.price_usd, product.price_uzs, product.package_quantity) : null;
           const hasPack = product.package_quantity > 1;
           const unitLabel = /^(кг|kg)$/i.test((product.unit || '').trim()) ? 'kg' : (t.pieces || 'dona');
+          // Sealed-whole-package item (paint bucket): order by the bucket only.
+          const wholePkg = hasPack && product.whole_package_only;
+          const packLabel = t.pack_unit || 'qadoq';
+          const cartItem = cart.items.find(i => i.id === product.id);
+          const packCount = cartItem ? Math.max(1, Math.round(cartItem.quantity / product.package_quantity)) : 1;
 
           return (
             <div
@@ -404,6 +409,29 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                     >
                       {t.lifecycle_unavailable_cart || 'Hozirda mavjud emas'}
                     </button>
+                  ) : wholePkg ? (
+                    /* Sealed bucket: order by the package only — step = a whole pack. */
+                    inCart ? (
+                      <QtyControls product={product} cart={cart} inCart={inCart}
+                        step={product.package_quantity} displayValue={`${packCount} ${packLabel}`} />
+                    ) : (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          cart.addItem({
+                            ...product,
+                            price: getPriceValue(product.price_usd, product.price_uzs),
+                            currency: getPriceCurrency(product.price_usd, product.price_uzs),
+                          }, product.package_quantity);
+                          if (searchQuery) {
+                            logSearchClick({ searchLogId, telegramId: getTelegramUserId(), productId: product.id, action: 'cart' });
+                          }
+                        }}
+                        className="w-full bg-tg-button text-tg-button-text text-sm font-semibold rounded-lg py-2.5 active:scale-95 transition-transform"
+                      >
+                        + {packLabel.replace(/^./, c => c.toUpperCase())} ({product.package_quantity} {unitLabel})
+                      </button>
+                    )
                   ) : inCart ? (
                     <QtyControls product={product} cart={cart} inCart={inCart} />
                   ) : (
@@ -424,9 +452,9 @@ export default function ProductsPage({ category, producer, searchQuery, cart, ap
                       + {t.add_to_cart}
                     </button>
                   )}
-                  {/* B2B "order by box" — full pack added on top of any loose qty.
-                      Stays available whether or not the item is already in cart. */}
-                  {hasPack && !product.hidden && (
+                  {/* B2B "order by box" — full pack on top of any loose qty. Not for
+                      whole-package items (those order by the box already, above). */}
+                  {hasPack && !wholePkg && !product.hidden && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();

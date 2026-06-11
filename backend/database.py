@@ -1268,6 +1268,17 @@ def init_db():
         prod_cols.add("units_score")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_products_units_score ON products(units_score DESC)")
 
+    # whole_package_only: for items sold ONLY as a sealed whole package (a 20 kg
+    # paint bucket) where the per-unit (kg) is just a pricing basis, not an
+    # orderable amount. The mini-app then orders by the package: 1 = one bucket
+    # (= package_quantity units), pack price headline, per-unit shown as reference.
+    # Owner-set in the Product Cleanup tab — the data alone can't tell a sealed
+    # bucket from loose bulk (a 20 kg bucket of emal and 20 kg of loose nails are
+    # byte-identical: unit/weight/pack the same). Default 0 = order by the unit.
+    if "whole_package_only" not in prod_cols:
+        conn.execute("ALTER TABLE products ADD COLUMN whole_package_only INTEGER DEFAULT 0")
+        prod_cols.add("whole_package_only")
+
     cat_cols = {row[1] for row in conn.execute("PRAGMA table_info(categories)").fetchall()}
     if "units_score" not in cat_cols:
         conn.execute("ALTER TABLE categories ADD COLUMN units_score REAL DEFAULT 0")

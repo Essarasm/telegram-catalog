@@ -2360,6 +2360,11 @@
                             <option value="365" selected>Last 365 days</option>
                         </select>
                         <button onclick="loadCleanupData()" class="btn" style="padding:8px 14px; background:#2a2d3a; color:#e4e4e7; border:none; border-radius:6px; cursor:pointer;">Reload</button>
+                        <select id="cleanupBulkCat" title="Bulk-flag a whole category as sold-by-whole-package (paint buckets)"
+                                style="padding:8px 12px; background:#0f1117; color:#e4e4e7; border:1px solid #2a2d3a; border-radius:6px;">
+                            <option value="">🪣 Butun qadoq: category…</option>
+                        </select>
+                        <button onclick="bulkWholePackageByCategory()" class="btn" style="padding:8px 12px; background:#2a2d3a; color:#e4e4e7; border:none; border-radius:6px; cursor:pointer;">Set</button>
                         <span id="cleanupCountLabel" style="margin-left:auto; color:#8b8fa3; font-size:13px;"></span>
                     </div>
 
@@ -6699,6 +6704,19 @@
                 const data = await apiCall(`cleanup-queue?window_days=${win}&min_orders=1&limit=3000`);
                 cleanupData = data;
                 cleanupSelected.clear();
+                // Populate the bulk-category dropdown from packed products only.
+                const sel = document.getElementById('cleanupBulkCat');
+                if (sel) {
+                    const cats = {};
+                    (data.products || []).forEach(p => {
+                        if (p.current_pack > 1 && p.category_id) cats[p.category_id] = p.category_name || `#${p.category_id}`;
+                    });
+                    const prev = sel.value;
+                    sel.innerHTML = '<option value="">🪣 Butun qadoq: category…</option>' +
+                        Object.entries(cats).sort((a, b) => a[1].localeCompare(b[1]))
+                            .map(([id, nm]) => `<option value="${id}">${esc(nm)}</option>`).join('');
+                    sel.value = prev;
+                }
                 renderCleanupKpis();
                 renderCleanupTable();
             } catch (err) {
@@ -6812,12 +6830,19 @@
                 }
                 const fileInput = `<input type="file" id="cleanupFile_${p.id}" accept="image/png,image/jpeg,image/webp" style="display:none;" onchange="uploadCleanupPhoto(${p.id}, this.files[0])">`;
                 const packVal = (p.current_pack != null && p.current_pack > 1) ? p.current_pack : '';
-                const packCell = `<div style="display:flex; align-items:center; gap:3px;">
+                const wholeChk = p.current_pack > 1
+                    ? `<label title="Sold ONLY as a whole package (e.g. a sealed 20kg paint bucket) — the mini-app then orders by the bucket, not the per-kg unit" style="display:flex; align-items:center; gap:3px; font-size:10px; color:#8b8fa3; cursor:pointer; margin-top:3px;">
+                         <input type="checkbox" ${p.whole_package_only ? 'checked' : ''} onchange="saveWholePackage(${p.id}, this.checked)"> 🪣 butun qadoq
+                       </label>`
+                    : '';
+                const packCell = `<div>
+                      <div style="display:flex; align-items:center; gap:3px;">
                         <input type="number" step="0.01" min="0" id="pack_${p.id}" value="${packVal}" placeholder="—"
                                title="sold-units per package; empty = sold singly"
                                style="width:52px; padding:3px; background:#1a1d2a; color:#e4e4e7; border:1px solid #4b5563; border-radius:4px; font-size:11px;">
                         <button onclick="savePack(${p.id})" title="Save pack size"
                                 style="padding:3px 7px; background:#6366f1; color:white; border:none; border-radius:4px; cursor:pointer; font-size:11px;">✓</button>
+                      </div>${wholeChk}
                        </div>`;
                 return `
                     <tr data-pid="${p.id}">
@@ -6954,6 +6979,35 @@
                 const p = cleanupData.products.find(x => x.id === productId);
                 if (p) p.current_pack = pack > 1 ? pack : 0;
                 if (btn) { btn.style.background = '#22c55e'; setTimeout(() => { btn.style.background = '#6366f1'; }, 900); }
+            } catch (err) {
+                alert(`Failed: ${err.message}`);
+            }
+        }
+
+        // Toggle "sold only as a whole package" (paint bucket → mini-app orders by
+        // the bucket, not the per-kg unit).
+        async function saveWholePackage(productId, checked) {
+            try {
+                await postJsonAdmin('confirm-weight', { items: [{ product_id: productId, whole_package_only: checked }] });
+                const p = cleanupData.products.find(x => x.id === productId);
+                if (p) p.whole_package_only = checked;
+            } catch (err) {
+                alert(`Failed: ${err.message}`);
+            }
+        }
+
+        // Bulk-set "whole package" for every packed product in a category — fast way
+        // to flag all paint/emal at once.
+        async function bulkWholePackageByCategory() {
+            const sel = document.getElementById('cleanupBulkCat');
+            const catId = sel && parseInt(sel.value, 10);
+            if (!catId) { alert('Pick a category first'); return; }
+            const on = confirm(`Mark ALL packed products in "${sel.options[sel.selectedIndex].text}" as sold-by-whole-package?\n\nOK = ON (bucket ordering)   ·   Cancel = leave as-is`);
+            if (!on) return;
+            try {
+                const res = await postJsonAdmin('set-whole-package-by-category', { category_id: catId, whole_package_only: true });
+                alert(`${res.updated} products in this category set to whole-package.`);
+                loadCleanupData();
             } catch (err) {
                 alert(`Failed: ${err.message}`);
             }
