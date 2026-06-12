@@ -1333,8 +1333,8 @@
                             <div class="kpi-label">Out/No Data</div>
                             <div class="kpi-value" id="kpi-out-no-data">-</div>
                         </div>
-                        <div class="kpi-card clickable" data-inventory-filter="stale" title="Items not present in the latest stock upload — likely 0 in 1C but excluded from the price list export">
-                            <div class="kpi-label">Stale ⚠️</div>
+                        <div class="kpi-card clickable" data-inventory-filter="stale" title="Active products NOT present in the latest stock upload — 1C dropped them from the export. Deactivation candidates (dormant products).">
+                            <div class="kpi-label">Not in upload 💤</div>
                             <div class="kpi-value" id="kpi-stale">-</div>
                             <div class="kpi-sub" id="kpi-stale-sub" style="font-size: 11px; color: #8b8fa3;">Last upload: -</div>
                         </div>
@@ -1591,7 +1591,7 @@
                         <div class="kpi-card" style="border-left: 3px solid #ef4444;">
                             <div class="kpi-label">🔴 Stockout</div>
                             <div class="kpi-value" id="kpi-supply-stockout" style="color: #ef4444;">-</div>
-                            <div class="kpi-sub" style="font-size: 11px; color: #8b8fa3;">SKUs out + demand</div>
+                            <div class="kpi-sub" id="kpi-supply-stockout-sub" style="font-size: 11px; color: #8b8fa3;">SKUs out + demand</div>
                         </div>
                         <div class="kpi-card" style="border-left: 3px solid #f59e0b;">
                             <div class="kpi-label">🟠 Order now</div>
@@ -4779,7 +4779,7 @@
                 title = 'Out of Stock & No Data Products';
             } else if (inventoryFilterMode === 'stale') {
                 items = inventoryData.stale_items || [];
-                title = 'Stale Stock — Missing from Latest Upload';
+                title = 'Not in Latest Upload — Deactivation Candidates';
             }
 
             document.getElementById('inventoryDetailTitle').textContent = title;
@@ -4793,18 +4793,22 @@
                 return;
             }
 
-            // Stale = item not present in the most recent stock upload
+            // Stale = item not present in the most recent stock upload.
+            // Presence is tracked by stock_last_seen_at (stamped for every
+            // product in the file), NOT stock_updated_at (only moves on a
+            // qty/status change). Keying on stock_updated_at over-counts.
             const latestUpload = inventoryData.latest_upload || null;
             const isStale = (item) => {
-                if (!latestUpload || !item.stock_updated_at) return false;
-                const itemTime = new Date(item.stock_updated_at).getTime();
+                if (!latestUpload) return false;
+                if (!item.stock_last_seen_at) return true;
+                const itemTime = new Date(item.stock_last_seen_at).getTime();
                 const latestTime = new Date(latestUpload).getTime();
                 return (latestTime - itemTime) > 5 * 60 * 1000;
             };
 
             // Color/status indicator based on quantity AND staleness
             const stockIndicator = (item) => {
-                if (isStale(item)) return { emoji: '⚠️', color: '#a855f7', label: 'Stale (likely 0 in 1C)' };
+                if (isStale(item)) return { emoji: '💤', color: '#a855f7', label: 'Not in last upload (dropped by 1C)' };
                 const q = item.stock_quantity;
                 if (q === null || q === undefined) return { emoji: '⚪', color: '#6b7280', label: 'No data' };
                 if (q === 0) return { emoji: '🔴', color: '#ef4444', label: 'Out of stock' };
@@ -4840,7 +4844,7 @@
                 const ind = stockIndicator(item);
                 const stale = isStale(item);
                 const rowStyle = stale ? 'style="background: rgba(168, 85, 247, 0.08);"' : '';
-                const staleTag = stale ? ' <span style="color: #a855f7; font-size: 11px;">(stale)</span>' : '';
+                const staleTag = stale ? ' <span style="color: #a855f7; font-size: 11px;">(not in upload)</span>' : '';
                 const qtyDisplay = (item.stock_quantity !== null && item.stock_quantity !== undefined) ? item.stock_quantity : '-';
                 return `
                 <tr ${rowStyle}>
@@ -4926,15 +4930,15 @@
 
         // ==================== SUPPLY ====================
         const SUPPLY_STATUS_EMOJI = {
-            stockout: '🔴', order_now: '🟠', order_soon: '🟡',
+            stockout: '🔴', chronic_stockout: '🟣', order_now: '🟠', order_soon: '🟡',
             ok: '🟢', no_recent_demand: '⚪',
         };
         const SUPPLY_STATUS_LABEL = {
-            stockout: 'Tugagan', order_now: 'Tezda', order_soon: 'Yaqin',
+            stockout: 'Tugagan', chronic_stockout: 'Tugagan ≈', order_now: 'Tezda', order_soon: 'Yaqin',
             ok: 'Yetarli', no_recent_demand: 'Talab yo\'q',
         };
         const SUPPLY_STATUS_COLOR = {
-            stockout: '#ef4444', order_now: '#f59e0b', order_soon: '#ca8a04',
+            stockout: '#ef4444', chronic_stockout: '#a855f7', order_now: '#f59e0b', order_soon: '#ca8a04',
             ok: '#22c55e', no_recent_demand: '#8b8fa3',
         };
 
@@ -4970,14 +4974,19 @@
         }
 
         function renderSupplyKpis(scoreboard) {
-            let stockout = 0, orderNow = 0, orderSoon = 0, totalBuy = 0;
+            let stockout = 0, chronic = 0, orderNow = 0, orderSoon = 0, totalBuy = 0;
             (scoreboard.suppliers || []).forEach(s => {
                 stockout += s.stockout || 0;
+                chronic += s.chronic_stockout || 0;
                 orderNow += s.order_now || 0;
                 orderSoon += s.order_soon || 0;
                 totalBuy += s.total_buy_qty || 0;
             });
-            document.getElementById('kpi-supply-stockout').textContent = _fmtNum(stockout);
+            document.getElementById('kpi-supply-stockout').textContent = _fmtNum(stockout + chronic);
+            const stockoutSub = document.getElementById('kpi-supply-stockout-sub');
+            if (stockoutSub) stockoutSub.textContent = chronic
+                ? `${stockout} live + ${chronic} chronic 🟣`
+                : 'SKUs out + demand';
             document.getElementById('kpi-supply-order-now').textContent = _fmtNum(orderNow);
             document.getElementById('kpi-supply-order-soon').textContent = _fmtNum(orderSoon);
             document.getElementById('kpi-supply-total-buy').textContent = _fmtNum(totalBuy);
@@ -5000,6 +5009,12 @@
                     : `${it.lead_time_days}†`;
                 const cover = it.days_of_cover === null ? '∞' : Math.round(it.days_of_cover);
                 const supName = it.supplier_name || '(noma\'lum)';
+                // Reconstructed (pre-stockout) demand: flag the daily rate as an
+                // estimate so it reads as lower-confidence than a live signal.
+                const recon = it.demand_source === 'pre_stockout';
+                const dailyCell = recon
+                    ? `<span title="Estimated from sales before stockout${it.last_sale ? ' (last sold ' + it.last_sale + ')' : ''} — currently 0 in stock so no live signal" style="color:#a855f7;">≈ ${it.seasoned_daily}</span>`
+                    : `${it.seasoned_daily}`;
                 return `
                     <tr>
                         <td class="table-number">${i + 1}</td>
@@ -5007,7 +5022,7 @@
                         <td style="font-size:11px;color:#8b8fa3;">${supName}</td>
                         <td>${it.name}</td>
                         <td>${Math.round(it.stock)}</td>
-                        <td>${it.seasoned_daily}</td>
+                        <td>${dailyCell}</td>
                         <td>${seasMark}</td>
                         <td>${leadMark}</td>
                         <td>${cover}</td>

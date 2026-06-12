@@ -220,17 +220,26 @@ def demand_signals(
 def stock_status(admin_key: str = Query(...)):
     """Enhanced stock overview with full item lists for each category.
 
-    Returns stock_updated_at per item and a `stale_items` list:
-    items not present in the most recent stock upload (likely 0 in 1C
-    but excluded from "Прайс лист" export, leaving stale values in DB).
+    Returns a `stale_items` list: active products NOT present in the most
+    recent stock upload — i.e. 1C dropped them from the export entirely.
+    These are deactivation candidates (the snapshot-reconciliation pass in
+    update_stock.py auto-zeroes any *positive-stock* product missing from an
+    upload, so anything left here is a dormant/dropped product worth review).
+
+    NOTE: presence-in-upload is tracked by `stock_last_seen_at` (stamped for
+    every product in the file, changed or not), NOT `stock_updated_at` (which
+    only moves when qty/status changes — a present-but-unchanged product keeps
+    an old value there). Keying staleness on stock_updated_at over-counts
+    massively; always use stock_last_seen_at here. See Error Log #93.
     """
     _check_admin(admin_key)
     conn = get_db()
 
-    # Most recent stock upload timestamp — items NOT updated at this exact
-    # time are considered stale (missing from latest upload).
+    # Most recent stock upload timestamp. stock_last_seen_at is stamped for
+    # every product present in the upload, so its MAX == the latest upload
+    # time, and "not seen at that time" == genuinely absent from the upload.
     latest_upload = conn.execute(
-        "SELECT MAX(stock_updated_at) FROM products WHERE stock_updated_at IS NOT NULL"
+        "SELECT MAX(stock_last_seen_at) FROM products WHERE stock_last_seen_at IS NOT NULL"
     ).fetchone()[0]
 
     total_products = conn.execute(
@@ -257,19 +266,16 @@ def stock_status(admin_key: str = Query(...)):
         "SELECT COUNT(*) FROM products WHERE is_active = 1 AND image_path IS NOT NULL AND image_path != ''"
     ).fetchone()[0]
 
-    # Stale items: have stock data but were NOT in the latest upload.
-    # Most likely 0 in 1C (excluded from "Прайс лист" export which only
-    # lists in-stock items), so DB still shows old positive value.
+    # "Not in last upload": active products absent from the most recent stock
+    # upload (1C dropped them from the export). Deactivation candidates.
     stale_count = 0
     if latest_upload:
-        # Anything updated >5 minutes before latest upload is from a
-        # previous upload session = not in current 1C export
+        # Not seen at the latest upload (>5min before it, or never seen).
         stale_count = conn.execute(
             """SELECT COUNT(*) FROM products
                WHERE is_active = 1
-                 AND stock_quantity > 0
-                 AND stock_updated_at IS NOT NULL
-                 AND datetime(stock_updated_at) < datetime(?, '-5 minutes')""",
+                 AND (stock_last_seen_at IS NULL
+                      OR datetime(stock_last_seen_at) < datetime(?, '-5 minutes'))""",
             (latest_upload,)
         ).fetchone()[0]
 
@@ -309,22 +315,22 @@ def stock_status(admin_key: str = Query(...)):
         ORDER BY pr.name, p.name
     """).fetchall()
 
-    # Stale items: stock > 0 but not updated in the latest upload.
-    # These probably have 0 in 1C but were excluded from the export.
+    # "Not in last upload" items: active products absent from the latest
+    # upload, longest-absent first (most actionable for deactivation review).
     stale_items = []
     if latest_upload:
         stale_items = conn.execute(
             """SELECT p.id, p.name as name_1c, COALESCE(p.name_display, p.name) as display_name,
                       pr.name as producer, c.name as category,
-                      p.stock_quantity, p.price_uzs, p.price_usd, p.stock_updated_at
+                      p.stock_quantity, p.price_uzs, p.price_usd,
+                      p.stock_updated_at, p.stock_last_seen_at
                FROM products p
                JOIN producers pr ON pr.id = p.producer_id
                JOIN categories c ON c.id = p.category_id
                WHERE p.is_active = 1
-                 AND p.stock_quantity > 0
-                 AND p.stock_updated_at IS NOT NULL
-                 AND datetime(p.stock_updated_at) < datetime(?, '-5 minutes')
-               ORDER BY p.stock_quantity ASC, p.name""",
+                 AND (p.stock_last_seen_at IS NULL
+                      OR datetime(p.stock_last_seen_at) < datetime(?, '-5 minutes'))
+               ORDER BY p.stock_last_seen_at ASC, p.name""",
             (latest_upload,)
         ).fetchall()
 

@@ -84,6 +84,7 @@ def supplier_scoreboard(admin_key: str = Query(...)):
             items = list_supplier_full(s["id"], conn=conn)
             n = len(items)
             stockout = sum(1 for it in items if it["status"] == "stockout")
+            chronic_stockout = sum(1 for it in items if it["status"] == "chronic_stockout")
             order_now = sum(1 for it in items if it["status"] == "order_now")
             order_soon = sum(1 for it in items if it["status"] == "order_soon")
             no_demand = sum(1 for it in items if it["status"] == "no_recent_demand")
@@ -119,6 +120,7 @@ def supplier_scoreboard(admin_key: str = Query(...)):
                 "supplier_name": s["name_1c"],
                 "product_count": n,
                 "stockout": stockout,
+                "chronic_stockout": chronic_stockout,
                 "order_now": order_now,
                 "order_soon": order_soon,
                 "no_recent_demand": no_demand,

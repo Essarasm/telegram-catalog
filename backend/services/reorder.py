@@ -15,12 +15,26 @@ Formula (lead-time aware, with year-over-year seasonality):
     suggested_buy      = max(0, ceil(target_qty − stock))
     days_of_cover      = stock / seasoned_daily
 
+CHRONIC-STOCKOUT RECONSTRUCTION (the "silent stockout" fix):
+    A product that has been out of stock for the whole window sells 0 units
+    (you can't sell what you don't have), so sold_window≈0 → seasoned_daily≈0
+    → suggested_buy=0. The engine files it as no_recent_demand and recommends
+    buying nothing — circular: chronic stockouts make themselves invisible.
+    Fix: for stock<=0 AND zero recent demand, reconstruct daily velocity from
+    the `window_days` ending at the product's LAST real sale (real_order_items
+    — NOT demand_signals, which is structurally sparse for agent-placed B2B).
+    Those rows get a real suggested_buy and the `chronic_stockout` status, and
+    carry demand_source='pre_stockout' so the UI can flag the lower-confidence
+    (reconstructed) number.
+
 Status bucket (drives sort order, lower = more urgent):
-    1 stockout            — seasoned_daily>0 AND stock<=0
-    2 order_now           — stock < reorder_point
-    3 order_soon          — stock < target_qty
-    4 ok                  — stock ≥ target_qty
-    5 no_recent_demand    — seasoned_daily≈0
+    1 stockout            — seasoned_daily>0 AND stock<=0 (live demand)
+    2 chronic_stockout    — stock<=0, no recent demand, velocity reconstructed
+                            from pre-stockout sales
+    3 order_now           — stock < reorder_point
+    4 order_soon          — stock < target_qty
+    5 ok                  — stock ≥ target_qty
+    6 no_recent_demand    — seasoned_daily≈0 AND never sold (truly dead)
 
 NO PRICES surfaced (per memory feedback_order_prep_no_prices).
 """
@@ -117,10 +131,11 @@ def _classify_status(seasoned_daily: float, stock: float,
 
 STATUS_ORDER = {
     "stockout": 1,
-    "order_now": 2,
-    "order_soon": 3,
-    "ok": 4,
-    "no_recent_demand": 5,
+    "chronic_stockout": 2,
+    "order_now": 3,
+    "order_soon": 4,
+    "ok": 5,
+    "no_recent_demand": 6,
 }
 
 
@@ -251,6 +266,52 @@ def list_supplier_full(
         yoy_by_product = {r["pid"]: (float(r["sm_qty"]), float(r["prior_qty"]))
                           for r in yoy_rows}
 
+        # ── Chronic-stockout velocity reconstruction ──────────────────
+        # Products out of stock with zero recent demand are blind spots:
+        # they sell 0 only because there's nothing to sell. Reconstruct
+        # their velocity from the window ending at their last real sale so
+        # they get a real suggested_buy instead of vanishing.
+        recon_daily: dict[int, float] = {}
+        recon_last_sale: dict[int, str] = {}
+        candidate_pids = [
+            r["product_id"] for r in prod_rows
+            if float(r["stock"] or 0) <= 0
+            and (float(r["sold_window"] or 0)
+                 + demand_signal_qty.get(r["product_id"], 0.0)) <= DAILY_EPSILON
+        ]
+        if candidate_pids:
+            cph = ",".join(["?"] * len(candidate_pids))
+            window_modifier = f"-{int(window_days)} days"
+            # Sales in the `window_days` ending at each product's last sale.
+            recon_rows = conn.execute(
+                f"""SELECT roi.product_id AS pid, SUM(roi.quantity) AS presold
+                      FROM real_order_items roi
+                      JOIN real_orders ro ON ro.id = roi.real_order_id
+                     WHERE roi.product_id IN ({cph})
+                       AND ro.doc_date > date(
+                             (SELECT MAX(ro2.doc_date)
+                                FROM real_order_items roi2
+                                JOIN real_orders ro2 ON ro2.id = roi2.real_order_id
+                               WHERE roi2.product_id = roi.product_id),
+                             ?)
+                     GROUP BY roi.product_id""",
+                (*candidate_pids, window_modifier),
+            ).fetchall()
+            for rr in recon_rows:
+                presold = float(rr["presold"] or 0)
+                if presold > 0 and window_days > 0:
+                    recon_daily[rr["pid"]] = presold / window_days
+            ls_rows = conn.execute(
+                f"""SELECT roi.product_id AS pid, MAX(ro.doc_date) AS last_sale
+                      FROM real_order_items roi
+                      JOIN real_orders ro ON ro.id = roi.real_order_id
+                     WHERE roi.product_id IN ({cph})
+                     GROUP BY roi.product_id""",
+                tuple(candidate_pids),
+            ).fetchall()
+            for rr in ls_rows:
+                recon_last_sale[rr["pid"]] = rr["last_sale"] or ""
+
         result = []
         for r in prod_rows:
             pid = r["product_id"]
@@ -260,6 +321,13 @@ def list_supplier_full(
             adjusted_sold = base_sold + ds_qty
 
             daily_rate = adjusted_sold / window_days if window_days > 0 else 0.0
+
+            # Chronic stockout: no live demand, but it sold before running
+            # out — use the reconstructed pre-stockout velocity instead of 0.
+            demand_source = "live"
+            if pid in recon_daily and stock <= 0 and adjusted_sold <= DAILY_EPSILON:
+                daily_rate = recon_daily[pid]
+                demand_source = "pre_stockout"
 
             sm_qty, prior_qty = yoy_by_product.get(pid, (0.0, 0.0))
             if sm_qty >= MIN_YOY_UNITS and prior_qty > 0 and sm_days > 0:
@@ -291,6 +359,10 @@ def list_supplier_full(
             suggested_buy = max(0, math.ceil(target_qty - stock))
             days_of_cover = (stock / seasoned_daily) if seasoned_daily > DAILY_EPSILON else None
             status = _classify_status(seasoned_daily, stock, reorder_point, target_qty)
+            # Reconstructed-demand stockouts get their own bucket so the UI
+            # can flag them as lower-confidence than live-demand stockouts.
+            if demand_source == "pre_stockout" and seasoned_daily > DAILY_EPSILON:
+                status = "chronic_stockout"
 
             result.append({
                 "product_id": pid,
@@ -299,6 +371,7 @@ def list_supplier_full(
                 "stock": stock,
                 "sold_window": base_sold,
                 "demand_signal_qty": ds_qty,
+                "demand_source": demand_source,
                 "daily_rate": round(daily_rate, 3),
                 "seasonal_mult": round(seasonal_mult, 2),
                 "seasonal_source": seasonal_source,
@@ -309,7 +382,7 @@ def list_supplier_full(
                 "target_qty": round(target_qty, 1),
                 "suggested_buy": suggested_buy,
                 "days_of_cover": round(days_of_cover, 1) if days_of_cover is not None else None,
-                "last_sale": r["last_sale"] or "",
+                "last_sale": r["last_sale"] or recon_last_sale.get(pid, "") or "",
                 "status": status,
             })
 
