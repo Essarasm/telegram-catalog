@@ -1631,6 +1631,10 @@
                         <button class="hot-chip" data-hot-filter="chronic_stockout" onclick="setHotFilter('chronic_stockout')">🟣 Chronic</button>
                         <button class="hot-chip" data-hot-filter="order_now" onclick="setHotFilter('order_now')">🟠 Tezda</button>
                         <button class="hot-chip" data-hot-filter="order_soon" onclick="setHotFilter('order_soon')">🟡 Yaqin</button>
+                        <span style="border-left:1px solid #d0d3de;margin:0 4px;"></span>
+                        <span style="font-size:11px;color:#8b8fa3;align-self:center;">Saralash:</span>
+                        <button class="hot-chip hot-sort active" data-hot-sort="urgency" onclick="setHotSort('urgency')">🔥 Shoshilinch</button>
+                        <button class="hot-chip hot-sort" data-hot-sort="velocity" onclick="setHotSort('velocity')">⚡ Tez pul ($/kun)</button>
                     </div>
                     <div class="table-container">
                         <div class="table-wrapper">
@@ -1643,6 +1647,7 @@
                                         <th>Product (1C)</th>
                                         <th>Stock</th>
                                         <th>Daily</th>
+                                        <th title="Kunlik pul aylanmasi: kunlik birlik × sotuv narxi, $ ekv. — qancha tez pul aylanadi">⚡ $/kun</th>
                                         <th>Mavsum</th>
                                         <th>Lead</th>
                                         <th>Cover</th>
@@ -5011,8 +5016,16 @@
         let _hotItems = [];
         let _hotTotalWithBuy = 0;
         let _hotFilter = 'all';
+        let _hotSort = 'urgency';
         let _hotFx = null;
         let _hotFxDate = null;
+
+        function setHotSort(s) {
+            _hotSort = s;
+            document.querySelectorAll('.hot-sort').forEach(b =>
+                b.classList.toggle('active', b.dataset.hotSort === s));
+            setHotFilter(_hotFilter);
+        }
 
         function renderSupplyHotList(data) {
             _hotItems = data.items || [];
@@ -5032,7 +5045,11 @@
             const body = document.getElementById('supplyHotListBody');
             const count = document.getElementById('supplyHotListCount');
             const CAP = 100;
-            const items = (f === 'all') ? _hotItems : _hotItems.filter(x => x.status === f);
+            let items = (f === 'all') ? _hotItems : _hotItems.filter(x => x.status === f);
+            if (_hotSort === 'velocity') {
+                items = items.slice().sort((a, b) =>
+                    (b.daily_throughput_usd || 0) - (a.daily_throughput_usd || 0));
+            }
             const shown = items.slice(0, CAP);
             const groupValue = items.reduce((a, x) => a + (x.order_value_usd || 0), 0);
             const valStr = groupValue ? ` · ≈$${_fmtNum(groupValue)} value` : '';
@@ -5040,7 +5057,7 @@
                 ? `· top ${shown.length} of ${_hotTotalWithBuy} needing order`
                 : `· ${shown.length}${items.length > CAP ? ' of ' + items.length : ''} shown`) + valStr;
             if (!shown.length) {
-                body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#8b8fa3;">No items in this group.</td></tr>';
+                body.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#8b8fa3;">No items in this group.</td></tr>';
                 return;
             }
             body.innerHTML = shown.map((it, i) => {
@@ -5065,7 +5082,9 @@
                         <td>${it.name}</td>
                         <td>${Math.round(it.stock)}</td>
                         <td>${dailyCell}</td>
+                        <td style="color:#0ea5e9;font-weight:700;">${it.daily_throughput_usd ? '$' + _fmtNum(it.daily_throughput_usd) : '-'}</td>
                         <td>${seasMark}</td>
+
                         <td>${leadMark}</td>
                         <td>${cover}</td>
                         <td><strong>${_fmtNum(it.suggested_buy)}</strong></td>

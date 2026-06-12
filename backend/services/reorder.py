@@ -396,6 +396,10 @@ def list_supplier_full(
             else:
                 unit_usd = 0.0
             order_value_usd = round(suggested_buy * unit_usd)
+            # Money velocity: $ of cash this item pushes through per day
+            # (units/day × sell price, USD-eq). The business runs on money
+            # turnover — reorder priority should favour the fastest movers.
+            daily_throughput_usd = round(seasoned_daily * unit_usd, 1)
 
             result.append({
                 "product_id": pid,
@@ -406,6 +410,7 @@ def list_supplier_full(
                 "demand_signal_qty": ds_qty,
                 "demand_source": demand_source,
                 "order_value_usd": order_value_usd,
+                "daily_throughput_usd": daily_throughput_usd,
                 "daily_rate": round(daily_rate, 3),
                 "seasonal_mult": round(seasonal_mult, 2),
                 "seasonal_source": seasonal_source,
