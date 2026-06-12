@@ -282,35 +282,30 @@ def list_supplier_full(
         if candidate_pids:
             cph = ",".join(["?"] * len(candidate_pids))
             window_modifier = f"-{int(window_days)} days"
-            # Sales in the `window_days` ending at each product's last sale.
+            # Last sale per candidate (grouped ONCE in the subquery), then sum
+            # sales in the window ending at it. Grouped join, NOT a per-row
+            # correlated subquery — the correlated form was ~25× slower on the
+            # 140k-row real_order_items and made hot-list/scoreboard/seasonal
+            # take ~18s → intermittent 502s + blank dashboard.
             recon_rows = conn.execute(
-                f"""SELECT roi.product_id AS pid, SUM(roi.quantity) AS presold
-                      FROM real_order_items roi
+                f"""SELECT lsq.pid AS pid, lsq.ls AS last_sale,
+                           SUM(CASE WHEN ro.doc_date > date(lsq.ls, ?)
+                                    THEN roi.quantity ELSE 0 END) AS presold
+                      FROM (SELECT roi2.product_id AS pid, MAX(ro2.doc_date) AS ls
+                              FROM real_order_items roi2
+                              JOIN real_orders ro2 ON ro2.id = roi2.real_order_id
+                             WHERE roi2.product_id IN ({cph})
+                             GROUP BY roi2.product_id) lsq
+                      JOIN real_order_items roi ON roi.product_id = lsq.pid
                       JOIN real_orders ro ON ro.id = roi.real_order_id
-                     WHERE roi.product_id IN ({cph})
-                       AND ro.doc_date > date(
-                             (SELECT MAX(ro2.doc_date)
-                                FROM real_order_items roi2
-                                JOIN real_orders ro2 ON ro2.id = roi2.real_order_id
-                               WHERE roi2.product_id = roi.product_id),
-                             ?)
-                     GROUP BY roi.product_id""",
-                (*candidate_pids, window_modifier),
+                     GROUP BY lsq.pid""",
+                (window_modifier, *candidate_pids),
             ).fetchall()
             for rr in recon_rows:
+                recon_last_sale[rr["pid"]] = rr["last_sale"] or ""
                 presold = float(rr["presold"] or 0)
                 if presold > 0 and window_days > 0:
                     recon_daily[rr["pid"]] = presold / window_days
-            ls_rows = conn.execute(
-                f"""SELECT roi.product_id AS pid, MAX(ro.doc_date) AS last_sale
-                      FROM real_order_items roi
-                      JOIN real_orders ro ON ro.id = roi.real_order_id
-                     WHERE roi.product_id IN ({cph})
-                     GROUP BY roi.product_id""",
-                tuple(candidate_pids),
-            ).fetchall()
-            for rr in ls_rows:
-                recon_last_sale[rr["pid"]] = rr["last_sale"] or ""
 
         result = []
         for r in prod_rows:
