@@ -821,6 +821,13 @@
                 min-height: 300px;
             }
         }
+        .hot-chip {
+            border: 1px solid #d0d3de; background: #fff; color: #4a4f63;
+            border-radius: 14px; padding: 3px 11px; font-size: 12px; cursor: pointer;
+            transition: all .12s;
+        }
+        .hot-chip:hover { background: #f0f1f6; }
+        .hot-chip.active { background: #2b2f3a; color: #fff; border-color: #2b2f3a; }
     </style>
 </head>
 <body>
@@ -1615,7 +1622,14 @@
                         🛒 Reorder hot-list <span id="supplyHotListCount" style="font-size: 12px; color: #8b8fa3; font-weight: 400;"></span>
                     </div>
                     <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
-                        Top items needing order, across all suppliers. Sorted by status priority, then days-of-cover ascending. Click a supplier name to filter `/zakazlar` in chat.
+                        Top items needing order, across all suppliers. Sorted by status priority, then days-of-cover ascending. 🟣 chronic = reconstructed from pre-stockout sales (currently 0 in stock). Click a supplier name to filter `/zakazlar` in chat.
+                    </div>
+                    <div id="hotFilterChips" style="display:flex;gap:6px;flex-wrap:wrap;padding:0 0 10px;">
+                        <button class="hot-chip" data-hot-filter="all" onclick="setHotFilter('all')">All</button>
+                        <button class="hot-chip" data-hot-filter="stockout" onclick="setHotFilter('stockout')">🔴 Live</button>
+                        <button class="hot-chip" data-hot-filter="chronic_stockout" onclick="setHotFilter('chronic_stockout')">🟣 Chronic</button>
+                        <button class="hot-chip" data-hot-filter="order_now" onclick="setHotFilter('order_now')">🟠 Tezda</button>
+                        <button class="hot-chip" data-hot-filter="order_soon" onclick="setHotFilter('order_soon')">🟡 Yaqin</button>
                     </div>
                     <div class="table-container">
                         <div class="table-wrapper">
@@ -4957,7 +4971,7 @@
         async function loadSupplyData() {
             // Fire all six endpoints in parallel
             const [hotList, scoreboard, lost, deliveries, unmapped, seasonal] = await Promise.all([
-                apiCall('supply/hot-list?limit=50'),
+                apiCall('supply/hot-list?limit=1500'),
                 apiCall('supply/supplier-scoreboard'),
                 apiCall('supply/lost-demand?days=60&limit=20'),
                 apiCall('supply/recent-deliveries?days=30'),
@@ -4992,16 +5006,33 @@
             document.getElementById('kpi-supply-total-buy').textContent = _fmtNum(totalBuy);
         }
 
+        let _hotItems = [];
+        let _hotTotalWithBuy = 0;
+        let _hotFilter = 'all';
+
         function renderSupplyHotList(data) {
+            _hotItems = data.items || [];
+            _hotTotalWithBuy = data.total_with_buy || _hotItems.length;
+            setHotFilter(_hotFilter);
+        }
+
+        function setHotFilter(f) {
+            _hotFilter = f;
+            document.querySelectorAll('.hot-chip').forEach(c =>
+                c.classList.toggle('active', c.dataset.hotFilter === f));
             const body = document.getElementById('supplyHotListBody');
             const count = document.getElementById('supplyHotListCount');
-            const items = data.items || [];
-            count.textContent = `· ${items.length} of ${data.total_with_buy} total needing order`;
-            if (!items.length) {
-                body.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#8b8fa3;">No items need reordering.</td></tr>';
+            const CAP = 100;
+            const items = (f === 'all') ? _hotItems : _hotItems.filter(x => x.status === f);
+            const shown = items.slice(0, CAP);
+            count.textContent = (f === 'all')
+                ? `· top ${shown.length} of ${_hotTotalWithBuy} needing order`
+                : `· ${shown.length}${items.length > CAP ? ' of ' + items.length : ''} shown`;
+            if (!shown.length) {
+                body.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#8b8fa3;">No items in this group.</td></tr>';
                 return;
             }
-            body.innerHTML = items.map((it, i) => {
+            body.innerHTML = shown.map((it, i) => {
                 const seasMark = it.seasonal_source === 'yoy' && it.seasonal_mult !== 1.0
                     ? `<strong>${it.seasonal_mult}×</strong>` : '1.0';
                 const leadMark = it.lead_time_source === 'product' ? it.lead_time_days

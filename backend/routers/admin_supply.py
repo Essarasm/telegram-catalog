@@ -41,7 +41,7 @@ def _enrich_with_supplier(items, supplier_id, supplier_name):
 
 
 @router.get("/hot-list")
-def hot_list(admin_key: str = Query(...), limit: int = Query(50, ge=1, le=500)):
+def hot_list(admin_key: str = Query(...), limit: int = Query(50, ge=1, le=2000)):
     """Top-N reorder candidates across all mapped suppliers + unmapped bucket.
     Sorted by status priority, then days_of_cover asc, then suggested_buy desc.
     """
