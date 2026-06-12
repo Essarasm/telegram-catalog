@@ -18,11 +18,22 @@ from fastapi import APIRouter, HTTPException, Query
 
 from backend.admin_auth import check_admin_key
 from backend.database import get_db
+import datetime as _dt
+
 from backend.services.reorder import (
+    DEFAULT_WINDOW_DAYS,
     STATUS_ORDER,
     list_supplier_full,
     list_suppliers_with_products,
+    recent_sales_map,
 )
+
+
+def _sales_map(conn):
+    """Sales aggregation computed ONCE per request, shared across all suppliers
+    (avoids the 43× per-supplier recompute that made these endpoints ~15s)."""
+    window_start = (_dt.date.today() - _dt.timedelta(days=DEFAULT_WINDOW_DAYS)).isoformat()
+    return recent_sales_map(conn, window_start)
 
 
 router = APIRouter(prefix="/api/admin/supply", tags=["admin-supply"])
@@ -49,9 +60,10 @@ def hot_list(admin_key: str = Query(...), limit: int = Query(50, ge=1, le=2000))
     conn = get_db()
     try:
         suppliers = list_suppliers_with_products(conn=conn)
+        sales_map = _sales_map(conn)
         all_items = []
         for s in suppliers:
-            items = list_supplier_full(s["id"], conn=conn)
+            items = list_supplier_full(s["id"], conn=conn, sales_map=sales_map)
             buy_items = [it for it in items if it["suggested_buy"] > 0]
             _enrich_with_supplier(buy_items, s["id"], s["name_1c"])
             all_items.extend(buy_items)
@@ -79,9 +91,10 @@ def supplier_scoreboard(admin_key: str = Query(...)):
     conn = get_db()
     try:
         suppliers = list_suppliers_with_products(conn=conn)
+        sales_map = _sales_map(conn)
         scoreboard = []
         for s in suppliers:
-            items = list_supplier_full(s["id"], conn=conn)
+            items = list_supplier_full(s["id"], conn=conn, sales_map=sales_map)
             n = len(items)
             stockout = sum(1 for it in items if it["status"] == "stockout")
             chronic_stockout = sum(1 for it in items if it["status"] == "chronic_stockout")
@@ -265,9 +278,10 @@ def seasonal_alerts(
     conn = get_db()
     try:
         suppliers = list_suppliers_with_products(conn=conn)
+        sales_map = _sales_map(conn)
         peak, low = [], []
         for s in suppliers:
-            items = list_supplier_full(s["id"], conn=conn)
+            items = list_supplier_full(s["id"], conn=conn, sales_map=sales_map)
             for it in items:
                 if it["seasonal_source"] != "yoy":
                     continue

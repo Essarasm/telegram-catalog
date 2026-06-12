@@ -99,6 +99,28 @@ def list_suppliers_with_products(conn=None) -> List[dict]:
             conn.close()
 
 
+def recent_sales_map(conn, window_start: str) -> dict:
+    """{product_id: (units_sold_in_window, last_sale_date)} over all products.
+
+    Computed ONCE and reused across every supplier — this aggregation scans the
+    140k-row real_order_items and is supplier-independent, so running it inside
+    the per-supplier loop (43×) was the dominant cost (~337ms × 43 ≈ 15s →
+    intermittent 502s). Callers that loop suppliers must pass the result into
+    list_supplier_full(sales_map=...).
+    """
+    rows = conn.execute(
+        """SELECT roi.product_id AS pid,
+                  SUM(roi.quantity) AS sold,
+                  MAX(ro.doc_date) AS last_sale
+             FROM real_order_items roi
+             JOIN real_orders ro ON ro.id = roi.real_order_id
+            WHERE ro.doc_date >= ? AND roi.product_id IS NOT NULL
+            GROUP BY roi.product_id""",
+        (window_start,),
+    ).fetchall()
+    return {r["pid"]: (float(r["sold"] or 0), r["last_sale"]) for r in rows}
+
+
 def _median_gap_days(sorted_dates: List[str]) -> Optional[float]:
     """Median gap in days between consecutive ISO-date strings. None if <2 dates."""
     if len(sorted_dates) < 2:
@@ -146,9 +168,14 @@ def list_supplier_full(
     safety_factor: float = DEFAULT_SAFETY_FACTOR,
     today: Optional[_dt.date] = None,
     conn=None,
+    sales_map: Optional[dict] = None,
 ) -> List[dict]:
     """All active products for a supplier (or unmapped bucket if supplier_id=None)
     with computed forecast fields. Sorted by status priority then days_of_cover asc.
+
+    `sales_map` ({pid: (sold, last_sale)} from recent_sales_map): pass it in when
+    looping suppliers so the expensive sales aggregation runs once, not per call.
+    If None it's computed here (fine for one-off / standalone / test callers).
     """
     own_conn = conn is None
     if own_conn:
@@ -158,31 +185,23 @@ def list_supplier_full(
             today = _dt.date.today()
         window_start = (today - _dt.timedelta(days=window_days)).isoformat()
 
+        if sales_map is None:
+            sales_map = recent_sales_map(conn, window_start)
+
         if supplier_id is None:
             sup_clause = "p.latest_supplier_id IS NULL"
-            sup_params: Tuple = (window_start,)
+            sup_params: Tuple = ()
         else:
             sup_clause = "p.latest_supplier_id = ?"
-            sup_params = (window_start, supplier_id)
+            sup_params = (supplier_id,)
 
         prod_rows = conn.execute(
             f"""
             SELECT p.id AS product_id,
                    p.name,
                    p.lifecycle,
-                   COALESCE(p.stock_quantity, 0) AS stock,
-                   COALESCE(s.sold, 0) AS sold_window,
-                   s.last_sale
+                   COALESCE(p.stock_quantity, 0) AS stock
               FROM products p
-              LEFT JOIN (
-                  SELECT roi.product_id AS pid,
-                         SUM(roi.quantity) AS sold,
-                         MAX(ro.doc_date) AS last_sale
-                    FROM real_order_items roi
-                    JOIN real_orders ro ON ro.id = roi.real_order_id
-                   WHERE ro.doc_date >= ?
-                   GROUP BY roi.product_id
-              ) s ON s.pid = p.id
              WHERE p.is_active = 1
                AND {sup_clause}
             """,
@@ -276,7 +295,7 @@ def list_supplier_full(
         candidate_pids = [
             r["product_id"] for r in prod_rows
             if float(r["stock"] or 0) <= 0
-            and (float(r["sold_window"] or 0)
+            and (sales_map.get(r["product_id"], (0.0, None))[0]
                  + demand_signal_qty.get(r["product_id"], 0.0)) <= DAILY_EPSILON
         ]
         if candidate_pids:
@@ -311,7 +330,8 @@ def list_supplier_full(
         for r in prod_rows:
             pid = r["product_id"]
             stock = float(r["stock"])
-            base_sold = float(r["sold_window"] or 0)
+            sm_sold, sm_last_sale = sales_map.get(pid, (0.0, None))
+            base_sold = float(sm_sold or 0)
             ds_qty = demand_signal_qty.get(pid, 0.0)
             adjusted_sold = base_sold + ds_qty
 
@@ -377,7 +397,7 @@ def list_supplier_full(
                 "target_qty": round(target_qty, 1),
                 "suggested_buy": suggested_buy,
                 "days_of_cover": round(days_of_cover, 1) if days_of_cover is not None else None,
-                "last_sale": r["last_sale"] or recon_last_sale.get(pid, "") or "",
+                "last_sale": sm_last_sale or recon_last_sale.get(pid, "") or "",
                 "status": status,
             })
 
