@@ -169,6 +169,7 @@ def list_supplier_full(
     today: Optional[_dt.date] = None,
     conn=None,
     sales_map: Optional[dict] = None,
+    fx_rate: Optional[float] = None,
 ) -> List[dict]:
     """All active products for a supplier (or unmapped bucket if supplier_id=None)
     with computed forecast fields. Sorted by status priority then days_of_cover asc.
@@ -200,7 +201,9 @@ def list_supplier_full(
             SELECT p.id AS product_id,
                    p.name,
                    p.lifecycle,
-                   COALESCE(p.stock_quantity, 0) AS stock
+                   COALESCE(p.stock_quantity, 0) AS stock,
+                   COALESCE(p.price_usd, 0) AS price_usd,
+                   COALESCE(p.price_uzs, 0) AS price_uzs
               FROM products p
              WHERE p.is_active = 1
                AND {sup_clause}
@@ -379,6 +382,21 @@ def list_supplier_full(
             if demand_source == "pre_stockout" and seasoned_daily > DAILY_EPSILON:
                 status = "chronic_stockout"
 
+            # Order VALUE (money lens): suggested_buy × sell price, in USD-eq.
+            # This is sell value (a proxy for spend magnitude — purchase cost is
+            # only 16% populated), NOT actual cost. Catalog is 84% USD-priced;
+            # the UZS minority is converted at the daily FX rate. Used to
+            # prioritise where money goes, not for exact budgeting.
+            price_usd = float(r["price_usd"] or 0)
+            price_uzs = float(r["price_uzs"] or 0)
+            if price_usd > 0:
+                unit_usd = price_usd
+            elif price_uzs > 0 and fx_rate and fx_rate > 0:
+                unit_usd = price_uzs / fx_rate
+            else:
+                unit_usd = 0.0
+            order_value_usd = round(suggested_buy * unit_usd)
+
             result.append({
                 "product_id": pid,
                 "name": r["name"],
@@ -387,6 +405,7 @@ def list_supplier_full(
                 "sold_window": base_sold,
                 "demand_signal_qty": ds_qty,
                 "demand_source": demand_source,
+                "order_value_usd": order_value_usd,
                 "daily_rate": round(daily_rate, 3),
                 "seasonal_mult": round(seasonal_mult, 2),
                 "seasonal_source": seasonal_source,

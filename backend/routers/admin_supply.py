@@ -36,6 +36,17 @@ def _sales_map(conn):
     return recent_sales_map(conn, window_start)
 
 
+def _fx_rate(conn):
+    """Latest USD→UZS rate for converting the UZS-priced minority to USD-eq
+    order values. Returns (rate, rate_date) or (None, None)."""
+    row = conn.execute(
+        """SELECT rate, rate_date FROM daily_fx_rates
+            WHERE currency_pair = 'USD_UZS' AND rate > 0
+            ORDER BY rate_date DESC LIMIT 1"""
+    ).fetchone()
+    return (float(row["rate"]), row["rate_date"]) if row else (None, None)
+
+
 router = APIRouter(prefix="/api/admin/supply", tags=["admin-supply"])
 
 
@@ -61,9 +72,10 @@ def hot_list(admin_key: str = Query(...), limit: int = Query(50, ge=1, le=2000))
     try:
         suppliers = list_suppliers_with_products(conn=conn)
         sales_map = _sales_map(conn)
+        fx_rate, fx_date = _fx_rate(conn)
         all_items = []
         for s in suppliers:
-            items = list_supplier_full(s["id"], conn=conn, sales_map=sales_map)
+            items = list_supplier_full(s["id"], conn=conn, sales_map=sales_map, fx_rate=fx_rate)
             buy_items = [it for it in items if it["suggested_buy"] > 0]
             _enrich_with_supplier(buy_items, s["id"], s["name_1c"])
             all_items.extend(buy_items)
@@ -73,9 +85,13 @@ def hot_list(admin_key: str = Query(...), limit: int = Query(50, ge=1, le=2000))
             float("inf") if x["days_of_cover"] is None else x["days_of_cover"],
             -x["suggested_buy"],
         ))
+        total_value = sum(it.get("order_value_usd", 0) for it in all_items)
         return {
             "items": all_items[:limit],
             "total_with_buy": len(all_items),
+            "total_order_value_usd": total_value,
+            "fx_rate": fx_rate,
+            "fx_date": fx_date,
             "limit": limit,
         }
     finally:

@@ -1623,6 +1623,7 @@
                     </div>
                     <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
                         Top items needing order, across all suppliers. Sorted by status priority, then days-of-cover ascending. 🟣 chronic = reconstructed from pre-stockout sales (currently 0 in stock). Click a supplier name to filter `/zakazlar` in chat.
+                        <br><span id="hotValueNote">Qiymat $ = taxminiy <b>sotuv</b> qiymati (xarid narxi emas), USD ekv.</span>
                     </div>
                     <div id="hotFilterChips" style="display:flex;gap:6px;flex-wrap:wrap;padding:0 0 10px;">
                         <button class="hot-chip" data-hot-filter="all" onclick="setHotFilter('all')">All</button>
@@ -1646,6 +1647,7 @@
                                         <th>Lead</th>
                                         <th>Cover</th>
                                         <th>Buyurtma</th>
+                                        <th title="Taxminiy sotuv qiymati (xarid narxi emas), $ ekv.">Qiymat $</th>
                                     </tr>
                                 </thead>
                                 <tbody id="supplyHotListBody"></tbody>
@@ -5009,10 +5011,17 @@
         let _hotItems = [];
         let _hotTotalWithBuy = 0;
         let _hotFilter = 'all';
+        let _hotFx = null;
+        let _hotFxDate = null;
 
         function renderSupplyHotList(data) {
             _hotItems = data.items || [];
             _hotTotalWithBuy = data.total_with_buy || _hotItems.length;
+            _hotFx = data.fx_rate || null;
+            _hotFxDate = data.fx_date || null;
+            const note = document.getElementById('hotValueNote');
+            if (note && _hotFx) note.innerHTML =
+                `Qiymat $ = taxminiy <b>sotuv</b> qiymati (xarid narxi emas), USD ekv. @ ${_fmtNum(_hotFx)} so'm${_hotFxDate ? ' (' + _hotFxDate + ')' : ''}`;
             setHotFilter(_hotFilter);
         }
 
@@ -5025,11 +5034,13 @@
             const CAP = 100;
             const items = (f === 'all') ? _hotItems : _hotItems.filter(x => x.status === f);
             const shown = items.slice(0, CAP);
-            count.textContent = (f === 'all')
+            const groupValue = items.reduce((a, x) => a + (x.order_value_usd || 0), 0);
+            const valStr = groupValue ? ` · ≈$${_fmtNum(groupValue)} value` : '';
+            count.textContent = ((f === 'all')
                 ? `· top ${shown.length} of ${_hotTotalWithBuy} needing order`
-                : `· ${shown.length}${items.length > CAP ? ' of ' + items.length : ''} shown`;
+                : `· ${shown.length}${items.length > CAP ? ' of ' + items.length : ''} shown`) + valStr;
             if (!shown.length) {
-                body.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#8b8fa3;">No items in this group.</td></tr>';
+                body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#8b8fa3;">No items in this group.</td></tr>';
                 return;
             }
             body.innerHTML = shown.map((it, i) => {
@@ -5058,6 +5069,7 @@
                         <td>${leadMark}</td>
                         <td>${cover}</td>
                         <td><strong>${_fmtNum(it.suggested_buy)}</strong></td>
+                        <td style="color:#16a34a;">${it.order_value_usd ? '$' + _fmtNum(it.order_value_usd) : '-'}</td>
                     </tr>`;
             }).join('');
         }
