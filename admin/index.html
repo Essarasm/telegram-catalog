@@ -1623,6 +1623,7 @@
                     </div>
                     <div style="font-size: 11px; color: #8b8fa3; padding: 4px 0 8px;">
                         Top items needing order, across all suppliers. Sorted by status priority, then days-of-cover ascending. 🟣 chronic = reconstructed from pre-stockout sales (currently 0 in stock). Click a supplier name to filter `/zakazlar` in chat.
+                        <br>🛒 birga = ko'p hollarda birga sotilgan mahsulotlar; <span style="color:#dc2626;font-weight:600;">⚠</span> = ro'yxatda yo'q, oz miqdor qo'shing.
                         <br><span id="hotValueNote">Qiymat $ = taxminiy <b>sotuv</b> qiymati (xarid narxi emas), USD ekv.</span>
                     </div>
                     <div id="hotFilterChips" style="display:flex;gap:6px;flex-wrap:wrap;padding:0 0 10px;">
@@ -4968,6 +4969,18 @@
             return Number(v).toLocaleString();
         }
 
+        function _companionsHtml(it) {
+            const cs = it.companions || [];
+            if (!cs.length) return '';
+            const parts = cs.map(c => {
+                const nm = c.name.length > 22 ? c.name.slice(0, 22) + '…' : c.name;
+                return c.in_list
+                    ? `<span style="color:#16a34a;" title="${c.count}x birga sotilgan · ro'yxatda bor">${nm}</span>`
+                    : `<span style="color:#dc2626;font-weight:600;" title="${c.count}x birga sotilgan · ro'yxatda YO'Q — oz miqdor qo'shing">⚠ ${nm}</span>`;
+            });
+            return `<div style="font-size:10px;color:#8b8fa3;margin-top:2px;">🛒 birga: ${parts.join(' · ')}</div>`;
+        }
+
         function _supplyStatusCell(status) {
             const emoji = SUPPLY_STATUS_EMOJI[status] || '·';
             const label = SUPPLY_STATUS_LABEL[status] || status;
@@ -5079,7 +5092,7 @@
                         <td class="table-number">${i + 1}</td>
                         <td>${_supplyStatusCell(it.status)}</td>
                         <td style="font-size:11px;color:#8b8fa3;">${supName}</td>
-                        <td>${it.name}</td>
+                        <td>${it.name}${_companionsHtml(it)}</td>
                         <td>${Math.round(it.stock)}</td>
                         <td>${dailyCell}</td>
                         <td style="color:#0ea5e9;font-weight:700;">${it.daily_throughput_usd ? '$' + _fmtNum(it.daily_throughput_usd) : '-'}</td>

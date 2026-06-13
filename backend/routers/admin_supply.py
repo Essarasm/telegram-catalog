@@ -26,6 +26,7 @@ from backend.services.reorder import (
     list_supplier_full,
     list_suppliers_with_products,
     recent_sales_map,
+    top_companions_map,
 )
 
 
@@ -85,6 +86,22 @@ def hot_list(admin_key: str = Query(...), limit: int = Query(50, ge=1, le=2000))
             float("inf") if x["days_of_cover"] is None else x["days_of_cover"],
             -x["suggested_buy"],
         ))
+
+        # Basket companions: for each item, its top sold-with products, with a
+        # flag for ones NOT already in the reorder list ("add a small qty").
+        buy_pids = {it["product_id"] for it in all_items}
+        companions = top_companions_map(conn, buy_pids)
+        for it in all_items:
+            comps = companions.get(it["product_id"], [])
+            it["companions"] = [
+                {
+                    "name": c["name"],
+                    "count": c["count"],
+                    "in_list": any(p in buy_pids for p in c["pids"]),
+                }
+                for c in comps
+            ]
+
         total_value = sum(it.get("order_value_usd", 0) for it in all_items)
         return {
             "items": all_items[:limit],

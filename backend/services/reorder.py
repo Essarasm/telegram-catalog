@@ -121,6 +121,61 @@ def recent_sales_map(conn, window_start: str) -> dict:
     return {r["pid"]: (float(r["sold"] or 0), r["last_sale"]) for r in rows}
 
 
+def top_companions_map(conn, anchor_pids, window_days: int = 120,
+                       min_pairs: int = 5, top_n: int = 3) -> dict:
+    """For each anchor product, its most-frequently-co-purchased products
+    ("sold-with" / basket companions), from orders in the last `window_days`.
+
+    Returns {anchor_pid: [{"name", "count", "pids": [variant_pids]}, ...]}.
+    Companions are deduped by display name (size variants summed), so the
+    consumer can flag whether that companion (any variant) is already in the
+    reorder list. Used for the basket-completeness lens: a fast-mover's
+    companions you AREN'T restocking are sales you'll lose. Anchored on the
+    buy-list pids only (keeps the self-join small)."""
+    anchor_pids = list(anchor_pids)
+    if not anchor_pids:
+        return {}
+    ph = ",".join(["?"] * len(anchor_pids))
+    rows = conn.execute(
+        f"""WITH recent AS (
+                SELECT roi.real_order_id AS oid, roi.product_id AS pid
+                  FROM real_order_items roi
+                  JOIN real_orders ro ON ro.id = roi.real_order_id
+                 WHERE ro.doc_date >= date('now', ?)
+                   AND roi.product_id IS NOT NULL)
+            SELECT a.pid AS anchor, b.pid AS comp, COUNT(DISTINCT a.oid) AS n
+              FROM recent a
+              JOIN recent b ON a.oid = b.oid AND a.pid <> b.pid
+             WHERE a.pid IN ({ph})
+             GROUP BY a.pid, b.pid
+            HAVING n >= ?""",
+        (f"-{int(window_days)} days", *anchor_pids, min_pairs),
+    ).fetchall()
+    names = dict(conn.execute(
+        "SELECT id, COALESCE(name_display, name) FROM products"
+    ).fetchall())
+
+    # anchor -> {comp_name: {"count": int, "pids": set}}
+    grouped: dict = {}
+    for r in rows:
+        cname = names.get(r["comp"], "")
+        if not cname:
+            continue
+        slot = grouped.setdefault(r["anchor"], {}).setdefault(
+            cname, {"count": 0, "pids": set()})
+        slot["count"] += r["n"]
+        slot["pids"].add(r["comp"])
+
+    result = {}
+    for anchor, comps in grouped.items():
+        top = sorted(comps.items(), key=lambda kv: -kv[1]["count"])[:top_n]
+        result[anchor] = [
+            {"name": cn, "count": v["count"], "pids": sorted(v["pids"])}
+            for cn, v in top
+        ]
+    return result
+
+
 def _median_gap_days(sorted_dates: List[str]) -> Optional[float]:
     """Median gap in days between consecutive ISO-date strings. None if <2 dates."""
     if len(sorted_dates) < 2:
