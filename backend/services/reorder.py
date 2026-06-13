@@ -151,9 +151,11 @@ def top_companions_map(conn, anchor_pids, window_days: int = 120,
             HAVING n >= ?""",
         (f"-{int(window_days)} days", *anchor_pids, min_pairs),
     ).fetchall()
-    names = dict(conn.execute(
-        "SELECT id, COALESCE(name_display, name) FROM products"
-    ).fetchall())
+    # NB: dict(get_db rows) does NOT build {id:name} — the custom _DictRow
+    # factory collapses it. Build the map explicitly with column access.
+    names = {r["id"]: r["nm"] for r in conn.execute(
+        "SELECT id, COALESCE(name_display, name) AS nm FROM products"
+    )}
 
     # anchor -> {comp_name: {"count": int, "pids": set}}
     grouped: dict = {}
