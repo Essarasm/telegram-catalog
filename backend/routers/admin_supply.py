@@ -108,7 +108,10 @@ def order_xlsx(admin_key: str = Query(...), supplier_id: int = Query(...)):
             ws.column_dimensions[chr(64 + col)].width = w
         ws.freeze_panes = "A4"
         buf = io.BytesIO(); wb.save(buf)
-        safe = "".join(ch for ch in sname if ch.isalnum() or ch in " -_")[:30].strip() or str(supplier_id)
+        # Content-Disposition must be Latin-1; str.isalnum() is True for Cyrillic,
+        # so restrict to ASCII or the header raises UnicodeEncodeError. Cyrillic
+        # supplier names fall back to the id.
+        safe = "".join(ch for ch in sname if ch.isascii() and (ch.isalnum() or ch in " -_")).strip()[:30] or str(supplier_id)
         return Response(
             content=buf.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
