@@ -53,7 +53,12 @@ def compute_x_queue(conn) -> dict:
     total_t = 0.0
     total_orders = 0
 
-    for name, wt, tuman, gdist, viloyat, has_pin in rows:
+    for row in rows:
+        # NB: get_db()'s _DictRow iterates KEYS, not values — positional unpack
+        # (`for a, b, ... in rows`) would bind COLUMN NAMES, not data (Error Log
+        # #98). Access by index instead.
+        name, wt, tuman, gdist, viloyat, has_pin = (
+            row[0], row[1], row[2], row[3], row[4], row[5])
         if name and any(k in name.lower() for k in _PSEUDO):
             continue
         # get_db() can return numeric columns as str (SQLite text affinity through
