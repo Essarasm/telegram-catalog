@@ -5026,21 +5026,31 @@
                     <div style="font-size:11px;color:#8b8fa3;margin-top:7px;">Yetkazish navbati <b>${d.backlog_tonnes}t</b> · kunlik oʻrtacha yetkazish ${d.median_daily_delivery_tonnes}t · chegara ${d.hold_threshold_tonnes}t</div>
                 </div>`;
             const tm = d.tomorrow;
-            let h = `<div class="section-title" style="margin-top:18px;">📦 Ertaga (${tm.date}, ${tm.weekday_uz}) — buyurtma</div>`;
-            if (!tm.orders.length) {
-                h += `<div style="color:#8b8fa3;padding:8px;">Ertaga jadval boʻyicha yetkazib beruvchi yoʻq.</div>`;
+            const po = d.priority_orders || [];
+            let h = `<div class="section-title" style="margin-top:18px;">📦 Buyurtma roʻyxati — ustuvorlik (pul aylanmasi boʻyicha)</div>`;
+            h += `<div style="font-size:11px;color:#8b8fa3;padding:0 0 8px;">Barcha yetkazib beruvchilar — eng tez pul aylanadigani birinchi. ⭐ = ertaga jadval boʻyicha navbati (${tm.weekday_uz}: ${(tm.scheduled || []).join(', ') || '—'}). ${!go ? '<span style="color:#b91c1c;">⏸ Bugun buyurtma tavsiya etilmaydi — avval yetkazishni tugating.</span>' : ''}</div>`;
+            if (!po.length) {
+                h += `<div style="color:#8b8fa3;padding:8px;">Buyurtma kerak boʻlgan mahsulot yoʻq.</div>`;
             } else {
-                tm.orders.forEach(o => {
+                const dim = (!go) ? 'opacity:0.6;' : '';
+                h += `<div class="table-container"><div class="table-wrapper" style="max-height:420px;${dim}"><table><thead><tr>
+                    <th>#</th><th>Yetkazib beruvchi</th><th style="text-align:right;">⚡ $/kun</th><th style="text-align:right;">Mahsulot</th><th style="text-align:right;">Dona</th><th style="text-align:right;">Qiymat $</th><th style="text-align:right;">~t</th><th></th></tr></thead><tbody>`;
+                po.forEach((o, i) => {
                     const over = o.est_tonnes > 22;
-                    const dim = (!go) ? 'opacity:0.55;' : '';
-                    h += `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px;${dim}">
-                        <div style="font-weight:700;font-size:15px;">${o.supplier_name}
-                            <button onclick="window.open('/api/admin/supply/order-xlsx?supplier_id=${o.supplier_id}&admin_key='+encodeURIComponent(ADMIN_KEY),'_blank')"
-                                style="float:right;font-size:12px;padding:3px 10px;border:1px solid #1F4E79;background:#1F4E79;color:#fff;border-radius:5px;cursor:pointer;">⬇ Excel</button></div>
-                        <div style="font-size:12px;color:#374151;margin-top:5px;">${o.n_items} mahsulot · ${o.total_buy_units.toLocaleString()} dona · ~$${o.total_value_usd.toLocaleString()} · ~${o.est_tonnes}t ${over ? '<span style="color:#dc2626;font-weight:600;">⚠ &gt;1 mashina</span>' : ''}</div>
-                    </div>`;
+                    const star = o.scheduled_tomorrow ? ' ⭐' : '';
+                    const tops = (o.top_items || []).map(t => (t.name.length > 22 ? t.name.slice(0, 22) + '…' : t.name)).join(' · ');
+                    h += `<tr>
+                        <td class="table-number">${i + 1}</td>
+                        <td><b>${o.supplier_name}</b>${star}<div style="font-size:10px;color:#8b8fa3;">${tops}</div></td>
+                        <td style="text-align:right;color:#0ea5e9;font-weight:700;">$${_fmtNum(o.total_throughput_usd)}</td>
+                        <td style="text-align:right;">${o.n_items}</td>
+                        <td style="text-align:right;">${_fmtNum(o.total_buy_units)}</td>
+                        <td style="text-align:right;color:#16a34a;">$${_fmtNum(o.total_value_usd)}</td>
+                        <td style="text-align:right;">${o.est_tonnes}${over ? ' <span style="color:#dc2626;" title="&gt;1 mashina">⚠</span>' : ''}</td>
+                        <td><button onclick="window.open('/api/admin/supply/order-xlsx?supplier_id=${o.supplier_id}&admin_key='+encodeURIComponent(ADMIN_KEY),'_blank')" title="Excel yuklab olish" style="font-size:11px;padding:2px 8px;border:1px solid #1F4E79;background:#1F4E79;color:#fff;border-radius:4px;cursor:pointer;">⬇</button></td>
+                    </tr>`;
                 });
-                if (!go) h += `<div style="font-size:11px;color:#b91c1c;padding:2px 0;">⏸ Bugun buyurtma tavsiya etilmaydi — yuqoridagi navbat tugagach bering.</div>`;
+                h += `</tbody></table></div></div>`;
             }
             document.getElementById('dpTomorrow').innerHTML = h;
             const ov = d.overdue_suppliers || [];

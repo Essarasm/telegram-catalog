@@ -253,12 +253,30 @@ def compute_daily_plan(conn=None, today: Optional[_dt.date] = None) -> dict:
         fx = float(fxrow["rate"]) if fxrow else None
 
         scheduled = _resolve_suppliers(conn, SUPPLY_SCHEDULE.get(wd, []))
-        tomorrow_orders = []
-        for s in scheduled:
-            order = _supplier_order(conn, s["id"], sales_map, fx)
-            order["supplier_id"] = s["id"]
-            order["supplier_name"] = s["name_1c"]
-            tomorrow_orders.append(order)
+        scheduled_ids = {s["id"] for s in scheduled}
+
+        # Priority order list — every supplier with items needing reorder, ranked
+        # by total money-velocity ($/day), schedule-agnostic. The owner's "what to
+        # order, most-urgent-first, regardless of whose day it is" view. Each item
+        # list lives behind the per-supplier Excel; here we ship roll-ups + a top-3.
+        priority_orders = []
+        for s in reorder.list_suppliers_with_products(conn=conn):
+            o = _supplier_order(conn, s["id"], sales_map, fx)
+            if o["n_items"] == 0:
+                continue
+            items = o.pop("items")
+            o["supplier_id"] = s["id"]
+            o["supplier_name"] = s["name_1c"]
+            o["scheduled_tomorrow"] = s["id"] in scheduled_ids
+            o["total_throughput_usd"] = round(
+                sum(it.get("daily_throughput_usd", 0) for it in items), 1)
+            o["top_items"] = [
+                {"name": it["name"], "throughput_usd": it.get("daily_throughput_usd", 0),
+                 "suggested_buy": it["suggested_buy"], "status": it["status"]}
+                for it in sorted(items, key=lambda x: -(x.get("daily_throughput_usd") or 0))[:3]
+            ]
+            priority_orders.append(o)
+        priority_orders.sort(key=lambda o: -o["total_throughput_usd"])
 
         overdue = _overdue_suppliers(conn, today)
 
@@ -282,8 +300,9 @@ def compute_daily_plan(conn=None, today: Optional[_dt.date] = None) -> dict:
             "tomorrow": {
                 "date": tomorrow.isoformat(),
                 "weekday_uz": _WD_UZ[wd],
-                "orders": tomorrow_orders,
+                "scheduled": [s["name_1c"] for s in scheduled],
             },
+            "priority_orders": priority_orders,
             "overdue_suppliers": overdue,
             "schedule": {str(k): v for k, v in SUPPLY_SCHEDULE.items()},
         }
