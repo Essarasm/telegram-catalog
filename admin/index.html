@@ -5026,6 +5026,39 @@
             return [['stockout', '🔴'], ['chronic_stockout', '🟣'], ['order_now', '🟠'], ['order_soon', '🟡']]
                 .filter(([k]) => sc[k]).map(([k, e]) => `${e}${sc[k]}`).join(' ');
         }
+
+        // Click a supplier row → expand its full order list inline (lazy-fetched).
+        async function toggleSupplierOrder(sid, rowEl) {
+            const open = document.getElementById('dorder-' + sid);
+            if (open) { open.remove(); rowEl.classList.remove('dp-open'); return; }
+            rowEl.classList.add('dp-open');
+            const tr = document.createElement('tr');
+            tr.id = 'dorder-' + sid;
+            tr.innerHTML = '<td colspan="8" style="padding:8px 12px;background:#f8f9fb;font-size:11px;color:#8b8fa3;">Yuklanmoqda…</td>';
+            rowEl.after(tr);
+            let d;
+            try { d = await apiCall('supply/supplier-order?supplier_id=' + sid); }
+            catch (e) { tr.firstChild.textContent = 'Yuklab boʻlmadi.'; return; }
+            const items = d.items || [];
+            const body = items.map((it, i) => {
+                const dailyT = it.daily_throughput_usd ? '$' + _fmtNum(it.daily_throughput_usd) : '-';
+                return `<tr>
+                    <td class="table-number">${i + 1}</td>
+                    <td>${it.name}</td>
+                    <td style="text-align:right;">${Math.round(it.stock)}</td>
+                    <td style="text-align:right;">${it.seasoned_daily}</td>
+                    <td style="text-align:right;color:#0ea5e9;">${dailyT}</td>
+                    <td style="text-align:right;font-weight:700;">${_fmtNum(it.suggested_buy)}</td>
+                    <td style="text-align:right;color:#16a34a;">${it.order_value_usd ? '$' + _fmtNum(it.order_value_usd) : '-'}</td>
+                    <td>${_supplyStatusCell(it.status)}</td>
+                </tr>`;
+            }).join('') || '<tr><td colspan="8" style="color:#8b8fa3;">Buyurtma kerak boʻlgan mahsulot yoʻq.</td></tr>';
+            tr.innerHTML = `<td colspan="8" style="padding:6px 12px;background:#f8f9fb;">
+                <div style="font-size:12px;font-weight:600;margin-bottom:4px;">${d.supplier_name || ''} — buyurtma (${items.length} ta · ~$${_fmtNum(d.total_value_usd)})</div>
+                <table style="width:100%;font-size:12px;"><thead><tr>
+                  <th>#</th><th>Mahsulot (1C)</th><th style="text-align:right;">Qoldiq</th><th style="text-align:right;">Kunlik</th><th style="text-align:right;">$/kun</th><th style="text-align:right;">Buyurtma</th><th style="text-align:right;">Qiymat $</th><th>Holat</th></tr></thead>
+                  <tbody>${body}</tbody></table></div>`;
+        }
         async function loadDailyPlan() {
             let d;
             try { d = await apiCall('supply/daily-plan'); }
@@ -5047,21 +5080,20 @@
             } else {
                 const dim = (!go) ? 'opacity:0.6;' : '';
                 h += `<div class="table-container"><div class="table-wrapper" style="max-height:420px;${dim}"><table><thead><tr>
-                    <th>#</th><th>Yetkazib beruvchi</th><th>Holat</th><th style="text-align:right;" title="Tugagan mahsulotlardagi kunlik pul aylanmasi — ustuvorlik shu boʻyicha">⚡ Tugagan $/kun</th><th style="text-align:right;">Mahsulot</th><th style="text-align:right;">Dona</th><th style="text-align:right;">Qiymat $</th><th style="text-align:right;">~t</th><th></th></tr></thead><tbody>`;
+                    <th>#</th><th>Yetkazib beruvchi</th><th>Holat</th><th style="text-align:right;" title="Tugagan mahsulotlardagi kunlik pul aylanmasi — ustuvorlik shu boʻyicha">⚡ Tugagan $/kun</th><th style="text-align:right;">Mahsulot</th><th style="text-align:right;">Dona</th><th style="text-align:right;">Qiymat $</th><th style="text-align:right;">~t</th></tr></thead><tbody>`;
                 po.forEach((o, i) => {
                     const over = o.est_tonnes > 22;
                     const star = o.scheduled_tomorrow ? ' ⭐' : '';
                     const tops = (o.top_items || []).map(t => (t.name.length > 22 ? t.name.slice(0, 22) + '…' : t.name)).join(' · ');
-                    h += `<tr>
+                    h += `<tr onclick="toggleSupplierOrder(${o.supplier_id}, this)" style="cursor:pointer;" title="Buyurtma roʻyxatini koʻrish">
                         <td class="table-number">${i + 1}</td>
-                        <td><b>${o.supplier_name}</b>${star}<div style="font-size:10px;color:#8b8fa3;">${tops}</div></td>
+                        <td>▸ <b>${o.supplier_name}</b>${star}<div style="font-size:10px;color:#8b8fa3;">${tops}</div></td>
                         <td style="font-size:11px;white-space:nowrap;">${_statusBadges(o.status_counts)}</td>
                         <td style="text-align:right;color:#0ea5e9;font-weight:700;" title="Jami pul aylanmasi $${_fmtNum(o.total_throughput_usd)}/kun">$${_fmtNum(o.urgent_throughput_usd)}<div style="font-size:9px;color:#8b8fa3;font-weight:400;">jami $${_fmtNum(o.total_throughput_usd)}</div></td>
                         <td style="text-align:right;">${o.n_items}</td>
                         <td style="text-align:right;">${_fmtNum(o.total_buy_units)}</td>
                         <td style="text-align:right;color:#16a34a;">$${_fmtNum(o.total_value_usd)}</td>
                         <td style="text-align:right;">${o.est_tonnes}${over ? ' <span style="color:#dc2626;" title="&gt;1 mashina">⚠</span>' : ''}</td>
-                        <td><button onclick="window.open('/api/admin/supply/order-xlsx?supplier_id=${o.supplier_id}&admin_key='+encodeURIComponent(ADMIN_KEY),'_blank')" title="Excel yuklab olish" style="font-size:11px;padding:2px 8px;border:1px solid #1F4E79;background:#1F4E79;color:#fff;border-radius:4px;cursor:pointer;">⬇</button></td>
                     </tr>`;
                 });
                 h += `</tbody></table></div></div>`;
@@ -5108,8 +5140,7 @@
                     const tops = (s.top_items || []).map(t => { const n = t.name || ''; return n.length > 20 ? n.slice(0, 20) + '…' : n; }).join(' · ');
                     const multi = s.n_days > 1 ? ` <span style="font-size:10px;color:#8b8fa3;">(×${s.n_days} kun)</span>` : '';
                     return `<div style="border-top:1px solid #eee;padding:6px 0;">
-                        <div style="font-weight:600;font-size:13px;">${s.supplier_name}${multi}
-                          <button onclick="window.open('/api/admin/supply/order-xlsx?supplier_id=${s.supplier_id}&admin_key='+encodeURIComponent(ADMIN_KEY),'_blank')" style="float:right;font-size:10px;padding:1px 7px;border:1px solid #1F4E79;background:#1F4E79;color:#fff;border-radius:4px;cursor:pointer;">⬇</button></div>
+                        <div style="font-weight:600;font-size:13px;">${s.supplier_name}${multi}</div>
                         <div style="font-size:11px;color:#374151;">${s.n_items} mahsulot · ~$${_fmtNum(s.per_day_value)} · ~${s.per_day_tonnes}t <span style="font-size:10px;">${_statusBadges(s.status_counts)}</span></div>
                         <div style="font-size:10px;color:#8b8fa3;">${tops}</div>
                     </div>`;
