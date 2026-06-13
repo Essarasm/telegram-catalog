@@ -5021,6 +5021,11 @@
         }
 
         const _WD_UZ_SHORT = ['Du', 'Se', 'Cho', 'Pa', 'Ju', 'Sha', 'Yak'];
+        function _statusBadges(sc) {
+            if (!sc) return '';
+            return [['stockout', '🔴'], ['chronic_stockout', '🟣'], ['order_now', '🟠'], ['order_soon', '🟡']]
+                .filter(([k]) => sc[k]).map(([k, e]) => `${e}${sc[k]}`).join(' ');
+        }
         async function loadDailyPlan() {
             let d;
             try { d = await apiCall('supply/daily-plan'); }
@@ -5042,7 +5047,7 @@
             } else {
                 const dim = (!go) ? 'opacity:0.6;' : '';
                 h += `<div class="table-container"><div class="table-wrapper" style="max-height:420px;${dim}"><table><thead><tr>
-                    <th>#</th><th>Yetkazib beruvchi</th><th style="text-align:right;">⚡ $/kun</th><th style="text-align:right;">Mahsulot</th><th style="text-align:right;">Dona</th><th style="text-align:right;">Qiymat $</th><th style="text-align:right;">~t</th><th></th></tr></thead><tbody>`;
+                    <th>#</th><th>Yetkazib beruvchi</th><th>Holat</th><th style="text-align:right;">⚡ $/kun</th><th style="text-align:right;">Mahsulot</th><th style="text-align:right;">Dona</th><th style="text-align:right;">Qiymat $</th><th style="text-align:right;">~t</th><th></th></tr></thead><tbody>`;
                 po.forEach((o, i) => {
                     const over = o.est_tonnes > 22;
                     const star = o.scheduled_tomorrow ? ' ⭐' : '';
@@ -5050,6 +5055,7 @@
                     h += `<tr>
                         <td class="table-number">${i + 1}</td>
                         <td><b>${o.supplier_name}</b>${star}<div style="font-size:10px;color:#8b8fa3;">${tops}</div></td>
+                        <td style="font-size:11px;white-space:nowrap;">${_statusBadges(o.status_counts)}</td>
                         <td style="text-align:right;color:#0ea5e9;font-weight:700;">$${_fmtNum(o.total_throughput_usd)}</td>
                         <td style="text-align:right;">${o.n_items}</td>
                         <td style="text-align:right;">${_fmtNum(o.total_buy_units)}</td>
@@ -5099,12 +5105,12 @@
                 const over = day.overload;
                 const hdr = `${day.weekday_uz} <span style="float:right;font-weight:400;color:${over ? '#dc2626' : '#16a34a'};">${day.day_tonnes}t${over ? ' ⚠' : ''}</span>`;
                 const sup = (day.suppliers || []).map(s => {
-                    const tops = (s.top_items || []).map(n => n.length > 20 ? n.slice(0, 20) + '…' : n).join(' · ');
+                    const tops = (s.top_items || []).map(t => { const n = t.name || ''; return n.length > 20 ? n.slice(0, 20) + '…' : n; }).join(' · ');
                     const multi = s.n_days > 1 ? ` <span style="font-size:10px;color:#8b8fa3;">(×${s.n_days} kun)</span>` : '';
                     return `<div style="border-top:1px solid #eee;padding:6px 0;">
                         <div style="font-weight:600;font-size:13px;">${s.supplier_name}${multi}
                           <button onclick="window.open('/api/admin/supply/order-xlsx?supplier_id=${s.supplier_id}&admin_key='+encodeURIComponent(ADMIN_KEY),'_blank')" style="float:right;font-size:10px;padding:1px 7px;border:1px solid #1F4E79;background:#1F4E79;color:#fff;border-radius:4px;cursor:pointer;">⬇</button></div>
-                        <div style="font-size:11px;color:#374151;">${s.n_items} mahsulot · ~$${_fmtNum(s.per_day_value)} · ~${s.per_day_tonnes}t</div>
+                        <div style="font-size:11px;color:#374151;">${s.n_items} mahsulot · ~$${_fmtNum(s.per_day_value)} · ~${s.per_day_tonnes}t <span style="font-size:10px;">${_statusBadges(s.status_counts)}</span></div>
                         <div style="font-size:10px;color:#8b8fa3;">${tops}</div>
                     </div>`;
                 }).join('') || '<div style="font-size:11px;color:#8b8fa3;padding:6px 0;">Bu kuni buyurtma yoʻq.</div>';

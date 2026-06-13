@@ -90,7 +90,10 @@ def _resolve_suppliers(conn, patterns):
 
 
 def _supplier_order(conn, supplier_id, sales_map, fx_rate):
-    """Reorder list (suggested_buy>0) for a supplier + roll-up totals + est tonnes."""
+    """Reorder list (suggested_buy>0) for a supplier + roll-ups, money-velocity,
+    and the urgency tier/mix. `urgency_tier` = the most-urgent item's status rank
+    (stockout=1 … order_soon=4) so callers can sort URGENCY-first, velocity-within
+    — i.e. "what's most critically empty, and among those what moves most money.\""""
     items = [it for it in reorder.list_supplier_full(
         supplier_id, conn=conn, sales_map=sales_map, fx_rate=fx_rate)
         if it["suggested_buy"] > 0]
@@ -101,11 +104,26 @@ def _supplier_order(conn, supplier_id, sales_map, fx_rate):
         wmap = {r["id"]: float(r["w"] or 0) for r in conn.execute(
             f"SELECT id, COALESCE(weight, 0) AS w FROM products WHERE id IN ({ph})", pids)}
     est_t = sum(wmap.get(it["product_id"], 0) * it["suggested_buy"] for it in items) / 1000.0
+    status_counts = {}
+    for it in items:
+        status_counts[it["status"]] = status_counts.get(it["status"], 0) + 1
+    urgency_tier = min(
+        (reorder.STATUS_ORDER.get(it["status"], 99) for it in items), default=99)
+    top_items = [
+        {"name": it["name"], "throughput_usd": it.get("daily_throughput_usd", 0),
+         "suggested_buy": it["suggested_buy"], "status": it["status"]}
+        for it in sorted(items, key=lambda x: -(x.get("daily_throughput_usd") or 0))[:3]
+    ]
     return {
         "n_items": len(items),
         "total_buy_units": sum(it["suggested_buy"] for it in items),
         "total_value_usd": sum(it.get("order_value_usd", 0) for it in items),
         "est_tonnes": round(est_t, 1),
+        "total_throughput_usd": round(
+            sum(it.get("daily_throughput_usd", 0) for it in items), 1),
+        "status_counts": status_counts,
+        "urgency_tier": urgency_tier,
+        "top_items": top_items,
         "items": items,
     }
 
@@ -256,12 +274,10 @@ def compute_weekly_plan(conn=None) -> dict:
         orders = {}
         for sid, info in sched_days.items():
             o = _supplier_order(conn, sid, sales_map, fx)
+            o.pop("items")
             o["supplier_id"] = sid
             o["supplier_name"] = info["name"]
             o["n_days"] = info["days"]
-            o["top_items"] = [it["name"] for it in sorted(
-                o["items"], key=lambda x: -(x.get("daily_throughput_usd") or 0))[:3]]
-            o.pop("items")
             orders[sid] = o
 
         days, week_value, week_tonnes, counted = [], 0.0, 0.0, set()
@@ -279,6 +295,8 @@ def compute_weekly_plan(conn=None) -> dict:
                     week_value += o["total_value_usd"]
                     week_tonnes += o["est_tonnes"]
                     counted.add(s["id"])
+            # urgency tier first, then money-velocity (when a day has >1 supplier)
+            day_sups.sort(key=lambda x: (x["urgency_tier"], -x["total_throughput_usd"]))
             days.append({
                 "weekday": wd, "weekday_uz": _WD_UZ[wd],
                 "suppliers": day_sups,
@@ -333,19 +351,13 @@ def compute_daily_plan(conn=None, today: Optional[_dt.date] = None) -> dict:
             o = _supplier_order(conn, s["id"], sales_map, fx)
             if o["n_items"] == 0:
                 continue
-            items = o.pop("items")
+            o.pop("items")
             o["supplier_id"] = s["id"]
             o["supplier_name"] = s["name_1c"]
             o["scheduled_tomorrow"] = s["id"] in scheduled_ids
-            o["total_throughput_usd"] = round(
-                sum(it.get("daily_throughput_usd", 0) for it in items), 1)
-            o["top_items"] = [
-                {"name": it["name"], "throughput_usd": it.get("daily_throughput_usd", 0),
-                 "suggested_buy": it["suggested_buy"], "status": it["status"]}
-                for it in sorted(items, key=lambda x: -(x.get("daily_throughput_usd") or 0))[:3]
-            ]
             priority_orders.append(o)
-        priority_orders.sort(key=lambda o: -o["total_throughput_usd"])
+        # Urgency tier FIRST (most critically out), then money-velocity within.
+        priority_orders.sort(key=lambda o: (o["urgency_tier"], -o["total_throughput_usd"]))
 
         overdue = _overdue_suppliers(conn, today)
 
