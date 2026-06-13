@@ -864,6 +864,7 @@
                 <div class="nav-tab" data-tab="debt" onclick="switchTab('debt')">Debt Management</div>
                 <div class="nav-tab" data-tab="inventory" onclick="switchTab('inventory')">Inventory</div>
                 <div class="nav-tab" data-tab="supply" onclick="switchTab('supply')">Supply</div>
+                <div class="nav-tab" data-tab="dailyplan" onclick="switchTab('dailyplan')">📋 Kunlik reja</div>
                 <div class="nav-tab" data-tab="health" onclick="switchTab('health')">Platform Health</div>
                 <!-- BEGIN Phase 3: Search Analytics tab -->
                 <div class="nav-tab" data-tab="search" onclick="switchTab('search')">Search</div>
@@ -1780,6 +1781,22 @@
                             </table>
                         </div>
                     </div>
+                </div>
+
+                <!-- Daily Plan Tab — daily supply-order decision -->
+                <div id="dailyplan-tab" class="tab-content hidden">
+                    <div class="section-title">📋 Kunlik buyurtma rejasi <span id="dpAsOf" style="font-size:12px;color:#8b8fa3;font-weight:400;"></span></div>
+                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 10px;">Har kuni yangilanadi (stok + realorders yuklangach). Yetkazish navbati zaxiraga qarab — buyurtma berasizmi yoki avval yetkazishni tugatasizmi.</div>
+                    <div id="dpBanner"></div>
+                    <div id="dpTomorrow"></div>
+                    <div class="section-title" style="margin-top:18px;">⏰ Muddati oʻtgan yetkazib beruvchilar</div>
+                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 6px;">Oʻz odatdagi oraligʻidan kechikkanlar (jadvaldan tashqari).</div>
+                    <div class="table-container"><div class="table-wrapper"><table>
+                        <thead><tr><th>Yetkazib beruvchi</th><th>Odatdagi oraliq</th><th>Oʻtgan kun</th><th>Kechikish</th></tr></thead>
+                        <tbody id="dpOverdueBody"></tbody>
+                    </table></div></div>
+                    <div class="section-title" style="margin-top:18px;">🗓 Haftalik jadval</div>
+                    <div id="dpSchedule" style="font-size:13px;color:#444;padding:4px 0;"></div>
                 </div>
 
                 <!-- Platform Health Tab -->
@@ -4988,6 +5005,45 @@
             return `<span style="color:${color};font-weight:600;">${emoji} ${label}</span>`;
         }
 
+        const _WD_UZ_SHORT = ['Du', 'Se', 'Cho', 'Pa', 'Ju', 'Sha', 'Yak'];
+        async function loadDailyPlan() {
+            let d;
+            try { d = await apiCall('supply/daily-plan'); }
+            catch (e) { document.getElementById('dpBanner').innerHTML = '<div style="color:#dc2626;">Yuklab boʻlmadi.</div>'; return; }
+            const go = d.decision === 'GO';
+            document.getElementById('dpAsOf').textContent = '· ' + d.as_of;
+            document.getElementById('dpBanner').innerHTML =
+                `<div style="background:${go ? '#dcfce7' : '#fee2e2'};border-left:5px solid ${go ? '#16a34a' : '#dc2626'};padding:14px 18px;border-radius:8px;">
+                    <div style="font-size:20px;font-weight:700;color:${go ? '#15803d' : '#b91c1c'};">${go ? '✅ Buyurtma bering' : '⏸ Buyurtma shart emas — yetkazishga eʼtibor'}</div>
+                    <div style="font-size:13px;color:#374151;margin-top:5px;">${d.reason}</div>
+                    <div style="font-size:11px;color:#8b8fa3;margin-top:7px;">Yetkazish navbati <b>${d.backlog_tonnes}t</b> · kunlik oʻrtacha yetkazish ${d.median_daily_delivery_tonnes}t · chegara ${d.hold_threshold_tonnes}t</div>
+                </div>`;
+            const tm = d.tomorrow;
+            let h = `<div class="section-title" style="margin-top:18px;">📦 Ertaga (${tm.date}, ${tm.weekday_uz}) — buyurtma</div>`;
+            if (!tm.orders.length) {
+                h += `<div style="color:#8b8fa3;padding:8px;">Ertaga jadval boʻyicha yetkazib beruvchi yoʻq.</div>`;
+            } else {
+                tm.orders.forEach(o => {
+                    const over = o.est_tonnes > 22;
+                    const dim = (!go) ? 'opacity:0.55;' : '';
+                    h += `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;margin-bottom:8px;${dim}">
+                        <div style="font-weight:700;font-size:15px;">${o.supplier_name}
+                            <button onclick="window.open('/api/admin/supply/order-xlsx?supplier_id=${o.supplier_id}&admin_key='+encodeURIComponent(ADMIN_KEY),'_blank')"
+                                style="float:right;font-size:12px;padding:3px 10px;border:1px solid #1F4E79;background:#1F4E79;color:#fff;border-radius:5px;cursor:pointer;">⬇ Excel</button></div>
+                        <div style="font-size:12px;color:#374151;margin-top:5px;">${o.n_items} mahsulot · ${o.total_buy_units.toLocaleString()} dona · ~$${o.total_value_usd.toLocaleString()} · ~${o.est_tonnes}t ${over ? '<span style="color:#dc2626;font-weight:600;">⚠ &gt;1 mashina</span>' : ''}</div>
+                    </div>`;
+                });
+                if (!go) h += `<div style="font-size:11px;color:#b91c1c;padding:2px 0;">⏸ Bugun buyurtma tavsiya etilmaydi — yuqoridagi navbat tugagach bering.</div>`;
+            }
+            document.getElementById('dpTomorrow').innerHTML = h;
+            const ov = d.overdue_suppliers || [];
+            document.getElementById('dpOverdueBody').innerHTML = ov.length
+                ? ov.map(o => `<tr><td>${o.supplier_name}</td><td>${o.median_gap_days}d</td><td>${o.days_since}d</td><td style="color:#dc2626;font-weight:600;">+${o.overdue_by}d</td></tr>`).join('')
+                : '<tr><td colspan="4" style="text-align:center;color:#8b8fa3;">Yoʻq</td></tr>';
+            document.getElementById('dpSchedule').innerHTML = Object.entries(d.schedule || {})
+                .map(([k, v]) => `<span style="display:inline-block;margin:0 14px 4px 0;"><b>${_WD_UZ_SHORT[k] || k}:</b> ${(v && v.length) ? v.join(', ') : '—'}</span>`).join('');
+        }
+
         async function loadSupplyData() {
             // Fire all six endpoints in parallel
             const [hotList, scoreboard, lost, deliveries, unmapped, seasonal] = await Promise.all([
@@ -6180,6 +6236,7 @@
             _origSwitchTab(tabName);
             if (tabName === 'collections' && !collectionsMap) initCollectionsTab();
             if (tabName === 'collections') initPlanRouteIfNeeded();
+            if (tabName === 'dailyplan') loadDailyPlan();
         };
 
         // ─── Plan delivery route (Session M Phase 3) ───────────

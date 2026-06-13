@@ -15,6 +15,7 @@ from __future__ import annotations
 from statistics import median
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 
 from backend.admin_auth import check_admin_key
 from backend.database import get_db
@@ -61,6 +62,60 @@ def _enrich_with_supplier(items, supplier_id, supplier_name):
         it["supplier_id"] = supplier_id
         it["supplier_name"] = supplier_name
     return items
+
+
+@router.get("/order-xlsx")
+def order_xlsx(admin_key: str = Query(...), supplier_id: int = Query(...)):
+    """Per-supplier order sheet (items + exact quantities) as .xlsx — the
+    dashboard equivalent of the /zakazlar Telegram export. Sorted by money
+    velocity ($/day) so the fastest cash-movers lead."""
+    _check_admin(admin_key)
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+
+    conn = get_db()
+    try:
+        sup = conn.execute("SELECT name_1c FROM suppliers WHERE id = ?", (supplier_id,)).fetchone()
+        sname = sup["name_1c"] if sup else f"supplier {supplier_id}"
+        sales_map = _sales_map(conn)
+        fx_rate, _ = _fx_rate(conn)
+        items = [it for it in list_supplier_full(
+            supplier_id, conn=conn, sales_map=sales_map, fx_rate=fx_rate)
+            if it["suggested_buy"] > 0]
+        items.sort(key=lambda x: -(x.get("daily_throughput_usd") or 0))
+
+        wb = Workbook(); ws = wb.active; ws.title = "Buyurtma"
+        ws.cell(1, 1, f"Buyurtma — {sname}").font = Font(bold=True, size=13)
+        headers = ["#", "Mahsulot (1C)", "Zaxira", "Kunlik", "$/kun", "Buyurtma", "Qiymat $"]
+        hf = Font(bold=True, color="FFFFFF"); hfill = PatternFill("solid", fgColor="1F4E79")
+        for j, h in enumerate(headers, 1):
+            c = ws.cell(3, j, h); c.font = hf; c.fill = hfill
+            c.alignment = Alignment(horizontal="center")
+        r = 4
+        for i, it in enumerate(items, 1):
+            ws.cell(r, 1, i)
+            ws.cell(r, 2, it["name"])
+            ws.cell(r, 3, round(float(it["stock"])))
+            ws.cell(r, 4, it["seasoned_daily"])
+            ws.cell(r, 5, it.get("daily_throughput_usd", 0))
+            ws.cell(r, 6, it["suggested_buy"]).font = Font(bold=True)
+            ws.cell(r, 7, it.get("order_value_usd", 0))
+            r += 1
+        ws.cell(r + 1, 6, "JAMI").font = Font(bold=True)
+        ws.cell(r + 1, 7, sum(it.get("order_value_usd", 0) for it in items)).font = Font(bold=True)
+        for col, w in {1: 5, 2: 42, 3: 9, 4: 9, 5: 9, 6: 11, 7: 12}.items():
+            ws.column_dimensions[chr(64 + col)].width = w
+        ws.freeze_panes = "A4"
+        buf = io.BytesIO(); wb.save(buf)
+        safe = "".join(ch for ch in sname if ch.isalnum() or ch in " -_")[:30].strip() or str(supplier_id)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="order_{safe}.xlsx"'},
+        )
+    finally:
+        conn.close()
 
 
 @router.get("/daily-plan")
