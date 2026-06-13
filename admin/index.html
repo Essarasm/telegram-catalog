@@ -5053,9 +5053,9 @@
                     <td>${_supplyStatusCell(it.status)}</td>
                 </tr>`;
             }).join('') || '<tr><td colspan="8" style="color:#8b8fa3;">Buyurtma kerak boʻlgan mahsulot yoʻq.</td></tr>';
-            tr.innerHTML = `<td colspan="8" style="padding:6px 12px;background:#f8f9fb;">
-                <div style="font-size:12px;font-weight:600;margin-bottom:4px;">${d.supplier_name || ''} — buyurtma (${items.length} ta · ~$${_fmtNum(d.total_value_usd)})</div>
-                <table style="width:100%;font-size:12px;"><thead><tr>
+            tr.innerHTML = `<td colspan="8" style="padding:6px 12px;background:#eef2f7;color:#1f2937;">
+                <div style="font-size:12px;font-weight:600;margin-bottom:4px;color:#1f2937;">${d.supplier_name || ''} — buyurtma (${items.length} ta · ~$${_fmtNum(d.total_value_usd)})</div>
+                <table style="width:100%;font-size:12px;color:#1f2937;"><thead><tr style="color:#475569;">
                   <th>#</th><th>Mahsulot (1C)</th><th style="text-align:right;">Qoldiq</th><th style="text-align:right;">Kunlik</th><th style="text-align:right;">$/kun</th><th style="text-align:right;">Buyurtma</th><th style="text-align:right;">Qiymat $</th><th>Holat</th></tr></thead>
                   <tbody>${body}</tbody></table></div>`;
         }
