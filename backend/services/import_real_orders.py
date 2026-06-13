@@ -92,6 +92,19 @@ def _norm(s) -> str:
     return str(s).strip().lower().replace("ё", "е")
 
 
+# Comment markers the bookkeeper uses for "recorded but NOT shipped". Match these
+# precisely — NEVER bare "отгружено" (which means SHIPPED). See Error Log #97.
+_UNSHIPPED_COMMENT_MARKERS = ("ortilmagan", "ortilmangan", "не отгру", "ne otgru")
+
+
+def _comment_says_unshipped(comment) -> bool:
+    """True if a real_orders comment marks the doc recorded-but-not-shipped."""
+    if not comment:
+        return False
+    c = str(comment).lower()
+    return any(m in c for m in _UNSHIPPED_COMMENT_MARKERS)
+
+
 def _parse_number(val) -> float:
     """Convert a cell value to float (0 if empty / unparseable)."""
     if val is None:
@@ -643,6 +656,15 @@ def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
             marker = str(sh.cell(r, 0) or "").strip().upper()
             is_approved = 1 if marker == "V" else (0 if marker == "X" else None)
 
+            # The bookkeeper marks "recorded but NOT shipped" in the COMMENT
+            # ("ortilmagan dostavka" / "НЕ ОТГРУЖЕНО") far more often than via the
+            # col-0 X marker (in practice the X column is barely used — Error Log
+            # #97). A not-shipped comment overrides the marker. Catching BOTH is
+            # what makes the delivery backlog / GO-HOLD / planning real.
+            comment_val = str(sh.cell(r, header_cols.get("comment", -1)) or "").strip() or None
+            if _comment_says_unshipped(comment_val):
+                is_approved = 0
+
             current = {
                 "doc_number_1c": doc_number,
                 "doc_date": _parse_doc_date(doc_date_raw),
@@ -653,7 +675,7 @@ def parse_real_orders_xls(file_bytes: bytes, filename_hint: str = "") -> dict:
                 "payment_account": str(sh.cell(r, header_cols.get("payment_account", -1)) or "").strip() or None,
                 "sale_agent": str(sh.cell(r, header_cols.get("sale_agent", -1)) or "").strip() or None,
                 "responsible_person": str(sh.cell(r, header_cols.get("responsible_person", -1)) or "").strip() or None,
-                "comment": str(sh.cell(r, header_cols.get("comment", -1)) or "").strip() or None,
+                "comment": comment_val,
                 "currency": (str(sh.cell(r, header_cols.get("currency", -1)) or "").strip().upper() or "UZS"),
                 "exchange_rate": _parse_number(sh.cell(r, header_cols.get("exchange_rate", -1))),
                 "is_approved": is_approved,
