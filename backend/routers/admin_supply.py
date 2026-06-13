@@ -148,10 +148,12 @@ def hot_list(admin_key: str = Query(...), limit: int = Query(50, ge=1, le=2000))
             _enrich_with_supplier(buy_items, s["id"], s["name_1c"])
             all_items.extend(buy_items)
 
+        # Aligned with the Kunlik-reja priority logic: urgency tier first, then
+        # money-velocity ($/day) within — so the Supply hot-list reads the same
+        # way as the daily plan (was: status → days-of-cover → qty).
         all_items.sort(key=lambda x: (
             STATUS_ORDER.get(x["status"], 99),
-            float("inf") if x["days_of_cover"] is None else x["days_of_cover"],
-            -x["suggested_buy"],
+            -(x.get("daily_throughput_usd") or 0),
         ))
 
         # Basket companions: for each item, its top sold-with products, with a
