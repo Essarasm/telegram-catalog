@@ -29,6 +29,7 @@
 #   SKIP_INLINE_FETCH_CHECK=1       — bypass the frontend inline-fetch guard
 #   SKIP_STATUS_VOCABULARY_CHECK=1  — bypass the structured-suffix status guard
 #   SKIP_REALORDERS_CURRENCY_FILTER_CHECK=1  — bypass the real_orders currency-filter ban
+#   SKIP_ADMIN_JS_CHECK=1           — skip the admin inline-JS syntax check
 #   SKIP_RUFF=1                     — skip ruff lint
 #   SKIP_FRONTEND_BUILD=1           — skip the frontend rebuild
 #   SKIP_BUNDLE_CHECK=1             — skip the bundle-size budget check
@@ -359,6 +360,48 @@ if [ "$SKIP_REALORDERS_CURRENCY_FILTER_CHECK" != "1" ] && [ -n "$STAGED_PY" ]; t
         echo "   client_debts where currency IS a valid per-row tag):"
         echo "   SKIP_REALORDERS_CURRENCY_FILTER_CHECK=1 git commit ..."
         exit 1
+    fi
+fi
+
+# ── Foundation guard 8: admin inline-JS syntax check ──────────────────────
+# Closes INLINE_SCRIPT_SYNTAX_ERROR_BLANKS_WHOLE_PAGE (Error Log #99).
+# admin/index.html is one ~270KB inline <script>. A single JS syntax error
+# anywhere in it (e.g. two `const` of the same name in one function, each
+# added by a different commit) means the WHOLE block parses to nothing →
+# the entire dashboard is blank, even though the server returns a clean 200
+# and every API works. ruff + pytest are Python-only and never touch this
+# inline JS, so the 2026-06-13 outage shipped invisibly. This guard
+# node --checks the extracted inline JS of any staged admin/*.html.
+# No-op (with a warning) if `node` isn't on PATH so CI/other machines
+# without node aren't blocked.
+if [ "$SKIP_ADMIN_JS_CHECK" != "1" ]; then
+    STAGED_ADMIN_HTML=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^admin/.*\.html$')
+    if [ -n "$STAGED_ADMIN_HTML" ]; then
+        if ! command -v node >/dev/null 2>&1; then
+            echo "⚠️  admin HTML staged but \`node\` not found — skipping inline-JS syntax check (Error Log #99)."
+        else
+            echo "🔎 Checking admin inline JS syntax..."
+            for f in $STAGED_ADMIN_HTML; do
+                [ -f "$f" ] || continue
+                TMPJS=$(mktemp /tmp/admin_inline_XXXXXX.js)
+                "$PY" - "$f" "$TMPJS" <<'PYEOF'
+import re, sys
+html = open(sys.argv[1], encoding='utf-8').read()
+blocks = re.findall(r'<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>', html, re.S)
+open(sys.argv[2], 'w', encoding='utf-8').write('\n;\n'.join(blocks))
+PYEOF
+                if ! node --check "$TMPJS" 2>&1; then
+                    rm -f "$TMPJS"
+                    echo "❌ Syntax error in inline JS of $f — the WHOLE dashboard would render blank (server still 200)."
+                    echo "   Common cause: a duplicate const/let in one function added by a separate commit."
+                    echo "   (Error Log #99 INLINE_SCRIPT_SYNTAX_ERROR_BLANKS_WHOLE_PAGE.)"
+                    echo "   Override (rare): SKIP_ADMIN_JS_CHECK=1 git commit ..."
+                    exit 1
+                fi
+                rm -f "$TMPJS"
+            done
+            echo "✅ Admin inline JS OK"
+        fi
     fi
 fi
 
