@@ -5172,9 +5172,9 @@
                     <div style="font-weight:700;font-size:14px;border-bottom:2px solid #1F4E79;padding-bottom:4px;">${day.weekday_uz} <span style="float:right;font-weight:400;color:#8b8fa3;">${(day.clients || []).length} mijoz</span></div>
                     ${cl}</div>`;
             }).join('');
-            const un = dd.unassigned || [];
-            document.getElementById('wpHLUnassigned').innerHTML = un.length
-                ? `Tumani jadvalga kirmagan (${un.length}): ` + un.slice(0, 12).map(c => `${c.name} (${c.tuman || '?'})`).join(' · ')
+            const unassigned = dd.unassigned || [];
+            document.getElementById('wpHLUnassigned').innerHTML = unassigned.length
+                ? `Tumani jadvalga kirmagan (${unassigned.length}): ` + unassigned.slice(0, 12).map(c => `${c.name} (${c.tuman || '?'})`).join(' · ')
                 : '';
 
             document.getElementById('wpSummary').textContent =
