@@ -63,6 +63,20 @@ def _enrich_with_supplier(items, supplier_id, supplier_name):
     return items
 
 
+@router.get("/daily-plan")
+def daily_plan(admin_key: str = Query(...)):
+    """Daily order decision: GO/HOLD (delivery backlog vs capacity) + tomorrow's
+    scheduled supplier order + overdue suppliers. Recomputes live on each load,
+    so it reflects the latest stock+realorders upload."""
+    _check_admin(admin_key)
+    from backend.services.supply_daily_plan import compute_daily_plan
+    conn = get_db()
+    try:
+        return compute_daily_plan(conn=conn)
+    finally:
+        conn.close()
+
+
 @router.get("/hot-list")
 def hot_list(admin_key: str = Query(...), limit: int = Query(50, ge=1, le=2000)):
     """Top-N reorder candidates across all mapped suppliers + unmapped bucket.
