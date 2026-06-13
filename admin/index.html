@@ -865,6 +865,7 @@
                 <div class="nav-tab" data-tab="inventory" onclick="switchTab('inventory')">Inventory</div>
                 <div class="nav-tab" data-tab="supply" onclick="switchTab('supply')">Supply</div>
                 <div class="nav-tab" data-tab="dailyplan" onclick="switchTab('dailyplan')">📋 Kunlik reja</div>
+                <div class="nav-tab" data-tab="weeklyplan" onclick="switchTab('weeklyplan')">📅 Haftalik reja</div>
                 <div class="nav-tab" data-tab="health" onclick="switchTab('health')">Platform Health</div>
                 <!-- BEGIN Phase 3: Search Analytics tab -->
                 <div class="nav-tab" data-tab="search" onclick="switchTab('search')">Search</div>
@@ -1804,6 +1805,13 @@
                         <table><thead><tr><th>Kun</th><th style="text-align:right;">Qabul t</th><th style="text-align:right;">Yetkazish t</th><th style="text-align:right;">Jami t</th><th style="text-align:right;">Navbat t</th></tr></thead>
                         <tbody id="dpBacktestBody"></tbody></table>
                     </div></div>
+                </div>
+
+                <!-- Weekly Plan Tab — 7-day fixed-supplier schedule + current orders -->
+                <div id="weeklyplan-tab" class="tab-content hidden">
+                    <div class="section-title">📅 Haftalik reja <span id="wpSummary" style="font-size:12px;color:#8b8fa3;font-weight:400;"></span></div>
+                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 12px;">Belgilangan haftalik jadval (Plan_Sklad_Savdo) + har bir yetkazib beruvchining hozirgi buyurtmasi. Maqsad: kuniga ~22t (1 mashina). ЭЛЕРОН haftada 3 marta — buyurtmasi kunlarga taqsimlangan. Miqdorlar hozirgi holatga koʻra (har kuni yangilanadi). <span style="color:#dc2626;">⚠</span> = kun ~22t dan oshgan.</div>
+                    <div id="wpGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;"></div>
                 </div>
 
                 <!-- Platform Health Tab -->
@@ -5081,6 +5089,31 @@
             }
         }
 
+        async function loadWeeklyPlan() {
+            let d;
+            try { d = await apiCall('supply/weekly-plan'); }
+            catch (e) { document.getElementById('wpGrid').innerHTML = '<div style="color:#dc2626;">Yuklab boʻlmadi.</div>'; return; }
+            document.getElementById('wpSummary').textContent =
+                `· hafta jami ~$${_fmtNum(d.week_total_value_usd)} · ~${d.week_total_tonnes}t · maqsad ${d.target_tonnes_per_day}t/kun`;
+            document.getElementById('wpGrid').innerHTML = (d.days || []).map(day => {
+                const over = day.overload;
+                const hdr = `${day.weekday_uz} <span style="float:right;font-weight:400;color:${over ? '#dc2626' : '#16a34a'};">${day.day_tonnes}t${over ? ' ⚠' : ''}</span>`;
+                const sup = (day.suppliers || []).map(s => {
+                    const tops = (s.top_items || []).map(n => n.length > 20 ? n.slice(0, 20) + '…' : n).join(' · ');
+                    const multi = s.n_days > 1 ? ` <span style="font-size:10px;color:#8b8fa3;">(×${s.n_days} kun)</span>` : '';
+                    return `<div style="border-top:1px solid #eee;padding:6px 0;">
+                        <div style="font-weight:600;font-size:13px;">${s.supplier_name}${multi}
+                          <button onclick="window.open('/api/admin/supply/order-xlsx?supplier_id=${s.supplier_id}&admin_key='+encodeURIComponent(ADMIN_KEY),'_blank')" style="float:right;font-size:10px;padding:1px 7px;border:1px solid #1F4E79;background:#1F4E79;color:#fff;border-radius:4px;cursor:pointer;">⬇</button></div>
+                        <div style="font-size:11px;color:#374151;">${s.n_items} mahsulot · ~$${_fmtNum(s.per_day_value)} · ~${s.per_day_tonnes}t</div>
+                        <div style="font-size:10px;color:#8b8fa3;">${tops}</div>
+                    </div>`;
+                }).join('') || '<div style="font-size:11px;color:#8b8fa3;padding:6px 0;">Bu kuni buyurtma yoʻq.</div>';
+                return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;${over ? 'background:rgba(220,38,38,0.05);' : ''}">
+                    <div style="font-weight:700;font-size:14px;border-bottom:2px solid #1F4E79;padding-bottom:4px;">${hdr}</div>
+                    ${sup}</div>`;
+            }).join('');
+        }
+
         async function loadSupplyData() {
             // Fire all six endpoints in parallel
             const [hotList, scoreboard, lost, deliveries, unmapped, seasonal] = await Promise.all([
@@ -6274,6 +6307,7 @@
             if (tabName === 'collections' && !collectionsMap) initCollectionsTab();
             if (tabName === 'collections') initPlanRouteIfNeeded();
             if (tabName === 'dailyplan') loadDailyPlan();
+            if (tabName === 'weeklyplan') loadWeeklyPlan();
         };
 
         // ─── Plan delivery route (Session M Phase 3) ───────────

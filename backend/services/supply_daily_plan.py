@@ -227,6 +227,75 @@ def load_backtest(conn, days: int = 56) -> dict:
     }
 
 
+def compute_weekly_plan(conn=None) -> dict:
+    """7-day (Mon–Sat) forward view of the fixed supplier schedule with each
+    scheduled supplier's CURRENT order (items/$/tonnes). v1 = current need (not
+    forward-projected). Multi-day anchors (ЭЛЕРОН Wed/Thu/Fri) are computed once
+    and their order spread across their delivery days so per-day tonnage is
+    realistic and the week total isn't multiplied. Target ~22 t/day (one truck)."""
+    own = conn is None
+    if own:
+        conn = get_db()
+    try:
+        today = _dt.date.today()
+        sales_map = reorder.recent_sales_map(
+            conn, (today - _dt.timedelta(days=reorder.DEFAULT_WINDOW_DAYS)).isoformat())
+        fxrow = conn.execute(
+            """SELECT rate FROM daily_fx_rates WHERE currency_pair='USD_UZS'
+                AND rate > 0 ORDER BY rate_date DESC LIMIT 1""").fetchone()
+        fx = float(fxrow["rate"]) if fxrow else None
+
+        resolved_by_wd, sched_days = {}, {}
+        for wd in range(6):                       # Mon..Sat
+            sups = _resolve_suppliers(conn, SUPPLY_SCHEDULE.get(wd, []))
+            resolved_by_wd[wd] = sups
+            for s in sups:
+                sched_days.setdefault(s["id"], {"name": s["name_1c"], "days": 0})
+                sched_days[s["id"]]["days"] += 1
+
+        orders = {}
+        for sid, info in sched_days.items():
+            o = _supplier_order(conn, sid, sales_map, fx)
+            o["supplier_id"] = sid
+            o["supplier_name"] = info["name"]
+            o["n_days"] = info["days"]
+            o["top_items"] = [it["name"] for it in sorted(
+                o["items"], key=lambda x: -(x.get("daily_throughput_usd") or 0))[:3]]
+            o.pop("items")
+            orders[sid] = o
+
+        days, week_value, week_tonnes, counted = [], 0.0, 0.0, set()
+        for wd in range(6):
+            day_sups, day_t, day_v = [], 0.0, 0.0
+            for s in resolved_by_wd[wd]:
+                o = orders[s["id"]]
+                nd = max(1, o["n_days"])
+                per_t = round(o["est_tonnes"] / nd, 1)
+                per_v = round(o["total_value_usd"] / nd)
+                day_sups.append({**o, "per_day_tonnes": per_t, "per_day_value": per_v})
+                day_t += per_t
+                day_v += per_v
+                if s["id"] not in counted:
+                    week_value += o["total_value_usd"]
+                    week_tonnes += o["est_tonnes"]
+                    counted.add(s["id"])
+            days.append({
+                "weekday": wd, "weekday_uz": _WD_UZ[wd],
+                "suppliers": day_sups,
+                "day_tonnes": round(day_t, 1), "day_value": round(day_v),
+                "overload": day_t > 22,
+            })
+        return {
+            "target_tonnes_per_day": 22,
+            "days": days,
+            "week_total_value_usd": round(week_value),
+            "week_total_tonnes": round(week_tonnes, 1),
+        }
+    finally:
+        if own:
+            conn.close()
+
+
 def compute_daily_plan(conn=None, today: Optional[_dt.date] = None) -> dict:
     own = conn is None
     if own:

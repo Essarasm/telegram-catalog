@@ -121,6 +121,19 @@ def order_xlsx(admin_key: str = Query(...), supplier_id: int = Query(...)):
         conn.close()
 
 
+@router.get("/weekly-plan")
+def weekly_plan(admin_key: str = Query(...)):
+    """7-day (Mon–Sat) forward view of the fixed supplier schedule + each
+    scheduled supplier's current order, tonnage-leveled to ~22t/day."""
+    _check_admin(admin_key)
+    from backend.services.supply_daily_plan import compute_weekly_plan
+    conn = get_db()
+    try:
+        return compute_weekly_plan(conn=conn)
+    finally:
+        conn.close()
+
+
 @router.get("/backtest")
 def supply_backtest(admin_key: str = Query(...), days: int = Query(56, ge=7, le=180)):
     """Per-day supply-in vs delivery-out load over the window (reconstructable
