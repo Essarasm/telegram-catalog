@@ -277,6 +277,105 @@ def _unshipped_summary(conn) -> dict:
     return {"total_orders": q["total_orders"], "total_tonnes": q["total_t"], "zones": zones}
 
 
+# Delivery-day schedule (Mon=0 … Sat=5) → district keyword(s), from the load-
+# balancing session's Heavy-Client Call List (steer whales to their district's
+# day to even the peaks). Latin keyword match on allowed_clients.tuman/viloyat.
+DELIVERY_SCHEDULE = {
+    0: ["payariq", "chelak"],        # Dushanba — Челак/Паярик
+    1: ["urgut"],                    # Seshanba — Ургут
+    2: ["oqdaryo", "jomboy"],        # Chorshanba — Окдарье/Жамбай
+    3: ["pastdarg"],                 # Payshanba — Пастдаргом/Жума
+    4: ["kattaqo", "nurobod"],       # Juma — Каттакурган/Нурабад
+    5: ["bulung", "samarqand sh"],   # Shanba — Булунгур/город
+}
+
+
+def _assigned_delivery_day(tuman, viloyat) -> Optional[int]:
+    blob = f"{tuman or ''} {viloyat or ''}".lower()
+    for wd, keys in DELIVERY_SCHEDULE.items():
+        if any(k in blob for k in keys):
+            return wd
+    return None
+
+
+def _delivery_distribution(conn) -> dict:
+    """Heavy/Large clients mapped to their district's delivery day — the live,
+    data-driven Heavy-Client Call List. Reuses client_portfolio's 12-mo USD-eq
+    bucketing; flags clients ordering OFF their assigned day (the scatter to
+    steer). Steering is human; this shows WHO to call onto WHICH day."""
+    from backend.services.client_portfolio import FX_FALLBACK, _bucket
+    from backend.services.pseudo_clients import (
+        sql_exclusion_clause, sql_exclusion_params)
+
+    fx_rows = conn.execute(
+        "SELECT rate FROM daily_fx_rates WHERE currency_pair='USD_UZS' AND rate>0").fetchall()
+    avg_fx = (sum(float(r["rate"]) for r in fx_rows) / len(fx_rows)) if fx_rows else FX_FALLBACK
+    level_start = (_dt.date.today() - _dt.timedelta(days=365)).isoformat()
+    excl = sql_exclusion_clause("client_name_1c")
+    excl_params = sql_exclusion_params()
+
+    rows = conn.execute(
+        f"""SELECT ro.client_id AS cid, MAX(ac.client_id_1c) AS name,
+                   MAX(ac.tuman) AS tuman, MAX(ac.viloyat) AS viloyat,
+                   SUM(ro.total_sum) AS uzs, SUM(ro.total_sum_currency) AS usd
+              FROM real_orders ro JOIN allowed_clients ac ON ac.id = ro.client_id
+             WHERE ro.doc_date >= ? AND COALESCE(ro.is_approved, 1) = 1
+               AND ro.client_id IS NOT NULL AND {excl}
+             GROUP BY ro.client_id""",
+        (level_start, *excl_params),
+    ).fetchall()
+
+    clients = {}
+    for r in rows:
+        monthly = (float(r["uzs"] or 0) / avg_fx + float(r["usd"] or 0)) / 12.0
+        tier = _bucket(monthly)
+        if tier not in ("Heavy", "Large"):
+            continue
+        clients[r["cid"]] = {
+            "name": r["name"], "tuman": r["tuman"], "tier": tier,
+            "monthly_usd": round(monthly),
+            "assigned_day": _assigned_delivery_day(r["tuman"], r["viloyat"]),
+            "weekdays": set(),
+        }
+
+    if clients:
+        ph = ",".join(["?"] * len(clients))
+        for r in conn.execute(
+            f"""SELECT client_id AS cid, strftime('%w', doc_date) AS w
+                  FROM real_orders WHERE client_id IN ({ph})
+                   AND COALESCE(is_approved, 1) = 1 AND doc_date >= date('now', '-56 days')""",
+                tuple(clients)):
+            clients[r["cid"]]["weekdays"].add((int(r["w"]) - 1) % 7)  # %w Sun=0 → Mon=0
+
+    days = []
+    for wd in range(6):
+        cl = []
+        for c in clients.values():
+            if c["assigned_day"] != wd:
+                continue
+            wds = c["weekdays"]
+            cl.append({
+                "name": c["name"], "tier": c["tier"], "tuman": c["tuman"],
+                "monthly_usd": c["monthly_usd"],
+                "scattered": bool(wds and (len(wds) > 1 or wd not in wds)),
+                "order_weekdays": sorted(wds),
+            })
+        cl.sort(key=lambda x: -x["monthly_usd"])
+        days.append({"weekday": wd, "weekday_uz": _WD_UZ[wd], "clients": cl})
+
+    unassigned = sorted(
+        ({"name": c["name"], "tier": c["tier"], "tuman": c["tuman"], "monthly_usd": c["monthly_usd"]}
+         for c in clients.values() if c["assigned_day"] is None),
+        key=lambda x: -x["monthly_usd"])
+    return {
+        "heavy_threshold": 4120, "large_threshold": 1721,
+        "total_heavy": sum(1 for c in clients.values() if c["tier"] == "Heavy"),
+        "total_large": sum(1 for c in clients.values() if c["tier"] == "Large"),
+        "days": days,
+        "unassigned": unassigned,
+    }
+
+
 def compute_weekly_plan(conn=None) -> dict:
     """7-day (Mon–Sat) forward view of the fixed supplier schedule with each
     scheduled supplier's CURRENT order (items/$/tonnes). v1 = current need (not
@@ -341,6 +440,7 @@ def compute_weekly_plan(conn=None) -> dict:
             "week_total_value_usd": round(week_value),
             "week_total_tonnes": round(week_tonnes, 1),
             "unshipped": _unshipped_summary(conn),
+            "delivery_distribution": _delivery_distribution(conn),
         }
     finally:
         if own:

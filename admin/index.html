@@ -1818,6 +1818,12 @@
                         <table><thead><tr><th>Zona</th><th style="text-align:right;">Buyurtma</th><th style="text-align:right;">Tonna</th><th>Mashina</th><th style="text-align:right;" title="Joylashuvsiz (pin yoʻq)">Pinsiz</th></tr></thead>
                         <tbody id="wpUnshippedBody"></tbody></table></div></div>
 
+                    <!-- SALES side: Heavy/Large clients by delivery day (call list) -->
+                    <div class="section-title" style="margin-top:18px;font-size:15px;">💎 Yirik mijozlar — yetkazish kuni boʻyicha <span id="wpHLSummary" style="font-size:12px;color:#8b8fa3;font-weight:400;"></span></div>
+                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 8px;">Heavy/Large mijozlar tumani boʻyicha yetkazish kuniga. <span style="color:#dc2626;">⚠ qoʻngʻiroq</span> = boshqa kunlarda buyurtma bermoqda — oʻz kuniga yoʻnaltiring (cho'qqilarni tekislash). 12 oylik USD-ekv: Heavy ≥$4120/oy · Large ≥$1721/oy. (Jadval kunlari belgilangan; yoʻnaltirish — qoʻngʻiroq orqali.)</div>
+                    <div id="wpHLGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;"></div>
+                    <div id="wpHLUnassigned" style="font-size:11px;color:#8b8fa3;margin-top:8px;"></div>
+
                     <!-- SUPPLY side: weekly order schedule -->
                     <div class="section-title" style="margin-top:18px;font-size:15px;">📦 Taʼminot — haftalik buyurtma jadvali <span id="wpSummary" style="font-size:12px;color:#8b8fa3;font-weight:400;"></span></div>
                     <div style="font-size:11px;color:#8b8fa3;padding:0 0 12px;">Belgilangan haftalik jadval (Plan_Sklad_Savdo) + har bir yetkazib beruvchining hozirgi buyurtmasi. Maqsad: kuniga ~22t (1 mashina). ЭЛЕРОН haftada 3 marta — buyurtmasi kunlarga taqsimlangan. <span style="color:#dc2626;">⚠</span> = kun ~22t dan oshgan.</div>
@@ -5151,6 +5157,25 @@
                  <td style="text-align:right;font-weight:600;">${z.tonnes}</td><td>${z.truck}</td>
                  <td style="text-align:right;color:${z.no_pin ? '#dc2626' : '#8b8fa3'};" title="joylashuvsiz">${z.no_pin || '-'}</td></tr>`
             ).join('') || '<tr><td colspan="5" style="text-align:center;color:#8b8fa3;">Joʻnatilmagan buyurtma yoʻq.</td></tr>';
+
+            // Heavy/Large clients by delivery day (data-driven call list)
+            const dd = d.delivery_distribution || { days: [], unassigned: [], total_heavy: 0, total_large: 0 };
+            document.getElementById('wpHLSummary').textContent = `· ${dd.total_heavy} Heavy + ${dd.total_large} Large`;
+            document.getElementById('wpHLGrid').innerHTML = (dd.days || []).map(day => {
+                const cl = (day.clients || []).map(c => {
+                    const badge = c.tier === 'Heavy' ? '🔴' : '🟠';
+                    const flag = c.scattered ? ' <span style="color:#dc2626;font-weight:600;" title="boshqa kunlarda buyurtma bermoqda">⚠ qoʻngʻiroq</span>' : '';
+                    const nm = (c.name || '?').length > 26 ? c.name.slice(0, 26) + '…' : (c.name || '?');
+                    return `<div style="border-top:1px solid #eee;padding:4px 0;font-size:12px;">${badge} <b>${nm}</b> <span style="color:#16a34a;">$${_fmtNum(c.monthly_usd)}/oy</span>${flag}</div>`;
+                }).join('') || '<div style="font-size:11px;color:#8b8fa3;padding:4px 0;">—</div>';
+                return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px;">
+                    <div style="font-weight:700;font-size:14px;border-bottom:2px solid #1F4E79;padding-bottom:4px;">${day.weekday_uz} <span style="float:right;font-weight:400;color:#8b8fa3;">${(day.clients || []).length} mijoz</span></div>
+                    ${cl}</div>`;
+            }).join('');
+            const un = dd.unassigned || [];
+            document.getElementById('wpHLUnassigned').innerHTML = un.length
+                ? `Tumani jadvalga kirmagan (${un.length}): ` + un.slice(0, 12).map(c => `${c.name} (${c.tuman || '?'})`).join(' · ')
+                : '';
 
             document.getElementById('wpSummary').textContent =
                 `· hafta jami ~$${_fmtNum(d.week_total_value_usd)} · ~${d.week_total_tonnes}t · maqsad ${d.target_tonnes_per_day}t/kun`;
