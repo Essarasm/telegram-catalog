@@ -5047,7 +5047,7 @@
             } else {
                 const dim = (!go) ? 'opacity:0.6;' : '';
                 h += `<div class="table-container"><div class="table-wrapper" style="max-height:420px;${dim}"><table><thead><tr>
-                    <th>#</th><th>Yetkazib beruvchi</th><th>Holat</th><th style="text-align:right;">⚡ $/kun</th><th style="text-align:right;">Mahsulot</th><th style="text-align:right;">Dona</th><th style="text-align:right;">Qiymat $</th><th style="text-align:right;">~t</th><th></th></tr></thead><tbody>`;
+                    <th>#</th><th>Yetkazib beruvchi</th><th>Holat</th><th style="text-align:right;" title="Tugagan mahsulotlardagi kunlik pul aylanmasi — ustuvorlik shu boʻyicha">⚡ Tugagan $/kun</th><th style="text-align:right;">Mahsulot</th><th style="text-align:right;">Dona</th><th style="text-align:right;">Qiymat $</th><th style="text-align:right;">~t</th><th></th></tr></thead><tbody>`;
                 po.forEach((o, i) => {
                     const over = o.est_tonnes > 22;
                     const star = o.scheduled_tomorrow ? ' ⭐' : '';
@@ -5056,7 +5056,7 @@
                         <td class="table-number">${i + 1}</td>
                         <td><b>${o.supplier_name}</b>${star}<div style="font-size:10px;color:#8b8fa3;">${tops}</div></td>
                         <td style="font-size:11px;white-space:nowrap;">${_statusBadges(o.status_counts)}</td>
-                        <td style="text-align:right;color:#0ea5e9;font-weight:700;">$${_fmtNum(o.total_throughput_usd)}</td>
+                        <td style="text-align:right;color:#0ea5e9;font-weight:700;" title="Jami pul aylanmasi $${_fmtNum(o.total_throughput_usd)}/kun">$${_fmtNum(o.urgent_throughput_usd)}<div style="font-size:9px;color:#8b8fa3;font-weight:400;">jami $${_fmtNum(o.total_throughput_usd)}</div></td>
                         <td style="text-align:right;">${o.n_items}</td>
                         <td style="text-align:right;">${_fmtNum(o.total_buy_units)}</td>
                         <td style="text-align:right;color:#16a34a;">$${_fmtNum(o.total_value_usd)}</td>

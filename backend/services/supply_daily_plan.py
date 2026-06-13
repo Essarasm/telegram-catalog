@@ -109,6 +109,12 @@ def _supplier_order(conn, supplier_id, sales_map, fx_rate):
         status_counts[it["status"]] = status_counts.get(it["status"], 0) + 1
     urgency_tier = min(
         (reorder.STATUS_ORDER.get(it["status"], 99) for it in items), default=99)
+    # Urgency DEPTH × velocity: $/day of the items that are actually OUT of stock
+    # (stockout + chronic). Ranking by this floats a supplier with many high-
+    # velocity stockouts above one with higher TOTAL velocity but few stockouts.
+    urgent_throughput = round(sum(
+        it.get("daily_throughput_usd", 0) for it in items
+        if it["status"] in ("stockout", "chronic_stockout")), 1)
     top_items = [
         {"name": it["name"], "throughput_usd": it.get("daily_throughput_usd", 0),
          "suggested_buy": it["suggested_buy"], "status": it["status"]}
@@ -121,6 +127,7 @@ def _supplier_order(conn, supplier_id, sales_map, fx_rate):
         "est_tonnes": round(est_t, 1),
         "total_throughput_usd": round(
             sum(it.get("daily_throughput_usd", 0) for it in items), 1),
+        "urgent_throughput_usd": urgent_throughput,
         "status_counts": status_counts,
         "urgency_tier": urgency_tier,
         "top_items": top_items,
@@ -295,8 +302,8 @@ def compute_weekly_plan(conn=None) -> dict:
                     week_value += o["total_value_usd"]
                     week_tonnes += o["est_tonnes"]
                     counted.add(s["id"])
-            # urgency tier first, then money-velocity (when a day has >1 supplier)
-            day_sups.sort(key=lambda x: (x["urgency_tier"], -x["total_throughput_usd"]))
+            # urgency depth ($/day out-of-stock) first, then total velocity
+            day_sups.sort(key=lambda x: (-x["urgent_throughput_usd"], -x["total_throughput_usd"]))
             days.append({
                 "weekday": wd, "weekday_uz": _WD_UZ[wd],
                 "suppliers": day_sups,
@@ -356,8 +363,10 @@ def compute_daily_plan(conn=None, today: Optional[_dt.date] = None) -> dict:
             o["supplier_name"] = s["name_1c"]
             o["scheduled_tomorrow"] = s["id"] in scheduled_ids
             priority_orders.append(o)
-        # Urgency tier FIRST (most critically out), then money-velocity within.
-        priority_orders.sort(key=lambda o: (o["urgency_tier"], -o["total_throughput_usd"]))
+        # Urgency DEPTH first — $/day stuck in out-of-stock items — then total
+        # velocity as tiebreak. Surfaces "most money sitting in empty shelves".
+        priority_orders.sort(
+            key=lambda o: (-o["urgent_throughput_usd"], -o["total_throughput_usd"]))
 
         overdue = _overdue_suppliers(conn, today)
 
