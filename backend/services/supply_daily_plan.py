@@ -140,6 +140,93 @@ def _overdue_suppliers(conn, today, limit=8):
     return res[:limit]
 
 
+def snapshot_backlog(conn, today: Optional[_dt.date] = None) -> dict:
+    """Record today's delivery backlog (forward-capture). real_orders overwrites
+    its V/X flag each upload, so without this ledger the day-by-day backlog is
+    lost. Idempotent per date — call at the end of each realorders import."""
+    if today is None:
+        today = _dt.date.today()
+    backlog = round(_backlog_tonnes(conn), 1)
+    n_orders = int(conn.execute(
+        "SELECT COUNT(*) FROM real_orders WHERE COALESCE(is_approved, 1) = 0"
+    ).fetchone()[0] or 0)
+    med = _median_daily_delivery_tonnes(conn)
+    threshold = round(HOLD_MULTIPLIER * med, 1)
+    decision = "HOLD" if (threshold > 0 and backlog > threshold) else "GO"
+    conn.execute(
+        """INSERT OR REPLACE INTO supply_backlog_daily
+             (snapshot_date, backlog_tonnes, backlog_orders, hold_threshold_tonnes,
+              decision, captured_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+        (today.isoformat(), backlog, n_orders, threshold, decision),
+    )
+    conn.commit()
+    return {"date": today.isoformat(), "backlog_tonnes": backlog,
+            "orders": n_orders, "decision": decision}
+
+
+def load_backtest(conn, days: int = 56) -> dict:
+    """Per-day supply-in vs delivery-out tonnage over the window — reconstructable
+    from the dated rows we keep (supply_orders, real_orders). Joins the captured
+    backlog snapshots where they exist (they accrue going forward). Flags the
+    overload (slammed-both-directions) and zero-supply days."""
+    win = f"-{int(days)} days"
+    deliv = {r["d"]: float(r["t"] or 0) / 1000.0 for r in conn.execute(
+        """SELECT ro.doc_date AS d, SUM(CAST(COALESCE(roi.total_weight, 0) AS REAL)) AS t
+             FROM real_order_items roi JOIN real_orders ro ON ro.id = roi.real_order_id
+            WHERE COALESCE(ro.is_approved, 1) = 1 AND ro.doc_date >= date('now', ?)
+            GROUP BY ro.doc_date""", (win,))}
+    sup = {}
+    for r in conn.execute(
+        """SELECT so.doc_date AS d,
+                  SUM(CASE WHEN lower(COALESCE(soi.unit, '')) IN ('кг', 'kg')
+                           THEN CAST(COALESCE(soi.quantity, 0) AS REAL)
+                           ELSE CAST(COALESCE(soi.quantity, 0) AS REAL) * COALESCE(p.weight, 0)
+                      END) AS kg
+             FROM supply_orders so
+             JOIN supply_order_items soi ON soi.supply_order_id = so.id
+             LEFT JOIN products p ON p.id = soi.matched_product_id
+            WHERE so.doc_type = 'supply' AND so.doc_date >= date('now', ?)
+            GROUP BY so.doc_date""", (win,)):
+        sup[r["d"]] = float(r["kg"] or 0) / 1000.0
+    snaps = {r["snapshot_date"]: r for r in conn.execute(
+        "SELECT * FROM supply_backlog_daily WHERE snapshot_date >= date('now', ?)", (win,))}
+
+    med = _median_daily_delivery_tonnes(conn)
+    overload_ceiling = round(3 * med, 1)   # combined in+out beyond ~3 days of flow = slammed
+    today = _dt.date.today()
+    rows, overload_days, zero_supply_days = [], 0, 0
+    for i in range(days, -1, -1):
+        d = today - _dt.timedelta(days=i)
+        if d.weekday() == 6:               # skip Sundays
+            continue
+        ds = d.isoformat()
+        si = round(sup.get(ds, 0.0), 1)
+        do = round(deliv.get(ds, 0.0), 1)
+        total = round(si + do, 1)
+        is_overload = total > overload_ceiling
+        if is_overload:
+            overload_days += 1
+        if si == 0:
+            zero_supply_days += 1
+        snap = snaps.get(ds)
+        rows.append({
+            "date": ds, "weekday": d.weekday(),
+            "supply_in_t": si, "delivery_out_t": do, "total_t": total,
+            "overload": is_overload,
+            "backlog_t": snap["backlog_tonnes"] if snap else None,
+            "decision": snap["decision"] if snap else None,
+        })
+    return {
+        "days": days,
+        "median_delivery_tonnes": round(med, 1),
+        "overload_ceiling_tonnes": overload_ceiling,
+        "overload_days": overload_days,
+        "zero_supply_days": zero_supply_days,
+        "rows": rows,
+    }
+
+
 def compute_daily_plan(conn=None, today: Optional[_dt.date] = None) -> dict:
     own = conn is None
     if own:

@@ -1002,6 +1002,15 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
 
     conn.commit()
 
+    # Forward-capture: record today's delivery backlog before the next upload
+    # overwrites the V/X flags (real_orders is current-state). Fire-and-forget —
+    # never let the snapshot break the import.
+    try:
+        from backend.services.supply_daily_plan import snapshot_backlog
+        snapshot_backlog(conn)
+    except Exception as _snap_e:
+        logger.warning("backlog snapshot failed (non-fatal): %s", _snap_e)
+
     db_total_docs = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
     db_total_items = conn.execute("SELECT COUNT(*) FROM real_order_items").fetchone()[0]
     conn.close()

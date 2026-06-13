@@ -121,6 +121,20 @@ def order_xlsx(admin_key: str = Query(...), supplier_id: int = Query(...)):
         conn.close()
 
 
+@router.get("/backtest")
+def supply_backtest(admin_key: str = Query(...), days: int = Query(56, ge=7, le=180)):
+    """Per-day supply-in vs delivery-out load over the window (reconstructable
+    from the dated rows we keep) + captured backlog where it exists. Validates
+    the load-balancing logic retroactively."""
+    _check_admin(admin_key)
+    from backend.services.supply_daily_plan import load_backtest
+    conn = get_db()
+    try:
+        return load_backtest(conn, days=days)
+    finally:
+        conn.close()
+
+
 @router.get("/daily-plan")
 def daily_plan(admin_key: str = Query(...)):
     """Daily order decision: GO/HOLD (delivery backlog vs capacity) + tomorrow's

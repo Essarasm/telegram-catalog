@@ -601,6 +601,21 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_fx_events_date_set_at
             ON daily_fx_rate_events(rate_date, set_at DESC);
 
+        -- Forward-capture of the daily delivery backlog (unshipped X orders),
+        -- written each realorders import. real_orders is a current-state table
+        -- (V/X flag is overwritten every upload), so the day-by-day backlog
+        -- would otherwise be lost. This ledger lets the supply daily-plan build
+        -- a TRUE backlog-based GO/HOLD history going forward (the past can't be
+        -- reconstructed — only the daily files held the as-of marks).
+        CREATE TABLE IF NOT EXISTS supply_backlog_daily (
+            snapshot_date TEXT PRIMARY KEY,
+            backlog_tonnes REAL,
+            backlog_orders INTEGER,
+            hold_threshold_tonnes REAL,
+            decision TEXT,
+            captured_at TEXT DEFAULT (datetime('now'))
+        );
+
         -- Audit of every agent → client switch (bot /testclient + mini app).
         -- Used to render the "Recent clients" list on the agent home screen.
         CREATE TABLE IF NOT EXISTS agent_client_switches (
