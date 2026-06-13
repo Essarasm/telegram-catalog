@@ -1809,8 +1809,18 @@
 
                 <!-- Weekly Plan Tab — 7-day fixed-supplier schedule + current orders -->
                 <div id="weeklyplan-tab" class="tab-content hidden">
-                    <div class="section-title">📅 Haftalik reja <span id="wpSummary" style="font-size:12px;color:#8b8fa3;font-weight:400;"></span></div>
-                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 12px;">Belgilangan haftalik jadval (Plan_Sklad_Savdo) + har bir yetkazib beruvchining hozirgi buyurtmasi. Maqsad: kuniga ~22t (1 mashina). ЭЛЕРОН haftada 3 marta — buyurtmasi kunlarga taqsimlangan. Miqdorlar hozirgi holatga koʻra (har kuni yangilanadi). <span style="color:#dc2626;">⚠</span> = kun ~22t dan oshgan.</div>
+                    <div class="section-title">📅 Haftalik reja</div>
+
+                    <!-- SALES / delivery side: orders not yet shipped -->
+                    <div class="section-title" style="margin-top:6px;font-size:15px;">🚚 Joʻnatilmagan buyurtmalar <span id="wpUnshippedSummary" style="font-size:13px;color:#dc2626;font-weight:700;"></span></div>
+                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 6px;">Hozir joʻnatilmagan (X) buyurtmalar — zona boʻyicha. Keyingi 2–3 kunni rejalashtirish uchun (har kuni yangilanadi).</div>
+                    <div class="table-container"><div class="table-wrapper" style="max-height:300px;">
+                        <table><thead><tr><th>Zona</th><th style="text-align:right;">Buyurtma</th><th style="text-align:right;">Tonna</th><th>Mashina</th><th style="text-align:right;" title="Joylashuvsiz (pin yoʻq)">Pinsiz</th></tr></thead>
+                        <tbody id="wpUnshippedBody"></tbody></table></div></div>
+
+                    <!-- SUPPLY side: weekly order schedule -->
+                    <div class="section-title" style="margin-top:18px;font-size:15px;">📦 Taʼminot — haftalik buyurtma jadvali <span id="wpSummary" style="font-size:12px;color:#8b8fa3;font-weight:400;"></span></div>
+                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 12px;">Belgilangan haftalik jadval (Plan_Sklad_Savdo) + har bir yetkazib beruvchining hozirgi buyurtmasi. Maqsad: kuniga ~22t (1 mashina). ЭЛЕРОН haftada 3 marta — buyurtmasi kunlarga taqsimlangan. <span style="color:#dc2626;">⚠</span> = kun ~22t dan oshgan.</div>
                     <div id="wpGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;"></div>
                 </div>
 
@@ -5131,6 +5141,17 @@
             let d;
             try { d = await apiCall('supply/weekly-plan'); }
             catch (e) { document.getElementById('wpGrid').innerHTML = '<div style="color:#dc2626;">Yuklab boʻlmadi.</div>'; return; }
+
+            // Sales/delivery side — orders not yet shipped (by zone)
+            const un = d.unshipped || { zones: [], total_orders: 0, total_tonnes: 0 };
+            document.getElementById('wpUnshippedSummary').textContent =
+                `${un.total_orders} buyurtma · ${un.total_tonnes}t`;
+            document.getElementById('wpUnshippedBody').innerHTML = (un.zones || []).map(z =>
+                `<tr><td>${z.zone}</td><td style="text-align:right;">${z.orders}</td>
+                 <td style="text-align:right;font-weight:600;">${z.tonnes}</td><td>${z.truck}</td>
+                 <td style="text-align:right;color:${z.no_pin ? '#dc2626' : '#8b8fa3'};" title="joylashuvsiz">${z.no_pin || '-'}</td></tr>`
+            ).join('') || '<tr><td colspan="5" style="text-align:center;color:#8b8fa3;">Joʻnatilmagan buyurtma yoʻq.</td></tr>';
+
             document.getElementById('wpSummary').textContent =
                 `· hafta jami ~$${_fmtNum(d.week_total_value_usd)} · ~${d.week_total_tonnes}t · maqsad ${d.target_tonnes_per_day}t/kun`;
             document.getElementById('wpGrid').innerHTML = (d.days || []).map(day => {

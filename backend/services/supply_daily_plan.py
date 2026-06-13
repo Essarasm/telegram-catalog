@@ -252,6 +252,31 @@ def load_backtest(conn, days: int = 56) -> dict:
     }
 
 
+def _unshipped_summary(conn) -> dict:
+    """The 'orders not yet shipped' (delivery backlog) by zone — JSON-safe
+    reshape of x_queue.compute_x_queue (which returns un-serialisable sets).
+    The sales/delivery side of the weekly plan: what's pending to deliver, so
+    the owner can sequence the next few days. Now accurate post Error Log #97."""
+    from backend.services.x_queue import _suggest_truck, compute_x_queue
+    q = compute_x_queue(conn)
+    zones = []
+    if q["city"]["orders"]:
+        c = q["city"]
+        zones.append({"zone": "Samarqand shahar", "tonnes": round(c["tonnes"], 1),
+                      "orders": c["orders"], "no_pin": c["no_pin"],
+                      "truck": _suggest_truck(c["tonnes"])})
+    for z, v in q["districts"].items():
+        zones.append({"zone": z, "tonnes": round(v["tonnes"], 1),
+                      "orders": v["orders"], "no_pin": v["no_pin"],
+                      "truck": _suggest_truck(v["tonnes"])})
+    if q["unlocated"]["orders"]:
+        u = q["unlocated"]
+        zones.append({"zone": "(joylashuvsiz)", "tonnes": round(u["tonnes"], 1),
+                      "orders": u["orders"], "no_pin": u["orders"], "truck": "—"})
+    zones.sort(key=lambda x: -x["tonnes"])
+    return {"total_orders": q["total_orders"], "total_tonnes": q["total_t"], "zones": zones}
+
+
 def compute_weekly_plan(conn=None) -> dict:
     """7-day (Mon–Sat) forward view of the fixed supplier schedule with each
     scheduled supplier's CURRENT order (items/$/tonnes). v1 = current need (not
@@ -315,6 +340,7 @@ def compute_weekly_plan(conn=None) -> dict:
             "days": days,
             "week_total_value_usd": round(week_value),
             "week_total_tonnes": round(week_tonnes, 1),
+            "unshipped": _unshipped_summary(conn),
         }
     finally:
         if own:
