@@ -1,13 +1,67 @@
 """Tests for stock alert active product detection and classification."""
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
 from backend.services.stock_alerts import (
     get_stock_alerts,
     format_stock_alert_message,
     format_daily_inventory_message,
 )
 
+_TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
+
+
+# These fixtures used to pin hardcoded April-2026 dates. The service filters to
+# "active" products via a rolling 30-day `stock_last_positive_at` window and to
+# "this week" via `datetime('now')`, so pinned constants silently rot the moment
+# the real clock moves past them (they went red ~early May 2026). Compute the
+# fixture dates relative to today instead so the suite stays deterministic.
+
+def _recent_positive_date() -> str:
+    """A `stock_last_positive_at` value inside the active-product window."""
+    return (datetime.now(_TASHKENT_TZ) - timedelta(days=2)).strftime("%Y-%m-%d")
+
+
+def _this_week_start_utc() -> str:
+    """This week's Monday 00:00 Tashkent as a UTC string — the weekly cutoff."""
+    now_tk = datetime.now(_TASHKENT_TZ)
+    monday = (now_tk - timedelta(days=now_tk.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return monday.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _this_week_day_utc(weekday: int, hour: int = 11) -> str:
+    """UTC `YYYY-MM-DD HH:MM:SS` for the given weekday (0=Mon) of the current
+    Tashkent week — for `stockout_at` fixtures on/after this week's Monday."""
+    now_tk = datetime.now(_TASHKENT_TZ)
+    monday = (now_tk - timedelta(days=now_tk.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    day_tk = monday + timedelta(days=weekday, hours=hour)
+    return day_tk.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _last_week_day_utc(weekday: int, hour: int = 12) -> str:
+    """Same as `_this_week_day_utc` but for the prior week (before the cutoff)."""
+    return _this_week_day_utc(weekday - 7, hour)
+
+
+def _this_week_date(weekday: int = 0) -> str:
+    """`YYYY-MM-DD` Tashkent for the given weekday of the current week."""
+    now_tk = datetime.now(_TASHKENT_TZ)
+    monday = now_tk - timedelta(days=now_tk.weekday())
+    return (monday + timedelta(days=weekday)).strftime("%Y-%m-%d")
+
+
+def _last_week_date(weekday: int = 0) -> str:
+    """`YYYY-MM-DD` Tashkent for the given weekday of the prior week."""
+    return _this_week_date(weekday - 7)
+
 
 class TestStockAlerts:
-    def _setup_stock(self, db, product_id, qty, last_positive="2026-04-15"):
+    def _setup_stock(self, db, product_id, qty, last_positive=None):
+        last_positive = last_positive or _recent_positive_date()
         db.execute(
             "UPDATE products SET stock_quantity = ?, stock_status = ?, "
             "stock_last_positive_at = ? WHERE id = ?",
@@ -123,10 +177,12 @@ class TestWeeklyOutOfStock:
     week's Monday 00:00 Tashkent. Tests pin the cutoff explicitly via
     ``week_start_utc`` so they don't depend on the current weekday."""
 
-    # Monday 2026-04-27 00:00 Tashkent = 2026-04-26 19:00 UTC.
-    WEEK_START = "2026-04-26 19:00:00"
+    # This week's Monday 00:00 Tashkent expressed as UTC — computed relative to
+    # today so the fixtures don't rot once the clock moves past a pinned week.
+    WEEK_START = _this_week_start_utc()
 
-    def _setup(self, db, pid, qty, last_positive="2026-04-15", stockout_at=None):
+    def _setup(self, db, pid, qty, last_positive=None, stockout_at=None):
+        last_positive = last_positive or _recent_positive_date()
         db.execute(
             """UPDATE products SET stock_quantity = ?, stock_status = ?,
                                    stock_last_positive_at = ?, stockout_at = ?
@@ -143,8 +199,8 @@ class TestWeeklyOutOfStock:
 
     def test_this_week_stockout_listed(self, seed_products):
         db = seed_products
-        # Mon 06:00 UTC = Mon 11:00 Tashkent — squarely inside the week
-        self._setup(db, 1, 0, stockout_at="2026-04-27 06:00:00")
+        # Monday of the current week — squarely inside the week
+        self._setup(db, 1, 0, stockout_at=_this_week_day_utc(0))
         self._setup(db, 2, 50)
         alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
         weekly = {item["id"] for item in alerts["weekly_out_of_stock"]}
@@ -153,8 +209,8 @@ class TestWeeklyOutOfStock:
 
     def test_last_week_stockout_excluded(self, seed_products):
         db = seed_products
-        # Sat 2026-04-25 — last week
-        self._setup(db, 1, 0, stockout_at="2026-04-25 12:00:00")
+        # Saturday of last week — before this week's cutoff
+        self._setup(db, 1, 0, stockout_at=_last_week_day_utc(5))
         alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
         cumul = {item["id"] for item in alerts["out_of_stock"]}
         weekly = {item["id"] for item in alerts["weekly_out_of_stock"]}
@@ -186,10 +242,10 @@ class TestWeeklyOutOfStock:
 
     def test_daily_message_groups_by_day(self, seed_products):
         db = seed_products
-        # Mon 06:00 UTC → Mon 11:00 Tashkent (Dushanba)
-        self._setup(db, 1, 0, stockout_at="2026-04-27 06:00:00")
-        # Tue 06:00 UTC → Tue 11:00 Tashkent (Seshanba)
-        self._setup(db, 2, 0, stockout_at="2026-04-28 06:00:00")
+        # Monday of the current week (Dushanba)
+        self._setup(db, 1, 0, stockout_at=_this_week_day_utc(0))
+        # Tuesday of the current week (Seshanba)
+        self._setup(db, 2, 0, stockout_at=_this_week_day_utc(1))
         alerts = get_stock_alerts(db, week_start_utc=self.WEEK_START)
         msgs = format_daily_inventory_message(alerts)
         combined = "\n".join(msgs)
@@ -204,8 +260,8 @@ class TestWeeklyOutOfStock:
 class TestWeeklyTopSellers:
     """Top 5 products by units sold since this week's Monday (Tashkent)."""
 
-    WEEK_START_UTC = "2026-04-26 19:00:00"
-    WEEK_START_TK_DATE = "2026-04-27"
+    WEEK_START_UTC = _this_week_start_utc()
+    WEEK_START_TK_DATE = _this_week_date(0)
 
     def _add_order(self, db, order_id, doc_date, item_specs):
         """item_specs: list of (product_id, quantity)."""
@@ -226,14 +282,15 @@ class TestWeeklyTopSellers:
         # is non-empty (otherwise get_stock_alerts short-circuits).
         db.execute(
             "UPDATE products SET stock_quantity = 50, stock_status = 'in_stock', "
-            "stock_last_positive_at = '2026-04-27' WHERE id <= 5",
+            "stock_last_positive_at = ? WHERE id <= 5",
+            (_recent_positive_date(),),
         )
         db.commit()
 
     def test_top5_orders_by_units_desc(self, seed_products):
         db = seed_products
-        self._add_order(db, 1, "2026-04-27", [(1, 10), (2, 5), (3, 3)])
-        self._add_order(db, 2, "2026-04-28", [(1, 15), (4, 8), (5, 2)])
+        self._add_order(db, 1, _this_week_date(0), [(1, 10), (2, 5), (3, 3)])
+        self._add_order(db, 2, _this_week_date(1), [(1, 15), (4, 8), (5, 2)])
         alerts = get_stock_alerts(
             db,
             week_start_utc=self.WEEK_START_UTC,
@@ -249,9 +306,9 @@ class TestWeeklyTopSellers:
     def test_top5_excludes_pre_week_orders(self, seed_products):
         db = seed_products
         # Last week — should NOT count
-        self._add_order(db, 1, "2026-04-20", [(1, 100)])
+        self._add_order(db, 1, _last_week_date(0), [(1, 100)])
         # This week
-        self._add_order(db, 2, "2026-04-27", [(2, 5)])
+        self._add_order(db, 2, _this_week_date(0), [(2, 5)])
         alerts = get_stock_alerts(
             db,
             week_start_utc=self.WEEK_START_UTC,
@@ -264,7 +321,7 @@ class TestWeeklyTopSellers:
     def test_top5_caps_at_five(self, seed_products):
         db = seed_products
         # 5 products × different quantities — fixture only has 5, so naturally capped
-        self._add_order(db, 1, "2026-04-27", [
+        self._add_order(db, 1, _this_week_date(0), [
             (1, 10), (2, 9), (3, 8), (4, 7), (5, 6),
         ])
         alerts = get_stock_alerts(
@@ -276,8 +333,8 @@ class TestWeeklyTopSellers:
 
     def test_top5_groups_same_product_across_orders(self, seed_products):
         db = seed_products
-        self._add_order(db, 1, "2026-04-27", [(1, 7)])
-        self._add_order(db, 2, "2026-04-28", [(1, 13)])
+        self._add_order(db, 1, _this_week_date(0), [(1, 7)])
+        self._add_order(db, 2, _this_week_date(1), [(1, 13)])
         alerts = get_stock_alerts(
             db,
             week_start_utc=self.WEEK_START_UTC,
@@ -290,7 +347,7 @@ class TestWeeklyTopSellers:
 
     def test_message_includes_top5_section(self, seed_products):
         db = seed_products
-        self._add_order(db, 1, "2026-04-27", [(1, 25), (2, 12)])
+        self._add_order(db, 1, _this_week_date(0), [(1, 25), (2, 12)])
         alerts = get_stock_alerts(
             db,
             week_start_utc=self.WEEK_START_UTC,
@@ -307,7 +364,7 @@ class TestWeeklyTopSellers:
         """Tuesday morning case: nothing ran out yet, but sales happened —
         message should still go out (top-10 section alone is enough)."""
         db = seed_products
-        self._add_order(db, 1, "2026-04-27", [(1, 5)])
+        self._add_order(db, 1, _this_week_date(0), [(1, 5)])
         alerts = get_stock_alerts(
             db,
             week_start_utc=self.WEEK_START_UTC,
