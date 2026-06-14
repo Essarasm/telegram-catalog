@@ -97,12 +97,22 @@ GPS_CONFLICT_DISTANCE_KM = 0.030
 # Tables with composite UNIQUE indexes (client_id, <other>). Naïve UPDATE of
 # client_id collides with canonical's existing rows on the same <other> key.
 # Pre-merge: delete non-canonical's rows that would collide, plus dedupe
-# between sibling non-canonical rows. Both tables are recomputed nightly
-# from financial activity that's about to be merged, so deletion is safe —
-# next cron recompute fills the canonical row from the unified history.
+# between sibling non-canonical rows.
+#   - client_scores / client_points_monthly: recomputed nightly from financial
+#     activity that's about to be merged, so deletion is safe — next cron
+#     recompute fills the canonical row from the unified history.
+#   - client_phones UNIQUE(client_id, phone_normalized): added by Identity
+#     Anchoring Phase 1 (2026-06-03/04) AFTER the last merge run, so it was
+#     missing here and every shared-phone cluster failed to merge with
+#     "UNIQUE constraint failed: client_phones.client_id, phone_normalized"
+#     (the shared phone is the very signature the audit flags duplicates by).
+#     Deleting a colliding non-canonical phone is lossless — the same number
+#     already exists on canonical; genuinely-new numbers survive the dedupe
+#     and get remapped to canonical in 4b.
 COMPOSITE_UNIQUE_TABLES = [
     ("client_scores", "client_id", "recalc_date"),
     ("client_points_monthly", "client_id", "month"),
+    ("client_phones", "client_id", "phone_normalized"),
 ]
 
 
