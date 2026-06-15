@@ -11,12 +11,12 @@ import sqlite3
 from backend.services.consistency_audit import run_audit
 
 
-def _add(conn, cid, name, phone="", r02="", r03="", status="active"):
+def _add(conn, cid, name, phone="", r02="", r03="", status="active", card=None):
     conn.execute(
         "INSERT INTO allowed_clients "
-        "(id, client_id_1c, phone_normalized, raqam_02, raqam_03, status) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (cid, name, phone, r02, r03, status),
+        "(id, client_id_1c, phone_normalized, raqam_02, raqam_03, status, onec_card_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (cid, name, phone, r02, r03, status, card),
     )
 
 
@@ -101,14 +101,25 @@ def _cb_audit(conn):
 
 
 def test_callback_on_shared_name_is_commingled(db):
-    # Same name on two distinct shops (different phones) + a comment on that
-    # name → the comment can't tell which shop → flagged commingled.
-    _add(db, 1, "УМУМИЙ ШОП", phone="111")
-    _add(db, 2, "УМУМИЙ ШОП", phone="222")
+    # Same name on two genuinely-distinct 1C shops (two distinct cards) + a
+    # comment on that name → the comment can't tell which shop → commingled.
+    _add(db, 1, "УМУМИЙ ШОП", phone="111", card="Прочие:1")
+    _add(db, 2, "УМУМИЙ ШОП", phone="222", card="Прочие:2")
     _add_cb(db, "УМУМИЙ ШОП")
     res = _cb_audit(db)
     assert res is not None and res["count"] >= 1
     assert any(s["kind"] == "commingled" for s in res["sample"])
+
+
+def test_callback_on_sibling_rows_not_commingled(db):
+    # Intended multi-user-per-client "sibling model": ONE carded shop plus a
+    # linked-user row sharing client_id_1c with no card (different phone, e.g.
+    # Улугбек Ургут + STROY MARKET). Distinct cards == 1 → one logical client →
+    # the comment is correctly attributed, NOT commingled.
+    _add(db, 1, "Улугбек Ургут", phone="979115654", card="Прочие:304")
+    _add(db, 2, "Улугбек Ургут", phone="979195654", card=None)  # linked user, no card
+    _add_cb(db, "Улугбек Ургут")
+    assert _cb_audit(db) is None
 
 
 def test_callback_orphaned_when_no_active_client(db):

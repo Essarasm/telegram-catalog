@@ -458,11 +458,23 @@ def run_audit(fix: bool = False) -> dict:
         # mutable 1C name label), never by a stable client_id / allowed_clients.id.
         # That makes it a latent member of the identity family (Error Log #75:
         # client_id_1c is a name, not a key). Two failure shapes surface here:
-        #   - commingled: one name shared by ≥2 distinct active shops (different
-        #     phones) that both have comments → their histories merge silently.
+        #   - commingled: one name shared by ≥2 genuinely-distinct 1C shops that
+        #     both have comments → their histories merge silently.
         #   - orphaned: a comment's name matches no active client (rename / #74
         #     drift) → the comment is lost, or worse, attaches to whoever inherits
         #     the old name next.
+        # IMPORTANT — "distinct shops" is counted by distinct `onec_card_id`
+        # (the 1C card anchor, Error Log #82), NOT by distinct phone. The earlier
+        # phone-count version false-flagged the *intended* multi-user-per-client
+        # model (Session F "sibling model"): one shop legitimately has several
+        # allowed_clients rows (one per linked Telegram user / extra phone) sharing
+        # client_id_1c, e.g. Улугбек Ургут (carded `Прочие:304`) + its linked user
+        # row "STROY MARKET" (no card, 0 orders). Those are ONE client, so a
+        # comment on the name is correctly attributed — not commingled. Counting
+        # distinct cards collapses sibling rows (card + card-less linked users → 1
+        # card) while still catching two genuinely-distinct carded shops (2 cards).
+        # Blind spot: two distinct shops that BOTH lack a card can't be told apart
+        # by anchor and won't flag until carded — acceptable (1708/1776 are carded).
         # Detection-only tripwire; the durable fix is to add a client_id FK to
         # client_callbacks + remap it in the merge tool. Table may be absent on a
         # not-yet-migrated DB, so guard the query.
@@ -471,11 +483,12 @@ def run_audit(fix: bool = False) -> dict:
                 """SELECT 'commingled' AS kind, cc.client_name_1c AS name,
                           COUNT(*) AS callbacks
                      FROM client_callbacks cc
-                    WHERE (SELECT COUNT(DISTINCT ac.phone_normalized)
+                    WHERE (SELECT COUNT(DISTINCT ac.onec_card_id)
                              FROM allowed_clients ac
                             WHERE ac.client_id_1c = cc.client_name_1c
                               AND COALESCE(ac.status,'active') NOT LIKE 'merged%'
-                              AND ac.phone_normalized != '') > 1
+                              AND ac.onec_card_id IS NOT NULL
+                              AND ac.onec_card_id != '') > 1
                     GROUP BY cc.client_name_1c
                    UNION ALL
                    SELECT 'orphaned' AS kind, cc.client_name_1c AS name,
