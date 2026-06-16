@@ -279,6 +279,23 @@ def debtors_list(admin_key: str = Query(...)):
                   FROM client_payments
                  GROUP BY client_name_1c
             ),
+            last_deal AS (
+                -- Last actual shipment from the real_orders ledger (the
+                -- /realorders upload). This is the authoritative, fresher
+                -- "last deal" source: client_debts.last_transaction_date is a
+                -- lagging mirror of the same documents, frozen at whatever the
+                -- most-recent /debtors snapshot saw. When /realorders is more
+                -- current than /debtors (the common case), a deal can sit in
+                -- real_orders for days before it shows on the debtors row.
+                -- See Error Log #78 / daily_incremental_blind_to_backdated.
+                -- Join by client_id (robust vs Cyrillic-case name joins);
+                -- COALESCE(is_approved,1)=1 keeps shipped + legacy rows.
+                SELECT client_id, MAX(doc_date) AS last_deal_date
+                  FROM real_orders
+                 WHERE client_id IS NOT NULL
+                   AND COALESCE(is_approved, 1) = 1
+                 GROUP BY client_id
+            ),
             last_pay AS (
                 SELECT cp.client_name_1c,
                        cp.doc_date,
@@ -334,6 +351,7 @@ def debtors_list(admin_key: str = Query(...)):
                    lp.doc_date AS last_payment_date,
                    lp.last_pay_uzs AS last_payment_uzs,
                    lp.last_pay_usd AS last_payment_usd,
+                   ld.last_deal_date AS last_deal_date,
                    lcb.callback_date, lcb.set_by_name AS callback_set_by,
                    lcb.set_at AS callback_set_at, lcb.note AS callback_note,
                    cbs.cb_date_count AS cb_date_count,
@@ -349,6 +367,7 @@ def debtors_list(admin_key: str = Query(...)):
                    ls.monthly_volume_usd AS monthly_volume_usd
               FROM client_debts cd
               LEFT JOIN last_pay lp ON lp.client_name_1c = cd.client_name_1c
+              LEFT JOIN last_deal ld ON ld.client_id = cd.client_id
               LEFT JOIN last_cb lcb ON lcb.client_name_1c = cd.client_name_1c
               LEFT JOIN cb_stats cbs ON cbs.client_name_1c = cd.client_name_1c
               LEFT JOIN latest_score ls ON ls.client_id = cd.client_id
@@ -441,15 +460,26 @@ def debtors_list(admin_key: str = Query(...)):
         agent_name = " ".join(p for p in (manual_first, manual_last) if p) or None
         monthly_volume_usd = r["monthly_volume_usd"]
         size_bucket = _proposal_b_bucket(monthly_volume_usd)
+        # "Last deal" = freshest of the debtors-snapshot last-transaction date
+        # and the real_orders shipment ledger. real_orders is uploaded daily
+        # and is the authoritative deal record; client_debts.last_transaction_date
+        # lags whenever /debtors trails /realorders. max() over ISO YYYY-MM-DD
+        # strings is chronological. Never regresses below the old value.
+        last_deal_date = max(
+            (d for d in (r["last_transaction_date"], r["last_deal_date"]) if d),
+            default=None,
+        )
         items.append({
             "client_name": r["client_name_1c"],
             "client_id": r["client_id"],
             "debt_uzs": round(debt_uzs, 2),
             "debt_usd": round(debt_usd, 2),
             "debt_usd_eq": round(usd_eq, 2),
-            "last_transaction_date": r["last_transaction_date"],
+            "last_transaction_date": last_deal_date,
             "last_transaction_no": r["last_transaction_no"],
-            "days_since_last_tx": _days_since(r["last_transaction_date"]),
+            "days_since_last_tx": _days_since(last_deal_date),
+            "last_debt_tx_date": r["last_transaction_date"],
+            "last_deal_date": r["last_deal_date"],
             "last_payment_date": r["last_payment_date"],
             "days_since_last_payment": _days_since(r["last_payment_date"]),
             "last_payment_uzs": round(float(r["last_payment_uzs"] or 0), 2),
