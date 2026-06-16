@@ -29,6 +29,11 @@ def setup_db(monkeypatch):
         # time, so setenv alone is import-order-dependent in the full suite.
         import backend.admin_auth as auth_mod
         monkeypatch.setattr(auth_mod, "_CURRENT", "test-admin-key")
+        # apply_debtors_import() fires payment notifications on a background
+        # thread that touches the DB; under the full suite it can outlive the
+        # tmpdir and error during teardown. Neutralize it for these tests.
+        import backend.services.payment_notifications as pn
+        monkeypatch.setattr(pn, "fire_pending_for_today_async", lambda *a, **k: None)
         db_mod.init_db()
         yield db_path
 
@@ -126,3 +131,60 @@ def test_legacy_null_approved_realorder_counts(setup_db, monkeypatch):
     _real_order(setup_db, "300", 8, "Legacy Null", "2026-06-15", is_approved=None)
     it = _get_items(monkeypatch)["Legacy Null"]
     assert it["last_transaction_date"] == "2026-06-15"
+
+
+# --- Staleness guard: an older /debtors report must not overwrite a newer one
+# (Error Log #102: 06-13 export applied 7s after 06-15 reverted the table). ---
+
+def _fake_parse(report_date):
+    """A minimal parse_debtors_xls() result with one client."""
+    return {
+        "ok": True,
+        "report_date": report_date,
+        "title": f"test {report_date}",
+        "clients": [{
+            "client_name_1c": "X", "debt_uzs": 0, "debt_usd": 100,
+            "last_transaction_date": report_date, "last_transaction_no": "1",
+            "aging_0_30": 0, "aging_31_60": 0, "aging_61_90": 0,
+            "aging_91_120": 0, "aging_120_plus": 0,
+        }],
+    }
+
+
+def _apply(monkeypatch, report_date, force=False):
+    import backend.services.import_debts as imp
+    monkeypatch.setattr(imp, "parse_debtors_xls", lambda _b: _fake_parse(report_date))
+    return imp.apply_debtors_import(b"ignored", force=force)
+
+
+def _loaded_report_date(db_path):
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute("SELECT MAX(report_date) FROM client_debts").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_older_report_is_blocked(setup_db, monkeypatch):
+    assert _apply(monkeypatch, "2026-06-15")["ok"] is True
+    res = _apply(monkeypatch, "2026-06-13")  # older — must refuse
+    assert res.get("stale_blocked") is True
+    assert res["current_report_date"] == "2026-06-15"
+    assert _loaded_report_date(setup_db) == "2026-06-15"  # table untouched
+
+
+def test_newer_report_proceeds(setup_db, monkeypatch):
+    assert _apply(monkeypatch, "2026-06-15")["ok"] is True
+    assert _apply(monkeypatch, "2026-06-16")["ok"] is True
+    assert _loaded_report_date(setup_db) == "2026-06-16"
+
+
+def test_same_date_refresh_allowed(setup_db, monkeypatch):
+    assert _apply(monkeypatch, "2026-06-15")["ok"] is True
+    assert _apply(monkeypatch, "2026-06-15")["ok"] is True  # idempotent
+
+
+def test_force_overrides_staleness(setup_db, monkeypatch):
+    assert _apply(monkeypatch, "2026-06-15")["ok"] is True
+    assert _apply(monkeypatch, "2026-06-13", force=True)["ok"] is True
+    assert _loaded_report_date(setup_db) == "2026-06-13"  # deliberate rollback

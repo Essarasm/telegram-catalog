@@ -969,6 +969,25 @@ async def cmd_debtors(message: types.Message):
             )
             result = resp.json()
 
+        if result.get("stale_blocked"):
+            inc_rd = result.get("incoming_report_date", "?")
+            cur_rd = result.get("current_report_date", "?")
+            lines = [
+                "⚠️ <b>Дебиторка yuklanmadi — eski sana</b>",
+                "",
+                f"Yuborilgan hisobot sanasi (<b>{html_escape(inc_rd)}</b>) "
+                f"hozir yuklangan hisobotdan (<b>{html_escape(cur_rd)}</b>) eski.",
+                "Eski hisobot yangisini almashtirib yuborardi (qarz summalari "
+                "va oxirgi savdo sanalari orqaga ketardi).",
+                "",
+                f"Eng yangi faylni (<b>{html_escape(cur_rd)}</b> yoki keyinroq) "
+                "yuboring. Agar ataylab eski hisobotni yuklamoqchi bo'lsangiz, "
+                "caption'ga <code>force</code> qo'shing:",
+                "<code>/debtors force</code>",
+            ]
+            await status_msg.edit_text("\n".join(lines), parse_mode="HTML")
+            return
+
         if result.get("regression_blocked"):
             prev = result.get("previous", {})
             inc = result.get("incoming", {})

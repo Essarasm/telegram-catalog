@@ -200,6 +200,13 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
            FROM client_debts"""
     ).fetchone()
 
+    # Currently-loaded report date. client_debts is truncate-replace, so the
+    # whole table carries one report_date; MAX is a safe read.
+    prev_report_row = conn.execute(
+        "SELECT MAX(report_date) AS rd FROM client_debts"
+    ).fetchone()
+    prev_report_date = prev_report_row["rd"] if prev_report_row else None
+
     # Per-client snapshot of pre-import state, keyed by client_name_1c so we
     # can compute today's debt delta after the truncate-replace. Aggregated
     # because client_debts has no UNIQUE(client_name_1c) — repeat rows per
@@ -218,6 +225,21 @@ def apply_debtors_import(file_bytes: bytes, force: bool = False) -> dict:
         )
 
     if not force:
+        # Staleness guard: refuse an OLDER report overwriting a newer one.
+        # client_debts is truncate-replace, so whichever file is applied last
+        # wins regardless of which report is fresher. On 2026-06-16 a 06-13
+        # export was uploaded 7s after a 06-15 export and silently reverted the
+        # whole table (stale debt amounts + last-deal dates). report_date is
+        # ISO YYYY-MM-DD → lexicographic compare is chronological. Equal date
+        # is allowed (idempotent same-day refresh). Error Log #102.
+        if prev_report_date and report_date < prev_report_date:
+            conn.close()
+            return {
+                "ok": False,
+                "stale_blocked": True,
+                "incoming_report_date": report_date,
+                "current_report_date": prev_report_date,
+            }
         regression_reasons = _check_debtors_regression(
             prev, incoming_total_uzs, incoming_total_usd, len(clients)
         )
