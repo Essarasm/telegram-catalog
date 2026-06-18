@@ -52,6 +52,7 @@ def compute_x_queue(conn) -> dict:
     unlocated = {"tonnes": 0.0, "orders": 0, "clients": set()}
     total_t = 0.0
     total_orders = 0
+    orders: list[dict] = []  # one entry per X doc — flat per-order list for /navbat
 
     for row in rows:
         # NB: get_db()'s _DictRow iterates KEYS, not values — positional unpack
@@ -70,6 +71,7 @@ def compute_x_queue(conn) -> dict:
         pinned = str(has_pin) in ("1", "1.0")
         total_t += t
         total_orders += 1
+        orders.append({"name": name, "tonnes": t})
         zone = (tuman or gdist or viloyat or "").strip()
         if not zone:
             unlocated["tonnes"] += t
@@ -97,6 +99,7 @@ def compute_x_queue(conn) -> dict:
         "city": city,
         "districts": districts,
         "unlocated": unlocated,
+        "orders": sorted(orders, key=lambda o: -o["tonnes"]),  # heaviest first
     }
 
 
@@ -110,38 +113,14 @@ def format_x_queue(conn=None) -> str:
         if q["total_orders"] == 0:
             return "📦 <b>Bugungi navbat</b>\n\nHali joʻnatilmagan buyurtma yoʻq (X belgisi)."
 
-        n_zones = len(q["districts"]) + (1 if q["city"]["orders"] else 0)
         lines = [
-            f"📦 <b>Bugungi navbat</b> — {q['total_t']}t / {q['total_orders']} buyurtma / "
-            f"{n_zones} zona (X belgisi)",
+            f"📦 <b>Bugungi navbat</b> — {q['total_t']}t / {q['total_orders']} buyurtma "
+            f"(X belgisi)",
+            "",
         ]
-
-        c = q["city"]
-        if c["orders"]:
-            tag = f"  ⚠ {c['no_pin']} joylashuvsiz" if c["no_pin"] else ""
-            lines += [
-                "",
-                "🏙 <b>Shahar</b> (Shuxrat):",
-                f"   • Samarqand {round(c['tonnes'], 1)}t → {_suggest_truck(c['tonnes'])} "
-                f"({len(c['clients'])} mijoz){tag}",
-            ]
-
-        if q["districts"]:
-            lines += ["", "🗺 <b>Tumanlar</b> (Alisher/Ibrat):"]
-            for zone, z in sorted(q["districts"].items(), key=lambda kv: -kv[1]["tonnes"]):
-                tag = f"  ⚠ {z['no_pin']} joylashuvsiz" if z["no_pin"] else ""
-                lines.append(
-                    f"   • {zone} {round(z['tonnes'], 1)}t → {_suggest_truck(z['tonnes'])} "
-                    f"({len(z['clients'])} mijoz){tag}"
-                )
-
-        u = q["unlocated"]
-        if u["orders"]:
-            lines += [
-                "",
-                f"❓ <b>Joylashuvsiz</b>: {round(u['tonnes'], 1)}t / {len(u['clients'])} mijoz "
-                f"— pin kerak (/lokatsiya)",
-            ]
+        for o in q["orders"]:
+            name = o["name"] or "(nomsiz)"
+            lines.append(f"   • {name} — {round(o['tonnes'], 1)}t")
         return "\n".join(lines)
     finally:
         if own:
