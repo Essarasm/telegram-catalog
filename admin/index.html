@@ -1799,10 +1799,19 @@
                     <div class="section-title" style="margin-top:18px;">🗓 Haftalik jadval</div>
                     <div id="dpSchedule" style="font-size:13px;color:#444;padding:4px 0;"></div>
 
-                    <div class="section-title" style="margin-top:18px;">📈 Yuk tarixi (backtest) <span id="dpBtSummary" style="font-size:12px;color:#8b8fa3;font-weight:400;"></span></div>
-                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 6px;">Kunlik <b>qabul</b> (supply-in) vs <b>yetkazish</b> (delivery-out), tonna — saqlangan maʼlumotdan qayta tiklangan. <span style="color:#dc2626;">🔴</span> = ikki tomon ham ogʻir yuklangan kun. <b>Navbat</b> (backlog) ustuni bugundan boshlab toʻplanadi (tarixiy holat saqlanmagan).</div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;gap:12px;flex-wrap:wrap;">
+                        <div class="section-title" style="margin-bottom:0;">📈 Yuk tarixi (backtest) <span id="dpBtSummary" style="font-size:12px;color:#8b8fa3;font-weight:400;"></span></div>
+                        <div class="currency-toggle" id="btRangeToggle">
+                            <button class="currency-btn active" data-days="14" onclick="setBtRange(14)">14 days</button>
+                            <button class="currency-btn" data-days="30" onclick="setBtRange(30)">30 days</button>
+                        </div>
+                    </div>
+                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 6px;">Kunlik <b>qabul</b> (supply-in) · <b>yetkazish</b> (delivery-out) · <b>sotilmagan (X)</b> — tonna, saqlangan maʼlumotdan qayta tiklangan. <span style="color:#dc2626;">🔴</span> = ikki tomon ham ogʻir yuklangan kun. <b>Navbat</b> (backlog) ustuni bugundan boshlab toʻplanadi.</div>
+                    <div class="chart-container" style="margin:4px 0 12px;">
+                        <div class="chart-wrapper" style="height:300px;"><canvas id="dpBtChart"></canvas></div>
+                    </div>
                     <div class="table-container"><div class="table-wrapper" style="max-height:380px;">
-                        <table><thead><tr><th>Kun</th><th style="text-align:right;">Qabul t</th><th style="text-align:right;">Yetkazish t</th><th style="text-align:right;">Jami t</th><th style="text-align:right;">Navbat t</th></tr></thead>
+                        <table><thead><tr><th>Kun</th><th style="text-align:right;">Qabul t</th><th style="text-align:right;">Yetkazish t</th><th style="text-align:right;">Jami t</th><th style="text-align:right;">Sotilm. X t</th><th style="text-align:right;">Navbat t</th></tr></thead>
                         <tbody id="dpBacktestBody"></tbody></table>
                     </div></div>
                 </div>
@@ -5122,25 +5131,71 @@
             document.getElementById('dpSchedule').innerHTML = Object.entries(d.schedule || {})
                 .map(([k, v]) => `<span style="display:inline-block;margin:0 14px 4px 0;"><b>${_WD_UZ_SHORT[k] || k}:</b> ${(v && v.length) ? v.join(', ') : '—'}</span>`).join('');
 
-            // Backtest / load history panel
+            await loadBacktest();
+        }
+
+        let btDaysRange = 14;
+        async function loadBacktest() {
             let bt = null;
-            try { bt = await apiCall('supply/backtest?days=56'); } catch (e) { bt = null; }
-            if (bt) {
-                document.getElementById('dpBtSummary').textContent =
-                    `· ${bt.overload_days} ogʻir kun · ${bt.zero_supply_days} boʻsh-qabul kun · ogʻirlik chegarasi ~${bt.overload_ceiling_tonnes}t`;
-                const rows = (bt.rows || []).slice().reverse();
-                document.getElementById('dpBacktestBody').innerHTML = rows.map(r => {
-                    const lbl = `${r.date} ${_WD_UZ_SHORT[r.weekday] || ''}`;
-                    const bg = r.overload ? 'background:rgba(220,38,38,0.08);' : '';
-                    const flag = r.overload ? ' 🔴' : '';
-                    const bl = (r.backlog_t !== null && r.backlog_t !== undefined) ? r.backlog_t : '—';
-                    return `<tr style="${bg}"><td>${lbl}${flag}</td>
-                        <td style="text-align:right;">${r.supply_in_t || '—'}</td>
-                        <td style="text-align:right;">${r.delivery_out_t || '—'}</td>
-                        <td style="text-align:right;font-weight:600;">${r.total_t}</td>
-                        <td style="text-align:right;color:#8b8fa3;">${bl}</td></tr>`;
-                }).join('');
-            }
+            try { bt = await apiCall('supply/backtest?days=' + btDaysRange); } catch (e) { bt = null; }
+            if (!bt) return;
+            document.getElementById('dpBtSummary').textContent =
+                `· ${bt.overload_days} ogʻir kun · ${bt.zero_supply_days} boʻsh-qabul kun · ogʻirlik chegarasi ~${bt.overload_ceiling_tonnes}t`;
+            const rows = (bt.rows || []).slice().reverse();
+            document.getElementById('dpBacktestBody').innerHTML = rows.map(r => {
+                const lbl = `${r.date} ${_WD_UZ_SHORT[r.weekday] || ''}`;
+                const bg = r.overload ? 'background:rgba(220,38,38,0.08);' : '';
+                const flag = r.overload ? ' 🔴' : '';
+                const bl = (r.backlog_t !== null && r.backlog_t !== undefined) ? r.backlog_t : '—';
+                return `<tr style="${bg}"><td>${lbl}${flag}</td>
+                    <td style="text-align:right;">${r.supply_in_t || '—'}</td>
+                    <td style="text-align:right;">${r.delivery_out_t || '—'}</td>
+                    <td style="text-align:right;font-weight:600;">${r.total_t}</td>
+                    <td style="text-align:right;color:#ef4444;">${r.unshipped_x_t || '—'}</td>
+                    <td style="text-align:right;color:#8b8fa3;">${bl}</td></tr>`;
+            }).join('');
+            drawBtChart(bt.rows || []);
+        }
+        function setBtRange(days) {
+            if (days !== 14 && days !== 30) return;
+            if (btDaysRange === days) return;
+            btDaysRange = days;
+            document.querySelectorAll('#btRangeToggle .currency-btn').forEach(btn => {
+                btn.classList.toggle('active', Number(btn.dataset.days) === days);
+            });
+            loadBacktest();
+        }
+
+        // Grouped tonnage bars per active day: supply-in · delivery-out · not-delivered(X).
+        // Chart.js to match the Business-Overview "Daily Recap" look; all three series
+        // are tonnes → one shared y-axis.
+        function drawBtChart(rows) {
+            const el = document.getElementById('dpBtChart');
+            if (!el) return;
+            const ctx = el.getContext('2d');
+            if (charts.btChart) charts.btChart.destroy();
+            const days = (rows || []).filter(r => (r.supply_in_t > 0 || r.delivery_out_t > 0 || r.unshipped_x_t > 0));
+            if (!days.length) return;
+            const labels = days.map(r => `${r.date.slice(5)} ${_WD_UZ_SHORT[r.weekday] || ''}`);
+            charts.btChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'Qabul (supply)', data: days.map(r => r.supply_in_t || 0), backgroundColor: '#f59e0b', borderRadius: 4 },
+                        { label: 'Yetkazish (delivery)', data: days.map(r => r.delivery_out_t || 0), backgroundColor: '#3b82f6', borderRadius: 4 },
+                        { label: 'Sotilmagan / X', data: days.map(r => r.unshipped_x_t || 0), backgroundColor: '#ef4444', borderRadius: 4 },
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#8b8fa3' } } },
+                    scales: {
+                        y: { grid: { color: '#2a2d3a' }, ticks: { color: '#8b8fa3', callback: v => v + 't' } },
+                        x: { grid: { display: false }, ticks: { color: '#8b8fa3' } }
+                    }
+                }
+            });
         }
 
         async function loadWeeklyPlan() {

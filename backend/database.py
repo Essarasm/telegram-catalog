@@ -616,6 +616,20 @@ def init_db():
             captured_at TEXT DEFAULT (datetime('now'))
         );
 
+        -- Per-day NOT-DELIVERED (X) recorded-sales tonnage + USD-eq revenue.
+        -- The 1C realorders re-import overwrites the V/X flag, so prod can't
+        -- reconstruct the undelivered backlog — it only survives in the dated
+        -- "real orders with X" exports. Backfilled from those files; the load
+        -- backtest reads it for the 3rd ("sotilmagan / X") bar.
+        CREATE TABLE IF NOT EXISTS unshipped_daily (
+            doc_date TEXT PRIMARY KEY,
+            tonnes REAL NOT NULL DEFAULT 0,
+            revenue_usd REAL NOT NULL DEFAULT 0,
+            doc_count INTEGER NOT NULL DEFAULT 0,
+            source TEXT DEFAULT 'daily_x_export',
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+
         -- Audit of every agent → client switch (bot /testclient + mini app).
         -- Used to render the "Recent clients" list on the agent home screen.
         CREATE TABLE IF NOT EXISTS agent_client_switches (

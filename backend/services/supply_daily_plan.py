@@ -190,6 +190,47 @@ def snapshot_backlog(conn, today: Optional[_dt.date] = None) -> dict:
             "orders": n_orders, "decision": decision}
 
 
+def capture_unshipped_daily(conn) -> int:
+    """Persist per-day NOT-DELIVERED (X) recorded-sales tonnage + USD-eq revenue.
+    real_orders overwrites the V/X flag on every re-import, so the undelivered
+    backlog has to be captured the moment it's seen. Reads the CURRENT X rows
+    (is_approved=0) grouped by doc_date and upserts into unshipped_daily, keeping
+    the MAX tonnes per day — a later (mostly-delivered) re-upload reports fewer X
+    and must NOT erase the original peak. Returns the number of days touched.
+
+    USD-eq = USD leg + UZS leg / 12000 (canonical realorders_revenue formula).
+    KG → /1000 for tonnes. See `.claude/skills/operational-resource-balancing.md`
+    and the unshipped_daily table in database.py."""
+    _FX = 12000.0
+    # Scope to the recent window only. Without this the query sweeps ALL-TIME
+    # is_approved=0 and rakes in year-old single-doc orphans (X marks never
+    # updated) that aren't an active daily backlog. 90 days comfortably covers
+    # the backtest chart range (14/30) and any daily upload's dates.
+    rows = conn.execute(
+        """SELECT doc_date AS d,
+                  SUM(CAST(COALESCE(total_weight, 0) AS REAL)) / 1000.0 AS t,
+                  SUM(COALESCE(total_sum_currency, 0) + COALESCE(total_sum, 0) / ?) AS rev,
+                  COUNT(*) AS n
+             FROM real_orders
+            WHERE is_approved = 0 AND doc_date IS NOT NULL
+              AND doc_date >= date('now', '-90 days')
+            GROUP BY doc_date HAVING t > 0""", (_FX,)).fetchall()
+    for r in rows:
+        conn.execute(
+            """INSERT INTO unshipped_daily (doc_date, tonnes, revenue_usd, doc_count, source, updated_at)
+               VALUES (?, ?, ?, ?, 'realorders_import', datetime('now'))
+               ON CONFLICT(doc_date) DO UPDATE SET
+                   revenue_usd = CASE WHEN excluded.tonnes > unshipped_daily.tonnes
+                                      THEN excluded.revenue_usd ELSE unshipped_daily.revenue_usd END,
+                   doc_count   = CASE WHEN excluded.tonnes > unshipped_daily.tonnes
+                                      THEN excluded.doc_count ELSE unshipped_daily.doc_count END,
+                   tonnes      = MAX(unshipped_daily.tonnes, excluded.tonnes),
+                   updated_at  = datetime('now')""",
+            (r["d"], round(float(r["t"] or 0), 2), round(float(r["rev"] or 0), 1), int(r["n"] or 0)))
+    conn.commit()
+    return len(rows)
+
+
 def load_backtest(conn, days: int = 56) -> dict:
     """Per-day supply-in vs delivery-out tonnage over the window — reconstructable
     from the dated rows we keep (supply_orders, real_orders). Joins the captured
@@ -216,6 +257,18 @@ def load_backtest(conn, days: int = 56) -> dict:
         sup[r["d"]] = float(r["kg"] or 0) / 1000.0
     snaps = {r["snapshot_date"]: r for r in conn.execute(
         "SELECT * FROM supply_backlog_daily WHERE snapshot_date >= date('now', ?)", (win,))}
+    # Delivered revenue, USD-eq = USD leg + UZS leg / 12000 (canonical realorders_revenue
+    # formula; the `currency` column is always 'USD' on real_orders — a 1C export quirk).
+    _FX = 12000.0
+    rev = {r["d"]: float(r["usd"] or 0) for r in conn.execute(
+        """SELECT doc_date AS d,
+                  SUM(COALESCE(total_sum_currency, 0) + COALESCE(total_sum, 0) / ?) AS usd
+             FROM real_orders
+            WHERE COALESCE(is_approved, 1) = 1 AND doc_date >= date('now', ?)
+            GROUP BY doc_date""", (_FX, win))}
+    # Not-delivered (X) recorded-sales tonnage, backfilled from the dated X exports.
+    unship = {r["doc_date"]: float(r["tonnes"] or 0) for r in conn.execute(
+        "SELECT doc_date, tonnes FROM unshipped_daily WHERE doc_date >= date('now', ?)", (win,))}
 
     med = _median_daily_delivery_tonnes(conn)
     overload_ceiling = round(3 * med, 1)   # combined in+out beyond ~3 days of flow = slammed
@@ -238,6 +291,8 @@ def load_backtest(conn, days: int = 56) -> dict:
         rows.append({
             "date": ds, "weekday": d.weekday(),
             "supply_in_t": si, "delivery_out_t": do, "total_t": total,
+            "revenue_k": round(rev.get(ds, 0.0) / 1000.0, 1),
+            "unshipped_x_t": round(unship.get(ds, 0.0), 1),
             "overload": is_overload,
             "backlog_t": snap["backlog_tonnes"] if snap else None,
             "decision": snap["decision"] if snap else None,

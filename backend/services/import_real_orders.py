@@ -1033,6 +1033,16 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
     except Exception as _snap_e:
         logger.warning("backlog snapshot failed (non-fatal): %s", _snap_e)
 
+    # Forward-capture the per-day NOT-DELIVERED (X) tonnage NOW, while real_orders
+    # still holds this upload's X marks. The next re-import flips X→V and the
+    # backlog would be lost (the whole reason unshipped_daily exists). Keeps the
+    # MAX seen per day so a mostly-delivered re-upload can't erase it.
+    try:
+        from backend.services.supply_daily_plan import capture_unshipped_daily
+        capture_unshipped_daily(conn)
+    except Exception as _x_e:
+        logger.warning("unshipped (X) capture failed (non-fatal): %s", _x_e)
+
     db_total_docs = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
     db_total_items = conn.execute("SELECT COUNT(*) FROM real_order_items").fetchone()[0]
     conn.close()
