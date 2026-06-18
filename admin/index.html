@@ -1822,9 +1822,9 @@
 
                     <!-- SALES / delivery side: orders not yet shipped -->
                     <div class="section-title" style="margin-top:6px;font-size:15px;">🚚 Joʻnatilmagan buyurtmalar <span id="wpUnshippedSummary" style="font-size:13px;color:#dc2626;font-weight:700;"></span></div>
-                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 6px;">Hozir joʻnatilmagan (X) buyurtmalar — zona boʻyicha. Keyingi 2–3 kunni rejalashtirish uchun (har kuni yangilanadi).</div>
+                    <div style="font-size:11px;color:#8b8fa3;padding:0 0 6px;">Hozir joʻnatilmagan (X) buyurtmalar — har bir buyurtma alohida (mijoz + tonna). Keyingi 2–3 kunni rejalashtirish uchun (har kuni yangilanadi).</div>
                     <div class="table-container"><div class="table-wrapper" style="max-height:300px;">
-                        <table><thead><tr><th>Zona</th><th style="text-align:right;">Buyurtma</th><th style="text-align:right;">Tonna</th><th>Mashina</th><th style="text-align:right;" title="Joylashuvsiz (pin yoʻq)">Pinsiz</th></tr></thead>
+                        <table><thead><tr><th>Mijoz</th><th style="text-align:right;">Tonna</th></tr></thead>
                         <tbody id="wpUnshippedBody"></tbody></table></div></div>
 
                     <!-- SALES side: Heavy/Large clients by delivery day (call list) -->
@@ -5204,14 +5204,12 @@
             catch (e) { document.getElementById('wpGrid').innerHTML = '<div style="color:#dc2626;">Yuklab boʻlmadi.</div>'; return; }
 
             // Sales/delivery side — orders not yet shipped (by zone)
-            const un = d.unshipped || { zones: [], total_orders: 0, total_tonnes: 0 };
+            const un = d.unshipped || { orders: [], zones: [], total_orders: 0, total_tonnes: 0 };
             document.getElementById('wpUnshippedSummary').textContent =
                 `${un.total_orders} buyurtma · ${un.total_tonnes}t`;
-            document.getElementById('wpUnshippedBody').innerHTML = (un.zones || []).map(z =>
-                `<tr><td>${z.zone}</td><td style="text-align:right;">${z.orders}</td>
-                 <td style="text-align:right;font-weight:600;">${z.tonnes}</td><td>${z.truck}</td>
-                 <td style="text-align:right;color:${z.no_pin ? '#dc2626' : '#8b8fa3'};" title="joylashuvsiz">${z.no_pin || '-'}</td></tr>`
-            ).join('') || '<tr><td colspan="5" style="text-align:center;color:#8b8fa3;">Joʻnatilmagan buyurtma yoʻq.</td></tr>';
+            document.getElementById('wpUnshippedBody').innerHTML = (un.orders || []).map(o =>
+                `<tr><td>${o.name}</td><td style="text-align:right;font-weight:600;">${o.tonnes}</td></tr>`
+            ).join('') || '<tr><td colspan="2" style="text-align:center;color:#8b8fa3;">Joʻnatilmagan buyurtma yoʻq.</td></tr>';
 
             // Heavy/Large clients by delivery day (data-driven call list)
             const dd = d.delivery_distribution || { days: [], unassigned: [], total_heavy: 0, total_large: 0 };

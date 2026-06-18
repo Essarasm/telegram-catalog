@@ -329,7 +329,13 @@ def _unshipped_summary(conn) -> dict:
         zones.append({"zone": "(joylashuvsiz)", "tonnes": round(u["tonnes"], 1),
                       "orders": u["orders"], "no_pin": u["orders"], "truck": "—"})
     zones.sort(key=lambda x: -x["tonnes"])
-    return {"total_orders": q["total_orders"], "total_tonnes": q["total_t"], "zones": zones}
+    # Per-order list (client name + tonnage), heaviest first — drives the
+    # dashboard's "Joʻnatilmagan buyurtmalar" table (zones kept for callers
+    # like the chart that still aggregate by zone).
+    orders = [{"name": o["name"] or "(nomsiz)", "tonnes": round(o["tonnes"], 1)}
+              for o in q.get("orders", [])]
+    return {"total_orders": q["total_orders"], "total_tonnes": q["total_t"],
+            "zones": zones, "orders": orders}
 
 
 # Delivery-day schedule (Mon=0 … Sat=5) → district keyword(s), from the load-
