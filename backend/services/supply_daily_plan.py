@@ -335,7 +335,7 @@ def _unshipped_summary(conn) -> dict:
     orders = [{"name": o["name"] or "(nomsiz)", "tonnes": round(o["tonnes"], 1)}
               for o in q.get("orders", [])]
     return {"total_orders": q["total_orders"], "total_tonnes": q["total_t"],
-            "zones": zones, "orders": orders}
+            "zones": zones, "orders": orders, "latest_day": q.get("latest_day")}
 
 
 # Delivery-day schedule (Mon=0 … Sat=5) → district keyword(s), from the load-

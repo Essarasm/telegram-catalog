@@ -35,17 +35,36 @@ def _is_city(zone: str, viloyat: str) -> bool:
 
 
 def compute_x_queue(conn) -> dict:
-    """Group the current X backlog by zone. Returns city/districts/unlocated buckets."""
+    """Group the latest day's X backlog by zone. Returns city/districts/unlocated buckets.
+
+    "Latest day" = the most recent doc_date that still carries a non-pseudo
+    unshipped (is_approved=0) order. Stale X orders accumulate forever — the
+    importer sweep only re-touches docs whose doc_date is in the current export
+    window, so old X rows are never re-marked V (shipped) or pruned and an
+    all-time count inflated to 49 rows back to 2025-04 (Error Log: stale-X
+    accumulation). Scoping to the freshest business day gives the actionable
+    backlog. Timezone-independent: whatever the newest imported day is.
+    """
     cur = conn.cursor()
     rows = cur.execute(
         # CAST: real_orders.total_weight is sometimes stored as TEXT (SQLite dynamic
         # typing) — row-level read needs explicit coercion (SUM would coerce, this won't)
         "SELECT ro.client_name_1c, CAST(COALESCE(ro.total_weight, 0) AS REAL), "
         "       ac.tuman, ac.gps_district, ac.viloyat, "
-        "       CASE WHEN ac.gps_latitude IS NOT NULL THEN 1 ELSE 0 END AS has_pin "
+        "       CASE WHEN ac.gps_latitude IS NOT NULL THEN 1 ELSE 0 END AS has_pin, "
+        "       ro.doc_date "
         "FROM real_orders ro LEFT JOIN allowed_clients ac ON ac.id = ro.client_id "
         "WHERE COALESCE(ro.is_approved, 1) = 0"
     ).fetchall()
+
+    # Drop pseudo rows first (cash/warehouse/returns/org buckets), then scope to
+    # the latest doc_date that still has a real unshipped order. doc_date is an
+    # ISO 'YYYY-MM-DD' string, so max() over strings is chronological.
+    real_rows = [r for r in rows
+                 if not (r[0] and any(k in r[0].lower() for k in _PSEUDO))]
+    latest_day = max((r[6] for r in real_rows if r[6]), default=None)
+    if latest_day is not None:
+        real_rows = [r for r in real_rows if r[6] == latest_day]
 
     city = {"tonnes": 0.0, "orders": 0, "clients": set(), "no_pin": 0}
     districts: dict[str, dict] = {}
@@ -54,14 +73,12 @@ def compute_x_queue(conn) -> dict:
     total_orders = 0
     orders: list[dict] = []  # one entry per X doc — flat per-order list for /navbat
 
-    for row in rows:
+    for row in real_rows:
         # NB: get_db()'s _DictRow iterates KEYS, not values — positional unpack
         # (`for a, b, ... in rows`) would bind COLUMN NAMES, not data (Error Log
-        # #98). Access by index instead.
+        # #98). Access by index instead. Pseudo rows already excluded above.
         name, wt, tuman, gdist, viloyat, has_pin = (
             row[0], row[1], row[2], row[3], row[4], row[5])
-        if name and any(k in name.lower() for k in _PSEUDO):
-            continue
         # get_db() can return numeric columns as str (SQLite text affinity through
         # this connection) — coerce in Python, don't trust SQL CAST/typeof here.
         try:
@@ -100,6 +117,7 @@ def compute_x_queue(conn) -> dict:
         "districts": districts,
         "unlocated": unlocated,
         "orders": sorted(orders, key=lambda o: -o["tonnes"]),  # heaviest first
+        "latest_day": latest_day,  # doc_date the backlog is scoped to (or None)
     }
 
 
