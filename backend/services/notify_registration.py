@@ -99,16 +99,28 @@ def send_registration_notification(
     }
     if not is_approved:
         payload["reply_markup"] = {
-            "inline_keyboard": [[
-                {
-                    "text": "✅ Klientga bog’lash",
-                    "callback_data": f"reg:link:{telegram_id}",
-                },
-                {
-                    "text": "\U0001f195 Yangi klient",
-                    "callback_data": f"reg:new:{telegram_id}",
-                },
-            ]],
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "✅ Klientga bog’lash",
+                        "callback_data": f"reg:link:{telegram_id}",
+                    },
+                    {
+                        "text": "\U0001f195 Yangi klient",
+                        "callback_data": f"reg:new:{telegram_id}",
+                    },
+                ],
+                # Third option: this registrant is our own staff, not a shop —
+                # opens the panel-role picker (admin/cashier/agent/ishchi/observer)
+                # via the existing reg:role handler in registration_link.py.
+                # Assigning a role marks them is_agent=1 and drops them from /unlinked.
+                [
+                    {
+                        "text": "\U0001f454 Xodim sifatida (rol berish)",
+                        "callback_data": f"reg:role:{telegram_id}",
+                    },
+                ],
+            ],
         }
 
     try:
