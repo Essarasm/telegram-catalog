@@ -2402,6 +2402,15 @@ def init_db():
         conn.execute("ALTER TABLE real_orders ADD COLUMN is_approved INTEGER")
     if "first_pending_at" not in ro_cols:
         conn.execute("ALTER TABLE real_orders ADD COLUMN first_pending_at TEXT")
+    # stale_expired_at (2026-06-20): soft-resolve marker for unshipped (X) orders
+    # that 1C never re-exported as shipped. The importer sweep only re-touches
+    # docs in the current export window, so old X rows never flip V → they pile
+    # up forever (49 rows back to 2025-04). Set = auto-expired-as-stale (hidden
+    # from the X-queue + aging readers); NULL = active. Reset to NULL whenever a
+    # fresh export touches the doc, so a full re-export can un-hide a genuinely-
+    # pending order. See x_queue.expire_stale_unshipped + Error Log (stale-X).
+    if "stale_expired_at" not in ro_cols:
+        conn.execute("ALTER TABLE real_orders ADD COLUMN stale_expired_at TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_real_orders_is_approved ON real_orders(is_approved)")
 
     # reminder_fire_log — bot/reminders.py uses this to dedup catch-up fires

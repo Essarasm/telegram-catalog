@@ -920,6 +920,7 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
                     total_sum=?, total_sum_currency=?, total_weight=?, item_count=?,
                     is_approved=?,
                     first_pending_at=COALESCE(first_pending_at, ?),
+                    stale_expired_at=NULL,
                     imported_at=datetime('now')
                    WHERE id=?""",
                 (
@@ -1042,6 +1043,19 @@ def apply_real_orders_import(file_bytes: bytes, filename_hint: str = "") -> dict
         capture_unshipped_daily(conn)
     except Exception as _x_e:
         logger.warning("unshipped (X) capture failed (non-fatal): %s", _x_e)
+
+    # Auto-expire stale X backlog: orders still marked unshipped >7 days after
+    # their doc_date are abandoned (1C never re-exported them as shipped). Runs
+    # AFTER capture_unshipped_daily so each day's X tonnage is already snapshotted.
+    # Fire-and-forget — never let cleanup break the import.
+    try:
+        from backend.services.x_queue import expire_stale_unshipped
+        _expired = expire_stale_unshipped(conn, days=7)
+        if _expired:
+            conn.commit()
+            logger.info("Auto-expired %d stale unshipped (X) orders (>7d)", _expired)
+    except Exception as _e_exp:
+        logger.warning("stale-X auto-expire failed (non-fatal): %s", _e_exp)
 
     db_total_docs = conn.execute("SELECT COUNT(*) FROM real_orders").fetchone()[0]
     db_total_items = conn.execute("SELECT COUNT(*) FROM real_order_items").fetchone()[0]

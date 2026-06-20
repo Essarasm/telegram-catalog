@@ -34,6 +34,28 @@ def _is_city(zone: str, viloyat: str) -> bool:
     return "samarqand sh" in blob or "samarkand" in blob
 
 
+def expire_stale_unshipped(conn, days: int = 7) -> int:
+    """Soft-resolve unshipped (X) orders older than `days` (Tashkent, UTC+5).
+
+    Stale X orders accumulate because the importer sweep only re-touches docs in
+    the current export window — old X rows never flip to V (shipped) and pile up
+    forever (Error Log: stale-X accumulation; 49 rows back to 2025-04, 38/39 of
+    them belonging to clients who shipped later = abandoned). Stamp
+    stale_expired_at so the X-queue + aging readers drop them. The importer resets
+    the stamp on any fresh export touch, so a full re-export can un-hide a
+    genuinely-pending order. Caller commits. Returns the number of rows stamped.
+    """
+    cur = conn.execute(
+        "UPDATE real_orders SET stale_expired_at = datetime('now') "
+        "WHERE COALESCE(is_approved, 1) = 0 "
+        "  AND stale_expired_at IS NULL "
+        "  AND doc_date IS NOT NULL "
+        "  AND date(doc_date) < date('now', '+5 hours', ?)",
+        (f"-{int(days)} days",),
+    )
+    return cur.rowcount
+
+
 def compute_x_queue(conn) -> dict:
     """Group the latest day's X backlog by zone. Returns city/districts/unlocated buckets.
 
@@ -54,7 +76,11 @@ def compute_x_queue(conn) -> dict:
         "       CASE WHEN ac.gps_latitude IS NOT NULL THEN 1 ELSE 0 END AS has_pin, "
         "       ro.doc_date "
         "FROM real_orders ro LEFT JOIN allowed_clients ac ON ac.id = ro.client_id "
-        "WHERE COALESCE(ro.is_approved, 1) = 0"
+        # stale_expired_at IS NULL: drop X orders auto-resolved as stale (see
+        # expire_stale_unshipped). Redundant with the latest-day scope below but
+        # keeps the predicate honest if that ever widens.
+        "WHERE COALESCE(ro.is_approved, 1) = 0 "
+        "  AND ro.stale_expired_at IS NULL"
     ).fetchall()
 
     # Drop pseudo rows first (cash/warehouse/returns/org buckets), then scope to
