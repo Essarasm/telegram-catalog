@@ -131,9 +131,15 @@ def compute_order_aging(conn, ref: date | None = None) -> dict:
     """Current X-backlog aging snapshot (recorded-but-not-shipped orders)."""
     ref = ref or date.today()
     cur = conn.cursor()
+    # stale_expired_at IS NULL: exclude X orders auto-resolved as stale (abandoned
+    # >7d, 1C never re-exported them as shipped). Without this the aging count +
+    # max blow up — 49 phantom rows back to 2025-04 (Error Log: stale-X). See
+    # x_queue.expire_stale_unshipped.
     ages = [
         (ref - date.fromisoformat(r[0])).days
-        for r in cur.execute("SELECT doc_date FROM real_orders WHERE COALESCE(is_approved,1)=0")
+        for r in cur.execute(
+            "SELECT doc_date FROM real_orders "
+            "WHERE COALESCE(is_approved,1)=0 AND stale_expired_at IS NULL")
         if r[0]
     ]
     if not ages:

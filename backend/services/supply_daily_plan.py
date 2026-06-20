@@ -55,7 +55,8 @@ def _backlog_tonnes(conn) -> float:
         """SELECT COALESCE(SUM(CAST(COALESCE(roi.total_weight, 0) AS REAL)), 0)
              FROM real_order_items roi
              JOIN real_orders ro ON ro.id = roi.real_order_id
-            WHERE COALESCE(ro.is_approved, 1) = 0"""
+            WHERE COALESCE(ro.is_approved, 1) = 0
+              AND ro.stale_expired_at IS NULL"""
     ).fetchone()
     return float(r[0] or 0) / 1000.0
 
@@ -173,7 +174,8 @@ def snapshot_backlog(conn, today: Optional[_dt.date] = None) -> dict:
         today = _dt.date.today()
     backlog = round(_backlog_tonnes(conn), 1)
     n_orders = int(conn.execute(
-        "SELECT COUNT(*) FROM real_orders WHERE COALESCE(is_approved, 1) = 0"
+        "SELECT COUNT(*) FROM real_orders "
+        "WHERE COALESCE(is_approved, 1) = 0 AND stale_expired_at IS NULL"
     ).fetchone()[0] or 0)
     med = _median_daily_delivery_tonnes(conn)
     threshold = round(HOLD_MULTIPLIER * med, 1)
