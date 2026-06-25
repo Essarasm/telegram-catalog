@@ -26,6 +26,7 @@ See memory `bucketing_schemes` (Proposal B is the SOLE size scheme) and
 """
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -36,6 +37,97 @@ from backend.services.pseudo_clients import (
 
 TK = ZoneInfo("Asia/Tashkent")
 FX_FALLBACK = 12_000.0
+
+
+def _norm(s: str) -> str:
+    """Case/whitespace/apostrophe-folded NFC form for name-collision checks."""
+    s = (s or "").strip().lower().replace("`", "'").replace("ʼ", "'").replace("’", "'")
+    return unicodedata.normalize("NFC", " ".join(s.split()))
+
+
+def _build_canon(conn):
+    """Map a raw order key → a STABLE shop identity.
+
+    The matrix groups by real_orders' raw key (`COALESCE(client_id,
+    'NAME:'||client_name_1c)`) but DISPLAYS the 1C name. A name lands in two
+    bands only when two raw keys resolve to the same display name — which the
+    identity family (Error Log #75/#82) makes possible three ways:
+
+      1. one shop with two `allowed_clients` rows (two `client_id`s, one
+         `onec_card_id`) — duplicate-row residue;
+      2. one shop split across resolved (`client_id`) and unresolved (NULL →
+         `NAME:`) order rows;
+      3. two genuinely different shops sharing a name (handled at display, not
+         here — they must NOT be merged).
+
+    Canonicalizing by `onec_card_id` (the stable anchor; `client_id_1c` is a
+    non-unique name label, memory `client_id_1c_nonunique`) folds (1) and the
+    unambiguous part of (2) so one shop = one matrix row, while keeping distinct
+    cards — i.e. distinct shops — separate. Returns a `canon(raw_key)` callable
+    that yields an int `client_id` (the card's representative row) when the shop
+    is known, else a `NAME:<norm>` string for truly unresolved orders.
+    """
+    id_card = {}          # allowed_clients.id -> onec_card_id
+    card_rep = {}         # onec_card_id -> representative (min) id
+    name_ids = {}         # _norm(client_id_1c) -> set(id)  [for NULL-row resolve]
+    for r in conn.execute(
+        "SELECT id, onec_card_id, client_id_1c FROM allowed_clients"
+    ).fetchall():
+        cid = r["id"]
+        card = r["onec_card_id"]
+        if card:
+            id_card[cid] = card
+            cur = card_rep.get(card)
+            if cur is None or cid < cur:
+                card_rep[card] = cid
+        if r["client_id_1c"]:
+            name_ids.setdefault(_norm(r["client_id_1c"]), set()).add(cid)
+
+    def _canon_id(cid: int):
+        card = id_card.get(cid)
+        return card_rep.get(card, cid) if card else cid
+
+    def canon(raw_key):
+        if isinstance(raw_key, str) and raw_key.startswith("NAME:"):
+            ids = name_ids.get(_norm(raw_key[5:]))
+            if ids and len(ids) == 1:   # unambiguous → fold into the known shop
+                return _canon_id(next(iter(ids)))
+            return "NAME:" + _norm(raw_key[5:])
+        return _canon_id(int(raw_key))
+
+    return canon
+
+
+def _fold_window(raw: dict, canon) -> dict:
+    """Re-aggregate a {raw_key: {name,usd_eq,n}} window by canonical identity."""
+    out: dict = {}
+    for rk, v in raw.items():
+        ck = canon(rk)
+        o = out.get(ck)
+        if o is None:
+            out[ck] = {"name": v["name"], "usd_eq": v["usd_eq"], "n": v["n"]}
+        else:
+            o["usd_eq"] += v["usd_eq"]
+            o["n"] += v["n"]
+            if v["name"] and (not o["name"] or v["name"] > o["name"]):
+                o["name"] = v["name"]   # MAX(name) — matches prior display pick
+    return out
+
+
+def _fold_hist(raw: dict, canon) -> dict:
+    """Re-aggregate {raw_key: (first, last)} order history by canonical identity."""
+    out: dict = {}
+    for rk, (fo, lo) in raw.items():
+        ck = canon(rk)
+        o = out.get(ck)
+        if o is None:
+            out[ck] = [fo, lo]
+        else:
+            if fo and (not o[0] or fo < o[0]):
+                o[0] = fo
+            if lo and (not o[1] or lo > o[1]):
+                o[1] = lo
+    return {k: tuple(v) for k, v in out.items()}
 
 # Proposal B size thresholds (monthly USD-eq). The SOLE client-size scheme.
 _SIZE_EDGES = [("Micro", 0), ("Small", 125), ("Medium", 621),
@@ -75,6 +167,10 @@ def compute_portfolio(conn) -> dict:
     ).fetchall()
     avg_fx = (sum(float(r["rate"]) for r in fx_rows) / len(fx_rows)) if fx_rows else FX_FALLBACK
 
+    # Stable-identity folding: collapse same-shop raw keys (duplicate rows /
+    # NULL splits) so one shop = one matrix row. See _build_canon.
+    canon = _build_canon(conn)
+
     def window(start, end):
         rows = conn.execute(
             f"""SELECT COALESCE(client_id,'NAME:'||client_name_1c) ckey,
@@ -86,18 +182,19 @@ def compute_portfolio(conn) -> dict:
                  GROUP BY ckey""",
             (start.isoformat(), end.isoformat(), *excl_params),
         ).fetchall()
-        return {r["ckey"]: {"name": r["name"],
-                            "usd_eq": float(r["uzs"] or 0) / avg_fx + float(r["usd"] or 0),
-                            "n": r["n"]} for r in rows}
+        raw = {r["ckey"]: {"name": r["name"],
+                           "usd_eq": float(r["uzs"] or 0) / avg_fx + float(r["usd"] or 0),
+                           "n": r["n"]} for r in rows}
+        return _fold_window(raw, canon)
 
-    hist = {r["ckey"]: (r["first_order"], r["last_order"]) for r in conn.execute(
+    hist = _fold_hist({r["ckey"]: (r["first_order"], r["last_order"]) for r in conn.execute(
         f"""SELECT COALESCE(client_id,'NAME:'||client_name_1c) ckey,
                    MIN(doc_date) first_order, MAX(doc_date) last_order
               FROM real_orders
              WHERE COALESCE(is_approved,1)=1 AND {excl}
              GROUP BY ckey""",
         excl_params,
-    ).fetchall()}
+    ).fetchall()}, canon)
 
     lvl = window(level_start, today)         # 12mo roster (the active base)
     cur = window(cur_start, today)           # current 120d
@@ -162,6 +259,7 @@ def compute_portfolio(conn) -> dict:
         b, bd = _bucket(monthly(k)), band(k)
         matrix[b][bd] += 1
         cells[f"{b}|{bd}"].append({
+            "_key": k,
             "name": lvl[k]["name"],
             "monthly_usd": round(monthly(k)),
             "yoy_rel_pct": round(rel[k], 1),
@@ -206,6 +304,7 @@ def compute_portfolio(conn) -> dict:
     # ---- Cohort drill lists (cheap; lets the UI expand New / Dormant too) ----
     def cohort_list(keys):
         out = [{
+            "_key": k,
             "name": lvl[k]["name"],
             "bucket": _bucket(monthly(k)),
             "monthly_usd": round(monthly(k)),
@@ -213,6 +312,40 @@ def compute_portfolio(conn) -> dict:
         } for k in keys]
         out.sort(key=lambda x: -x["monthly_usd"])
         return out
+
+    cohort_new = cohort_list(new_active)
+    cohort_dormant = cohort_list(dormant)
+
+    # ---- Display disambiguation (Error Log #75 — legit same-name neighbours) ----
+    # Same-shop keys are already folded above, so any display name still shared
+    # by two DISTINCT canonical keys is two genuinely different shops. Append a
+    # locator (district/landmark, else 1C Код, else the row id) so the owner
+    # reads them as two rows — not one client duplicated across groups.
+    all_entries = [e for lst in cells.values() for e in lst] + cohort_new + cohort_dormant
+    by_name: dict = {}
+    for e in all_entries:
+        by_name.setdefault(_norm(e["name"]), []).append(e)
+    colliding = [e for es in by_name.values()
+                 if len({x["_key"] for x in es}) > 1 for e in es]
+    if colliding:
+        ids = [e["_key"] for e in colliding if isinstance(e["_key"], int)]
+        loc: dict = {}
+        if ids:
+            ph = ",".join("?" * len(ids))
+            for r in conn.execute(
+                f"""SELECT id, tuman, moljal, viloyat, onec_card_id
+                      FROM allowed_clients WHERE id IN ({ph})""", ids,
+            ).fetchall():
+                tag = r["tuman"] or r["moljal"] or r["viloyat"]
+                if not tag and r["onec_card_id"]:
+                    tag = r["onec_card_id"].split(":")[-1]
+                loc[r["id"]] = tag
+        for e in colliding:
+            tag = loc.get(e["_key"]) if isinstance(e["_key"], int) else None
+            e["name"] = f"{e['name']} ({tag})" if tag else f"{e['name']} #{e['_key']}"
+
+    for e in all_entries:
+        e.pop("_key", None)
 
     return {
         "as_of": today.isoformat(),
@@ -236,7 +369,7 @@ def compute_portfolio(conn) -> dict:
         "cells": cells,
         "eligible_n": len(eligible),
         "cohort_lists": {
-            "new_active": cohort_list(new_active),
-            "dormant": cohort_list(dormant),
+            "new_active": cohort_new,
+            "dormant": cohort_dormant,
         },
     }
